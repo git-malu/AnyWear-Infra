@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseJson, sha256, HASH, exact, matches, SHA } from './json-contract.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
+import { changedStackNames } from './operation-stacks.mjs';
 validateOperationInputs();
 if (!/^stack-sources\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(process.env.STACK_SOURCES_FILE ?? '') || !HASH.test(process.env.STACK_SOURCES_SHA256 ?? '')) throw new Error('Reviewed stack sources path/hash required');
 const bytes = await readFile(process.env.STACK_SOURCES_FILE);
@@ -17,9 +18,7 @@ for (const row of rows) {
     || row.region !== (row.stack_name.includes('Billing') ? 'us-east-1' : 'ap-east-1')
     || !['git-malu/AnyWear-Service', 'git-malu/AnyWear-Infra'].includes(row.source_repository)) throw new Error('Unexpected stack provenance');
 }
-const touched = { 'deploy-foundation': ['AnyWearFoundationStack'], 'deploy-billing': ['AnyWearBillingStack-beta'],
-  'deploy-platform': ['AnyWearPlatformStack-beta'], 'deploy-workload': ['AnyWearWorkloadStack-beta'],
-  start: ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'] }[process.env.INFRA_OPERATION] ?? [];
+const touched = changedStackNames(process.env.INFRA_OPERATION);
 for (const name of touched) {
   const row = rows.find(row => row.stack_name === name);
   if (row?.source_repository !== 'git-malu/AnyWear-Infra' || row.source_sha !== process.env.GITHUB_SHA) throw new Error('Changed stack must bind this exact Infra executor source');
