@@ -1,0 +1,350 @@
+{
+ "Resources": {
+  "ComputeRuntimeMaintenanceOriginF7D74A6C": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "ComputeRuntimeMaintenanceOriginPolicyC97D8D6B": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "ComputeRuntimeMaintenanceOriginF7D74A6C"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ComputeRuntimeMaintenanceOriginF7D74A6C",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ComputeRuntimeMaintenanceOriginF7D74A6C",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "s3:GetObject",
+       "Condition": {
+        "StringEquals": {
+         "AWS:SourceArn": {
+          "Fn::Join": [
+           "",
+           [
+            "arn:",
+            {
+             "Ref": "AWS::Partition"
+            },
+            ":cloudfront::",
+            {
+             "Ref": "AWS::AccountId"
+            },
+            ":distribution/",
+            {
+             "Ref": "ComputeRuntimeApiDistribution5788DFE7"
+            }
+           ]
+          ]
+         }
+        }
+       },
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "cloudfront.amazonaws.com"
+       },
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ComputeRuntimeMaintenanceOriginF7D74A6C",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   }
+  },
+  "ComputeRuntimeMaintenanceResponseF200BB8A": {
+   "Type": "AWS::CloudFront::Function",
+   "Properties": {
+    "AutoPublish": true,
+    "FunctionCode": "function handler(event) { return { statusCode: 503, statusDescription: \"Service Unavailable\", headers: { \"content-type\": { value: \"application/json\" }, \"cache-control\": { value: \"no-store\" }, \"retry-after\": { value: \"300\" } }, body: \"{\\\"error\\\":\\\"beta_stopped\\\"}\" }; }",
+    "FunctionConfig": {
+     "Comment": "ap-east-1AnyWearWorkloadSntenanceResponseD9A01D86",
+     "Runtime": "cloudfront-js-2.0"
+    },
+    "Name": "ap-east-1AnyWearWorkloadSntenanceResponseD9A01D86"
+   }
+  },
+  "ComputeRuntimeApiDistributionOrigin1S3OriginAccessControl3FEE62B0": {
+   "Type": "AWS::CloudFront::OriginAccessControl",
+   "Properties": {
+    "OriginAccessControlConfig": {
+     "Name": "AnyWearWorkloadStackbetaCompOrigin1S3OriginAccessControlB2A80D04",
+     "OriginAccessControlOriginType": "s3",
+     "SigningBehavior": "always",
+     "SigningProtocol": "sigv4"
+    }
+   }
+  },
+  "ComputeRuntimeApiDistribution5788DFE7": {
+   "Type": "AWS::CloudFront::Distribution",
+   "Properties": {
+    "DistributionConfig": {
+     "Comment": "beta AnyWear API",
+     "DefaultCacheBehavior": {
+      "AllowedMethods": [
+       "GET",
+       "HEAD",
+       "OPTIONS",
+       "PUT",
+       "PATCH",
+       "POST",
+       "DELETE"
+      ],
+      "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+      "Compress": false,
+      "FunctionAssociations": [
+       {
+        "EventType": "viewer-request",
+        "FunctionARN": {
+         "Fn::GetAtt": [
+          "ComputeRuntimeMaintenanceResponseF200BB8A",
+          "FunctionARN"
+         ]
+        }
+       }
+      ],
+      "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+      "TargetOriginId": "AnyWearWorkloadStackbetaComputeRuntimeApiDistributionOrigin11E892748",
+      "ViewerProtocolPolicy": "redirect-to-https"
+     },
+     "Enabled": true,
+     "HttpVersion": "http2and3",
+     "IPV6Enabled": true,
+     "Origins": [
+      {
+       "DomainName": {
+        "Fn::GetAtt": [
+         "ComputeRuntimeMaintenanceOriginF7D74A6C",
+         "RegionalDomainName"
+        ]
+       },
+       "Id": "AnyWearWorkloadStackbetaComputeRuntimeApiDistributionOrigin11E892748",
+       "OriginAccessControlId": {
+        "Fn::GetAtt": [
+         "ComputeRuntimeApiDistributionOrigin1S3OriginAccessControl3FEE62B0",
+         "Id"
+        ]
+       },
+       "S3OriginConfig": {
+        "OriginAccessIdentity": ""
+       }
+      }
+     ]
+    }
+   }
+  },
+  "ComputeRuntimeApiLogGroupC2FC529C": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/anywear/beta/api",
+    "RetentionInDays": 14
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "ComputeRuntimeWorkerLogGroupF6DEE804": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/anywear/beta/worker",
+    "RetentionInDays": 14
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  }
+ },
+ "Parameters": {
+  "ServiceImageDigest": {
+   "Type": "String",
+   "AllowedPattern": "^sha256:[a-f0-9]{64}$",
+   "ConstraintDescription": "Must be a sha256 OCI image digest",
+   "Description": "Immutable ECR image digest qualified for this deployment"
+  },
+  "ServiceCommitSha": {
+   "Type": "String",
+   "AllowedPattern": "^[a-f0-9]{40}$",
+   "Description": "Exact AnyWear-Service commit represented by the image"
+  },
+  "VlmConfigArn": {
+   "Type": "String",
+   "Description": "Secrets Manager ARN containing DOUBAO_VLM_API_KEY"
+  },
+  "CloudFrontPrefixListId": {
+   "Type": "String",
+   "AllowedPattern": "^pl-[a-z0-9]+$",
+   "Description": "Regional ID for com.amazonaws.global.cloudfront.origin-facing"
+  },
+  "SsmParameterValueanywearbetaqweatherapihostC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/qweather_api_host"
+  },
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Outputs": {
+  "BetaActive": {
+   "Value": "false"
+  },
+  "ServiceRepositoryUri": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      {
+       "Fn::Select": [
+        4,
+        {
+         "Fn::Split": [
+          ":",
+          {
+           "Fn::GetStackOutput": {
+            "StackName": "AnyWearPlatformStack-beta",
+            "Region": "ap-east-1",
+            "OutputName": "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89"
+           }
+          }
+         ]
+        }
+       ]
+      },
+      ".dkr.ecr.",
+      {
+       "Fn::Select": [
+        3,
+        {
+         "Fn::Split": [
+          ":",
+          {
+           "Fn::GetStackOutput": {
+            "StackName": "AnyWearPlatformStack-beta",
+            "Region": "ap-east-1",
+            "OutputName": "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89"
+           }
+          }
+         ]
+        }
+       ]
+      },
+      ".",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Fn::GetStackOutput": {
+        "StackName": "AnyWearPlatformStack-beta",
+        "Region": "ap-east-1",
+        "OutputName": "PublishOutputRefAsyncRuntimeServiceRepository6535F885E981090C"
+       }
+      }
+     ]
+    ]
+   }
+  },
+  "ApiDistributionDomainName": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ComputeRuntimeApiDistribution5788DFE7",
+     "DomainName"
+    ]
+   }
+  },
+  "ApiBaseUrl": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Fn::GetAtt": [
+        "ComputeRuntimeApiDistribution5788DFE7",
+        "DomainName"
+       ]
+      }
+     ]
+    ]
+   }
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

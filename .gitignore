@@ -14,5 +14,10 @@ test/*.js
 test/*.d.ts
 .service-artifacts/
 .qualification/
+.qualification-verifier/
 deployment-evidence/
 runtime-evidence/
+cdk.matrix/
+cdk.protected.matrix/
+*.zip
+!test/fixtures/placeholder.zip

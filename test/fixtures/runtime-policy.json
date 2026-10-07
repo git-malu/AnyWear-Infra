@@ -1,0 +1,28 @@
+{
+  "vto": {
+    "queueVisibilitySeconds": 900,
+    "receiveVisibilitySeconds": 900,
+    "dbLeaseMs": 960000,
+    "sqsHeartbeatMs": 60000,
+    "retryDelayBaseMs": 1000,
+    "retryDelayMaxMs": 60000,
+    "outboxRetryDelayMs": 5000,
+    "outboxMaxAttempts": 5,
+    "maxAttempts": 3,
+    "maxReceives": 9,
+    "terminalRedriveSeconds": 1
+  },
+  "auto-tagging": {
+    "queueVisibilitySeconds": 300,
+    "receiveVisibilitySeconds": 300,
+    "dbLeaseMs": 360000,
+    "sqsHeartbeatMs": 30000,
+    "retryDelayBaseMs": 1000,
+    "retryDelayMaxMs": 60000,
+    "outboxRetryDelayMs": 5000,
+    "outboxMaxAttempts": 5,
+    "maxAttempts": 3,
+    "maxReceives": 9,
+    "terminalRedriveSeconds": 1
+  }
+}

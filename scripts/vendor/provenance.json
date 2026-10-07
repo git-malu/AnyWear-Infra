@@ -1,0 +1,22 @@
+{
+  "repository": "git-malu/AnyWear-Service",
+  "source_sha": "8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce",
+  "files": {
+    ".github/scripts/service-artifact-contract.mjs": {
+      "vendored_path": "scripts/vendor/service-artifact-contract.mjs",
+      "sha256": "57fbd454b90fae6de856d05bb612a8c9b5b8d9e130e0521093fee0bf7e9422de"
+    },
+    ".github/scripts/service-release-attestation.mjs": {
+      "vendored_path": "scripts/vendor/service-release-attestation.mjs",
+      "sha256": "cd8235e75ace18eb40728e61bea99d2bc149ba1d44963683df9729035b30e02f"
+    },
+    ".github/fixtures/github-native-release-verification.json": {
+      "vendored_path": "test/fixtures/github-native-release-verification.json",
+      "sha256": "cd31c6b48807df60c5fb4ae0d41d71233f56f9804a379bdcbd1fb8c4d843d614"
+    },
+    ".github/fixtures/README.md": {
+      "vendored_path": "test/fixtures/native-release-source.md",
+      "sha256": "e42d46257223b6ef2869b828b2cf9c14d068985d4a1f0145ace17b5f8482cdd6"
+    }
+  }
+}

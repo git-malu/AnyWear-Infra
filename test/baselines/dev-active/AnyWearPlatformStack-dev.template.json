@@ -1,0 +1,942 @@
+{
+ "Resources": {
+  "AsyncRuntimeServiceRepository6535F885": {
+   "Type": "AWS::ECR::Repository",
+   "Properties": {
+    "EmptyOnDelete": true,
+    "ImageScanningConfiguration": {
+     "ScanOnPush": true
+    },
+    "ImageTagMutability": "IMMUTABLE",
+    "LifecyclePolicy": {
+     "LifecyclePolicyText": "{\"rules\":[{\"rulePriority\":1,\"selection\":{\"tagStatus\":\"any\",\"countType\":\"imageCountMoreThan\",\"countNumber\":30},\"action\":{\"type\":\"expire\"}}]}"
+    },
+    "RepositoryName": "dev-anywear-service"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeVtoDeadLetterQueueE526C0CE": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "dev-anywear-vto-dlq",
+    "SqsManagedSseEnabled": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeVtoDeadLetterQueuePolicy582D4FBC": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeVtoDeadLetterQueueE526C0CE",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeVtoDeadLetterQueueE526C0CE"
+     }
+    ]
+   }
+  },
+  "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "dev-anywear-auto-tagging-dlq",
+    "SqsManagedSseEnabled": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeAutoTaggingDeadLetterQueuePolicy0B8431A1": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868"
+     }
+    ]
+   }
+  },
+  "AsyncRuntimeVtoQueue7826D09D": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "dev-anywear-vto",
+    "ReceiveMessageWaitTimeSeconds": 20,
+    "RedrivePolicy": {
+     "deadLetterTargetArn": {
+      "Fn::GetAtt": [
+       "AsyncRuntimeVtoDeadLetterQueueE526C0CE",
+       "Arn"
+      ]
+     },
+     "maxReceiveCount": 9
+    },
+    "SqsManagedSseEnabled": true,
+    "VisibilityTimeout": 900
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeVtoQueuePolicy76E52827": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeVtoQueue7826D09D",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeVtoQueue7826D09D"
+     }
+    ]
+   }
+  },
+  "AsyncRuntimeAutoTaggingQueueEC10AA50": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "dev-anywear-auto-tagging",
+    "ReceiveMessageWaitTimeSeconds": 20,
+    "RedrivePolicy": {
+     "deadLetterTargetArn": {
+      "Fn::GetAtt": [
+       "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868",
+       "Arn"
+      ]
+     },
+     "maxReceiveCount": 9
+    },
+    "SqsManagedSseEnabled": true,
+    "VisibilityTimeout": 300
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeAutoTaggingQueuePolicy9F343831": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeAutoTaggingQueueEC10AA50",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeAutoTaggingQueueEC10AA50"
+     }
+    ]
+   }
+  },
+  "PreSignUpLambdaServiceRoleFA160DE8": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  "PreSignUpLambda2E8F0430": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
+     "S3Key": "dd22b734392647d49821cee5abdfd267205184a0f9a69f47c6dd49c8f3c68317.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "STAGE": "dev"
+     }
+    },
+    "FunctionName": "dev-anywear-pre-sign-up",
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "PreSignUpLambdaServiceRoleFA160DE8",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs24.x"
+   },
+   "DependsOn": [
+    "PreSignUpLambdaServiceRoleFA160DE8"
+   ]
+  },
+  "PreSignUpLambdaLogGroup4E55E569": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "PreSignUpLambda2E8F0430"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 731
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "PostConfirmationSyncLambdaServiceRole6B199B36": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  "PostConfirmationSyncLambda6A4CD3FA": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
+     "S3Key": "a01797605d9d4e1c1108721a950bcab293c54eeb9627c5059ce9661e94fd6dce.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "STAGE": "dev"
+     }
+    },
+    "FunctionName": "dev-anywear-post-confirmation-sync",
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "PostConfirmationSyncLambdaServiceRole6B199B36",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs24.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "PostConfirmationSyncLambdaServiceRole6B199B36"
+   ]
+  },
+  "PostConfirmationSyncLambdaLogGroupA074A573": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "PostConfirmationSyncLambda6A4CD3FA"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 731
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "AnyWearUserPoolPreSignUpCognito7A1B18E7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "PreSignUpLambda2E8F0430",
+      "Arn"
+     ]
+    },
+    "Principal": "cognito-idp.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AnyWearUserPoolAFAAA981",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "AnyWearUserPoolPostConfirmationCognito13F80A54": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "PostConfirmationSyncLambda6A4CD3FA",
+      "Arn"
+     ]
+    },
+    "Principal": "cognito-idp.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AnyWearUserPoolAFAAA981",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "AnyWearUserPoolAFAAA981": {
+   "Type": "AWS::Cognito::UserPool",
+   "Properties": {
+    "AccountRecoverySetting": {
+     "RecoveryMechanisms": [
+      {
+       "Name": "verified_phone_number",
+       "Priority": 1
+      },
+      {
+       "Name": "verified_email",
+       "Priority": 2
+      }
+     ]
+    },
+    "AdminCreateUserConfig": {
+     "AllowAdminCreateUserOnly": false
+    },
+    "AutoVerifiedAttributes": [
+     "email"
+    ],
+    "EmailVerificationMessage": "The verification code to your new account is {####}",
+    "EmailVerificationSubject": "Verify your new account",
+    "LambdaConfig": {
+     "PostConfirmation": {
+      "Fn::GetAtt": [
+       "PostConfirmationSyncLambda6A4CD3FA",
+       "Arn"
+      ]
+     },
+     "PreSignUp": {
+      "Fn::GetAtt": [
+       "PreSignUpLambda2E8F0430",
+       "Arn"
+      ]
+     }
+    },
+    "Policies": {
+     "PasswordPolicy": {
+      "MinimumLength": 8,
+      "RequireLowercase": true,
+      "RequireNumbers": true,
+      "RequireSymbols": true,
+      "RequireUppercase": true
+     }
+    },
+    "Schema": [
+     {
+      "AttributeDataType": "String",
+      "Mutable": false,
+      "Name": "e2e_bootstrap"
+     }
+    ],
+    "SmsVerificationMessage": "The verification code to your new account is {####}",
+    "UserPoolName": "dev-anywear-user-pool",
+    "UsernameAttributes": [
+     "email"
+    ],
+    "VerificationMessageTemplate": {
+     "DefaultEmailOption": "CONFIRM_WITH_CODE",
+     "EmailMessage": "The verification code to your new account is {####}",
+     "EmailSubject": "Verify your new account",
+     "SmsMessage": "The verification code to your new account is {####}"
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "AnyWearUserPoolClient15EC205A": {
+   "Type": "AWS::Cognito::UserPoolClient",
+   "Properties": {
+    "AllowedOAuthFlows": [
+     "implicit",
+     "code"
+    ],
+    "AllowedOAuthFlowsUserPoolClient": true,
+    "AllowedOAuthScopes": [
+     "profile",
+     "phone",
+     "email",
+     "openid",
+     "aws.cognito.signin.user.admin"
+    ],
+    "CallbackURLs": [
+     "https://example.com"
+    ],
+    "ExplicitAuthFlows": [
+     "ALLOW_USER_SRP_AUTH",
+     "ALLOW_REFRESH_TOKEN_AUTH"
+    ],
+    "GenerateSecret": false,
+    "ReadAttributes": [
+     "custom:e2e_bootstrap",
+     "email",
+     "email_verified"
+    ],
+    "SupportedIdentityProviders": [
+     "COGNITO"
+    ],
+    "UserPoolId": {
+     "Ref": "AnyWearUserPoolAFAAA981"
+    },
+    "WriteAttributes": [
+     "email"
+    ]
+   }
+  },
+  "UserPoolIdParam81D6760E": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/dev/cognito_user_pool_id",
+    "Type": "String",
+    "Value": {
+     "Ref": "AnyWearUserPoolAFAAA981"
+    }
+   }
+  },
+  "UserPoolClientIdParam5DF0EADC": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/dev/cognito_client_id",
+    "Type": "String",
+    "Value": {
+     "Ref": "AnyWearUserPoolClient15EC205A"
+    }
+   }
+  },
+  "AnyWearWardrobeBucket61DCC096": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketName": "dev-anywear-wardrobe-bucket-650880818323-ap-east-1",
+    "CorsConfiguration": {
+     "CorsRules": [
+      {
+       "AllowedHeaders": [
+        "*"
+       ],
+       "AllowedMethods": [
+        "GET",
+        "PUT",
+        "POST",
+        "DELETE",
+        "HEAD"
+       ],
+       "AllowedOrigins": [
+        "*"
+       ],
+       "ExposedHeaders": [
+        "ETag"
+       ]
+      }
+     ]
+    },
+    "LifecycleConfiguration": {
+     "Rules": [
+      {
+       "ExpirationInDays": 7,
+       "Id": "ExpireUnpromotedTaskAttempts",
+       "Prefix": "task-attempts/",
+       "Status": "Enabled"
+      }
+     ]
+    },
+    "Tags": [
+     {
+      "Key": "aws-cdk:auto-delete-objects",
+      "Value": "true"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AnyWearWardrobeBucketPolicy49DC3AFD": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "AnyWearWardrobeBucket61DCC096"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:PutBucketPolicy"
+       ],
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": {
+         "Fn::GetAtt": [
+          "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+          "Arn"
+         ]
+        }
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AnyWearWardrobeBucket61DCC096",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AnyWearWardrobeBucket61DCC096",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   }
+  },
+  "AnyWearWardrobeBucketAutoDeleteObjectsCustomResource9D816965": {
+   "Type": "Custom::S3AutoDeleteObjects",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+      "Arn"
+     ]
+    },
+    "BucketName": {
+     "Ref": "AnyWearWardrobeBucket61DCC096"
+    }
+   },
+   "DependsOn": [
+    "AnyWearWardrobeBucketPolicy49DC3AFD"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     }
+    ]
+   }
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
+     "S3Key": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip"
+    },
+    "Timeout": 900,
+    "MemorySize": 128,
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs24.x",
+    "Description": {
+     "Fn::Join": [
+      "",
+      [
+       "Lambda function for auto-deleting objects in ",
+       {
+        "Ref": "AnyWearWardrobeBucket61DCC096"
+       },
+       " S3 bucket."
+      ]
+     ]
+    }
+   },
+   "DependsOn": [
+    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+   ]
+  },
+  "WardrobeBucketNameParam34389501": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/dev/s3_bucket_name",
+    "Type": "String",
+    "Value": {
+     "Ref": "AnyWearWardrobeBucket61DCC096"
+    }
+   }
+  },
+  "AwsRegionParam2228D1F0": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/dev/aws_region",
+    "Type": "String",
+    "Value": "ap-east-1"
+   }
+  },
+  "QWeatherApiHostParamEAEA215A": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/dev/qweather_api_host",
+    "Type": "String",
+    "Value": "jt4d94d58q.re.qweatherapi.com"
+   }
+  },
+  "GitHubActionsPipelineRolePolicyAnyWearPlatformStackdevGitHubActionsPipelineRole0B02CC2568EEBA9E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AnyWearWardrobeBucket61DCC096",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AnyWearWardrobeBucket61DCC096",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeServiceRepository6535F885",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "cloudformation:DescribeStacks",
+        "ec2:DescribeManagedPrefixLists",
+        "ecr:DescribeImages",
+        "ecr:GetAuthorizationToken"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "cognito-idp:AdminConfirmSignUp",
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminDeleteUser",
+        "cognito-idp:AdminSetUserPassword",
+        "cognito-idp:GetUser"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "AnyWearUserPoolAFAAA981",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "PolicyAnyWearPlatformStackdevGitHubActionsPipelineRole0B02CC25",
+    "Roles": [
+     "dev-github-actions-pipeline-role"
+    ]
+   }
+  }
+ },
+ "Outputs": {
+  "UserPoolId": {
+   "Value": {
+    "Ref": "AnyWearUserPoolAFAAA981"
+   }
+  },
+  "UserPoolClientId": {
+   "Value": {
+    "Ref": "AnyWearUserPoolClient15EC205A"
+   }
+  },
+  "WardrobeBucketName": {
+   "Value": {
+    "Ref": "AnyWearWardrobeBucket61DCC096"
+   }
+  },
+  "ServiceRepositoryUri": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      {
+       "Fn::Select": [
+        4,
+        {
+         "Fn::Split": [
+          ":",
+          {
+           "Fn::GetAtt": [
+            "AsyncRuntimeServiceRepository6535F885",
+            "Arn"
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      ".dkr.ecr.",
+      {
+       "Fn::Select": [
+        3,
+        {
+         "Fn::Split": [
+          ":",
+          {
+           "Fn::GetAtt": [
+            "AsyncRuntimeServiceRepository6535F885",
+            "Arn"
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      ".",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "AsyncRuntimeServiceRepository6535F885"
+      }
+     ]
+    ]
+   }
+  },
+  "ServiceRepositoryName": {
+   "Value": {
+    "Ref": "AsyncRuntimeServiceRepository6535F885"
+   }
+  },
+  "VtoQueueUrl": {
+   "Value": {
+    "Ref": "AsyncRuntimeVtoQueue7826D09D"
+   }
+  },
+  "AutoTaggingQueueUrl": {
+   "Value": {
+    "Ref": "AsyncRuntimeAutoTaggingQueueEC10AA50"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
