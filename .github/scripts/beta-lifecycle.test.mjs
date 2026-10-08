@@ -86,7 +86,7 @@ test('stop drains and waits for all tasks before removing Beta network egress', 
   await runBetaLifecycle('stop', io);
   assert.deepEqual(events, [
     'ssm get-parameter',
-    'oneShot lifecycle close', 'oneShot lifecycle drain',
+    'oneShot lifecycle close', 'ssm get-parameter', 'oneShot lifecycle drain',
     'ecs list-tasks RUNNING', 'ecs list-tasks STOPPED',
     `deploy ${workloadName} false`,
     'ecs list-tasks RUNNING', 'ecs list-tasks STOPPED',
@@ -402,5 +402,16 @@ test('invalid task inventory aborts stop before CDK and keeps admission closed',
     assert.ok(!events.some((event) => event.startsWith('deploy ')));
     assert.equal(events.at(-1), 'ssm get-parameter');
     assert.equal(events.includes('oneShot lifecycle open'), false);
+  }
+});
+
+test('a successful close with false or unavailable suspension readback never drains or changes infrastructure', async () => {
+  for (const closedState of ['false', 'invalid', undefined]) {
+    const { io, events } = lifecycleIo(); const aws = io.aws; const oneShot = io.oneShot; let closed = false;
+    io.oneShot = async (...args) => { await oneShot(...args); if (args[2] === 'close') closed = true; };
+    io.aws = async args => { const result = await aws(args); return closed && args[0] === 'ssm' ? { Parameter: { Value: closedState } } : result; };
+    await assert.rejects(runBetaLifecycle('stop', io), /shutdown failed/);
+    assert.equal(events.includes('oneShot lifecycle drain'), false);
+    assert.equal(events.some(event => event.startsWith('deploy ') || event === 'oneShot lifecycle open'), false);
   }
 });

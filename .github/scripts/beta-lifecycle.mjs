@@ -153,6 +153,10 @@ export async function runBetaLifecycle(action, io) {
   await readAdmissionSuspension('stopping');
   try {
     await oneShot('close');
+    // The verified pinned-image close task sets both SSM and DB suspension.
+    // Re-read SSM before drain, whose old-image implementation restores its
+    // observed prior suspension; an inconsistent close must never reach drain.
+    if (await readAdmissionSuspension('draining') !== 'true') throw new Error('Successful pinned close did not prove suspended admission before drain');
     await oneShot('drain');
     await waitForTasks(io, cluster, { servicesAllowed: true });
     await deploy(workloadStack, false);

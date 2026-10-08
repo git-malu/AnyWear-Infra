@@ -182,3 +182,10 @@ CloudFormation rollback from restoring activity during stop or stopped-state
 maintenance. Failure leaves partial resource state for explicit reviewed recovery;
 resource replacements unsupported in this mode must fail rather than trigger a
 restart. Preserve actual stack outputs/statuses and admission readback.
+
+Before stop drains, the successful one-shot close is bound to the exact pinned
+image/task/command and must set SSM and DB suspension in that reviewed Service
+image. Infra immediately re-reads `admission_suspended=true`; false, malformed or
+unavailable readback aborts before drain or CFN. The #54 maintenance operator also
+preserves independent DB/SSM status proof before native drain. Task success or
+requested flags do not substitute for these observed maintenance conditions.
