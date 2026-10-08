@@ -19,6 +19,30 @@ jobs:
       - run: npm ci
       - run: npm run audit:prod
       - run: npm run check
+      - name: Reproduce and confine CLI 2.101.0 state without credentials or network
+        id: cli_state
+        env:
+          CLI_REGRESSION_DIRECTORY: ${{ runner.temp }}/offline-cli-state
+        run: |
+          mkdir -p "$CLI_REGRESSION_DIRECTORY"
+          result="$CLI_REGRESSION_DIRECTORY/result.json"
+          printf '%s\n' '{"schema_version":1,"record_type":"anywear_offline_cli_state_regression","cli_version":"2.101.0","network_isolated":false,"credentials_supplied":false,"native_reads_performed":false,"passed":false,"trials":[]}' > "$result"
+          archive="$CLI_REGRESSION_DIRECTORY/gh_2.101.0_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_amd64.tar.gz --output "$archive"
+          printf '%s  %s\n' '9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8' "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$CLI_REGRESSION_DIRECTORY"
+          sudo -n unshare --net -- /usr/bin/env -i PATH="$PATH" LANG=C.UTF-8 \
+            HANDSHAKE_REQUIRE_LINUX_CLI_REGRESSION=true \
+            HANDSHAKE_CLI_EXECUTABLE="$CLI_REGRESSION_DIRECTORY/gh_2.101.0_linux_amd64/bin/gh" \
+            HANDSHAKE_CLI_REGRESSION_RESULT="$result" \
+            "$(command -v node)" --test --test-name-pattern 'credential-free Linux CLI state regression' scripts/publication-handshake.test.mjs
+      - name: Preserve sanitized CLI state observations on success or failure
+        if: ${{ always() && steps.cli_state.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-cli-state-regression
+          path: ${{ runner.temp }}/offline-cli-state/result.json
+          if-no-files-found: error
       - name: Check native release verification CLI offline
         run: |
           gh --version

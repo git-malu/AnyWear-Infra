@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -184,6 +184,91 @@ test('checkout guard refuses replacement refs even when worktree appears clean',
   await current.git(['--no-replace-objects', 'reset', '--hard', current.sha]);
   await assert.rejects(assertCheckout(current.root, current.sha), /unclean/);
 });
+
+test('credential-free Linux CLI state regression', {
+  skip: process.env.HANDSHAKE_REQUIRE_LINUX_CLI_REGRESSION !== 'true', timeout: 120_000,
+}, async () => {
+  const executable = process.env.HANDSHAKE_CLI_EXECUTABLE;
+  const resultFile = process.env.HANDSHAKE_CLI_REGRESSION_RESULT;
+  assert.ok(path.isAbsolute(executable ?? '') && path.isAbsolute(resultFile ?? ''), 'Explicit external tool/result paths required');
+  const sourceRoot = await realpath(fileURLToPath(new URL('../', import.meta.url)));
+  const outsideSource = target => {
+    const relative = path.relative(sourceRoot, target);
+    return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+  };
+  assert.ok(outsideSource(await realpath(executable)) && outsideSource(await realpath(path.dirname(resultFile))),
+    'CLI executable and report must remain outside source');
+  const commands = [['--version'], ['release', 'verify', '--format', 'json', '--help'], ['release', 'verify-asset', '--format', 'json', '--help']];
+  const report = { schema_version: 1, record_type: 'anywear_offline_cli_state_regression', cli_version: '2.101.0',
+    network_isolated: false, credentials_supplied: false, native_reads_performed: false, passed: false, trials: [] };
+  const clean = value => !value.porcelain_dirty && !value.replacement_refs && !value.hidden_index;
+  try {
+    assert.equal(process.platform, 'linux', 'Required regression must run on Linux');
+    // Source CI starts this test in a fresh network namespace. Neither telemetry
+    // nor an unexpected CLI command can reach a network or credential service.
+    const interfaces = (await readFile('/proc/net/dev', 'utf8')).split('\n').slice(2).filter(line => line.includes(':'))
+      .map(line => line.split(':')[0].trim());
+    assert.deepEqual(interfaces, ['lo'], 'CLI regression requires a network-isolated namespace');
+    report.network_isolated = true;
+    for (const profile of ['original', 'telemetry-disabled', 'state-confined']) {
+      const current = await gitFixture(); const configDirectory = await temporary('offline-config');
+      const commandEnv = commandEnvironment(process.env, configDirectory);
+      // This restores W's exact sanitized environment, not an approximately
+      // filtered user environment. The implementation adds only this fixed key.
+      if (profile !== 'telemetry-disabled') delete commandEnv.GH_TELEMETRY;
+      if (profile === 'state-confined') commandEnv.XDG_STATE_HOME = path.join(configDirectory, 'state');
+      for (const key of ['HOME', 'USERPROFILE', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'NODE_OPTIONS', 'GH_DEBUG']) {
+        assert.equal(commandEnv[key], undefined, 'Offline child environment excludes credentials and user state');
+      }
+      const git = async args => (await execute('git', ['--no-replace-objects', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', current.root, ...args],
+        { encoding: 'utf8', timeout: 30_000, maxBuffer: 2 * 1024 * 1024, env: commandEnvironment(process.env, '') })).stdout;
+      const snapshot = async () => {
+        const porcelain = await git(['status', '--porcelain=v1', '--untracked-files=all']);
+        return { porcelain_dirty: Boolean(porcelain.trim()), replacement_refs: Boolean((await git(['for-each-ref', '--format=%(refname)', 'refs/replace'])).trim()),
+          hidden_index: (await git(['ls-files', '-v', '-z'])).split('\0').filter(Boolean).some(line => !line.startsWith('H ')),
+          only_telemetry_device_file: porcelain.trim() === '?? .local/state/gh/device-id' };
+      };
+      await assertCheckout(current.root, current.sha);
+      const trial = { profile, before: await snapshot(), commands: [] }; report.trials.push(trial);
+      for (const args of commands) {
+        let stdout; let exitCode;
+        try {
+          stdout = (await execute(executable, args, { cwd: current.root, encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, env: commandEnv })).stdout;
+          exitCode = 0;
+        } catch (error) { exitCode = Number.isInteger(error.code) ? error.code : 'process-failed'; }
+        // Persist fixed predicates and outcomes only, never stderr/environment
+        // or arbitrary checkout contents. CLI version must be the failed one.
+        const result = { command: args.join(' '), exit_code: exitCode, after: await snapshot() };
+        if (args[0] === '--version') result.pinned_version_matches = /^gh version 2\.101\.0 /.test(stdout ?? '');
+        trial.commands.push(result);
+      }
+      if (profile === 'state-confined') trial.external_device_file = await readFile(path.join(configDirectory, 'state', 'gh', 'device-id'))
+        .then(bytes => bytes.length > 0, () => false);
+      if (profile === 'telemetry-disabled') trial.external_config_empty = (await readdir(configDirectory)).length === 0;
+      trial.guard_rejected = await assertCheckout(current.root, current.sha).then(() => false, error => {
+        assert.match(error.message, /checkout-unclean/); return true;
+      });
+    }
+    // Observe every profile before asserting the hypothesis, so a failed
+    // reproduction still preserves the original and fixed predicate results.
+    for (const trial of report.trials) {
+      assert.ok(clean(trial.before), 'Every trial must start from a strict clean checkout');
+      assert.ok(trial.commands.every(result => result.exit_code === 0), 'Offline probes must exit successfully');
+      assert.equal(trial.commands[0].pinned_version_matches, true, 'Pinned failed-reader CLI required');
+      if (trial.profile === 'original') {
+        assert.ok(trial.commands.every(result => result.after.only_telemetry_device_file && !result.after.replacement_refs && !result.after.hidden_index),
+          'Original environment must reproduce only the untracked telemetry device file');
+        assert.equal(trial.guard_rejected, true, 'Original contamination must trip the strict checkout guard');
+      } else {
+        assert.ok(trial.commands.every(result => clean(result.after)), 'Isolated CLI must preserve every strict checkout predicate');
+        assert.equal(trial.guard_rejected, false);
+        if (trial.profile === 'state-confined') assert.equal(trial.external_device_file, true, 'State confinement must demonstrate the same write outside source');
+        else assert.equal(trial.external_config_empty, true, 'Telemetry opt-out requires no user state or configuration');
+      }
+    }
+    report.passed = true;
+  } finally { await writeFile(resultFile, canonicalJson(report)); }
+});
 test('CLI guard failure initializes nothing; failed mint finalization removes stale candidate/hash and retains only sanitized status', async () => {
   const current = await gitFixture(); const temp = await temporary('cli');
   const env = { ...commandEnvironment(process.env, path.join(temp, 'empty-config')), ...environment(), RUNNER_TEMP: temp, GITHUB_WORKSPACE: current.root,
@@ -207,9 +292,14 @@ test('CLI guard failure initializes nothing; failed mint finalization removes st
 });
 test('credential environment strips alternate tokens, debug, enterprise, Git and Node overrides', () => {
   const env = commandEnvironment({ PATH: 'system', GH_TOKEN: 'old', GITHUB_TOKEN: 'old', GH_ENTERPRISE_TOKEN: 'old', GH_HOST: 'enterprise',
-    GH_DEBUG: 'api', NODE_OPTIONS: '--require attack', GIT_CONFIG_COUNT: '1', APP_PRIVATE_KEY: 'never' }, '/empty/config', 'scoped-test-token');
+    GH_DEBUG: 'api', NODE_OPTIONS: '--require attack', GIT_CONFIG_COUNT: '1', APP_PRIVATE_KEY: 'never', GH_TELEMETRY: 'enabled',
+    HOME: '/user', USERPROFILE: '/user', XDG_STATE_HOME: '/user/state', XDG_CACHE_HOME: '/user/cache', DO_NOT_TRACK: '0' }, '/empty/config', 'scoped-test-token');
   assert.equal(env.GH_TOKEN, 'scoped-test-token'); assert.equal(env.GH_HOST, 'github.com'); assert.equal(env.GH_CONFIG_DIR, '/empty/config');
-  for (const key of ['GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GH_DEBUG', 'NODE_OPTIONS', 'GIT_CONFIG_COUNT', 'APP_PRIVATE_KEY']) assert.equal(env[key], undefined);
+  assert.equal(env.GH_TELEMETRY, 'disabled');
+  for (const key of ['GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GH_DEBUG', 'NODE_OPTIONS', 'GIT_CONFIG_COUNT', 'APP_PRIVATE_KEY',
+    'HOME', 'USERPROFILE', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'DO_NOT_TRACK']) assert.equal(env[key], undefined);
+  for (const telemetry of ['log', 'enabled', 'disabled', 'unexpected']) assert.equal(commandEnvironment({ GH_TELEMETRY: telemetry }, '/empty').GH_TELEMETRY, 'disabled');
+  assert.equal(commandEnvironment({ GH_TOKEN: 'ambient' }, '/empty').GH_TOKEN, undefined);
   assert.throws(() => liveReaderIo({ token: '', configDirectory: '/empty' }), /reader-token-missing/);
 });
 test('absent, omitted and null reader tokens fail before any fetch or native command', () => {
@@ -225,6 +315,7 @@ test('live adapter executes literal native arguments with only scoped credential
     run: async (command, args, options) => { calls++; assert.equal(command, 'gh'); assert.deepEqual(args,
       ['release', 'verify-asset', fixture.request.release.tag, '/allowed/asset.zip', '--repo', repo.full_name, '--format', 'json']);
       assert.equal(options.env.GITHUB_TOKEN, undefined); assert.equal(options.env.GH_DEBUG, undefined); assert.equal(options.env.GH_TOKEN, 'scoped-test-token');
+      assert.equal(options.env.GH_TELEMETRY, 'disabled');
       return { stdout: raw }; } });
   assert.ok((await io.attestation(fixture.request.release.tag, '/allowed/asset.zip')).equals(raw)); assert.equal(calls, 1);
 });
