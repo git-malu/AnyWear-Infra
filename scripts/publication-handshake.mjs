@@ -70,6 +70,10 @@ export function commandEnvironment(env, configDirectory, token) {
     if (typeof env[key] === 'string') out[key] = env[key];
   }
   out.GH_HOST = 'github.com'; out.GH_CONFIG_DIR = configDirectory; out.GH_PROMPT_DISABLED = '1';
+  // cli/cli v2.101.0 initializes telemetry even for --version/--help. Without
+  // HOME, its Unix state path is relative to cwd; GH_CONFIG_DIR does not govern
+  // that state. Use the supported fixed opt-out, never an inherited override.
+  out.GH_TELEMETRY = 'disabled';
   out.GIT_CONFIG_NOSYSTEM = '1'; out.GIT_CONFIG_GLOBAL = process.platform === 'win32' ? 'NUL' : '/dev/null';
   if (token !== undefined) {
     if (typeof token !== 'string' || !token) fail('reader-token-missing');
