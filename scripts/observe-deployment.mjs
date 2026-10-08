@@ -12,6 +12,17 @@ export { validateDeploymentRecord, assertObservedMatchesDeployment } from './dep
 const execute = promisify(execFile);
 const outputMap = stack => Object.fromEntries((stack.Outputs ?? []).map(item => [item.OutputKey, item.OutputValue]));
 
+export function selectEcrImageManifest(imageResult, selectedDigest) {
+  const images = imageResult?.images;
+  if (imageResult?.failures?.length || !Array.isArray(images) || images.length === 0
+    || images.some(image => image?.imageId?.imageDigest !== selectedDigest)) throw new Error('Exact selected OCI manifest unavailable');
+  const manifests = images.map(image => image.imageManifest);
+  if (manifests.some(manifest => typeof manifest !== 'string') || new Set(manifests).size !== 1) throw new Error('Exact selected OCI manifest unavailable');
+  const imageManifest = manifests[0];
+  if (`sha256:${sha256(imageManifest)}` !== selectedDigest) throw new Error('Actual OCI manifest bytes differ from sealed selected digest');
+  return imageManifest;
+}
+
 export function liveObservationIo() {
   return {
     async aws(args, awsRegion = region) {
@@ -34,10 +45,9 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
   const selector = selected.selector;
   if (env.AWS_REGION !== region || env.AWS_ACCOUNT_ID !== account || (await io.aws(['sts', 'get-caller-identity'])).Account !== account) throw new Error('Unexpected authenticated observer account/region');
   const imageResult = await io.aws(['ecr', 'batch-get-image', '--repository-name', selector.image.repository_uri.split('/').slice(1).join('/'), '--image-ids', `imageDigest=${selector.image.digest}`]);
-  if (imageResult.failures?.length || imageResult.images?.length !== 1 || imageResult.images[0].imageId?.imageDigest !== selector.image.digest) throw new Error('Exact selected OCI manifest unavailable');
+  const imageManifest = selectEcrImageManifest(imageResult, selector.image.digest);
   const imageManifestPath = path.join(selected.directory, 'selected-image-manifest.json');
-  await writeFile(imageManifestPath, imageResult.images[0].imageManifest);
-  if (`sha256:${sha256(imageResult.images[0].imageManifest)}` !== selector.image.digest) throw new Error('Actual OCI manifest bytes differ from sealed selected digest');
+  await writeFile(imageManifestPath, imageManifest);
   const stacks = []; const actualStacks = new Map();
   for (const source of stackSources) {
     exact(source, ['stack_name', 'region', 'source_repository', 'source_sha'], 'stack provenance input');
