@@ -275,3 +275,9 @@ Future promotion also requires a sealed stable Service release, completed-succes
 exact E2E v2 qualification, digest-preserving promotion and scan policy. Artifact
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
+
+Inactive CDK deployments explicitly pass `--no-rollback` to prevent native
+CloudFormation rollback from restoring activity during stop or stopped-state
+maintenance. Failure leaves partial resource state for explicit reviewed recovery;
+resource replacements unsupported in this mode must fail rather than trigger a
+restart. Preserve actual stack outputs/statuses and admission readback.

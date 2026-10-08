@@ -1,12 +1,9 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 const account = '650880818323';
 const region = 'ap-east-1';
 const stackName = 'AnyWearPlatformStack-beta';
 const functionNames = ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync'];
-const pause = (ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 
 async function pages(io, args, field, tokenField) {
   const rows = [];
@@ -104,11 +101,5 @@ export async function enforceBetaPlatformLogRetention(io, {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const execute = promisify(execFile);
-  enforceBetaPlatformLogRetention({ region: process.env.AWS_REGION, sleep: pause,
-    async aws(args) {
-      const { stdout } = await execute('aws', [...args, '--region', region, '--output', 'json'], { timeout: 60_000, maxBuffer: 2 * 1024 * 1024 });
-      return stdout.trim() ? JSON.parse(stdout) : {};
-    },
-  }).then((value) => console.log(JSON.stringify(value))).catch((error) => { console.error(error.message); process.exitCode = 1; });
+  throw new Error('Use scripts/runtime-operation.mjs with the committed selection');
 }

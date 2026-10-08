@@ -176,3 +176,9 @@ artifacts cannot authorize qualification or rollback. SSM selection/deployment
 values alone are not observed release proof. Final E2E v2 qualification runs in a
 separate scheduled window and compares authenticated observations before/after
 against the exact deployment record.
+
+Inactive CDK deployments explicitly pass `--no-rollback` to prevent native
+CloudFormation rollback from restoring activity during stop or stopped-state
+maintenance. Failure leaves partial resource state for explicit reviewed recovery;
+resource replacements unsupported in this mode must fail rather than trigger a
+restart. Preserve actual stack outputs/statuses and admission readback.

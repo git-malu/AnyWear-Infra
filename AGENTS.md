@@ -44,7 +44,8 @@ infrastructure authority.
   is not a cross-repository lock; migration rollout stays separately coordinated.
 - Maintenance deploys preserve both observed Platform and Workload activity.
   Unknown/mixed state fails with concrete evidence. Stop failures never implicitly
-  start stacks or reopen admission; preserve actual state and select start
+  start stacks or reopen admission; inactive CDK deploys use `--no-rollback` so
+  native CFN failure cannot silently reactivate resources; preserve actual state and select start
   separately. Requested flags do not prove stopped state after CFN rollback.
 - Use `runtime.yml` for ordinary Beta operations. Initial `appScope=foundation`
   bootstrap is a separately assigned operator allocation and needs no Service

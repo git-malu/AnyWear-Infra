@@ -40,6 +40,17 @@ export function betaDeploymentActivity(platform, workload) {
   if (platformActive !== workloadActive) throw new Error(`Mixed Beta activity: Platform=${platformActive}, Workload=${workloadActive}`);
   return platformActive === 'true';
 }
+export function cdkDeploymentArguments(stack, active, revision, directory, env) {
+  if (typeof active !== 'boolean') throw new Error('Explicit observed Beta activity required');
+  const parameters = stack.includes('Workload') ? Object.entries(revision.parameters).filter(([key]) =>
+    ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) => ['--parameters', `${key}=${value}`]) : [];
+  return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
+    // Native rollback must not reactivate stopped/partially stopped resources.
+    // An unsuccessful inactive deployment remains for explicit reviewed recovery.
+    ...(!active ? ['--no-rollback'] : []), '-c', 'stage=beta', '-c', `betaActive=${active}`,
+    '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
+    '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
+}
 export async function credentialEnvironment(kind, env = process.env) {
   const role = `arn:aws:iam::650880818323:role/beta-infra-${kind}-role`;
   const configured = env[kind === 'deploy' ? 'INFRA_DEPLOY_ROLE_ARN' : 'INFRA_RUNTIME_ROLE_ARN'];
@@ -60,13 +71,13 @@ export async function credentialEnvironment(kind, env = process.env) {
   return { ...env, AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
 }
-export async function createRuntimeIo(selector, directory, env = process.env, record) {
+export async function createRuntimeIo(selector, directory, env = process.env, record, { trustedInfraRoot = root, run = execute, assume = credentialEnvironment } = {}) {
   const credentials = new Map();
-  const check = async () => { validateOperationInputs(env); await loadCommittedSelection(selectionBinding(env)); };
+  const check = async () => { validateOperationInputs(env); await loadCommittedSelection(selectionBinding(env, trustedInfraRoot)); };
   const roleEnv = async kind => {
     await check();
-    if (!credentials.has(kind)) credentials.set(kind, { value: await credentialEnvironment(kind, env), at: Date.now() });
-    if (Date.now() - credentials.get(kind).at > 50 * 60_000) credentials.set(kind, { value: await credentialEnvironment(kind, env), at: Date.now() });
+    if (!credentials.has(kind)) credentials.set(kind, { value: await assume(kind, env), at: Date.now() });
+    if (Date.now() - credentials.get(kind).at > 50 * 60_000) credentials.set(kind, { value: await assume(kind, env), at: Date.now() });
     return credentials.get(kind).value;
   };
   const io = {
@@ -76,7 +87,7 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       const awsEnv = await roleEnv('runtime');
       const explicitRegion = args.indexOf('--region');
       if (explicitRegion >= 0 && !['ap-east-1', 'us-east-1'].includes(args[explicitRegion + 1])) throw new Error('Unexpected operation region');
-      const result = await execute('aws', [...args, ...(explicitRegion < 0 ? ['--region', 'ap-east-1'] : []), '--output', 'json'], { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
+      const result = await run('aws', [...args, ...(explicitRegion < 0 ? ['--region', 'ap-east-1'] : []), '--output', 'json'], { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
       return result.stdout.trim() ? parseJson(result.stdout) : {};
     },
     async oneShot(role, revision, argument = '', payload) {
@@ -84,7 +95,7 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       if (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha) throw new Error('Lifecycle selected image differs from deployed revision');
       const awsEnv = await roleEnv('runtime');
       let result;
-      try { result = await execute('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
+      try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
         { cwd: root, env: { ...awsEnv, BASH_ENV: path.join(root, '.github/scripts/operation-hook.sh'), INFRA_REPOSITORY_DIRECTORY: root }, timeout: 4_200_000, maxBuffer: 10 * 1024 * 1024 });
       } catch { throw new Error('One-shot execution failed; preserve task resources and inspect redacted run evidence'); }
       const tasks = [...new Set([...result.stdout.matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
@@ -104,10 +115,7 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
     async deploy(stack, active, revision) {
       await check();
       const awsEnv = await roleEnv('deploy');
-      const parameters = stack.includes('Workload') ? Object.entries(revision.parameters).filter(([key]) =>
-        ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) => ['--parameters', `${key}=${value}`]) : [];
-      await execute('npx', ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never', '-c', 'stage=beta', '-c', `betaActive=${active}`,
-        '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`, '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters],
+      await run('npx', cdkDeploymentArguments(stack, active, revision, directory, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       if (stack === 'AnyWearPlatformStack-beta') await enforceBetaPlatformLogRetention(io);
       record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: active, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
