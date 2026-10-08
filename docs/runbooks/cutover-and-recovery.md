@@ -17,7 +17,8 @@ application/Billing construction and skips the Service artifact loader:
 ```sh
 npm ci
 npm run build
-npx cdk synth AnyWearFoundationStack -c appScope=foundation -c identityPhase=roles-added
+npx cdk synth AnyWearFoundationStack -c appScope=foundation -c identityPhase=roles-added \
+  -c legacyRoleOwnership=external
 ```
 
 Once the manager accepts that exact source/diff and records the operator/writer
@@ -25,8 +26,19 @@ window, the existing authorized operator can reconcile only Foundation:
 
 ```sh
 npx cdk deploy AnyWearFoundationStack --exclusively \
-  -c appScope=foundation -c identityPhase=roles-added --require-approval never
+  -c appScope=foundation -c identityPhase=roles-added -c legacyRoleOwnership=external \
+  --require-approval never
 ```
+
+All CLI entry points require explicit `legacyRoleOwnership=managed|external`.
+`managed` is the separately identified Service source/simulation baseline; it is
+not the deployed-account ownership mode. The live Foundation Original contains
+only the provider/helpers/metadata. Dev belongs to `AnyWearInfraStack-dev`, Beta
+is outside Foundation, and no Prod pipeline role exists. `external` is limited to
+account `650880818323`/`ap-east-1`, keeps those external identities untouched, and
+creates only the six dedicated roles plus two Foundation policies. There is no
+import/adoption or automatic legacy-role retirement. Ordinary runtime hardcodes
+this same external mode for all CDK construction, avoiding a later collision.
 
 This creates the six dedicated roles while retaining the old Beta trust/grants.
 Read back roles, immutable OIDC subjects and effective policies before configuring
@@ -298,11 +310,13 @@ as a #54 gate.
 ## Retirement and final qualification
 
 After rehearsal and rollback acceptance, schedule Foundation/IAM retirement
-separately from Beta runtime and billing. `identityPhase=retired` preserves the old
-Beta role's logical/physical identity, removes its repository subjects and
-template-owned grants, and retains the dedicated consumers. Dev/prod legacy
-declarations remain outside Beta retirement. Retiring the template policies does
-not remove unmanaged effective policies automatically.
+separately from Beta runtime and billing. In the actual `external` ownership mode,
+`identityPhase=retired` removes template-owned Platform grants and retains the
+dedicated consumers; Foundation never owned the old Beta role, so this phase
+cannot retire its trust or unmanaged `AnyWearBetaPipelineBaseline`. Those require
+the separately reviewed IAM writer/diff/readback after old sessions cease. Dev
+remains with its original stack, and Production remains absent. The `managed`
+source/simulation fixture's retired role is not a live retirement result.
 
 Inventory and explicitly reconcile `AnyWearBetaPipelineBaseline`, all other
 inline/managed attachments and bootstrap trust. Record exact intended removals

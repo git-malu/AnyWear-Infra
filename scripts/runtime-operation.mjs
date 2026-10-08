@@ -95,7 +95,7 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       const parameters = stack.includes('Workload') ? Object.entries(revision.parameters).filter(([key]) =>
         ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) => ['--parameters', `${key}=${value}`]) : [];
       await execute('npx', ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never', '-c', 'stage=beta', '-c', `betaActive=${active}`,
-        '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`, '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters],
+        '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`, '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters],
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       if (stack === 'AnyWearPlatformStack-beta') await enforceBetaPlatformLogRetention(io);
       record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: active, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });

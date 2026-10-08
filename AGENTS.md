@@ -39,6 +39,13 @@ infrastructure authority.
   bootstrap is a separately assigned operator window and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
+- Every CLI scope requires explicit `legacyRoleOwnership=managed|external`.
+  `managed` reproduces the Service source fixture; never use it as the live
+  account plan. Foundation in account `650880818323`/`ap-east-1` owns only its
+  existing provider/helpers. Live `external` leaves Dev/Beta legacy roles outside
+  Foundation and Production absent, without import/adoption. Runtime always uses
+  external. Later `identityPhase=retired` cannot retire external Beta trust or its
+  unmanaged policy; a separate effective IAM writer/readback must do that.
 - Dedicated roles separate direct responsibilities. The existing CDK execution
   role has `AdministratorAccess` and no permissions boundary: Infra deployment
   has transitive account-wide authority, not Beta resource isolation. Review
@@ -74,6 +81,14 @@ node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --bas
 node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --baseline-templates test/baselines --retention-protection true --output cdk.protected.matrix
 git diff --check
 ```
+
+Also synthesize the live Foundation with `appScope=foundation`,
+`identityPhase=roles-added`, `legacyRoleOwnership=external`, account `650880818323`
+and application region `ap-east-1`, then run `scripts/compare-live-foundation.mjs`
+against that output. CI preserves the actual CLI template and comparison. The
+authenticated Original fixture permits exactly six dedicated roles/two policies;
+only fixed pseudo-parameter equivalence and declared CDK diagnostic metadata
+differences are normalized. Provider/helper code, output and IAM changes fail.
 
 `npm run check` runs CDK build/tests and Node contract/workflow tests. The production
 dependency audit allows only the script's finite, dated exceptions; do not silently

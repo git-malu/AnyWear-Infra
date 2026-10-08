@@ -106,6 +106,10 @@ actual deployed template hashes.
 main, the `beta` environment and an open activation gate. It validates the window
 and source inputs before credentials, then assumes dedicated deploy/runtime roles
 as needed. All its operations share the Infra queue.
+Every runtime CDK call explicitly selects `legacyRoleOwnership=external` for
+this account. Foundation never constructs or adopts the external legacy roles.
+The `managed` source/simulation mode is used only by the independently labeled
+Service baseline matrices and cannot substitute for the live Original comparison.
 
 | Operation | Behavior |
 | --- | --- |

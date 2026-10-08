@@ -6,11 +6,18 @@ import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack'
 import { WorkloadStack } from '../lib/workload-stack';
 import { loadArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
+import { readLegacyRoleOwnership } from '../lib/legacy-role-ownership';
 
 const app = new cdk.App();
 const appScope = app.node.tryGetContext('appScope') || 'application';
 if (!['application', 'foundation', 'billing'].includes(appScope)) throw new Error('Invalid appScope');
 const identityPhase = readIdentityPhase(app.node.tryGetContext('identityPhase'));
+// Required even for Billing-only entry; source/simulation mode is never an
+// implicit live fallback. Foundation validates the bound external account.
+const legacyRoleOwnership = readLegacyRoleOwnership(app.node.tryGetContext('legacyRoleOwnership'));
+if (legacyRoleOwnership === 'external' && process.env.CDK_DEFAULT_ACCOUNT !== '650880818323') {
+  throw new Error('External legacy roles require the reviewed account 650880818323');
+}
 const retentionProtectionContext = app.node.tryGetContext('retentionProtection');
 if (retentionProtectionContext !== undefined && !['true', 'false', true, false].includes(retentionProtectionContext)) {
   throw new Error('retentionProtection must be true or false');
@@ -26,7 +33,7 @@ const billingEnv = process.env.CDK_DEFAULT_ACCOUNT
   ? { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.BILLING_REGION || 'us-east-1' }
   : { region: process.env.BILLING_REGION || 'us-east-1' };
 
-if (appScope !== 'billing') new FoundationStack(app, 'AnyWearFoundationStack', { env, identityPhase });
+if (appScope !== 'billing') new FoundationStack(app, 'AnyWearFoundationStack', { env, identityPhase, legacyRoleOwnership });
 if (appScope === 'billing') new BillingStack(app, 'AnyWearBillingStack-beta', { stage: 'beta', env: billingEnv });
 
 if (appScope === 'application') {

@@ -34,7 +34,7 @@ function synthesizeWorkload(stage: 'beta' | 'prod', betaActive?: boolean): Recor
 
 function synthesizeFoundation(identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
-  return Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', { identityPhase })).toJSON();
+  return Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', { identityPhase, legacyRoleOwnership: 'managed' })).toJSON();
 }
 
 function synthesizeBilling(): Record<string, any> {
@@ -950,7 +950,7 @@ describe('Explicit infrastructure identity cutover', () => {
     const env = { account: '650880818323', region: 'ap-east-1' };
     const app = new cdk.App({ context: cdkConfig.context });
     const foundationStack = new FoundationStack(app, 'AnyWearFoundationStack', {
-      env, identityPhase: 'roles-added',
+      env, identityPhase: 'roles-added', legacyRoleOwnership: 'managed',
     });
     const platformStack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
       stage: 'beta', env, identityPhase: 'roles-added', artifactInputs,

@@ -20,5 +20,6 @@ runtime-evidence/
 app-access-evidence/
 cdk.matrix/
 cdk.protected.matrix/
+cdk.live-foundation/
 *.zip
 !test/fixtures/placeholder.zip

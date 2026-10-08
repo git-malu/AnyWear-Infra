@@ -69,7 +69,7 @@ function synth(cwd, directory, variant, phase, immutableInputs) {
   mkdirSync(directory, { recursive: true });
   const config = JSON.parse(readFileSync(path.join(cwd, 'cdk.json'), 'utf8'));
   const context = { ...config.context, stage: variant.stage, betaActive: variant.active,
-    ...(immutableInputs ? { identityPhase: phase, retentionProtection,
+    ...(immutableInputs ? { identityPhase: phase, retentionProtection, legacyRoleOwnership: 'managed',
       artifactDirectory: path.resolve(options['artifact-directory']) } : {}) };
   // Execute the existing app directly with its locked local ts-node. CDK App
   // auto-synths because CDK_OUTDIR is set; no AWS context lookup is performed.
@@ -101,6 +101,7 @@ for (const variant of variants) {
   }
 }
 const report = { ...source, generated_at: new Date().toISOString(), variants, phases,
+  comparison_kind: 'service-source-simulation', legacy_role_ownership: 'managed',
   retention_protection: retentionProtection,
   accepted: reports.length ? reports.every((entry) => entry.accepted) : null, comparisons: reports };
 writeFileSync(path.join(output, 'comparison.json'), `${JSON.stringify(report, null, 2)}\n`);

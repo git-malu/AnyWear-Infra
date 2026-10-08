@@ -2,15 +2,21 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
+import { readLegacyRoleOwnership, type LegacyRoleOwnership } from './legacy-role-ownership';
 
 export interface FoundationStackProps extends cdk.StackProps {
   identityPhase?: IdentityPhase;
+  legacyRoleOwnership: LegacyRoleOwnership;
 }
 
 export class FoundationStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: FoundationStackProps) {
+  constructor(scope: Construct, id: string, props: FoundationStackProps) {
     super(scope, id, props);
     const identityPhase = readIdentityPhase(props?.identityPhase);
+    const legacyRoleOwnership = readLegacyRoleOwnership(props.legacyRoleOwnership);
+    if (legacyRoleOwnership === 'external' && (this.account !== '650880818323' || this.region !== 'ap-east-1')) {
+      throw new Error('External legacy roles require the reviewed account 650880818323 in ap-east-1');
+    }
 
     // Setup GitHub OIDC Trust Provider
     // This is a singleton resource per AWS Account
@@ -32,7 +38,9 @@ export class FoundationStack extends cdk.Stack {
       `repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:${stage}`;
     const clientSubject = 'repo:git-malu@11473072/AnyWear-Client@1176104200:environment:beta';
 
-    for (const stage of ['dev', 'beta', 'prod'] as const) {
+    // The deployed Foundation owns only its OIDC provider/helpers. Existing
+    // Dev/Beta pipeline identities stay outside it; no adoption or Prod creation.
+    if (legacyRoleOwnership === 'managed') for (const stage of ['dev', 'beta', 'prod'] as const) {
       const subjects = stage === 'beta' && identityPhase === 'retired' ? [
         // Preserve the role identity with an unmatchable retired subject. No
         // repository is trusted, including the new Infra repository.
