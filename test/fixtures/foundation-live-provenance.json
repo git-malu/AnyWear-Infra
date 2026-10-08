@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "record_type": "anywear_foundation_live_source_fixture",
+  "account_id": "650880818323",
+  "region": "ap-east-1",
+  "stack_name": "AnyWearFoundationStack",
+  "stack_id": "arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearFoundationStack/2525c1b0-3624-11f1-a399-0673fec36ca5",
+  "observed_at": "2026-10-08T01:41:44.331Z",
+  "observed_until": "2026-10-08T01:42:09.894Z",
+  "review_url": "https://github.com/git-malu/AnyWear/issues/54#issuecomment-6050513630",
+  "original_capture_sha256": "df6c26b35fdb58ec435ff2cd655cee42f31f9d08557545bbd7cf4e2778069b22",
+  "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
+  "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
+  "dedicated_source_sha": "0c514d52f68726cda140200b2ecb2a4c504c635e",
+  "dedicated_candidate_canonical_sha256": "2bac01f3c96724340bd55bd0460e030ebc94eecb03262d485b0db388a8825fb1",
+  "dedicated_additions_sha256": "1abb583a6df6b14a764a3d430bb50bc571047cafd7600dea6bee7686fe7d0334",
+  "addition_allowlist": [
+    "BetaInfraDeployRole2472E7D7",
+    "BetaInfraDeployRoleDefaultPolicyE72AFE8E",
+    "BetaInfraRuntimeRole945E5AF1",
+    "BetaServiceArtifactRole7F1A3C4E",
+    "BetaServiceArtifactRoleDefaultPolicy0CD74B82",
+    "BetaServiceDataRoleE58F0017",
+    "BetaClientPublishRoleBA62A451",
+    "BetaE2EQualificationRoleF86AA0D7"
+  ],
+  "publication_verified": false,
+  "deployment_qualified": false
+}

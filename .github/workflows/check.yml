@@ -1,0 +1,51 @@
+name: Infra source checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run audit:prod
+      - run: npm run check
+      - name: Check native release verification CLI offline
+        run: |
+          gh --version
+          gh release verify --format json --help > /dev/null
+          gh release verify-asset --format json --help > /dev/null
+      - run: bash -n .github/scripts/run-one-shot-task.sh .github/scripts/writer-window-hook.sh
+      - name: Compare explicit live Foundation with authenticated Original fixture
+        env:
+          AWS_REGION: ap-east-1
+          AWS_DEFAULT_REGION: ap-east-1
+          CDK_DEFAULT_ACCOUNT: '650880818323'
+          CDK_DEFAULT_REGION: ap-east-1
+          BILLING_REGION: us-east-1
+        run: |
+          npx cdk synth AnyWearFoundationStack --lookups false --output cdk.live-foundation -c appScope=foundation -c identityPhase=roles-added -c legacyRoleOwnership=external --quiet
+          node scripts/compare-live-foundation.mjs --candidate cdk.live-foundation/AnyWearFoundationStack.template.json --output cdk.live-foundation/comparison.json
+      - name: Synthesize identity and runtime matrix from fixture artifacts
+        run: |
+          node scripts/create-test-inputs.mjs
+          node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --baseline-templates test/baselines --output cdk.matrix
+          node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --baseline-templates test/baselines --retention-protection true --output cdk.protected.matrix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infra-source-matrix
+          path: |
+            cdk.matrix/comparison.json
+            cdk.protected.matrix/comparison.json
+            cdk.live-foundation/comparison.json
+            cdk.live-foundation/AnyWearFoundationStack.template.json
+          if-no-files-found: error

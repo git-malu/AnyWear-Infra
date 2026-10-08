@@ -1,0 +1,109 @@
+name: Reviewed private App access preflight
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+concurrency:
+  group: anywear-issue54-app-access
+  cancel-in-progress: false
+jobs:
+  access:
+    if: >-
+      github.event.number == 1 &&
+      github.repository == 'git-malu/AnyWear-Infra' &&
+      github.event.pull_request.head.repo.id == 1409047265 &&
+      github.event.pull_request.head.ref == 'codex/issue-54-infra-extraction' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.sha == vars.APP_ACCESS_REVIEWED_SHA
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      APP_ACCESS_REVIEWED_SHA: ${{ vars.APP_ACCESS_REVIEWED_SHA }}
+      PREFLIGHT_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      PREFLIGHT_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}
+      PREFLIGHT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PREFLIGHT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      PREFLIGHT_PR_NUMBER: ${{ github.event.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify reviewed checkout before using App credentials
+        id: guard
+        run: node scripts/app-access-preflight.mjs guard
+      - name: Check native release verification CLI without network access
+        run: |
+          mkdir -p app-access-evidence
+          gh --version | tee app-access-evidence/github-cli-version.txt
+          gh release verify --format json --help > /dev/null
+          gh release verify-asset --format json --help > /dev/null
+      - name: Read sanitized App registration and installation metadata
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: node scripts/app-registration-metadata.mjs
+      - name: Create Service read token
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        id: service
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+      - name: Verify exact Service source and successful attempt
+        if: ${{ !cancelled() && steps.service.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.service.outputs.token }}
+          PREFLIGHT_SERVICE_TOKEN_MINT_OUTCOME: ${{ steps.service.outcome }}
+        run: node scripts/app-access-preflight.mjs service
+      - name: Create Infra read token
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        id: infra
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+      - name: Verify exact Infra source and successful attempt
+        if: ${{ !cancelled() && steps.infra.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.infra.outputs.token }}
+        run: node scripts/app-access-preflight.mjs infra
+      - name: Create root issue read token
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        id: issue
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: AnyWear
+          permission-issues: read
+      - name: Verify issue and original owner claim
+        if: ${{ !cancelled() && steps.issue.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.issue.outputs.token }}
+        run: node scripts/app-access-preflight.mjs issue
+      - name: Preserve sanitized access evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-access-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            app-access-evidence/*.json
+            app-access-evidence/github-cli-version.txt
+          retention-days: 90
+          if-no-files-found: warn

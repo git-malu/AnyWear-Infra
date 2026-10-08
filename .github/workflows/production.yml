@@ -1,0 +1,86 @@
+name: Future qualified Production promotion
+on:
+  workflow_dispatch:
+    inputs:
+      writer_window:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: anywear-prod-infra-runtime
+  cancel-in-progress: false
+jobs:
+  promotion:
+    # #54 does not enable this gate, install the Production role or mutate Prod.
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_PROD_DEPLOY == 'true'
+    environment: prod
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ENABLE_PROD_DEPLOY: ${{ vars.ENABLE_PROD_DEPLOY }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+      CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      PROD_DEPLOY_ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+      PROD_WRITER_WINDOW: ${{ vars.PROD_WRITER_WINDOW }}
+      WRITER_WINDOW_INPUT: ${{ inputs.writer_window }}
+      PROD_WINDOW_SHA: ${{ vars.PROD_WINDOW_SHA }}
+      PROD_WINDOW_EXPIRES_AT: ${{ vars.PROD_WINDOW_EXPIRES_AT }}
+      PROD_WINDOW_RECORD_URL: ${{ vars.PROD_WINDOW_RECORD_URL }}
+      QUALIFICATION_RUN_ID: ${{ vars.PROD_QUALIFICATION_RUN_ID }}
+      QUALIFICATION_RUN_ATTEMPT: ${{ vars.PROD_QUALIFICATION_RUN_ATTEMPT }}
+      QUALIFICATION_ARTIFACT_ID: ${{ vars.PROD_QUALIFICATION_ARTIFACT_ID }}
+      QUALIFICATION_RECORD_SHA256: ${{ vars.PROD_QUALIFICATION_RECORD_SHA256 }}
+      QUALIFICATION_E2E_SHA: ${{ vars.PROD_QUALIFICATION_E2E_SHA }}
+      STABLE_RELEASE_ID: ${{ vars.PROD_STABLE_RELEASE_ID }}
+      SELECTION_FILE: ${{ vars.PROD_SELECTION_FILE }}
+      SELECTION_SHA256: ${{ vars.PROD_SELECTION_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Require separately reviewed Production executor onboarding before credentials or artifact access
+        run: node scripts/promote-production.mjs
+      - run: npm ci
+      - uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: |
+            AnyWear-Service
+            AnyWear-E2E
+          permission-contents: read
+          permission-actions: read
+      - name: Verify sealed selection, stable release and trusted Beta qualification before AWS credentials
+        id: qualified
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: node scripts/production-preflight.mjs resolve
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ vars.PROD_QUALIFICATION_ARTIFACT_ID }}
+          repository: git-malu/AnyWear-E2E
+          run-id: ${{ vars.PROD_QUALIFICATION_RUN_ID }}
+          github-token: ${{ steps.app.outputs.token }}
+          path: .qualification/download
+          merge-multiple: true
+      - uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-E2E
+          ref: ${{ steps.qualified.outputs.e2e_sha }}
+          path: .qualification-verifier
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
+      - name: Verify qualification v2 integrity and exact artifact/run/attempt/image binding
+        run: node scripts/production-preflight.mjs verify
+      # Execution stays source-disabled even if ENABLE_PROD_DEPLOY is changed.
+      # A future reviewed onboarding PR must supply scoped cross-account credentials,
+      # Production DB observation, scan/retention evidence and compute-only recovery.

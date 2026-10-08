@@ -1,0 +1,2024 @@
+{
+ "Resources": {
+  "AsyncRuntimeServiceRepository6535F885": {
+   "Type": "AWS::ECR::Repository",
+   "Properties": {
+    "EmptyOnDelete": false,
+    "ImageScanningConfiguration": {
+     "ScanOnPush": true
+    },
+    "ImageTagMutability": "IMMUTABLE",
+    "LifecyclePolicy": {
+     "LifecyclePolicyText": "{\"rules\":[{\"rulePriority\":1,\"selection\":{\"tagStatus\":\"any\",\"countType\":\"imageCountMoreThan\",\"countNumber\":100},\"action\":{\"type\":\"expire\"}}]}"
+    },
+    "RepositoryName": "prod-anywear-service"
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "AsyncRuntimeVtoDeadLetterQueueE526C0CE": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "prod-anywear-vto-dlq",
+    "SqsManagedSseEnabled": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeVtoDeadLetterQueuePolicy582D4FBC": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeVtoDeadLetterQueueE526C0CE",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeVtoDeadLetterQueueE526C0CE"
+     }
+    ]
+   }
+  },
+  "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "prod-anywear-auto-tagging-dlq",
+    "SqsManagedSseEnabled": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeAutoTaggingDeadLetterQueuePolicy0B8431A1": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868"
+     }
+    ]
+   }
+  },
+  "AsyncRuntimeVtoQueue7826D09D": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "prod-anywear-vto",
+    "ReceiveMessageWaitTimeSeconds": 20,
+    "RedrivePolicy": {
+     "deadLetterTargetArn": {
+      "Fn::GetAtt": [
+       "AsyncRuntimeVtoDeadLetterQueueE526C0CE",
+       "Arn"
+      ]
+     },
+     "maxReceiveCount": 9
+    },
+    "SqsManagedSseEnabled": true,
+    "VisibilityTimeout": 900
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeVtoQueuePolicy76E52827": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeVtoQueue7826D09D",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeVtoQueue7826D09D"
+     }
+    ]
+   }
+  },
+  "AsyncRuntimeAutoTaggingQueueEC10AA50": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "prod-anywear-auto-tagging",
+    "ReceiveMessageWaitTimeSeconds": 20,
+    "RedrivePolicy": {
+     "deadLetterTargetArn": {
+      "Fn::GetAtt": [
+       "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868",
+       "Arn"
+      ]
+     },
+     "maxReceiveCount": 9
+    },
+    "SqsManagedSseEnabled": true,
+    "VisibilityTimeout": 300
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AsyncRuntimeAutoTaggingQueuePolicy9F343831": {
+   "Type": "AWS::SQS::QueuePolicy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sqs:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeAutoTaggingQueueEC10AA50",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Queues": [
+     {
+      "Ref": "AsyncRuntimeAutoTaggingQueueEC10AA50"
+     }
+    ]
+   }
+  },
+  "AnyWearVpcA8B15590": {
+   "Type": "AWS::EC2::VPC",
+   "Properties": {
+    "CidrBlock": "10.0.0.0/16",
+    "EnableDnsHostnames": true,
+    "EnableDnsSupport": true,
+    "InstanceTenancy": "default",
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc"
+     }
+    ]
+   }
+  },
+  "AnyWearVpcPublicSubnet1Subnet5CC36A83": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": "dummy1a",
+    "CidrBlock": "10.0.0.0/18",
+    "MapPublicIpOnLaunch": true,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Public"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Public"
+     },
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PublicSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPublicSubnet1RouteTable1127E6AA": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PublicSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPublicSubnet1RouteTableAssociation476C31C7": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPublicSubnet1RouteTable1127E6AA"
+    },
+    "SubnetId": {
+     "Ref": "AnyWearVpcPublicSubnet1Subnet5CC36A83"
+    }
+   }
+  },
+  "AnyWearVpcPublicSubnet1DefaultRoute33CFF82E": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "GatewayId": {
+     "Ref": "AnyWearVpcIGW2FDBBB1C"
+    },
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPublicSubnet1RouteTable1127E6AA"
+    }
+   },
+   "DependsOn": [
+    "AnyWearVpcVPCGW582A1572"
+   ]
+  },
+  "AnyWearVpcPublicSubnet1EIPC926E73C": {
+   "Type": "AWS::EC2::EIP",
+   "Properties": {
+    "Domain": "vpc",
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PublicSubnet1"
+     }
+    ]
+   }
+  },
+  "AnyWearVpcPublicSubnet1NATGatewayD437BC71": {
+   "Type": "AWS::EC2::NatGateway",
+   "Properties": {
+    "AllocationId": {
+     "Fn::GetAtt": [
+      "AnyWearVpcPublicSubnet1EIPC926E73C",
+      "AllocationId"
+     ]
+    },
+    "SubnetId": {
+     "Ref": "AnyWearVpcPublicSubnet1Subnet5CC36A83"
+    },
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PublicSubnet1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "AnyWearVpcPublicSubnet1DefaultRoute33CFF82E",
+    "AnyWearVpcPublicSubnet1RouteTableAssociation476C31C7"
+   ]
+  },
+  "AnyWearVpcPublicSubnet2Subnet78E1776F": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": "dummy1b",
+    "CidrBlock": "10.0.64.0/18",
+    "MapPublicIpOnLaunch": true,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Public"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Public"
+     },
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PublicSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPublicSubnet2RouteTable2B185BFA": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PublicSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPublicSubnet2RouteTableAssociation4AD228C4": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPublicSubnet2RouteTable2B185BFA"
+    },
+    "SubnetId": {
+     "Ref": "AnyWearVpcPublicSubnet2Subnet78E1776F"
+    }
+   }
+  },
+  "AnyWearVpcPublicSubnet2DefaultRoute5C42F45F": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "GatewayId": {
+     "Ref": "AnyWearVpcIGW2FDBBB1C"
+    },
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPublicSubnet2RouteTable2B185BFA"
+    }
+   },
+   "DependsOn": [
+    "AnyWearVpcVPCGW582A1572"
+   ]
+  },
+  "AnyWearVpcPrivateSubnet1Subnet2CB21A9B": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": "dummy1a",
+    "CidrBlock": "10.0.128.0/18",
+    "MapPublicIpOnLaunch": false,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Private"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Private"
+     },
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PrivateSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPrivateSubnet1RouteTable9BAADAF1": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PrivateSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPrivateSubnet1RouteTableAssociation71986135": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPrivateSubnet1RouteTable9BAADAF1"
+    },
+    "SubnetId": {
+     "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
+    }
+   }
+  },
+  "AnyWearVpcPrivateSubnet1DefaultRoute4D7C01D6": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "NatGatewayId": {
+     "Ref": "AnyWearVpcPublicSubnet1NATGatewayD437BC71"
+    },
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPrivateSubnet1RouteTable9BAADAF1"
+    }
+   }
+  },
+  "AnyWearVpcPrivateSubnet2Subnet360A1C50": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": "dummy1b",
+    "CidrBlock": "10.0.192.0/18",
+    "MapPublicIpOnLaunch": false,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Private"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Private"
+     },
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PrivateSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPrivateSubnet2RouteTable88A2B5DD": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc/PrivateSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcPrivateSubnet2RouteTableAssociationFBD0E1E5": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPrivateSubnet2RouteTable88A2B5DD"
+    },
+    "SubnetId": {
+     "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
+    }
+   }
+  },
+  "AnyWearVpcPrivateSubnet2DefaultRouteCFBC580A": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "NatGatewayId": {
+     "Ref": "AnyWearVpcPublicSubnet1NATGatewayD437BC71"
+    },
+    "RouteTableId": {
+     "Ref": "AnyWearVpcPrivateSubnet2RouteTable88A2B5DD"
+    }
+   }
+  },
+  "AnyWearVpcIGW2FDBBB1C": {
+   "Type": "AWS::EC2::InternetGateway",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "AnyWearPlatformStack-prod/AnyWearVpc"
+     }
+    ]
+   }
+  },
+  "AnyWearVpcVPCGW582A1572": {
+   "Type": "AWS::EC2::VPCGatewayAttachment",
+   "Properties": {
+    "InternetGatewayId": {
+     "Ref": "AnyWearVpcIGW2FDBBB1C"
+    },
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearVpcRestrictDefaultSecurityGroupCustomResourceAF015344": {
+   "Type": "Custom::VpcRestrictDefaultSG",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomVpcRestrictDefaultSGCustomResourceProviderHandlerDC833E5E",
+      "Arn"
+     ]
+    },
+    "DefaultSecurityGroupId": {
+     "Fn::GetAtt": [
+      "AnyWearVpcA8B15590",
+      "DefaultSecurityGroup"
+     ]
+    },
+    "Account": "650880818323"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "CustomVpcRestrictDefaultSGCustomResourceProviderRole26592FE0": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     }
+    ],
+    "Policies": [
+     {
+      "PolicyName": "Inline",
+      "PolicyDocument": {
+       "Version": "2012-10-17",
+       "Statement": [
+        {
+         "Effect": "Allow",
+         "Action": [
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:AuthorizeSecurityGroupEgress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupEgress"
+         ],
+         "Resource": [
+          {
+           "Fn::Join": [
+            "",
+            [
+             "arn:aws:ec2:ap-east-1:650880818323:security-group/",
+             {
+              "Fn::GetAtt": [
+               "AnyWearVpcA8B15590",
+               "DefaultSecurityGroup"
+              ]
+             }
+            ]
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    ]
+   }
+  },
+  "CustomVpcRestrictDefaultSGCustomResourceProviderHandlerDC833E5E": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
+     "S3Key": "02b51ab524e7bcf8f477de3e71e5f9a72e448301b26ba62e9e75a14f9c55a093.zip"
+    },
+    "Timeout": 900,
+    "MemorySize": 128,
+    "Handler": "__entrypoint__.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomVpcRestrictDefaultSGCustomResourceProviderRole26592FE0",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs24.x",
+    "Description": "Lambda function for removing all inbound/outbound rules from the VPC default security group"
+   },
+   "DependsOn": [
+    "CustomVpcRestrictDefaultSGCustomResourceProviderRole26592FE0"
+   ]
+  },
+  "PostConfirmationSyncLambdaServiceRole6B199B36": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     },
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "DependsOn": [
+    "AnyWearVpcPrivateSubnet1DefaultRoute4D7C01D6",
+    "AnyWearVpcPrivateSubnet1RouteTableAssociation71986135",
+    "AnyWearVpcPrivateSubnet2DefaultRouteCFBC580A",
+    "AnyWearVpcPrivateSubnet2RouteTableAssociationFBD0E1E5"
+   ]
+  },
+  "PostConfirmationSyncLambdaServiceRoleDefaultPolicy8237CE75": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "AnyWearDatabaseSecretAttachment4886B381"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "PostConfirmationSyncLambdaServiceRoleDefaultPolicy8237CE75",
+    "Roles": [
+     {
+      "Ref": "PostConfirmationSyncLambdaServiceRole6B199B36"
+     }
+    ]
+   },
+   "DependsOn": [
+    "AnyWearVpcPrivateSubnet1DefaultRoute4D7C01D6",
+    "AnyWearVpcPrivateSubnet1RouteTableAssociation71986135",
+    "AnyWearVpcPrivateSubnet2DefaultRouteCFBC580A",
+    "AnyWearVpcPrivateSubnet2RouteTableAssociationFBD0E1E5"
+   ]
+  },
+  "PostConfirmationSyncLambdaSecurityGroup6F40B6F1": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Automatic security group for Lambda Function AnyWearPlatformStackprodPostConfirmationSyncLambda12B97FB3",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   },
+   "DependsOn": [
+    "AnyWearVpcPrivateSubnet1DefaultRoute4D7C01D6",
+    "AnyWearVpcPrivateSubnet1RouteTableAssociation71986135",
+    "AnyWearVpcPrivateSubnet2DefaultRouteCFBC580A",
+    "AnyWearVpcPrivateSubnet2RouteTableAssociationFBD0E1E5"
+   ]
+  },
+  "PostConfirmationSyncLambda6A4CD3FA": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
+     "S3Key": "a01797605d9d4e1c1108721a950bcab293c54eeb9627c5059ce9661e94fd6dce.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "STAGE": "prod",
+      "DB_SECRET_ARN": {
+       "Ref": "AnyWearDatabaseSecretAttachment4886B381"
+      },
+      "DB_HOST": {
+       "Fn::GetAtt": [
+        "AnyWearDatabase2CD487D8",
+        "Endpoint.Address"
+       ]
+      },
+      "DB_PORT": {
+       "Fn::GetAtt": [
+        "AnyWearDatabase2CD487D8",
+        "Endpoint.Port"
+       ]
+      },
+      "DB_NAME": "anywear"
+     }
+    },
+    "FunctionName": "prod-anywear-post-confirmation-sync",
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "PostConfirmationSyncLambdaServiceRole6B199B36",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs24.x",
+    "Timeout": 30,
+    "VpcConfig": {
+     "SecurityGroupIds": [
+      {
+       "Fn::GetAtt": [
+        "PostConfirmationSyncLambdaSecurityGroup6F40B6F1",
+        "GroupId"
+       ]
+      }
+     ],
+     "SubnetIds": [
+      {
+       "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
+      },
+      {
+       "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
+      }
+     ]
+    }
+   },
+   "DependsOn": [
+    "AnyWearVpcPrivateSubnet1DefaultRoute4D7C01D6",
+    "AnyWearVpcPrivateSubnet1RouteTableAssociation71986135",
+    "AnyWearVpcPrivateSubnet2DefaultRouteCFBC580A",
+    "AnyWearVpcPrivateSubnet2RouteTableAssociationFBD0E1E5",
+    "PostConfirmationSyncLambdaServiceRoleDefaultPolicy8237CE75",
+    "PostConfirmationSyncLambdaServiceRole6B199B36"
+   ]
+  },
+  "PostConfirmationSyncLambdaLogGroupA074A573": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "PostConfirmationSyncLambda6A4CD3FA"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 731
+   },
+   "DependsOn": [
+    "AnyWearVpcPrivateSubnet1DefaultRoute4D7C01D6",
+    "AnyWearVpcPrivateSubnet1RouteTableAssociation71986135",
+    "AnyWearVpcPrivateSubnet2DefaultRouteCFBC580A",
+    "AnyWearVpcPrivateSubnet2RouteTableAssociationFBD0E1E5"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "AnyWearUserPoolPostConfirmationCognito13F80A54": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "PostConfirmationSyncLambda6A4CD3FA",
+      "Arn"
+     ]
+    },
+    "Principal": "cognito-idp.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AnyWearUserPoolAFAAA981",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "AnyWearUserPoolAFAAA981": {
+   "Type": "AWS::Cognito::UserPool",
+   "Properties": {
+    "AccountRecoverySetting": {
+     "RecoveryMechanisms": [
+      {
+       "Name": "verified_phone_number",
+       "Priority": 1
+      },
+      {
+       "Name": "verified_email",
+       "Priority": 2
+      }
+     ]
+    },
+    "AdminCreateUserConfig": {
+     "AllowAdminCreateUserOnly": false
+    },
+    "AutoVerifiedAttributes": [
+     "email"
+    ],
+    "EmailVerificationMessage": "The verification code to your new account is {####}",
+    "EmailVerificationSubject": "Verify your new account",
+    "LambdaConfig": {
+     "PostConfirmation": {
+      "Fn::GetAtt": [
+       "PostConfirmationSyncLambda6A4CD3FA",
+       "Arn"
+      ]
+     }
+    },
+    "Policies": {
+     "PasswordPolicy": {
+      "MinimumLength": 8,
+      "RequireLowercase": true,
+      "RequireNumbers": true,
+      "RequireSymbols": true,
+      "RequireUppercase": true
+     }
+    },
+    "Schema": [
+     {
+      "AttributeDataType": "String",
+      "Mutable": false,
+      "Name": "e2e_bootstrap"
+     }
+    ],
+    "SmsVerificationMessage": "The verification code to your new account is {####}",
+    "UserPoolName": "prod-anywear-user-pool",
+    "UsernameAttributes": [
+     "email"
+    ],
+    "VerificationMessageTemplate": {
+     "DefaultEmailOption": "CONFIRM_WITH_CODE",
+     "EmailMessage": "The verification code to your new account is {####}",
+     "EmailSubject": "Verify your new account",
+     "SmsMessage": "The verification code to your new account is {####}"
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "AnyWearUserPoolClient15EC205A": {
+   "Type": "AWS::Cognito::UserPoolClient",
+   "Properties": {
+    "AllowedOAuthFlows": [
+     "implicit",
+     "code"
+    ],
+    "AllowedOAuthFlowsUserPoolClient": true,
+    "AllowedOAuthScopes": [
+     "profile",
+     "phone",
+     "email",
+     "openid",
+     "aws.cognito.signin.user.admin"
+    ],
+    "CallbackURLs": [
+     "https://example.com"
+    ],
+    "ExplicitAuthFlows": [
+     "ALLOW_USER_SRP_AUTH",
+     "ALLOW_REFRESH_TOKEN_AUTH"
+    ],
+    "GenerateSecret": false,
+    "ReadAttributes": [
+     "custom:e2e_bootstrap",
+     "email",
+     "email_verified"
+    ],
+    "SupportedIdentityProviders": [
+     "COGNITO"
+    ],
+    "UserPoolId": {
+     "Ref": "AnyWearUserPoolAFAAA981"
+    },
+    "WriteAttributes": [
+     "email"
+    ]
+   }
+  },
+  "UserPoolIdParam81D6760E": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/prod/cognito_user_pool_id",
+    "Type": "String",
+    "Value": {
+     "Ref": "AnyWearUserPoolAFAAA981"
+    }
+   }
+  },
+  "UserPoolClientIdParam5DF0EADC": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/prod/cognito_client_id",
+    "Type": "String",
+    "Value": {
+     "Ref": "AnyWearUserPoolClient15EC205A"
+    }
+   }
+  },
+  "AnyWearWardrobeBucket61DCC096": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketName": "prod-anywear-wardrobe-bucket-650880818323-ap-east-1",
+    "CorsConfiguration": {
+     "CorsRules": [
+      {
+       "AllowedHeaders": [
+        "*"
+       ],
+       "AllowedMethods": [
+        "GET",
+        "PUT",
+        "POST",
+        "DELETE",
+        "HEAD"
+       ],
+       "AllowedOrigins": [
+        "*"
+       ],
+       "ExposedHeaders": [
+        "ETag"
+       ]
+      }
+     ]
+    },
+    "LifecycleConfiguration": {
+     "Rules": [
+      {
+       "ExpirationInDays": 7,
+       "Id": "ExpireUnpromotedTaskAttempts",
+       "Prefix": "task-attempts/",
+       "Status": "Enabled"
+      }
+     ]
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "WardrobeBucketNameParam34389501": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/prod/s3_bucket_name",
+    "Type": "String",
+    "Value": {
+     "Ref": "AnyWearWardrobeBucket61DCC096"
+    }
+   }
+  },
+  "AwsRegionParam2228D1F0": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/prod/aws_region",
+    "Type": "String",
+    "Value": "ap-east-1"
+   }
+  },
+  "QWeatherApiHostParamEAEA215A": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Name": "/anywear/prod/qweather_api_host",
+    "Type": "String",
+    "Value": "jt4d94d58q.re.qweatherapi.com"
+   }
+  },
+  "GitHubActionsPipelineRolePolicyAnyWearPlatformStackprodGitHubActionsPipelineRoleD275743F1A2E84DF": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AnyWearWardrobeBucket61DCC096",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AnyWearWardrobeBucket61DCC096",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeServiceRepository6535F885",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "cloudformation:DescribeStacks",
+        "ec2:DescribeManagedPrefixLists",
+        "ecr:DescribeImages",
+        "ecr:GetAuthorizationToken",
+        "ecs:DeregisterTaskDefinition",
+        "ecs:DescribeServices",
+        "ecs:DescribeTasks",
+        "ecs:RegisterTaskDefinition",
+        "ecs:RunTask"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": "iam:PassRole",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "MigrationTaskRole7F23D565",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::GetAtt": [
+          "OneShotExecutionRoleE1BB48E7",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::GetAtt": [
+          "VerificationTaskRoleF6CF2A5D",
+          "Arn"
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "PolicyAnyWearPlatformStackprodGitHubActionsPipelineRoleD275743F",
+    "Roles": [
+     "prod-github-actions-pipeline-role"
+    ]
+   }
+  },
+  "AnyWearDatabaseSubnetsE76350ED": {
+   "Type": "AWS::RDS::DBSubnetGroup",
+   "Properties": {
+    "DBSubnetGroupDescription": "Subnets for AnyWearDatabase database",
+    "SubnetIds": [
+     {
+      "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
+     },
+     {
+      "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "AnyWearDatabaseSecurityGroupBF41DFCD": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "RDS security group",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "AnyWearDatabaseSecurityGroupfromAnyWearPlatformStackprodApiSecurityGroup5BA8AFCB5432F370E806": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "API to PostgreSQL",
+    "FromPort": 5432,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "AnyWearDatabaseSecurityGroupBF41DFCD",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "ApiSecurityGroup4E5BB726",
+      "GroupId"
+     ]
+    },
+    "ToPort": 5432
+   }
+  },
+  "AnyWearDatabaseSecurityGroupfromAnyWearPlatformStackprodWorkerSecurityGroup79ABE2F45432B4FCDE5A": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "Worker to PostgreSQL",
+    "FromPort": 5432,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "AnyWearDatabaseSecurityGroupBF41DFCD",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "WorkerSecurityGroup5529CF0B",
+      "GroupId"
+     ]
+    },
+    "ToPort": 5432
+   }
+  },
+  "AnyWearDatabaseSecurityGroupfromAnyWearPlatformStackprodOneShotSecurityGroupC228E0055432CEE9614C": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "One-shot tasks to PostgreSQL",
+    "FromPort": 5432,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "AnyWearDatabaseSecurityGroupBF41DFCD",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "OneShotSecurityGroup6BBA5E34",
+      "GroupId"
+     ]
+    },
+    "ToPort": 5432
+   }
+  },
+  "AnyWearDatabaseSecurityGroupfromAnyWearPlatformStackprodPostConfirmationSyncLambdaSecurityGroup52F1C5C4543247D4F741": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "from AnyWearPlatformStackprodPostConfirmationSyncLambdaSecurityGroup52F1C5C4:5432",
+    "FromPort": 5432,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "AnyWearDatabaseSecurityGroupBF41DFCD",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "PostConfirmationSyncLambdaSecurityGroup6F40B6F1",
+      "GroupId"
+     ]
+    },
+    "ToPort": 5432
+   }
+  },
+  "AnyWearDatabaseSecretF777FAFF": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Description": {
+     "Fn::Join": [
+      "",
+      [
+       "Generated by the CDK for stack: ",
+       {
+        "Ref": "AWS::StackName"
+       }
+      ]
+     ]
+    },
+    "GenerateSecretString": {
+     "ExcludeCharacters": " %+~`#$&*()|[]{}:;<>?!'/@\"\\",
+     "GenerateStringKey": "password",
+     "PasswordLength": 30,
+     "SecretStringTemplate": "{\"username\":\"postgres\"}"
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "AnyWearDatabaseSecretAttachment4886B381": {
+   "Type": "AWS::SecretsManager::SecretTargetAttachment",
+   "Properties": {
+    "SecretId": {
+     "Ref": "AnyWearDatabaseSecretF777FAFF"
+    },
+    "TargetId": {
+     "Ref": "AnyWearDatabase2CD487D8"
+    },
+    "TargetType": "AWS::RDS::DBCluster"
+   }
+  },
+  "AnyWearDatabase2CD487D8": {
+   "Type": "AWS::RDS::DBCluster",
+   "Properties": {
+    "CopyTagsToSnapshot": true,
+    "DBClusterParameterGroupName": "default.aurora-postgresql17",
+    "DBSubnetGroupName": {
+     "Ref": "AnyWearDatabaseSubnetsE76350ED"
+    },
+    "DatabaseName": "anywear",
+    "DeletionProtection": true,
+    "Engine": "aurora-postgresql",
+    "EngineVersion": "17.7",
+    "MasterUserPassword": {
+     "Fn::Join": [
+      "",
+      [
+       "{{resolve:secretsmanager:",
+       {
+        "Ref": "AnyWearDatabaseSecretF777FAFF"
+       },
+       ":SecretString:password::}}"
+      ]
+     ]
+    },
+    "MasterUsername": {
+     "Fn::Join": [
+      "",
+      [
+       "{{resolve:secretsmanager:",
+       {
+        "Ref": "AnyWearDatabaseSecretF777FAFF"
+       },
+       ":SecretString:username::}}"
+      ]
+     ]
+    },
+    "Port": 5432,
+    "ServerlessV2ScalingConfiguration": {
+     "MaxCapacity": 2,
+     "MinCapacity": 0.5
+    },
+    "StorageEncrypted": true,
+    "VpcSecurityGroupIds": [
+     {
+      "Fn::GetAtt": [
+       "AnyWearDatabaseSecurityGroupBF41DFCD",
+       "GroupId"
+      ]
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "AnyWearDatabasewriter936467CD": {
+   "Type": "AWS::RDS::DBInstance",
+   "Properties": {
+    "DBClusterIdentifier": {
+     "Ref": "AnyWearDatabase2CD487D8"
+    },
+    "DBInstanceClass": "db.serverless",
+    "Engine": "aurora-postgresql",
+    "PromotionTier": 0,
+    "PubliclyAccessible": false
+   },
+   "DependsOn": [
+    "AnyWearVpcPrivateSubnet1DefaultRoute4D7C01D6",
+    "AnyWearVpcPrivateSubnet1RouteTableAssociation71986135",
+    "AnyWearVpcPrivateSubnet2DefaultRouteCFBC580A",
+    "AnyWearVpcPrivateSubnet2RouteTableAssociationFBD0E1E5"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  },
+  "ClusterEB0386A7": {
+   "Type": "AWS::ECS::Cluster",
+   "Properties": {
+    "ClusterName": "prod-anywear",
+    "ClusterSettings": [
+     {
+      "Name": "containerInsights",
+      "Value": "enabled"
+     }
+    ]
+   }
+  },
+  "ApiSecurityGroup4E5BB726": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Ingress is allowed only from the AnyWear ALB",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "ApiSecurityGroupfromAnyWearPlatformStackprodLoadBalancerSecurityGroup307BFACD3000D0E029E3": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "ALB to API",
+    "FromPort": 3000,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "ApiSecurityGroup4E5BB726",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "LoadBalancerSecurityGroup3036A0FC",
+      "GroupId"
+     ]
+    },
+    "ToPort": 3000
+   }
+  },
+  "WorkerSecurityGroup5529CF0B": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "AnyWear private worker egress and database access",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "OneShotSecurityGroup6BBA5E34": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Migration and deployment verification task egress",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "LoadBalancerSecurityGroup3036A0FC": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "CloudFront origin-facing ingress only",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AnyWearVpcA8B15590"
+    }
+   }
+  },
+  "MigrationTaskRole7F23D565": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "RoleName": "prod-anywear-migration-task"
+   }
+  },
+  "MigrationTaskRoleDefaultPolicy72DAE31B": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "AnyWearDatabaseSecretAttachment4886B381"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "MigrationTaskRoleDefaultPolicy72DAE31B",
+    "Roles": [
+     {
+      "Ref": "MigrationTaskRole7F23D565"
+     }
+    ]
+   }
+  },
+  "VerificationTaskRoleF6CF2A5D": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "RoleName": "prod-anywear-verification-task"
+   }
+  },
+  "VerificationTaskRoleDefaultPolicy326E7553": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "AnyWearDatabaseSecretAttachment4886B381"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "VerificationTaskRoleDefaultPolicy326E7553",
+    "Roles": [
+     {
+      "Ref": "VerificationTaskRoleF6CF2A5D"
+     }
+    ]
+   }
+  },
+  "OneShotExecutionRoleE1BB48E7": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+       ]
+      ]
+     }
+    ],
+    "RoleName": "prod-anywear-one-shot-execution"
+   }
+  },
+  "OneShotExecutionRoleDefaultPolicy82AFD118": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncRuntimeServiceRepository6535F885",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": "ecr:GetAuthorizationToken",
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "OneShotExecutionRoleDefaultPolicy82AFD118",
+    "Roles": [
+     {
+      "Ref": "OneShotExecutionRoleE1BB48E7"
+     }
+    ]
+   }
+  },
+  "OneShotLogGroup31A8D153": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/anywear/prod/one-shot",
+    "RetentionInDays": 30
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain"
+  }
+ },
+ "Outputs": {
+  "UserPoolId": {
+   "Value": {
+    "Ref": "AnyWearUserPoolAFAAA981"
+   }
+  },
+  "UserPoolClientId": {
+   "Value": {
+    "Ref": "AnyWearUserPoolClient15EC205A"
+   }
+  },
+  "WardrobeBucketName": {
+   "Value": {
+    "Ref": "AnyWearWardrobeBucket61DCC096"
+   }
+  },
+  "ServiceRepositoryUri": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      {
+       "Fn::Select": [
+        4,
+        {
+         "Fn::Split": [
+          ":",
+          {
+           "Fn::GetAtt": [
+            "AsyncRuntimeServiceRepository6535F885",
+            "Arn"
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      ".dkr.ecr.",
+      {
+       "Fn::Select": [
+        3,
+        {
+         "Fn::Split": [
+          ":",
+          {
+           "Fn::GetAtt": [
+            "AsyncRuntimeServiceRepository6535F885",
+            "Arn"
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      ".",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "AsyncRuntimeServiceRepository6535F885"
+      }
+     ]
+    ]
+   }
+  },
+  "ServiceRepositoryName": {
+   "Value": {
+    "Ref": "AsyncRuntimeServiceRepository6535F885"
+   }
+  },
+  "VtoQueueUrl": {
+   "Value": {
+    "Ref": "AsyncRuntimeVtoQueue7826D09D"
+   }
+  },
+  "AutoTaggingQueueUrl": {
+   "Value": {
+    "Ref": "AsyncRuntimeAutoTaggingQueueEC10AA50"
+   }
+  },
+  "DatabaseEndpoint": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      {
+       "Fn::GetAtt": [
+        "AnyWearDatabase2CD487D8",
+        "Endpoint.Address"
+       ]
+      },
+      ":",
+      {
+       "Fn::GetAtt": [
+        "AnyWearDatabase2CD487D8",
+        "Endpoint.Port"
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  "DatabaseHost": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AnyWearDatabase2CD487D8",
+     "Endpoint.Address"
+    ]
+   }
+  },
+  "DatabasePort": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AnyWearDatabase2CD487D8",
+     "Endpoint.Port"
+    ]
+   }
+  },
+  "DatabaseName": {
+   "Value": "anywear"
+  },
+  "DatabaseSecretArn": {
+   "Value": {
+    "Ref": "AnyWearDatabaseSecretAttachment4886B381"
+   }
+  },
+  "EcsClusterName": {
+   "Value": {
+    "Ref": "ClusterEB0386A7"
+   }
+  },
+  "OneShotSecurityGroupId": {
+   "Value": {
+    "Fn::GetAtt": [
+     "OneShotSecurityGroup6BBA5E34",
+     "GroupId"
+    ]
+   }
+  },
+  "MigrationTaskRoleArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "MigrationTaskRole7F23D565",
+     "Arn"
+    ]
+   }
+  },
+  "VerificationTaskRoleArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "VerificationTaskRoleF6CF2A5D",
+     "Arn"
+    ]
+   }
+  },
+  "OneShotExecutionRoleArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "OneShotExecutionRoleE1BB48E7",
+     "Arn"
+    ]
+   }
+  },
+  "OneShotLogGroupName": {
+   "Value": {
+    "Ref": "OneShotLogGroup31A8D153"
+   }
+  },
+  "PrivateSubnetIds": {
+   "Value": {
+    "Fn::Join": [
+     ",",
+     [
+      {
+       "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
+      },
+      {
+       "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
+      }
+     ]
+    ]
+   }
+  },
+  "PublishOutputFnGetAttLoadBalancerSecurityGroup3036A0FCGroupId273B4B7E": {
+   "Value": {
+    "Fn::GetAtt": [
+     "LoadBalancerSecurityGroup3036A0FC",
+     "GroupId"
+    ]
+   }
+  },
+  "PublishOutputRefAnyWearVpcPublicSubnet1Subnet5CC36A8305BC9630": {
+   "Value": {
+    "Ref": "AnyWearVpcPublicSubnet1Subnet5CC36A83"
+   }
+  },
+  "PublishOutputRefAnyWearVpcPublicSubnet2Subnet78E1776F16455447": {
+   "Value": {
+    "Ref": "AnyWearVpcPublicSubnet2Subnet78E1776F"
+   }
+  },
+  "PublishOutputRefAnyWearVpcA8B15590AB9CA509": {
+   "Value": {
+    "Ref": "AnyWearVpcA8B15590"
+   }
+  },
+  "PublishOutputRefAnyWearDatabaseSecretAttachment4886B38144EA741B": {
+   "Value": {
+    "Ref": "AnyWearDatabaseSecretAttachment4886B381"
+   }
+  },
+  "PublishOutputFnGetAttAnyWearWardrobeBucket61DCC096Arn724558D0": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AnyWearWardrobeBucket61DCC096",
+     "Arn"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncRuntimeServiceRepository6535F885",
+     "Arn"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAsyncRuntimeVtoQueue7826D09DArnE4D35296": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncRuntimeVtoQueue7826D09D",
+     "Arn"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingQueueEC10AA50ArnF3081676": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncRuntimeAutoTaggingQueueEC10AA50",
+     "Arn"
+    ]
+   }
+  },
+  "PublishOutputRefAsyncRuntimeServiceRepository6535F885E981090C": {
+   "Value": {
+    "Ref": "AsyncRuntimeServiceRepository6535F885"
+   }
+  },
+  "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointAddress8F10C00D": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AnyWearDatabase2CD487D8",
+     "Endpoint.Address"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointPort898B970A": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AnyWearDatabase2CD487D8",
+     "Endpoint.Port"
+    ]
+   }
+  },
+  "PublishOutputRefAnyWearWardrobeBucket61DCC096146CB5ED": {
+   "Value": {
+    "Ref": "AnyWearWardrobeBucket61DCC096"
+   }
+  },
+  "PublishOutputRefAsyncRuntimeVtoQueue7826D09D30543F7E": {
+   "Value": {
+    "Ref": "AsyncRuntimeVtoQueue7826D09D"
+   }
+  },
+  "PublishOutputRefAsyncRuntimeAutoTaggingQueueEC10AA508CE2FD1E": {
+   "Value": {
+    "Ref": "AsyncRuntimeAutoTaggingQueueEC10AA50"
+   }
+  },
+  "PublishOutputRefAnyWearUserPoolAFAAA9816AD1F62D": {
+   "Value": {
+    "Ref": "AnyWearUserPoolAFAAA981"
+   }
+  },
+  "PublishOutputRefAnyWearUserPoolClient15EC205A2F344351": {
+   "Value": {
+    "Ref": "AnyWearUserPoolClient15EC205A"
+   }
+  },
+  "PublishOutputRefClusterEB0386A7D87642F6": {
+   "Value": {
+    "Ref": "ClusterEB0386A7"
+   }
+  },
+  "PublishOutputRefAnyWearVpcPrivateSubnet1Subnet2CB21A9B8EE63669": {
+   "Value": {
+    "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
+   }
+  },
+  "PublishOutputRefAnyWearVpcPrivateSubnet2Subnet360A1C5092550D4E": {
+   "Value": {
+    "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
+   }
+  },
+  "PublishOutputFnGetAttApiSecurityGroup4E5BB726GroupIdF3427EAD": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ApiSecurityGroup4E5BB726",
+     "GroupId"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttWorkerSecurityGroup5529CF0BGroupId1D09B9A4": {
+   "Value": {
+    "Fn::GetAtt": [
+     "WorkerSecurityGroup5529CF0B",
+     "GroupId"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAsyncRuntimeVtoQueue7826D09DQueueNameE55C65DE": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncRuntimeVtoQueue7826D09D",
+     "QueueName"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingQueueEC10AA50QueueName4DC945B2": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncRuntimeAutoTaggingQueueEC10AA50",
+     "QueueName"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAsyncRuntimeVtoDeadLetterQueueE526C0CEQueueNameB688750E": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncRuntimeVtoDeadLetterQueueE526C0CE",
+     "QueueName"
+    ]
+   }
+  },
+  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingDeadLetterQueueD5D55868QueueName504A8E35": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868",
+     "QueueName"
+    ]
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
