@@ -22,12 +22,16 @@ infrastructure authority.
   Service owns the shared parser/fixture; keep its full pin and file hashes in
   `scripts/vendor/provenance.json` when updating those inputs.
 - Pass an explicit `trustedInfraRoot` and `expectedInfraSha` to artifact
-  verification. Runtime uses protected main at the manager window's exact SHA;
+  verification. Runtime uses reviewed main at the manager window's exact SHA;
   E2E uses its reviewed `compatibility.infra` pin and `.infra-source` checkout.
   Require the trusted checkout's exact Infra origin/full SHA and clean tracked/
   untracked state. Verify the receipt is a regular tracked blob with no path
   links and its raw-byte hash matches the selector and committed bytes.
   A vendored verifier directory is not a trust root.
+- Do not claim repository branch protection when the private plan cannot enforce
+  it. The configured Beta environment restricts the branch to main. Apply the
+  manager's independently reviewed exact SHA/input gates and operational freeze
+  with one writer; these are distinct from repository branch protection.
 - Use `gh` for GitHub and `aws` for AWS. Verify account, profile and region before
   cloud commands. Run package/build commands here, never in the shell root.
 - Before AWS mutations, verify the manager-recorded writer window, exact Infra

@@ -12,8 +12,8 @@ The 2026-10-08 setup readback has a `beta` environment limited to the `main`
 branch. Its activation gate is `ENABLE_BETA_DEPLOY=false`. GitHub returned 403
 for private repository rulesets/branch protection under the current plan; the
 environment's branch restriction does not mean `main` has repository branch
-protection. References below to protected main require either supported branch
-protection or the manager's recorded operational freeze: independently reviewed
+protection. Use supported branch protection when available; the current controls
+include the manager's recorded operational freeze: independently reviewed
 exact source, one writer, no peer merges, exact-SHA window/dispatch gates, and
 activation disabled between assigned operations. This does not authorize a
 runtime operation by itself.
@@ -45,7 +45,7 @@ The `beta` environment controls `ENABLE_BETA_DEPLOY` and these exact values:
 | --- | --- |
 | `AWS_ACCOUNT_ID`, `AWS_REGION` | `650880818323`, `ap-east-1` |
 | `INFRA_WRITER_WINDOW` | Recorded token, identical to dispatch `writer_window` |
-| `INFRA_WINDOW_SHA` | Full Infra `GITHUB_SHA` on protected `refs/heads/main` |
+| `INFRA_WINDOW_SHA` | Reviewed full Infra `GITHUB_SHA` on `refs/heads/main`, with the controls above |
 | `INFRA_WINDOW_EXPIRES_AT` | Valid future timestamp; expiration stops subsequent guarded mutations |
 | `INFRA_WINDOW_RECORD_URL` | #54 manager issue-comment URL |
 | `INFRA_WINDOW_OPERATION` | Exact dispatch operation |
@@ -84,7 +84,7 @@ read-only GitHub App; installation access is proved before activation.
 `APP_PRIVATE_KEY` stays in the protected secret store.
 
 Every verifier caller supplies explicit `trustedInfraRoot` and `expectedInfraSha`.
-Runtime uses the protected-main workspace and exact `INFRA_WINDOW_SHA`/
+Runtime uses the reviewed main workspace and exact `INFRA_WINDOW_SHA`/
 `GITHUB_SHA`; E2E uses the `.infra-source` checkout at its reviewed
 `compatibility.infra` pin. Require the exact Infra Git origin, matching full HEAD
 and a clean checkout including untracked files. Verify the receipt is a regular
@@ -102,7 +102,7 @@ actual deployed template hashes.
 
 ## Entry points
 
-[runtime.yml](../../.github/workflows/runtime.yml) runs on manual dispatch, protected
+[runtime.yml](../../.github/workflows/runtime.yml) runs on manual dispatch, reviewed
 main, the `beta` environment and an open activation gate. It validates the window
 and source inputs before credentials, then assumes dedicated deploy/runtime roles
 as needed. All its operations share the Infra queue.

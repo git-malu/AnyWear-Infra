@@ -91,7 +91,7 @@ The original CDK source-synth baseline has separate Service provenance in
 
 1. Independently retrieve the exact publisher run/attempt from Service using the
    read-only private-repository access. Require the expected repository,
-   protected-main source/workflow identity, `completed` status and `success`
+   reviewed main source/workflow identity, `completed` status and `success`
    conclusion. Select the unique bounded Actions ZIP artifact named
    `service-artifact-publication-<run-id>-<attempt>` and its exact
    `service-artifact-publication.json` entry. Record the artifact ID, archive hash
@@ -126,13 +126,13 @@ The original CDK source-synth baseline has separate Service provenance in
 5. Add the accepted receipt as `publications/<full-manifest-sha256>.json` through
    the reviewed Infra commit. Add the selector's top-level
    `publication_acceptance: { file, sha256 }`, where `sha256` hashes the exact raw
-   receipt bytes. Only then authorize the protected-main writer window for that
+   receipt bytes. Only then authorize the reviewed main writer window for that
    exact full Infra source, selector/hash, operation and expiry. The receipt
    review and source/window authorization are separate recorded decisions.
 6. Subsequent consumers compare the live native signed release commit/all assets
    with the preserved receipt, manifest and raw hashes, and still require the
    exact publisher run/attempt to be available and completed successfully. Use
-   explicit `trustedInfraRoot`/`expectedInfraSha`: runtime's protected-main
+   explicit `trustedInfraRoot`/`expectedInfraSha`: runtime's reviewed main
    workspace at the window SHA, or E2E's `.infra-source` checkout at its reviewed
    `compatibility.infra` pin. Require the exact Infra origin/full HEAD and a clean
    checkout including untracked files. The receipt must be a regular tracked
@@ -243,7 +243,7 @@ that the effective repository policy has the same hash.
    put-lifecycle-policy`. Re-read its canonical hash, exact tags and all required
    digests, preview the effective policy again, and verify the policy has not
    changed during preview. Preserve both policy readbacks and preview results.
-5. Under protected Infra execution, `node scripts/ecr-retention.mjs required-images.json`
+5. Under manager-approved Infra execution, `node scripts/ecr-retention.mjs required-images.json`
    validates the same rules/tags/bounds and completed preview, using
    `ECR_RETENTION_VERIFIED_POLICY_SHA256` to bind the approved hash. The required
    file is an array of exact `service_sha`/`digest` objects. The runtime role can
