@@ -84,19 +84,20 @@ export function validateSnapshot(snapshot) {
 }
 export function validateDeploymentRecord(record) {
   exact(record, ['schema_version', 'record_type', 'infra', 'selection', 'stacks', 'observed', 'schema'], 'deployment record');
-  if (record.schema_version !== 1 || record.record_type !== 'anywear_infra_deployment') throw new Error('Unknown deployment schema');
+  if (record.schema_version !== 2 || record.record_type !== 'anywear_infra_deployment') throw new Error('Unknown deployment schema; historical v1 is not a direct-verification input');
   exact(record.infra, ['repository', 'sha', 'workflow_path', 'workflow_ref', 'run_id', 'run_attempt'], 'Infra run');
   const infra = record.infra;
   if (infra.repository !== INFRA_REPOSITORY || infra.workflow_path !== '.github/workflows/runtime.yml'
     || infra.workflow_ref !== `${INFRA_REPOSITORY}/${infra.workflow_path}@refs/heads/main`) throw new Error('Unexpected deployment workflow');
   matches(infra.sha, SHA, 'Infra SHA'); integer(infra.run_id, 'Infra run'); integer(infra.run_attempt, 'Infra attempt');
-  exact(record.selection, ['sha256', 'release', 'publication_acceptance', 'components'], 'selection'); matches(record.selection.sha256, HASH, 'selector hash');
+  exact(record.selection, ['file', 'sha256', 'release', 'components'], 'selection'); matches(record.selection.sha256, HASH, 'selector hash');
+  matches(record.selection.file, /^selections\/[a-z0-9][a-z0-9._-]{0,127}\.json$/, 'committed selection path');
   exact(record.selection.release, ['repository', 'id', 'manifest_asset_id', 'manifest_sha256'], 'release');
   const release = record.selection.release;
   if (release.repository !== SERVICE_REPOSITORY) throw new Error('Unexpected Service release');
   integer(release.id, 'release ID'); integer(release.manifest_asset_id, 'manifest asset ID'); matches(release.manifest_sha256, HASH, 'manifest hash');
   exact(record.selection.components, ['image', 'lambdas', 'runtime_policy', 'schema'], 'component expectations');
-  const selector = { schema_version: 1, record_type: 'anywear_infra_selection', release, publication_acceptance: record.selection.publication_acceptance, ...record.selection.components };
+  const selector = { schema_version: 2, record_type: 'anywear_infra_selection', release, ...record.selection.components };
   validateSelection(selector);
   if (contentHash(selector) !== record.selection.sha256) throw new Error('Canonical exact selector bytes mismatch');
   validateSnapshot({ stacks: record.stacks, observed: record.observed, schema: record.schema });
