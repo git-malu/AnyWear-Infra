@@ -92,6 +92,11 @@ jobs:
           mkdir -p deployment-evidence
           node scripts/check-window.mjs
           node scripts/check-stack-sources.mjs
+      - name: Check native release verification CLI before credentials
+        run: |
+          gh --version | tee deployment-evidence/github-cli-version.txt
+          gh release verify --format json --help > /dev/null
+          gh release verify-asset --format json --help > /dev/null
       - name: Create read-only private artifact token
         id: app
         uses: actions/create-github-app-token@v3
@@ -102,6 +107,7 @@ jobs:
           repositories: AnyWear-Service
           permission-contents: read
           permission-actions: read
+          permission-attestations: read
       - name: Execute selected operation with distinct OIDC principals
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}

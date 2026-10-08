@@ -19,6 +19,11 @@ jobs:
       - run: npm ci
       - run: npm run audit:prod
       - run: npm run check
+      - name: Check native release verification CLI offline
+        run: |
+          gh --version
+          gh release verify --format json --help > /dev/null
+          gh release verify-asset --format json --help > /dev/null
       - run: bash -n .github/scripts/run-one-shot-task.sh .github/scripts/writer-window-hook.sh
       - name: Compare explicit live Foundation with authenticated Original fixture
         env:

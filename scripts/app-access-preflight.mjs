@@ -4,10 +4,10 @@ import { pathToFileURL } from 'node:url';
 
 const OWNER_ID = 11473072;
 export const targets = Object.freeze({
-  service: { name: 'AnyWear-Service', id: 1158460323, sha: '8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce',
-    run: 37659133501, attempt: 1, workflow: '.github/workflows/pipeline.yml' },
-  infra: { name: 'AnyWear-Infra', id: 1409047265, sha: '0c514d52f68726cda140200b2ecb2a4c504c635e',
-    run: 37660726165, attempt: 1, workflow: '.github/workflows/check.yml' },
+  service: { name: 'AnyWear-Service', id: 1158460323, sha: '75c65b22a434129ea84749caa8c9e20bb6119843',
+    run: 37722410961, attempt: 1, workflow: '.github/workflows/pipeline.yml' },
+  infra: { name: 'AnyWear-Infra', id: 1409047265, sha: 'c9b1a7e5ccffb073011c698fd8c1091fbda782a1',
+    run: 37721948214, attempt: 1, workflow: '.github/workflows/check.yml' },
   issue: { name: 'AnyWear', id: 1202866423, number: 54, comment: 6041539765 },
 });
 
@@ -28,9 +28,10 @@ function repositoryIdentity(value, target) {
   }
 }
 
-export async function verifyAccess(mode, get) {
+export async function verifyAccess(mode, get, { serviceTokenMintOutcome } = {}) {
   const target = targets[mode];
   if (!target) throw new Error('Unknown access scope');
+  if (mode === 'service' && serviceTokenMintOutcome !== 'success') throw new Error('Reviewed Service scoped token mint must succeed');
   const prefix = `/repos/git-malu/${target.name}`;
   const installation = await get('/installation/repositories?per_page=100');
   if (installation.total_count !== 1 || installation.repositories?.length !== 1) throw new Error('Token must cover exactly one requested repository');
@@ -57,7 +58,9 @@ export async function verifyAccess(mode, get) {
     || run.head_sha !== target.sha || run.path !== target.workflow || run.status !== 'completed'
     || run.conclusion !== 'success') throw new Error('Exact source or successful Actions attempt mismatch');
   repositoryIdentity(run.repository, target);
-  return { ...result, permissions_requested: { contents: 'read', actions: 'read' }, source_sha: target.sha,
+  return { ...result, permissions_requested: { contents: 'read', actions: 'read', ...(mode === 'service' ? { attestations: 'read' } : {}) },
+    ...(mode === 'service' ? { attestations_scope_mint_accepted: true, actual_native_read_verified: false,
+      native_read_gate: 'Verify the actual sealed release and its assets after publication; no nonexistent subject is an access proof' } : {}), source_sha: target.sha,
     source_run_id: target.run, source_run_attempt: target.attempt, source_workflow: target.workflow,
     source_run_conclusion: run.conclusion };
 }
@@ -75,7 +78,7 @@ async function main() {
     if (!response.ok) throw new Error(`GitHub read failed (${response.status}) for ${endpoint}`);
     return response.json();
   };
-  const evidence = { ...await verifyAccess(mode, get), preflight_source_sha: checkoutSha,
+  const evidence = { ...await verifyAccess(mode, get, { serviceTokenMintOutcome: process.env.PREFLIGHT_SERVICE_TOKEN_MINT_OUTCOME }), preflight_source_sha: checkoutSha,
     preflight_run_id: process.env.GITHUB_RUN_ID, preflight_run_attempt: process.env.GITHUB_RUN_ATTEMPT,
     verified_at: new Date().toISOString() };
   await mkdir('app-access-evidence', { recursive: true });

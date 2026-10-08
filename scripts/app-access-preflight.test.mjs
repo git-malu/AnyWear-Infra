@@ -38,20 +38,36 @@ test('secret guard rejects foreign PR/ref, unreviewed SHA, and checkout substitu
 
 test('separate tokens prove exact private repository and source/attempt or claim reads', async () => {
   for (const mode of ['service', 'infra', 'issue']) {
-    const fixture = fixtures(mode); const result = await verifyAccess(mode, fixture.get);
+    const fixture = fixtures(mode); const result = await verifyAccess(mode, fixture.get, { serviceTokenMintOutcome: 'success' });
     assert.equal(result.verified, true); assert.equal(result.mutation_performed, false);
     fixture.values['/installation/repositories?per_page=100'].total_count = 2;
-    await assert.rejects(verifyAccess(mode, fixture.get), /exactly one/);
+    await assert.rejects(verifyAccess(mode, fixture.get, { serviceTokenMintOutcome: 'success' }), /exactly one/);
   }
 });
 
 test('access proof rejects repository substitution and failed or replaced exact attempts', async () => {
   for (const patch of [{ conclusion: 'failure' }, { run_attempt: 2 }, { head_sha: sha }, { path: '.github/workflows/other.yml' }]) {
     const fixture = fixtures('service'); Object.assign(fixture.values[`${fixture.prefix}/actions/runs/${fixture.target.run}/attempts/1`], patch);
-    await assert.rejects(verifyAccess('service', fixture.get), /attempt mismatch/);
+    await assert.rejects(verifyAccess('service', fixture.get, { serviceTokenMintOutcome: 'success' }), /attempt mismatch/);
   }
   const fixture = fixtures('infra'); fixture.values[fixture.prefix].owner.id = 1;
   await assert.rejects(verifyAccess('infra', fixture.get), /identity mismatch/);
+});
+
+test('Service requires a successful scoped mint before reads and keeps native verification pending', async () => {
+  const fixture = fixtures('service');
+  for (const serviceTokenMintOutcome of [undefined, 'failure', 'skipped']) {
+    let requested = false;
+    await assert.rejects(verifyAccess('service', async () => { requested = true; }, { serviceTokenMintOutcome }), /scoped token mint/);
+    assert.equal(requested, false);
+  }
+  const result = await verifyAccess('service', fixture.get, { serviceTokenMintOutcome: 'success' });
+  assert.deepEqual(result.permissions_requested, { contents: 'read', actions: 'read', attestations: 'read' });
+  assert.equal(result.attestations_scope_mint_accepted, true);
+  assert.equal(result.actual_native_read_verified, false);
+  const infra = await verifyAccess('infra', fixtures('infra').get);
+  assert.deepEqual(infra.permissions_requested, { contents: 'read', actions: 'read' });
+  assert.equal(infra.attestations_scope_mint_accepted, undefined);
 });
 
 test('root issues read rejects a different owner claim even if the issue is accessible', async () => {

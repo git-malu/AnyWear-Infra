@@ -121,5 +121,8 @@ test('workflow puts metadata credentials after checkout guard and keeps failed s
   assert.ok(guard >= 0 && metadata > guard && service > metadata);
   assert.match(workflow.slice(guard, service), /steps\.guard\.outcome == 'success'/);
   assert.match(workflow.slice(guard, service), /APP_PRIVATE_KEY: \$\{\{ secrets\.APP_PRIVATE_KEY \}\}/);
-  assert.doesNotMatch(workflow, /id-token:|permission-attestations:|permission-actions: write/);
+  assert.doesNotMatch(workflow, /id-token:|permission-actions: write/);
+  const serviceToken = workflow.slice(service, workflow.indexOf('- name: Verify exact Service source'));
+  assert.match(serviceToken, /repositories: AnyWear-Service\s+permission-contents: read\s+permission-actions: read\s+permission-attestations: read/);
+  assert.doesNotMatch(workflow.slice(workflow.indexOf('- name: Create Infra read token')), /permission-attestations:/);
 });

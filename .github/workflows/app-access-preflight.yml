@@ -37,6 +37,12 @@ jobs:
       - name: Verify reviewed checkout before using App credentials
         id: guard
         run: node scripts/app-access-preflight.mjs guard
+      - name: Check native release verification CLI without network access
+        run: |
+          mkdir -p app-access-evidence
+          gh --version | tee app-access-evidence/github-cli-version.txt
+          gh release verify --format json --help > /dev/null
+          gh release verify-asset --format json --help > /dev/null
       - name: Read sanitized App registration and installation metadata
         if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
         env:
@@ -53,10 +59,12 @@ jobs:
           repositories: AnyWear-Service
           permission-contents: read
           permission-actions: read
+          permission-attestations: read
       - name: Verify exact Service source and successful attempt
         if: ${{ !cancelled() && steps.service.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.service.outputs.token }}
+          PREFLIGHT_SERVICE_TOKEN_MINT_OUTCOME: ${{ steps.service.outcome }}
         run: node scripts/app-access-preflight.mjs service
       - name: Create Infra read token
         if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
@@ -94,6 +102,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-access-${{ github.run_id }}-${{ github.run_attempt }}
-          path: app-access-evidence/*.json
+          path: |
+            app-access-evidence/*.json
+            app-access-evidence/github-cli-version.txt
           retention-days: 90
           if-no-files-found: warn

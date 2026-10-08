@@ -22,7 +22,7 @@ runtime operation by itself.
 only runs for same-repository PR1 on `codex/issue-54-infra-extraction` after the
 manager sets `APP_ACCESS_REVIEWED_SHA` to that reviewed full head. A second
 checkout/source guard runs before App credentials are used. It requests separate
-single-repository tokens for Service contents/actions read, Infra contents/actions
+single-repository tokens for Service contents/actions/attestations read, Infra contents/actions
 read, and root AnyWear issues read. Exact repository/owner IDs, source commits,
 completed-success CI attempts, and the original #54 owner claim are checked.
 Only sanitized status/identity evidence is uploaded; key/token bytes stay inside
@@ -36,11 +36,23 @@ memory. The uploaded `registration-metadata.json` records sanitized App and
 installation identities, the actual App permissions settings URL, repository
 selection, suspension and configured-versus-installed permissions. It includes
 Attestations read for the later native immutable-release verification review;
-the diagnostic neither requests that scope nor expands any token permission.
+the metadata diagnostic does not request any scoped token permission.
 App ownership is recorded separately from installation ownership. Metadata does
 not establish scoped access: the independent single-repository token/read
 checks must still pass. Only the manager opens the exact-head credential gate
 after source review and CI, and closes it after the bounded run.
+
+Service's dedicated token requests Attestations read because native
+`gh release verify` and `verify-asset` use that private repository API. A successful
+bounded token mint records `attestations_scope_mint_accepted=true`; the existing
+source/Actions reads remain independently checked. Until a sealed release exists,
+`actual_native_read_verified=false`. A missing subject's 404 cannot prove access.
+The first real native read gate verifies the published release and every selected
+asset with that Service-only token. Service's publisher seals its own release
+with its distinct GITHUB_TOKEN and explicit job-level Attestations read.
+Offline command/JSON-format probes and the actual runner's `gh --version` precede
+App credentials in the preflight and runtime; these prove CLI capability, while
+the post-publication native gate establishes actual private release access.
 
 ## Manager window and immutable inputs
 
