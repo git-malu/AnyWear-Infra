@@ -25,8 +25,11 @@ function stack(active, workload = false) {
   };
 }
 
-function lifecycleIo({ platformActive = true, workloadActive = true, suspended = 'false', fail } = {}) {
+function lifecycleIo({ platformActive = true, workloadActive = true, suspended = 'false', expectedRevision = {
+  digest: parameters.ServiceImageDigest, commit: parameters.ServiceCommitSha,
+}, stackStatus = 'UPDATE_COMPLETE', fail } = {}) {
   const events = [];
+  const revisions = [];
   let time = 0;
   const io = {
     now: () => time,
@@ -34,7 +37,9 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
     async aws(args) {
       if (args[0] === 'cloudformation') {
         const workload = args.at(-1) === workloadName;
-        return { Stacks: [stack(workload ? workloadActive : platformActive, workload)] };
+        const result = stack(workload ? workloadActive : platformActive, workload);
+        result.StackStatus = stackStatus;
+        return { Stacks: [result] };
       }
       const operation = args.slice(0, 2).join(' ');
       events.push(`${operation}${operation === 'ecs list-tasks' ? ` ${args[args.indexOf('--desired-status') + 1]}` : ''}`);
@@ -48,8 +53,9 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
       assert.fail(`Unexpected AWS operation: ${args.join(' ')}`);
     },
     async oneShot(role, revision, argument = '') {
-      assert.equal(revision.digest, parameters.ServiceImageDigest);
-      assert.equal(revision.commit, parameters.ServiceCommitSha);
+      assert.equal(revision.digest, expectedRevision.digest);
+      assert.equal(revision.commit, expectedRevision.commit);
+      revisions.push({ role, argument, digest: revision.digest, commit: revision.commit });
       const event = `oneShot ${role} ${argument}`.trim();
       events.push(event);
       if (event === 'oneShot lifecycle close') suspended = 'true';
@@ -57,7 +63,10 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
       if (fail?.(event)) throw new Error(event === 'oneShot lifecycle drain'
         ? 'Beta drain exceeded 60 minutes' : 'Injected operation failure');
     },
-    async deploy(name, enabled) {
+    async deploy(name, enabled, revision) {
+      assert.equal(revision.digest, expectedRevision.digest);
+      assert.equal(revision.commit, expectedRevision.commit);
+      revisions.push({ role: 'deploy', argument: `deploy ${name} ${enabled}`, digest: revision.digest, commit: revision.commit });
       const event = `deploy ${name} ${enabled}`;
       events.push(event);
       if (fail?.(event)) throw new Error('Injected operation failure');
@@ -68,7 +77,7 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
       events.push('verifyHealth');
     },
   };
-  return { io, events };
+  return { io, events, revisions };
 }
 
 test('stop failure records actual state and requires separately selected start', async () => {
@@ -109,7 +118,7 @@ test('drain and deployment failures preserve closed admission and never restart 
 });
 test('native rollback output is reported rather than treated as a successful stopped state', async () => {
   const { io, events } = lifecycleIo(); const deploy = io.deploy;
-  io.deploy = async (name, enabled) => { if (name === workloadName) return; await deploy(name, enabled); };
+  io.deploy = async (name, enabled, revision) => { if (name === workloadName) return; await deploy(name, enabled, revision); };
   await assert.rejects(runBetaLifecycle('stop', io), /Platform=false.*Workload=true/);
   assert.equal(events.some(event => /^deploy .* true$/.test(event)), false);
 });
@@ -126,18 +135,18 @@ test('missing, malformed, or unavailable suspension state aborts stop before any
 });
 
 test('start restores the network before private tasks and opens intake only after verification', async () => {
-  const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false });
-  await runBetaLifecycle('start', io);
+  const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false, suspended: 'true' });
+  await runBetaLifecycle('start', io, { selectedRevision: { digest: parameters.ServiceImageDigest, commit: parameters.ServiceCommitSha } });
   assert.deepEqual(events, [
     'ssm get-parameter', `deploy ${platformName} true`, 'oneShot lifecycle close', 'oneShot migrate', 'oneShot verify',
     `deploy ${workloadName} true`, 'ecs wait', 'verifyHealth',
-    `oneShot verify ${apiUrl}`, 'oneShot lifecycle open',
+    `oneShot verify ${apiUrl}`, 'oneShot lifecycle close',
   ]);
 });
 
 test('start preserves a pre-existing admission suspension after verification', async () => {
   const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false, suspended: 'true' });
-  await runBetaLifecycle('start', io);
+  await runBetaLifecycle('start', io, { selectedRevision: { digest: parameters.ServiceImageDigest, commit: parameters.ServiceCommitSha } });
   assert.deepEqual(events, [
     'ssm get-parameter', `deploy ${platformName} true`, 'oneShot lifecycle close', 'oneShot migrate', 'oneShot verify',
     `deploy ${workloadName} true`, 'ecs wait', 'verifyHealth',
@@ -148,15 +157,55 @@ test('start preserves a pre-existing admission suspension after verification', a
 test('start rejects an unavailable admission state before mutating infrastructure', async () => {
   const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false,
     fail: (event) => event === 'ssm get-parameter' });
-  await assert.rejects(runBetaLifecycle('start', io), /SSM suspension read failed/);
+  await assert.rejects(runBetaLifecycle('start', io, { selectedRevision: { digest: parameters.ServiceImageDigest, commit: parameters.ServiceCommitSha } }), /SSM suspension read failed/);
   assert.deepEqual(events, ['ssm get-parameter']);
 });
 
 test('failed start verification never opens intake', async () => {
-  const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false,
+  const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false, suspended: 'true',
     fail: (event) => event === `oneShot verify ${apiUrl}` });
-  await assert.rejects(runBetaLifecycle('start', io), /Injected operation failure/);
+  await assert.rejects(runBetaLifecycle('start', io, { selectedRevision: { digest: parameters.ServiceImageDigest, commit: parameters.ServiceCommitSha } }), /Injected operation failure/);
   assert.ok(!events.includes('oneShot lifecycle open'));
+});
+
+test('start hands the reviewed selection to every lifecycle and deployment action', async () => {
+  const selected = { digest: `sha256:${'c'.repeat(64)}`, commit: 'd'.repeat(40) };
+  const { io, events, revisions } = lifecycleIo({ platformActive: false, workloadActive: false, suspended: 'true', expectedRevision: selected });
+  await runBetaLifecycle('start', io, { selectedRevision: selected });
+  assert.deepEqual(revisions.map(({ role, argument, digest, commit }) => ({ role, argument, digest, commit })), [
+    { role: 'deploy', argument: `deploy ${platformName} true`, ...selected },
+    { role: 'lifecycle', argument: 'close', ...selected },
+    { role: 'migrate', argument: '', ...selected },
+    { role: 'verify', argument: '', ...selected },
+    { role: 'deploy', argument: `deploy ${workloadName} true`, ...selected },
+    { role: 'verify', argument: apiUrl, ...selected },
+    { role: 'lifecycle', argument: 'close', ...selected },
+  ]);
+  assert.equal(events.at(-1), 'oneShot lifecycle close');
+});
+
+test('start requires inactive terminal stacks and suspended admission before mutation', async () => {
+  const selected = { digest: parameters.ServiceImageDigest, commit: parameters.ServiceCommitSha };
+  for (const [platformActive, workloadActive, stackStatus, error] of [
+    [true, false, 'UPDATE_COMPLETE', /Platform stack must be inactive/],
+    [false, true, 'UPDATE_COMPLETE', /Workload stack must be inactive/],
+    [false, false, 'UPDATE_IN_PROGRESS', /Platform stack is not terminal/],
+  ]) {
+    const { io, events } = lifecycleIo({ platformActive, workloadActive, suspended: 'true', stackStatus });
+    await assert.rejects(runBetaLifecycle('start', io, { selectedRevision: selected }), error);
+    assert.equal(events.some((event) => event.startsWith('deploy ') || event.startsWith('oneShot ')), false);
+  }
+  const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false, suspended: 'false' });
+  await assert.rejects(runBetaLifecycle('start', io, { selectedRevision: selected }), /admission must be suspended/);
+  assert.equal(events.some((event) => event.startsWith('deploy ') || event.startsWith('oneShot ')), false);
+});
+
+test('stop keeps the observed workload revision even when a selected start revision is supplied', async () => {
+  const selected = { digest: `sha256:${'c'.repeat(64)}`, commit: 'd'.repeat(40) };
+  const { io, revisions } = lifecycleIo({ suspended: 'false' });
+  await runBetaLifecycle('stop', io, { selectedRevision: selected });
+  assert.ok(revisions.length > 0);
+  assert.ok(revisions.every(({ digest, commit }) => digest === parameters.ServiceImageDigest && commit === parameters.ServiceCommitSha));
 });
 
 test('an already stopped Beta is an idempotent no-op', async () => {

@@ -19,6 +19,69 @@ test('source provenance binds every stack mutated by deployment and lifecycle op
   assert.deepEqual(changedStackNames('observe'), []);
 });
 
+async function runtimeDeployFixture() {
+  const execute = promisify(execFile);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'infra-readback-'));
+  const { selector } = await createTestInputs(await mkdtemp(path.join(os.tmpdir(), 'infra-readback-artifacts-')));
+  const git = async args => (await execute('git', ['-C', root, ...args])).stdout.trim();
+  await git(['init', '--quiet']); await git(['config', 'core.autocrlf', 'false']);
+  await git(['config', 'user.name', 'Readback fixture']); await git(['config', 'user.email', 'fixture@invalid.local']);
+  await git(['remote', 'add', 'origin', 'https://github.com/git-malu/AnyWear-Infra.git']);
+  await mkdir(path.join(root, 'selections')); await writeFile(path.join(root, 'selections/beta.json'), canonicalJson(selector));
+  await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
+  const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: await git(['rev-parse', 'HEAD']), GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
+    AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: 'deploy-workload',
+    INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector) };
+  const revision = { digest: selector.image.digest, commit: selector.image.service_sha,
+    parameters: { ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha,
+      VlmConfigArn: 'arn:secret', CloudFrontPrefixListId: 'pl-test' } };
+  const stack = (digest = revision.digest, commit = revision.commit) => ({ StackStatus: 'UPDATE_COMPLETE', Parameters: [
+    { ParameterKey: 'ServiceImageDigest', ParameterValue: digest }, { ParameterKey: 'ServiceCommitSha', ParameterValue: commit },
+    { ParameterKey: 'VlmConfigArn', ParameterValue: revision.parameters.VlmConfigArn },
+    { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: revision.parameters.CloudFrontPrefixListId },
+  ] });
+  return { root, selector, env, revision, stack };
+}
+
+test('workload deploy records exact parameter readback before success', async () => {
+  const { root, selector, env, revision, stack } = await runtimeDeployFixture();
+  const record = { events: [] }; const commands = [];
+  const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
+    async assume() { return { ...env }; },
+    async run(command, args) {
+      commands.push([command, args]);
+      if (command === 'npx') return { stdout: '', stderr: '' };
+      if (command === 'aws') return { stdout: JSON.stringify({ Stacks: [stack()] }), stderr: '' };
+      throw new Error(`Unexpected command ${command}`);
+    },
+  });
+  await io.deploy('AnyWearWorkloadStack-beta', true, revision);
+  assert.ok(commands.some(([command]) => command === 'npx'));
+  assert.deepEqual(record.events, [
+    { type: 'workload-parameter-readback', stack_name: 'AnyWearWorkloadStack-beta', stack_status: 'UPDATE_COMPLETE',
+      service_sha: revision.commit, image_digest: revision.digest },
+    { type: 'stack-deploy', stack_name: 'AnyWearWorkloadStack-beta', beta_active: true,
+      source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' },
+  ]);
+});
+
+test('workload deploy fails closed when CloudFormation parameter readback mismatches', async () => {
+  const { root, selector, env, revision, stack } = await runtimeDeployFixture();
+  const record = { events: [] };
+  const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
+    async assume() { return { ...env }; },
+    async run(command) {
+      if (command === 'npx') return { stdout: '', stderr: '' };
+      if (command === 'aws') return { stdout: JSON.stringify({ Stacks: [stack(`sha256:${'f'.repeat(64)}`, 'e'.repeat(40))] }), stderr: '' };
+      throw new Error(`Unexpected command ${command}`);
+    },
+  });
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', false, revision), /Workload parameter readback mismatch for ServiceImageDigest/);
+  assert.deepEqual(record.events, []);
+});
+
 test('restart map resolves touched executor rows and preserves historical producers through the actual source guard', async () => {
   const execute = promisify(execFile);
   const root = await mkdtemp(path.join(os.tmpdir(), 'infra-restart-map-'));
