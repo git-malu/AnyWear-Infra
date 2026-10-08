@@ -100,7 +100,16 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
     const args = commands.at(-1);
     assert.ok(args.includes('--no-rollback')); assert.ok(args.includes('betaActive=false'));
     assert.ok(args.includes('legacyRoleOwnership=external')); assert.ok(args.includes('artifactDirectory=/verified/assets'));
-    if (name.includes('Workload')) assert.ok(args.includes(`ServiceImageDigest=${selector.image.digest}`));
+    if (name.includes('Workload')) {
+      const parameterArgs = args.flatMap((value, index) => value === '--parameters' ? [args[index + 1]] : []);
+      assert.deepEqual(parameterArgs, [
+        `AnyWearWorkloadStack-beta:ServiceImageDigest=${selector.image.digest}`,
+        `AnyWearWorkloadStack-beta:ServiceCommitSha=${selector.image.service_sha}`,
+        'AnyWearWorkloadStack-beta:VlmConfigArn=arn:secret',
+        'AnyWearWorkloadStack-beta:CloudFrontPrefixListId=pl-test',
+      ]);
+      assert.equal(parameterArgs.some(value => value.startsWith('ServiceImageDigest=')), false);
+    } else assert.equal(args.includes('--parameters'), false);
   }
   await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, revision), error => error === boundary);
   assert.equal(commands.at(-1).includes('--no-rollback'), false); assert.ok(commands.at(-1).includes('betaActive=true'));

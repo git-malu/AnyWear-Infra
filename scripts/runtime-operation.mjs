@@ -43,7 +43,8 @@ export function betaDeploymentActivity(platform, workload) {
 export function cdkDeploymentArguments(stack, active, revision, directory, env) {
   if (typeof active !== 'boolean') throw new Error('Explicit observed Beta activity required');
   const parameters = stack.includes('Workload') ? Object.entries(revision.parameters).filter(([key]) =>
-    ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) => ['--parameters', `${key}=${value}`]) : [];
+    ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) =>
+    ['--parameters', `${stack}:${key}=${value}`]) : [];
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
     // Native rollback must not reactivate stopped/partially stopped resources.
     // An unsuccessful inactive deployment remains for explicit reviewed recovery.
