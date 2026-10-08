@@ -139,8 +139,8 @@ test('a genuine signed native release from a failed producer does not satisfy pu
   const statement = assertNativeReleaseAttestation(genuine, v02Expected);
   assert.equal(statement.subject.length, 6);
   const manifest = { producer: { run_id: 37757528038, run_attempt: 1, workflow_sha: v02Expected.target } };
-  const run = { id: 37757528038, run_attempt: 1, head_repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323 },
-    repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072 } }, head_branch: 'main', head_sha: v02Expected.target,
+  const run = { id: 37757528038, run_attempt: 1, head_repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072, login: 'git-malu' } },
+    repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072, login: 'git-malu' } }, head_branch: 'main', head_sha: v02Expected.target,
     path: '.github/workflows/service-artifacts.yml', event: 'workflow_dispatch', status: 'completed', conclusion: 'failure' };
   assert.throws(() => assertPublisherRun(run, manifest.producer), /complete successfully/);
   assert.doesNotThrow(() => assertPublisherRun({ ...run, conclusion: 'success' }, manifest.producer));

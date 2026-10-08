@@ -1,8 +1,11 @@
 import { pathToFileURL } from 'node:url';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { parseJson, contentHash, exact, matches, HASH, SHA, DIGEST } from './json-contract.mjs';
 import { liveObservationIo } from './observe-deployment.mjs';
-import { assertWriterWindow } from './writer-window.mjs';
+import { validateOperationInputs, selectionBinding } from './runtime-operation.mjs';
+import { loadCommittedSelection, verifySelection } from './artifact-consumer.mjs';
 
 export function verifyRetentionPolicy(policy, expectedPolicyHash) {
   exact(policy, ['rules'], 'ECR lifecycle policy');
@@ -40,16 +43,18 @@ export function verifyLifecyclePreview(preview, required) {
   if (preview.previewResults.some(result => digests.has(result.imageDigest) && result.action?.type === 'EXPIRE')) throw new Error('Selected or rollback digest would expire');
   return true;
 }
-export async function checkRetention({ required, expectedPolicyHash, io = liveObservationIo(), env = process.env }) {
-  const gate = () => assertWriterWindow({ token: env.WRITER_WINDOW_INPUT, operation: env.INFRA_OPERATION, env });
-  gate();
+export async function checkRetention({ required, expectedPolicyHash, io = liveObservationIo(), env = process.env, artifactIo }) {
+  const binding = selectionBinding(env);
+  const gate = async () => { validateOperationInputs(env); await loadCommittedSelection(binding); };
+  await gate();
+  await verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'anywear-retention-assets-')), artifactIo);
   if ((await io.aws(['sts', 'get-caller-identity'])).Account !== '650880818323') throw new Error('Unexpected retention account');
   const repository = 'beta-anywear-service';
   const policy = parseJson((await io.aws(['ecr', 'get-lifecycle-policy', '--repository-name', repository])).lifecyclePolicyText);
   const hash = verifyRetentionPolicy(policy, expectedPolicyHash);
   const images = (await io.aws(['ecr', 'describe-images', '--repository-name', repository])).imageDetails;
   const count = verifyProtectedImages(images, required);
-  gate(); await io.aws(['ecr', 'start-lifecycle-policy-preview', '--repository-name', repository]);
+  await gate(); await io.aws(['ecr', 'start-lifecycle-policy-preview', '--repository-name', repository]);
   let preview;
   for (let attempt = 0; attempt < 30; attempt++) {
     preview = await io.aws(['ecr', 'get-lifecycle-policy-preview', '--repository-name', repository]);

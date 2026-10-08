@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { parseJson, sha256, contentHash, HASH, SHA, canonicalJson, matches, integer } from './json-contract.mjs';
-import { validateSelection, verifySelection } from './artifact-consumer.mjs';
+import { validateSelection, loadCommittedSelection, verifySelection, liveArtifactIo } from './artifact-consumer.mjs';
 
 const execute = promisify(execFile);
 const INFRA = 'git-malu/AnyWear-Infra';
@@ -12,22 +12,14 @@ const E2E = 'git-malu/AnyWear-E2E';
 const SERVICE = 'git-malu/AnyWear-Service';
 const QUALIFICATION_WORKFLOW = '.github/workflows/beta-qualification.yml';
 export const PRODUCTION_WORKFLOW = '.github/workflows/production.yml';
-const api = async endpoint => parseJson((await execute('gh', ['api', endpoint], { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 })).stdout);
 
-export function validateProductionWindow(env = process.env, now = Date.now()) {
+export function validateProductionContext(env = process.env) {
   if (env.ENABLE_PROD_DEPLOY !== 'true' || env.GITHUB_REPOSITORY !== INFRA
     || env.GITHUB_REPOSITORY_ID !== '1409047265' || env.GITHUB_REF !== 'refs/heads/main'
     || env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || env.GITHUB_WORKFLOW_REF !== `${INFRA}/${PRODUCTION_WORKFLOW}@refs/heads/main`) {
     throw new Error('Protected Production activation remains closed');
   }
-  matches(env.PROD_WINDOW_SHA, SHA, 'Production source');
-  if (env.PROD_WINDOW_SHA !== env.GITHUB_SHA || env.WRITER_WINDOW_INPUT !== env.PROD_WRITER_WINDOW
-    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(env.WRITER_WINDOW_INPUT ?? '')
-    || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(env.PROD_WINDOW_EXPIRES_AT ?? '')
-    || !Number.isFinite(Date.parse(env.PROD_WINDOW_EXPIRES_AT)) || now >= Date.parse(env.PROD_WINDOW_EXPIRES_AT)) {
-    throw new Error('Production window/source/expiry mismatch');
-  }
-  matches(env.PROD_WINDOW_RECORD_URL, /^https:\/\/github\.com\/git-malu\/AnyWear\/issues\/[1-9][0-9]*#issuecomment-[1-9][0-9]*$/, 'Production release gate');
+  matches(env.GITHUB_SHA, SHA, 'Production source');
   matches(env.AWS_ACCOUNT_ID, /^[0-9]{12}$/, 'Production account');
   if (env.AWS_ACCOUNT_ID === '650880818323' || env.AWS_REGION !== 'ap-east-1') throw new Error('Production requires its separate reviewed account and ap-east-1 region');
   if (env.PROD_DEPLOY_ROLE_ARN !== `arn:aws:iam::${env.AWS_ACCOUNT_ID}:role/prod-infra-deploy-role`) {
@@ -89,7 +81,7 @@ export function assertQualifiedSelection(record, selector, env = process.env) {
     || record.service_artifacts.manifest_sha256 !== selector.release.manifest_sha256) {
     throw new Error('Qualified Infra/artifact/image selection differs from promotion');
   }
-  const expected = { sha256: env.SELECTION_SHA256, release: selector.release, publication_acceptance: selector.publication_acceptance,
+  const expected = { file: env.SELECTION_FILE, sha256: env.SELECTION_SHA256, release: selector.release,
     components: { image: selector.image, lambdas: selector.lambdas, runtime_policy: selector.runtime_policy, schema: selector.schema } };
   if (record.deployment?.record?.infra?.sha !== env.GITHUB_SHA || canonicalJson(record.deployment?.record?.selection) !== canonicalJson(expected)) {
     throw new Error('Qualified complete component selection differs from promotion');
@@ -98,10 +90,12 @@ export function assertQualifiedSelection(record, selector, env = process.env) {
 }
 
 export async function resolveProductionInputs(env = process.env, io = {}) {
-  validateProductionWindow(env);
-  const get = io.api ?? api;
-  const selector = readReviewedSelection(await (io.readFile ?? readFile)(env.SELECTION_FILE), env);
-  await (io.verifySelection ?? verifySelection)(selector, '.service-artifacts/production', undefined, { trustedInfraRoot: process.cwd(), expectedInfraSha: env.GITHUB_SHA });
+  validateProductionContext(env);
+  const binding = { trustedInfraRoot: process.cwd(), expectedInfraSha: env.GITHUB_SHA, selectionFile: env.SELECTION_FILE, selectionSha256: env.SELECTION_SHA256 };
+  const selector = await (io.loadCommittedSelection ?? loadCommittedSelection)(binding);
+  await (io.verifySelection ?? verifySelection)(binding, '.service-artifacts/production');
+  const artifactIo = io.api && io.verifyStableRelease ? undefined : await liveArtifactIo();
+  const get = io.api ?? artifactIo.api;
   const run = await get(`repos/${E2E}/actions/runs/${env.QUALIFICATION_RUN_ID}/attempts/${env.QUALIFICATION_RUN_ATTEMPT}`);
   const artifact = await get(`repos/${E2E}/actions/artifacts/${env.QUALIFICATION_ARTIFACT_ID}`);
   assertTrustedQualificationMetadata(run, artifact, env);
@@ -112,7 +106,7 @@ export async function resolveProductionInputs(env = process.env, io = {}) {
   if (commit?.type === 'tag') commit = (await get(`repos/${SERVICE}/git/tags/${commit.sha}`)).object;
   const comparison = await get(`repos/${SERVICE}/compare/${selector.image.service_sha}...main`);
   assertStableRelease(stable, commit, comparison, selector, env);
-  await (io.verifyStableRelease ?? (tag => execute('gh', ['release', 'verify', tag, '--repo', SERVICE], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })))(stable.tag_name);
+  await (io.verifyStableRelease ?? artifactIo.attestation)(stable.tag_name);
   // The download uses a separate child directory so artifact contents cannot overwrite API metadata.
   await (io.mkdir ?? mkdir)('.qualification/trusted', { recursive: true });
   const put = io.writeFile ?? writeFile;
@@ -123,7 +117,7 @@ export async function resolveProductionInputs(env = process.env, io = {}) {
 }
 
 export async function verifyProductionRecord({ recordBytes, selectorBytes, run, artifact, verifier, env = process.env, now = Date.now() }) {
-  validateProductionWindow(env, now);
+  validateProductionContext(env, now);
   const selector = readReviewedSelection(selectorBytes, env); const record = parseJson(recordBytes);
   assertTrustedQualificationMetadata(run, artifact, env, now);
   if (sha256(recordBytes) !== env.QUALIFICATION_RECORD_SHA256) throw new Error('Pinned qualification exact-byte checksum mismatch');
@@ -137,7 +131,8 @@ export async function verifyProductionRecord({ recordBytes, selectorBytes, run, 
 }
 
 export async function verifyProductionQualification(env = process.env) {
-  validateProductionWindow(env);
+  validateProductionContext(env);
+  await loadCommittedSelection({ trustedInfraRoot: process.cwd(), expectedInfraSha: env.GITHUB_SHA, selectionFile: env.SELECTION_FILE, selectionSha256: env.SELECTION_SHA256 });
   const verifierRoot = path.resolve('.qualification-verifier');
   const checkout = (await execute('git', ['-C', verifierRoot, 'rev-parse', 'HEAD'], { timeout: 30_000 })).stdout.trim();
   const origin = (await execute('git', ['-C', verifierRoot, 'remote', 'get-url', 'origin'], { timeout: 30_000 })).stdout.trim();

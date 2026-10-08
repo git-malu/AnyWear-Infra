@@ -1,14 +1,10 @@
 name: Future qualified Production promotion
 on:
   workflow_dispatch:
-    inputs:
-      writer_window:
-        required: true
-        type: string
 permissions:
   contents: read
 concurrency:
-  group: anywear-prod-infra-runtime
+  group: anywear-infra-runtime
   cancel-in-progress: false
 jobs:
   promotion:
@@ -25,11 +21,6 @@ jobs:
       CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       PROD_DEPLOY_ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
-      PROD_WRITER_WINDOW: ${{ vars.PROD_WRITER_WINDOW }}
-      WRITER_WINDOW_INPUT: ${{ inputs.writer_window }}
-      PROD_WINDOW_SHA: ${{ vars.PROD_WINDOW_SHA }}
-      PROD_WINDOW_EXPIRES_AT: ${{ vars.PROD_WINDOW_EXPIRES_AT }}
-      PROD_WINDOW_RECORD_URL: ${{ vars.PROD_WINDOW_RECORD_URL }}
       QUALIFICATION_RUN_ID: ${{ vars.PROD_QUALIFICATION_RUN_ID }}
       QUALIFICATION_RUN_ATTEMPT: ${{ vars.PROD_QUALIFICATION_RUN_ATTEMPT }}
       QUALIFICATION_ARTIFACT_ID: ${{ vars.PROD_QUALIFICATION_ARTIFACT_ID }}
@@ -38,9 +29,11 @@ jobs:
       STABLE_RELEASE_ID: ${{ vars.PROD_STABLE_RELEASE_ID }}
       SELECTION_FILE: ${{ vars.PROD_SELECTION_FILE }}
       SELECTION_SHA256: ${{ vars.PROD_SELECTION_SHA256 }}
+      GH_TELEMETRY: disabled
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -59,7 +52,8 @@ jobs:
             AnyWear-E2E
           permission-contents: read
           permission-actions: read
-      - name: Verify sealed selection, stable release and trusted Beta qualification before AWS credentials
+          permission-attestations: read
+      - name: Verify committed selection, stable release and trusted Beta qualification before AWS credentials
         id: qualified
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}

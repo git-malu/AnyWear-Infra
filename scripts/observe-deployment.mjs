@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseJson, contentHash, canonicalJson, exact, matches, SHA, sha256 } from './json-contract.mjs';
-import { verifySelection } from './artifact-consumer.mjs';
-import { runRuntimeVerification } from './verify-runtime-task.mjs';
+import { verifySelection, loadCommittedSelection } from './artifact-consumer.mjs';
+import { runRuntimeVerification, assertVerificationExecutor } from './verify-runtime-task.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration, account, region, INFRA_REPOSITORY } from './deployment-contract.mjs';
 export { validateDeploymentRecord, assertObservedMatchesDeployment } from './deployment-contract.mjs';
 const execute = promisify(execFile);
@@ -25,11 +25,14 @@ export function liveObservationIo() {
     },
   };
 }
-export async function observeDeployment({ selector, stackSources, infraSha, io = liveObservationIo(), env = process.env, artifactIo, trustedInfraRoot, expectedInfraSha = infraSha }) {
-  if (env.AWS_REGION !== region || env.AWS_ACCOUNT_ID !== account || (await io.aws(['sts', 'get-caller-identity'])).Account !== account) throw new Error('Unexpected authenticated observer account/region');
+export async function observeDeployment({ binding, stackSources, infraSha, io = liveObservationIo(), env = process.env, artifactIo }) {
   matches(infraSha, SHA, 'Observed Infra input');
+  assertVerificationExecutor(infraSha, env);
+  if (binding?.expectedInfraSha !== infraSha) throw new Error('Observation must bind the explicit reviewed Infra pin');
   if (!Array.isArray(stackSources) || stackSources.length !== 4) throw new Error('Four reviewed stack source bindings required');
-  const selected = await verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-observe-')), artifactIo, { trustedInfraRoot, expectedInfraSha });
+  const selected = await verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-observe-')), artifactIo);
+  const selector = selected.selector;
+  if (env.AWS_REGION !== region || env.AWS_ACCOUNT_ID !== account || (await io.aws(['sts', 'get-caller-identity'])).Account !== account) throw new Error('Unexpected authenticated observer account/region');
   const imageResult = await io.aws(['ecr', 'batch-get-image', '--repository-name', selector.image.repository_uri.split('/').slice(1).join('/'), '--image-ids', `imageDigest=${selector.image.digest}`]);
   if (imageResult.failures?.length || imageResult.images?.length !== 1 || imageResult.images[0].imageId?.imageDigest !== selector.image.digest) throw new Error('Exact selected OCI manifest unavailable');
   const imageManifestPath = path.join(selected.directory, 'selected-image-manifest.json');
@@ -111,19 +114,24 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let expected; let selector; let stackSources; let infraSha;
   if (process.argv.includes('--expected')) {
     expected = validateDeploymentRecord(parseJson(await readFile(option('--expected'))));
-    selector = { schema_version: 1, record_type: 'anywear_infra_selection', release: expected.selection.release, publication_acceptance: expected.selection.publication_acceptance, ...expected.selection.components };
+    selector = { schema_version: 2, record_type: 'anywear_infra_selection', release: expected.selection.release, ...expected.selection.components };
     stackSources = expected.stacks.map(({ template_sha256, ...source }) => source); infraSha = expected.infra.sha;
   } else {
-    selector = parseJson(await readFile(option('--selection'))); stackSources = parseJson(await readFile(option('--stack-sources'))); infraSha = process.env.GITHUB_SHA;
+    stackSources = parseJson(await readFile(option('--stack-sources'))); infraSha = process.env.GITHUB_SHA;
   }
   if (!process.argv.includes('--trusted-infra-root') || !process.argv.includes('--infra-sha') || option('--infra-sha') !== infraSha) throw new Error('Explicit trusted Infra root and matching immutable SHA required');
-  const snapshot = await observeDeployment({ selector, stackSources, infraSha, trustedInfraRoot: path.resolve(option('--trusted-infra-root')), expectedInfraSha: option('--infra-sha') });
+  if (!process.argv.includes('--selection') || !process.argv.includes('--selection-sha256')) throw new Error('Explicit committed selection path/hash required');
+  const binding = { trustedInfraRoot: path.resolve(option('--trusted-infra-root')), expectedInfraSha: option('--infra-sha'), selectionFile: option('--selection'), selectionSha256: option('--selection-sha256') };
+  const committed = await loadCommittedSelection(binding);
+  if (expected && (expected.selection.file !== binding.selectionFile || expected.selection.sha256 !== binding.selectionSha256 || canonicalJson(selector) !== canonicalJson(committed))) throw new Error('Expected deployment selects different committed bytes');
+  selector = committed;
+  const snapshot = await observeDeployment({ binding, stackSources, infraSha });
   if (expected) { assertObservedMatchesDeployment(expected, snapshot); await writeFile(option('--output'), `${JSON.stringify(snapshot, null, 2)}\n`); }
   else {
-    const { image, lambdas, runtime_policy, schema, release, publication_acceptance } = selector;
-    const record = { schema_version: 1, record_type: 'anywear_infra_deployment', infra: { repository: INFRA_REPOSITORY, sha: infraSha,
+    const { image, lambdas, runtime_policy, schema, release } = selector;
+    const record = { schema_version: 2, record_type: 'anywear_infra_deployment', infra: { repository: INFRA_REPOSITORY, sha: infraSha,
       workflow_path: '.github/workflows/runtime.yml', workflow_ref: process.env.GITHUB_WORKFLOW_REF, run_id: Number(process.env.GITHUB_RUN_ID), run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT) },
-      selection: { sha256: contentHash(selector), release, publication_acceptance, components: { image, lambdas, runtime_policy, schema } }, ...snapshot };
+      selection: { file: binding.selectionFile, sha256: binding.selectionSha256, release, components: { image, lambdas, runtime_policy, schema } }, ...snapshot };
     validateDeploymentRecord(record); await writeFile(option('--output'), `${JSON.stringify(record, null, 2)}\n`);
   }
 }

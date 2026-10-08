@@ -13,34 +13,41 @@ infrastructure authority.
 - Service owns application/Lambda/migration/verification source and immutable
   artifacts. Do not generate the shared API or read mutable peer `main` as a
   deployment input. Client publishes independently through deployed interfaces.
-- Verify Service artifacts with GitHub's native signed immutable-release
-  statement and a reviewed publication acceptance receipt committed in Infra.
-  Bind the full release commit, every asset ID/hash, original publication bytes
-  and exact completed-success publisher run/attempt. The native signature does
-  not contain workflow/run identity; that binding requires independent review.
-  A candidate or issue-comment URL alone does not authorize acceptance.
-  Service owns the shared parser/fixture; keep its full pin and file hashes in
-  `scripts/vendor/provenance.json` when updating those inputs.
-- Pass an explicit `trustedInfraRoot` and `expectedInfraSha` to artifact
-  verification. Runtime uses reviewed main at the manager window's exact SHA;
-  E2E uses its reviewed `compatibility.infra` pin and `.infra-source` checkout.
-  Require the trusted checkout's exact Infra origin/full SHA and clean tracked/
-  untracked state. Verify the receipt is a regular tracked blob with no path
-  links and its raw-byte hash matches the selector and committed bytes.
-  A vendored verifier directory is not a trust root.
+- Commit one canonical v2 selection with full component source, release/asset
+  identities and hashes. Ordinary runtime verifies the immutable Service release,
+  direct tag/source, API sizes/digests, downloaded bytes and all components before
+  AWS credentials. Preserve one complete native v0.1/v0.2 signed statement across
+  release verification plus all five asset checks. Independently require exact
+  completed-success publisher repository/workflow/main/source/run/attempt and
+  both repository/head-repository owner identities before and after verification.
+  Keep Service's shared parser/fixture full pin and hashes in
+  `scripts/vendor/provenance.json`. Historical v1 records remain evidence only.
+- Pass explicit `trustedInfraRoot`, `expectedInfraSha`, relative `selectionFile`
+  and raw `selectionSha256`. Runtime uses exact reviewed main; E2E uses reviewed
+  `compatibility.infra` and its actual `.infra-source` checkout. Require trusted
+  Infra origin/full HEAD, clean tracked/untracked source, no replacement refs or
+  hidden-index masking, a regular tracked selection without path links, and bytes
+  equal to the committed canonical blob/hash. Vendored code is not a trust root.
+  No publication ZIP, candidate/receipt, issue URL, token or expiry ceremony is a
+  runtime prerequisite. Sanitized CLI children fix `GH_TELEMETRY=disabled`.
 - Do not claim repository branch protection when the private plan cannot enforce
   it. The configured Beta environment restricts the branch to main. Apply the
-  manager's independently reviewed exact SHA/input gates and operational freeze
+  independently reviewed exact source/inputs and operational coordination
   with one writer; these are distinct from repository branch protection.
 - Use `gh` for GitHub and `aws` for AWS. Verify account, profile and region before
   cloud commands. Run package/build commands here, never in the shell root.
-- Before AWS mutations, verify the manager-recorded writer window, exact Infra
-  source/ref, expiry, operation, selector hash, identity phase, retention setting,
-  reviewed per-stack sources and rollback inputs. Enumerate in-flight Actions,
-  local processes, CloudFormation operations and ECS/helper tasks; timeout does
-  not establish cessation. Repo-local Actions concurrency is not a cross-repo lock.
+- Before AWS mutations, verify protected main/workflow, explicit operation,
+  account/region, committed selection/hash, identity phase, retention protection,
+  reviewed stack source/hash and rollback inputs. Use one Infra runtime queue.
+  Enumerate conflicting Actions, local processes, CloudFormation operations and
+  ECS/helper tasks; timeout does not establish cessation. Repository concurrency
+  is not a cross-repository lock; migration rollout stays separately coordinated.
+- Maintenance deploys preserve both observed Platform and Workload activity.
+  Unknown/mixed state fails with concrete evidence. Stop failures never implicitly
+  start stacks or reopen admission; preserve actual state and select start
+  separately. Requested flags do not prove stopped state after CFN rollback.
 - Use `runtime.yml` for ordinary Beta operations. Initial `appScope=foundation`
-  bootstrap is a separately assigned operator window and needs no Service
+  bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
 - Every CLI scope requires explicit `legacyRoleOwnership=managed|external`.
@@ -57,7 +64,7 @@ infrastructure authority.
   `AnyWearBetaPipelineBaseline`, before retirement; synth alone cannot prove IAM.
 - `identityPhase=legacy` and `retentionProtection=false` preserve the source
   baseline by default. Role additions, retention activation and old-role
-  retirement require separate reviewed diffs/windows. Initial cutover keeps the
+  retirement require separate reviewed diffs/operations. Initial cutover keeps the
   live image, Client, Lambda bytes, runtime policy, endpoints and schema behavior.
 - Production activation/onboarding remains outside #54. Keep its deployment and
   readiness gates disabled; its source blocker must fail before AWS credentials

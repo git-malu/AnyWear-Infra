@@ -13,8 +13,7 @@ const { selector, manifest, schema } = await createTestInputs(await mkdtemp(path
 const sha = '5'.repeat(40);
 const env = { GITHUB_SHA: sha, GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1',
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
-  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', OBSERVATION_WRITER_WINDOW: 'window-54-1', OBSERVATION_WINDOW_SHA: sha,
-  OBSERVATION_WINDOW_RECORD_URL: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-6041978451', OBSERVATION_WINDOW_EXPIRES_AT: '2099-01-01T00:00:00Z' };
+  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1' };
 const outputs = Object.fromEntries(['PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn', 'OneShotExecutionRoleArn',
   'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName', 'WardrobeBucketName'].map(key => [key, key]));
 Object.assign(outputs, { EcsClusterName: 'beta-anywear', BetaActive: 'true' });

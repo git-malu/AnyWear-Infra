@@ -1,12 +1,21 @@
 import { readFile } from 'node:fs/promises';
-import { sha256, parseJson, exact, canonicalJson } from './json-contract.mjs';
+import { sha256, parseJson, exact, canonicalJson, matches, SHA, integer } from './json-contract.mjs';
 import { assertSchemaCompatibility } from './vendor/service-artifact-contract.mjs';
-import { assertWriterWindow } from './writer-window.mjs';
 import { INFRA_REPOSITORY, region } from './deployment-contract.mjs';
 
+export function assertVerificationExecutor(infraSha, env = process.env) {
+  matches(infraSha, SHA, 'reviewed verification Infra source'); matches(env.GITHUB_SHA, SHA, 'verification executor source');
+  integer(Number(env.GITHUB_RUN_ID), 'verification run'); integer(Number(env.GITHUB_RUN_ATTEMPT), 'verification attempt');
+  const paths = env.GITHUB_REPOSITORY === INFRA_REPOSITORY ? ['.github/workflows/runtime.yml']
+    : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E' ? ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml'] : [];
+  if (!paths.some(file => env.GITHUB_WORKFLOW_REF === `${env.GITHUB_REPOSITORY}/${file}@refs/heads/main`)
+    || env.GITHUB_REF !== 'refs/heads/main' || env.AWS_ACCOUNT_ID !== '650880818323' || env.AWS_REGION !== region
+    || env.GITHUB_REPOSITORY === INFRA_REPOSITORY && env.GITHUB_SHA !== infraSha) throw new Error('Protected verification executor/account/region/source required');
+}
+
 export async function runRuntimeVerification({ io, outputs, selector, manifest, schema, infraSha, env = process.env }) {
-  const window = () => assertWriterWindow({ token: env.OBSERVATION_WRITER_WINDOW, operation: 'observation', env });
-  window();
+  const check = () => assertVerificationExecutor(infraSha, env);
+  check();
   const code = await runtimeCommandBytes();
   const command = ['node', '-e', code.toString('utf8')];
   const image = `${selector.image.repository_uri}@${selector.image.digest}`;
@@ -25,13 +34,13 @@ export async function runRuntimeVerification({ io, outputs, selector, manifest, 
       name: 'OneShot', image, command, essential: true, environment,
       logConfiguration: { logDriver: 'awslogs', options: { 'awslogs-group': outputs.OneShotLogGroupName, 'awslogs-region': region, 'awslogs-stream-prefix': family } },
     }] };
-  window();
+  check();
   const registered = await io.aws(['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(definition)]);
   const taskDefinitionArn = registered.taskDefinition?.taskDefinitionArn;
   if (!/^arn:aws:ecs:ap-east-1:650880818323:task-definition\/beta-anywear-artifact-verify:[1-9][0-9]*$/.test(taskDefinitionArn ?? '')) throw new Error('Verification task definition unproven');
   let taskArn;
   try {
-    window();
+    check();
     const started = await io.aws(['ecs', 'run-task', '--cluster', 'beta-anywear', '--launch-type', 'FARGATE', '--task-definition', taskDefinitionArn,
       '--network-configuration', JSON.stringify({ awsvpcConfiguration: { subnets: outputs.PrivateSubnetIds.split(','), securityGroups: [outputs.OneShotSecurityGroupId], assignPublicIp: 'DISABLED' } }),
       '--started-by', `infra-verify-${env.GITHUB_RUN_ID}-${env.GITHUB_RUN_ATTEMPT}`]);
@@ -76,7 +85,7 @@ export async function runRuntimeVerification({ io, outputs, selector, manifest, 
     // only follows authenticated STOPPED readback and never kills another task.
     if (taskArn) {
       const actual = await io.aws(['ecs', 'describe-tasks', '--cluster', 'beta-anywear', '--tasks', taskArn]);
-      if (actual.tasks?.[0]?.lastStatus === 'STOPPED') { window(); await io.aws(['ecs', 'deregister-task-definition', '--task-definition', taskDefinitionArn]); }
+      if (actual.tasks?.[0]?.lastStatus === 'STOPPED') { check(); await io.aws(['ecs', 'deregister-task-definition', '--task-definition', taskDefinitionArn]); }
     }
   }
 }

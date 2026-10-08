@@ -1,13 +1,6 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import path from 'node:path';
-import { enforceBetaPlatformLogRetention } from './beta-platform-log-retention.mjs';
-
-const exec = promisify(execFile);
+import { pathToFileURL } from 'node:url';
 const platformStack = 'AnyWearPlatformStack-beta';
 const workloadStack = 'AnyWearWorkloadStack-beta';
-const sleep = (milliseconds) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
 
 function values(entries, nameKey, valueKey) {
   return Object.fromEntries((entries ?? []).map((entry) => [entry[nameKey], entry[valueKey]]));
@@ -96,8 +89,9 @@ export async function runBetaLifecycle(action, io) {
   const workloadOutputs = values(workload.Outputs, 'OutputKey', 'OutputValue');
   const cluster = output.EcsClusterName;
   if (cluster !== 'beta-anywear') throw new Error('Refusing lifecycle changes outside beta-anywear');
-  const active = workloadOutputs.BetaActive !== 'false';
-  const platformActive = output.BetaActive !== 'false';
+  if (![output.BetaActive, workloadOutputs.BetaActive].every(value => ['true', 'false'].includes(value))) throw new Error('Both Beta activity states must be observed');
+  const active = workloadOutputs.BetaActive === 'true';
+  const platformActive = output.BetaActive === 'true';
   const oneShot = (command) => io.oneShot('lifecycle', revision, command);
   const deploy = (stack, enabled) => io.deploy(stack, enabled, revision);
   const healthy = async () => {
@@ -131,90 +125,45 @@ export async function runBetaLifecycle(action, io) {
     return;
   }
 
-  if (!active && !platformActive) return;
+  const observe = async () => {
+    const state = {};
+    for (const [key, name] of [['platform', platformStack], ['workload', workloadStack]]) {
+      try {
+        const stack = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', name])).Stacks?.[0];
+        state[`${key}_active`] = values(stack?.Outputs, 'OutputKey', 'OutputValue').BetaActive ?? 'unavailable';
+        state[`${key}_status`] = stack?.StackStatus ?? 'unavailable';
+      } catch { state[`${key}_active`] = 'unavailable'; state[`${key}_status`] = 'unavailable'; }
+    }
+    try { state.admission_suspended = await readAdmissionSuspension('readback'); }
+    catch { state.admission_suspended = 'unavailable'; }
+    io.recordLifecycleState?.(state);
+    return state;
+  };
+  const fail = async error => {
+    const observed = await observe();
+    io.recordRecovery?.('requires-explicit-start');
+    throw new Error(`Beta shutdown failed; observed Platform=${observed.platform_active} (${observed.platform_status}), Workload=${observed.workload_active} (${observed.workload_status}), admission_suspended=${observed.admission_suspended}; select start separately after review`, { cause: error });
+  };
   if (!active || !platformActive) {
-    throw new Error('Beta is partially stopped; run start to restore a consistent state before stopping');
+    if (active !== platformActive) return fail(new Error('Beta is partially stopped'));
+    const observed = await observe();
+    if (observed.platform_active !== 'false' || observed.workload_active !== 'false' || observed.admission_suspended !== 'true') return fail(new Error('Stopped Beta admission is not proven closed'));
+    return;
   }
-  const priorSuspension = await readAdmissionSuspension('stopping');
-  let infrastructureChanged = false;
+  await readAdmissionSuspension('stopping');
   try {
     await oneShot('close');
     await oneShot('drain');
     await waitForTasks(io, cluster, { servicesAllowed: true });
-    infrastructureChanged = true;
     await deploy(workloadStack, false);
     await waitForTasks(io, cluster, { servicesAllowed: false });
     await deploy(platformStack, false);
-  } catch (error) {
-    io.recordRecovery?.('began');
-    try {
-      if (infrastructureChanged) {
-        await deploy(platformStack, true);
-        await deploy(workloadStack, true);
-        await healthy();
-      }
-      await oneShot(priorSuspension === 'true' ? 'close' : 'open');
-      io.recordRecovery?.('succeeded');
-    } catch (recoveryError) {
-      io.recordRecovery?.('failed');
-      throw new AggregateError(
-        [error, recoveryError],
-        'Beta shutdown and recovery failed; intake remains closed',
-        { cause: recoveryError },
-      );
-    }
-    throw new Error(priorSuspension === 'true'
-      ? 'Beta shutdown aborted; prior admission suspension restored and runtime remains active'
-      : 'Beta shutdown aborted; intake restored and runtime remains active', { cause: error });
-  }
-}
-
-export function liveIo(options = {}) {
-  const execute = options.exec ?? exec;
-  const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-  const io = {
-    region: process.env.AWS_REGION ?? 'ap-east-1',
-    now: Date.now,
-    sleep,
-    async aws(args) {
-      const { stdout } = await execute('aws', [...args, '--output', 'json'], { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 });
-      return stdout.trim() ? JSON.parse(stdout) : {};
-    },
-    async oneShot(role, revision, argument = '') {
-      const { stdout, stderr } = await execute('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role,
-        revision.digest, revision.commit, argument], { cwd: serviceRoot, maxBuffer: 10 * 1024 * 1024 });
-      process.stdout.write(stdout);
-      process.stderr.write(stderr);
-    },
-    async deploy(stack, active, revision) {
-      const parameters = stack === workloadStack ? Object.entries(revision.parameters)
-        .filter(([key]) => ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key))
-        .flatMap(([key, value]) => ['--parameters', `${key}=${value}`]) : [];
-      const { stdout, stderr } = await execute('npx', ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
-        '-c', 'stage=beta', '-c', `betaActive=${active}`, ...parameters], {
-        cwd: path.join(serviceRoot, 'infra'), maxBuffer: 20 * 1024 * 1024,
-      });
-      process.stdout.write(stdout);
-      process.stderr.write(stderr);
-      if (stack === platformStack) console.log(JSON.stringify(await enforceBetaPlatformLogRetention(io)));
-    },
-    async verifyHealth(url, revision) {
-      if (!/^https:\/\/[^/]+\.cloudfront\.net$/.test(url ?? '')) throw new Error('Expected the stable Beta CloudFront HTTPS URL');
-      const deadline = Date.now() + 600_000;
-      while (Date.now() < deadline) {
-        try {
-          const response = await globalThis.fetch(`${url}/health`, { signal: globalThis.AbortSignal.timeout(15_000) });
-          const body = await response.json();
-          if (response.ok && body.service_commit === revision.commit && body.image_digest === revision.digest) return;
-        } catch { /* CloudFront origin propagation can lag ECS readiness. */ }
-        await sleep(10_000);
-      }
-      throw new Error('Beta CloudFront health did not match the pinned revision within ten minutes');
-    },
-  };
-  return io;
+    const observed = await observe();
+    if (observed.platform_active !== 'false' || observed.workload_active !== 'false'
+      || observed.admission_suspended !== 'true') throw new Error('Stop readback does not prove both stacks stopped with admission closed');
+  } catch (error) { await fail(error); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  throw new Error('Use scripts/runtime-operation.mjs with a recorded Infra writer window');
+  throw new Error('Use scripts/runtime-operation.mjs with the committed selection');
 }

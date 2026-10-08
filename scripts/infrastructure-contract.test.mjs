@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { parseJson, canonicalJson, contentHash, sha256 } from './json-contract.mjs';
@@ -8,25 +8,33 @@ import { createTestInputs } from './create-test-inputs.mjs';
 import { validateSelection, verifySelection } from './artifact-consumer.mjs';
 import { assertNativeReleaseAttestation } from './vendor/service-release-attestation.mjs';
 import { validateDeploymentRecord, assertObservedMatchesDeployment, stableLambdaConfiguration } from './deployment-contract.mjs';
-import { assertWriterWindow } from './writer-window.mjs';
-import { validateOperationInputs } from './runtime-operation.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { validateOperationInputs, betaDeploymentActivity } from './runtime-operation.mjs';
 import { verifyRetentionPolicy, verifyProtectedImages, verifyLifecyclePreview } from './ecr-retention.mjs';
 
 const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-contract-'));
 const { selector, manifest } = await createTestInputs(fixtureDirectory);
 const sha = '5'.repeat(40);
+const sourceRoot = await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-trusted-contract-'));
+const execute = promisify(execFile);
+const git = async args => (await execute('git', ['-C', sourceRoot, ...args])).stdout.trim();
+await git(['init', '--quiet']); await git(['config', 'core.autocrlf', 'false']);
+await git(['config', 'user.name', 'Contract fixture']); await git(['config', 'user.email', 'fixture@invalid.local']);
+await git(['remote', 'add', 'origin', 'https://github.com/git-malu/AnyWear-Infra.git']);
+await mkdir(path.join(sourceRoot, 'selections')); await writeFile(path.join(sourceRoot, 'selections/beta.json'), canonicalJson(selector));
+await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
+const binding = { trustedInfraRoot: sourceRoot, expectedInfraSha: await git(['rev-parse', 'HEAD']), selectionFile: 'selections/beta.json', selectionSha256: contentHash(selector) };
 const env = { AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', GITHUB_SHA: sha, GITHUB_REF: 'refs/heads/main',
   GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', ENABLE_BETA_DEPLOY: 'true',
-  INFRA_WRITER_WINDOW: 'window-54-1', WRITER_WINDOW_INPUT: 'window-54-1', INFRA_WINDOW_SHA: sha,
-  INFRA_WINDOW_EXPIRES_AT: '2099-01-01T00:00:00Z', INFRA_WINDOW_RECORD_URL: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-6041978451',
-  INFRA_WINDOW_OPERATION: 'observe', INFRA_OPERATION: 'observe', IDENTITY_PHASE_INPUT: 'legacy', INFRA_IDENTITY_PHASE: 'legacy',
-  INFRA_RETENTION_PROTECTION: 'false', RETENTION_PROTECTION_INPUT: 'false', SELECTION_FILE: 'selections/beta.json',
-  SELECTION_SHA256: contentHash(selector), INFRA_WINDOW_SELECTION_SHA256: contentHash(selector) };
+  GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
+  INFRA_OPERATION: 'observe', INFRA_IDENTITY_PHASE: 'legacy', INFRA_RETENTION_PROTECTION: 'false',
+  SELECTION_FILE: binding.selectionFile, SELECTION_SHA256: binding.selectionSha256 };
 const fixtureRecord = () => {
   const migrations = [{ id: '2'.repeat(64), created_at: 1000 }];
-  return { schema_version: 1, record_type: 'anywear_infra_deployment', infra: { repository: 'git-malu/AnyWear-Infra', sha,
+  return { schema_version: 2, record_type: 'anywear_infra_deployment', infra: { repository: 'git-malu/AnyWear-Infra', sha,
     workflow_path: '.github/workflows/runtime.yml', workflow_ref: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main', run_id: 23, run_attempt: 1 },
-    selection: { sha256: contentHash(selector), release: selector.release, publication_acceptance: selector.publication_acceptance, components: manifest.components },
+    selection: { file: binding.selectionFile, sha256: contentHash(selector), release: selector.release, components: manifest.components },
     stacks: ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta', 'AnyWearBillingStack-beta'].map(stack_name => ({ stack_name,
       region: stack_name.includes('Billing') ? 'us-east-1' : 'ap-east-1', source_repository: 'git-malu/AnyWear-Service', source_sha: '1'.repeat(40), template_sha256: 'a'.repeat(64) })),
     observed: { service_sha: selector.image.service_sha, image_digest: selector.image.digest,
@@ -61,18 +69,6 @@ test('selection rejects unknown nested fields, traversal and duplicate assets', 
     const value = structuredClone(selector); mutate(value); assert.throws(() => validateSelection(value));
   }
 });
-test('publisher run must finish success; release published event is insufficient', async () => {
-  const ids = new Map([[1, 'service-artifacts.json'], [2, 'pre-sign-up.zip'], [3, 'post-confirmation.zip'], [4, 'runtime-policy.json'], [5, 'service-schema.json']]);
-  const io = { async api(endpoint) {
-    if (endpoint.includes('/releases/')) return { id: 1, immutable: true, draft: false, tag_name: `service-artifacts-${selector.image.service_sha}`,
-      assets: [...ids].map(([id, name]) => ({ id, name, state: 'uploaded' })) };
-    if (endpoint.includes('/git/ref/')) return { object: { type: 'commit', sha: selector.image.service_sha } };
-    return { id: 1, run_attempt: 1, head_sha: manifest.producer.workflow_sha, head_branch: 'main', path: '.github/workflows/service-artifacts.yml',
-      repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072 } }, head_repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323 },
-      event: 'workflow_dispatch', status: 'in_progress', conclusion: null };
-  }, async asset(repo, id) { return readFile(path.join(fixtureDirectory, ids.get(id))); }, async attestation() { assert.fail('Early release must not reach attestation'); } };
-  await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')), io), /complete successfully/);
-});
 function nativeFixture(predicateType = 'https://in-toto.io/attestation/release/v0.1') {
   const tag = `service-artifacts-${selector.image.service_sha}`; const purl = `pkg:github/git-malu/AnyWear-Service@${tag}`;
   const hashes = { 'service-artifacts.json': selector.release.manifest_sha256, ...Object.fromEntries([...Object.values(selector.lambdas), selector.runtime_policy, selector.schema].map(item => [item.file, item.sha256])) };
@@ -89,14 +85,14 @@ function selectedArtifactIo(native, conclusion = 'success') {
   const nativeChecks = [];
   return { nativeChecks, async api(endpoint) {
     if (endpoint.includes('/releases/')) return { id: 1, immutable: true, draft: false, tag_name: `service-artifacts-${selector.image.service_sha}`,
-      assets: [...ids].map(([id, name]) => ({ id, name, state: 'uploaded' })) };
+      target_commitish: selector.image.service_sha,
+      assets: await Promise.all([...ids].map(async ([id, name]) => { const bytes = await readFile(path.join(fixtureDirectory, name)); return { id, name, state: 'uploaded', size: bytes.length, digest: `sha256:${sha256(bytes)}` }; })) };
     if (endpoint.includes('/git/ref/')) return { object: { type: 'commit', sha: selector.image.service_sha } };
     return { id: 1, run_attempt: 1, head_sha: manifest.producer.workflow_sha, head_branch: 'main', path: '.github/workflows/service-artifacts.yml',
-      repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072 } }, head_repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323 },
+      repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072, login: 'git-malu' } }, head_repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072, login: 'git-malu' } },
       event: 'workflow_dispatch', status: 'completed', conclusion };
   }, async asset(repo, id) { return readFile(path.join(fixtureDirectory, ids.get(id))); },
-  async attestation(tag, file) { nativeChecks.push(file ? path.basename(file) : 'release'); return native; },
-  async loadPublicationAcceptance() { return {}; } };
+  async attestation(tag, file) { nativeChecks.push(file ? path.basename(file) : 'release'); return native; } };
 }
 
 for (const predicateType of ['https://in-toto.io/attestation/release/v0.1', 'https://in-toto.io/attestation/release/v0.2']) {
@@ -104,13 +100,13 @@ for (const predicateType of ['https://in-toto.io/attestation/release/v0.1', 'htt
     const native = nativeFixture(predicateType);
     const original = canonicalJson(native);
     const io = selectedArtifactIo(native);
-    const result = await verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')), io);
+    const result = await verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')), io);
     assert.equal(result.schema.minimum_version, 16);
-    assert.deepEqual(io.nativeChecks, ['release', 'service-artifacts.json', 'pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json', 'service-schema.json']);
+    assert.deepEqual(io.nativeChecks, ['release', 'service-artifacts.json', 'post-confirmation.zip', 'pre-sign-up.zip', 'runtime-policy.json', 'service-schema.json']);
     assert.equal(canonicalJson(native), original, 'Consumer must preserve the original native statement/envelope');
     const bytes = await readFile(path.join(fixtureDirectory, 'pre-sign-up.zip'));
-    await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')),
-      { ...io, async asset(repo, id) { return id === 2 ? Buffer.concat([bytes, Buffer.from('tamper')]) : io.asset(repo, id); } }), /Asset bytes differ/);
+    await assert.rejects(verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')),
+      { ...io, async asset(repo, id) { return id === 2 ? Buffer.concat([bytes, Buffer.from('tamper')]) : io.asset(repo, id); } }), /Downloaded asset size\/hash differs/);
   });
 
   test(`${predicateType} consumer rejects a different policy-valid signed statement for each of the five assets`, async () => {
@@ -124,7 +120,7 @@ for (const predicateType of ['https://in-toto.io/attestation/release/v0.1', 'htt
     assertNativeReleaseAttestation(native, expected); assertNativeReleaseAttestation(altered, expected);
     for (const mismatch of ['service-artifacts.json', 'pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json', 'service-schema.json']) {
       const io = selectedArtifactIo(native);
-      await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-mixed-native-')),
+      await assert.rejects(verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-mixed-native-')),
         { ...io, async attestation(tag, file) { return file && path.basename(file) === mismatch ? altered : native; } }),
         /different native statement/, mismatch);
     }
@@ -137,22 +133,28 @@ for (const predicateType of ['https://in-toto.io/attestation/release/v0.1', 'htt
         ...Object.fromEntries([...Object.values(selector.lambdas), selector.runtime_policy, selector.schema].map(item => [item.file, item.sha256])) } };
     assertNativeReleaseAttestation(native, expected);
     const io = selectedArtifactIo(native, 'failure');
-    await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-failed-publisher-')), io), /complete successfully/);
-    assert.deepEqual(io.nativeChecks, [], 'Reject failed producer before any native or receipt acceptance');
+    await assert.rejects(verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-failed-publisher-')), io), /complete successfully/);
+    assert.deepEqual(io.nativeChecks, [], 'Reject failed producer before any native verification');
   });
 }
 
-test('writer source/ref/window/expiry/operation/artifact and retention phase bind before credentials', () => {
+test('operation main workflow/account/region/selection/identity/retention bind before credentials', () => {
   validateOperationInputs(env);
-  for (const patch of [{ INFRA_WINDOW_SHA: '0'.repeat(40) }, { GITHUB_REF: 'refs/heads/branch' }, { INFRA_OPERATION: 'stop' },
-    { WRITER_WINDOW_INPUT: 'other-54' }, { ENABLE_BETA_DEPLOY: 'false' }, { INFRA_WINDOW_EXPIRES_AT: '2000-01-01' },
-    { INFRA_RETENTION_PROTECTION: 'true' }, { SELECTION_FILE: '../beta.json' }, { INFRA_WINDOW_SELECTION_SHA256: '0'.repeat(64) }]) assert.throws(() => validateOperationInputs({ ...env, ...patch }));
-  assert.throws(() => assertWriterWindow({ token: 'window-54-1', operation: 'observe', env, now: Date.parse('2100-01-01') }));
+  for (const patch of [{ GITHUB_SHA: 'short' }, { GITHUB_REF: 'refs/heads/branch' }, { INFRA_OPERATION: 'unknown' },
+    { GITHUB_EVENT_NAME: 'push' }, { GITHUB_WORKFLOW_REF: 'other' }, { ENABLE_BETA_DEPLOY: 'false' }, { AWS_REGION: 'us-east-1' },
+    { INFRA_IDENTITY_PHASE: undefined }, { INFRA_RETENTION_PROTECTION: undefined }, { SELECTION_FILE: '../beta.json' }, { SELECTION_SHA256: 'short' }]) assert.throws(() => validateOperationInputs({ ...env, ...patch }));
+});
+test('maintenance deployment preserves both stopped stacks and rejects either mixed or unknown state', () => {
+  const stack = value => ({ Outputs: [{ OutputKey: 'BetaActive', OutputValue: value }] });
+  assert.equal(betaDeploymentActivity(stack('false'), stack('false')), false);
+  assert.equal(betaDeploymentActivity(stack('true'), stack('true')), true);
+  for (const [platform, workload] of [['true', 'false'], ['false', 'true']]) assert.throws(() => betaDeploymentActivity(stack(platform), stack(workload)), new RegExp(`Platform=${platform}, Workload=${workload}`));
+  assert.throws(() => betaDeploymentActivity(stack(undefined), stack('false')), /Both/);
 });
 test('deployment strict binding rejects legacy, undeclared artifact and template/code/schema drift', () => {
   const record = recordWithIds(); validateDeploymentRecord(record);
   const snapshot = { stacks: record.stacks, observed: record.observed, schema: record.schema }; assertObservedMatchesDeployment(record, snapshot);
-  for (const mutate of [r => r.schema_version = 2, r => r.selection.components.image.extra = 1,
+  for (const mutate of [r => r.schema_version = 1, r => r.selection.components.image.extra = 1,
     r => r.observed.lambdas['pre-sign-up'].code_sha256 = Buffer.alloc(32).toString('base64'),
     r => r.schema.applied_migration_ids[0].id = '0'.repeat(64), r => r.schema.applied_schema_version = 15,
     r => r.infra.workflow_path = '.github/workflows/other.yml']) {
@@ -194,4 +196,38 @@ test('protected retention priority+count bound+authenticated preview fail closed
   assert.throws(() => verifyProtectedImages(Array.from({ length: 257 }, (_, i) => ({ imageDigest: `sha256:${sha256(String(i))}`, imageTags: ['protected-service-source'] })), required));
   assert.throws(() => verifyLifecyclePreview({ status: 'COMPLETE', previewResults: [{ imageDigest: selector.image.digest, action: { type: 'EXPIRE' } }] }, required));
   assert.throws(() => verifyRetentionPolicy({ rules: [policy.rules[1]] }));
+});
+
+test('direct verification rejects publisher repository/owner/fork/source identity before native reads and rechecks producer at completion', async () => {
+  const native = nativeFixture();
+  for (const after of [false, true]) {
+    for (const mutate of [run => run.repository.owner.login = 'other', run => run.head_repository.owner.id = 1,
+      run => run.head_repository.full_name = 'fork/AnyWear-Service', run => run.head_sha = '9'.repeat(40),
+      run => run.run_attempt++, run => run.conclusion = 'failure']) {
+      const base = selectedArtifactIo(native); let reads = 0;
+      const io = { ...base, async api(endpoint) {
+        const value = await base.api(endpoint);
+        if (endpoint.includes('/actions/runs/') && ++reads === (after ? 2 : 1)) mutate(value);
+        return value;
+      } };
+      await assert.rejects(verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'infra-producer-negative-')), io), /complete successfully/);
+      assert.equal(base.nativeChecks.length, after ? 6 : 0);
+    }
+  }
+});
+test('direct verification rejects release target, API asset sizes/digests and end-of-verification release drift', async () => {
+  for (const [mutation, expected] of [
+    [release => release.target_commitish = '9'.repeat(40), /source binding/],
+    [release => release.assets[0].size++, /Downloaded asset size/],
+    [release => release.assets[0].digest = `sha256:${'9'.repeat(64)}`, /API digest/],
+    [release => release.assets[0].size = 0, /asset API size/]]) {
+    const base = selectedArtifactIo(nativeFixture());
+    await assert.rejects(verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'infra-release-negative-')), {
+      ...base, async api(endpoint) { const value = await base.api(endpoint); if (endpoint.includes('/releases/')) mutation(value); return value; },
+    }), expected);
+  }
+  const base = selectedArtifactIo(nativeFixture()); let releases = 0;
+  await assert.rejects(verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'infra-release-drift-')), {
+    ...base, async api(endpoint) { const value = await base.api(endpoint); if (endpoint.includes('/releases/') && ++releases === 2) value.assets[0].size++; return value; },
+  }), /identity changed/);
 });
