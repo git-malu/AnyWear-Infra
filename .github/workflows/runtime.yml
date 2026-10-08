@@ -1,5 +1,5 @@
 name: Reviewed Beta infrastructure operation
-run-name: Beta ${{ inputs.operation }} · ${{ inputs.writer_window }}
+run-name: Beta ${{ inputs.operation }} · ${{ github.sha }}
 on:
   workflow_dispatch:
     inputs:
@@ -7,11 +7,9 @@ on:
         type: choice
         options: [deploy-foundation, deploy-billing, deploy-platform, deploy-workload, migrate, verify, start, stop, observe, tester-status, tester-add, tester-replace]
         required: true
-      writer_window:
-        type: string
-        required: true
       selection_file:
-        description: Reviewed canonical selector path in this Infra revision
+        description: Committed canonical selection in this Infra revision
+        default: selections/beta-baseline.json
         type: string
         required: true
       selection_sha256:
@@ -29,14 +27,18 @@ on:
         description: Reviewed per-stack producer source JSON path
         type: string
         required: true
+      stack_sources_sha256:
+        description: Exact raw hash of the reviewed stack source file
+        type: string
+        required: true
       tester_emails:
-        description: Exact email JSON array; bound to the manager window after normalization
+        description: Explicit email JSON array, normalized before execution
         type: string
         default: '[]'
 permissions:
   contents: read
 concurrency:
-  group: anywear-beta-infra-runtime
+  group: anywear-infra-runtime
   cancel-in-progress: false
 jobs:
   operation:
@@ -56,41 +58,29 @@ jobs:
       BILLING_REGION: us-east-1
       ENABLE_BETA_DEPLOY: ${{ vars.ENABLE_BETA_DEPLOY }}
       INFRA_OPERATION: ${{ inputs.operation }}
-      WRITER_WINDOW_INPUT: ${{ inputs.writer_window }}
-      INFRA_WRITER_WINDOW: ${{ vars.INFRA_WRITER_WINDOW }}
-      INFRA_WINDOW_SHA: ${{ vars.INFRA_WINDOW_SHA }}
-      INFRA_WINDOW_EXPIRES_AT: ${{ vars.INFRA_WINDOW_EXPIRES_AT }}
-      INFRA_WINDOW_RECORD_URL: ${{ vars.INFRA_WINDOW_RECORD_URL }}
-      INFRA_WINDOW_OPERATION: ${{ vars.INFRA_WINDOW_OPERATION }}
-      INFRA_WINDOW_TESTERS_SHA256: ${{ vars.INFRA_WINDOW_TESTERS_SHA256 }}
       TESTER_EMAILS: ${{ inputs.tester_emails }}
-      INFRA_WINDOW_SELECTION_SHA256: ${{ vars.INFRA_WINDOW_SELECTION_SHA256 }}
-      INFRA_IDENTITY_PHASE: ${{ vars.INFRA_IDENTITY_PHASE }}
-      IDENTITY_PHASE_INPUT: ${{ inputs.identity_phase }}
-      RETENTION_PROTECTION_INPUT: ${{ inputs.retention_protection }}
-      INFRA_RETENTION_PROTECTION: ${{ vars.INFRA_RETENTION_PROTECTION }}
+      INFRA_IDENTITY_PHASE: ${{ inputs.identity_phase }}
+      INFRA_RETENTION_PROTECTION: ${{ inputs.retention_protection }}
       INFRA_DEPLOY_ROLE_ARN: ${{ vars.INFRA_DEPLOY_ROLE_ARN }}
       INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
       SELECTION_FILE: ${{ inputs.selection_file }}
       SELECTION_SHA256: ${{ inputs.selection_sha256 }}
       STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
-      STACK_SOURCES_SHA256: ${{ vars.INFRA_WINDOW_STACK_SOURCES_SHA256 }}
-      OBSERVATION_WRITER_WINDOW: ${{ inputs.writer_window }}
-      OBSERVATION_WINDOW_SHA: ${{ vars.INFRA_WINDOW_SHA }}
-      OBSERVATION_WINDOW_EXPIRES_AT: ${{ vars.INFRA_WINDOW_EXPIRES_AT }}
-      OBSERVATION_WINDOW_RECORD_URL: ${{ vars.INFRA_WINDOW_RECORD_URL }}
+      STACK_SOURCES_SHA256: ${{ inputs.stack_sources_sha256 }}
+      GH_TELEMETRY: disabled
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: npm ci
-      - name: Validate exact source, stack provenance and manager window before credentials
+      - name: Validate committed source, selection and stack provenance before credentials
         run: |
           mkdir -p deployment-evidence
-          node scripts/check-window.mjs
+          node scripts/check-operation.mjs
           node scripts/check-stack-sources.mjs
       - name: Check native release verification CLI before credentials
         run: |
@@ -109,24 +99,25 @@ jobs:
           permission-actions: read
           permission-attestations: read
       - name: Execute selected operation with distinct OIDC principals
+        id: operation
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: node scripts/runtime-operation.mjs
       - name: Configure observation role
-        if: inputs.operation != 'stop'
+        if: steps.operation.outputs.beta_active == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - name: Observe final authenticated deployment
-        if: inputs.operation != 'stop'
+        if: steps.operation.outputs.beta_active == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          node scripts/check-window.mjs
-          node scripts/observe-deployment.mjs --selection "$SELECTION_FILE" --stack-sources deployment-evidence/stack-sources.json --output deployment-evidence/deployment-record.json --trusted-infra-root "$GITHUB_WORKSPACE" --infra-sha "$GITHUB_SHA"
+          node scripts/check-operation.mjs
+          node scripts/observe-deployment.mjs --selection "$SELECTION_FILE" --selection-sha256 "$SELECTION_SHA256" --stack-sources deployment-evidence/stack-sources.json --output deployment-evidence/deployment-record.json --trusted-infra-root "$GITHUB_WORKSPACE" --infra-sha "$GITHUB_SHA"
       - name: Preserve exact final deployment record
-        if: inputs.operation != 'stop'
+        if: steps.operation.outputs.beta_active == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}

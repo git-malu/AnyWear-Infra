@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
-import { validateProductionWindow, readReviewedSelection, assertTrustedQualificationMetadata, assertStableRelease,
+import { validateProductionContext, readReviewedSelection, assertTrustedQualificationMetadata, assertStableRelease,
   assertQualifiedSelection, verifyProductionRecord, resolveProductionInputs } from './production-preflight.mjs';
 import { assertProductionExecutorReady, buildProductionPromotionPlan, verifyPromotionDigest, verifyPromotionScan } from './promote-production.mjs';
 
@@ -26,8 +26,6 @@ const stable = { id: 79, tag_name: 'v1.2.3', draft: false, prerelease: false, im
 const env = { ENABLE_PROD_DEPLOY: 'true', GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
   GITHUB_SHA: infraSha, GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/production.yml@refs/heads/main',
-  PROD_WRITER_WINDOW: 'window-54-prod-1', WRITER_WINDOW_INPUT: 'window-54-prod-1', PROD_WINDOW_SHA: infraSha,
-  PROD_WINDOW_EXPIRES_AT: '2099-01-01T00:00:00Z', PROD_WINDOW_RECORD_URL: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-6041978451',
   AWS_ACCOUNT_ID: '123456789012', AWS_REGION: 'ap-east-1', PROD_DEPLOY_ROLE_ARN: 'arn:aws:iam::123456789012:role/prod-infra-deploy-role',
   QUALIFICATION_RUN_ID: '77', QUALIFICATION_RUN_ATTEMPT: '2', QUALIFICATION_ARTIFACT_ID: '78', QUALIFICATION_E2E_SHA: e2eSha,
   QUALIFICATION_RECORD_SHA256: '7'.repeat(64), STABLE_RELEASE_ID: '79', SELECTION_FILE: 'selections/prod.json', SELECTION_SHA256: sha256(selectorBytes) };
@@ -40,19 +38,17 @@ function qualificationFixture() {
       service: { repository: 'git-malu/AnyWear-Service', sha: selector.image.service_sha, image_digest: selector.image.digest } },
     service_artifacts: { repository: selector.release.repository, release_id: selector.release.id,
       manifest_asset_id: selector.release.manifest_asset_id, manifest_sha256: selector.release.manifest_sha256 },
-    deployment: { record: { infra: { sha: infraSha }, selection: { sha256: env.SELECTION_SHA256, release: selector.release, publication_acceptance: selector.publication_acceptance,
+    deployment: { record: { infra: { sha: infraSha }, selection: { file: env.SELECTION_FILE, sha256: env.SELECTION_SHA256, release: selector.release,
       components: { image: selector.image, lambdas: selector.lambdas, runtime_policy: selector.runtime_policy, schema: selector.schema } } } } };
 }
 
-test('future Production window binds protected source, environment operation, account, IDs and expiration', () => {
-  validateProductionWindow(env, now);
+test('future Production context binds protected source, account, IDs and explicit selection', () => {
+  validateProductionContext(env, now);
   for (const patch of [{ ENABLE_PROD_DEPLOY: 'false' }, { GITHUB_REPOSITORY_ID: '1' }, { GITHUB_REF: 'refs/heads/branch' },
     { GITHUB_EVENT_NAME: 'push' }, { GITHUB_WORKFLOW_REF: env.GITHUB_WORKFLOW_REF.replace('production', 'runtime') },
-    { PROD_WINDOW_SHA: '8'.repeat(40) }, { WRITER_WINDOW_INPUT: 'another-window' }, { PROD_WINDOW_EXPIRES_AT: 'invalid' },
-    { PROD_WINDOW_EXPIRES_AT: '2026-10-08T01:00:00Z' }, { AWS_ACCOUNT_ID: '650880818323' }, { AWS_REGION: 'us-east-1' },
     { PROD_DEPLOY_ROLE_ARN: 'arn:aws:iam::123456789012:role/prod-github-actions-pipeline-role' },
     { QUALIFICATION_RUN_ATTEMPT: '9007199254740992' }, { SELECTION_FILE: '../selection.json' }]) {
-    assert.throws(() => validateProductionWindow({ ...env, ...patch }, now));
+    assert.throws(() => validateProductionContext({ ...env, ...patch }, now));
   }
 });
 
@@ -60,7 +56,7 @@ test('reviewed selector requires complete strict canonical exact bytes', () => {
   assert.deepEqual(readReviewedSelection(selectorBytes, env), selector);
   const whitespace = Buffer.concat([selectorBytes, Buffer.from('\n')]);
   assert.throws(() => readReviewedSelection(whitespace, { ...env, SELECTION_SHA256: sha256(whitespace) }), /canonical bytes/);
-  const duplicate = Buffer.from(selectorBytes.toString().replace('"schema_version":1', '"schema_version":1,"schema_version":1'));
+  const duplicate = Buffer.from(selectorBytes.toString().replace('"schema_version":2', '"schema_version":2,"schema_version":2'));
   assert.throws(() => readReviewedSelection(duplicate, { ...env, SELECTION_SHA256: sha256(duplicate) }), /Duplicate/);
 });
 
@@ -101,8 +97,8 @@ test('authenticated input resolver verifies sealed selection and annotated stabl
     if (endpoint.includes('/git/tags/')) return { object: { type: 'commit', sha: selector.image.service_sha } };
     if (endpoint.includes('/compare/')) return { status: 'identical', merge_base_commit: { sha: selector.image.service_sha } };
     assert.fail('Unexpected GitHub endpoint');
-  }, async readFile(file) { assert.equal(file, env.SELECTION_FILE); return selectorBytes; },
-  async verifySelection(actual) { assert.deepEqual(actual, selector); calls.push('sealed-selection'); },
+  }, async loadCommittedSelection(actual) { assert.equal(actual.selectionFile, env.SELECTION_FILE); assert.equal(actual.expectedInfraSha, infraSha); return selector; },
+  async verifySelection(actual) { assert.equal(actual.selectionSha256, env.SELECTION_SHA256); assert.equal(actual.selectionFile, env.SELECTION_FILE); calls.push('sealed-selection'); },
   async verifyStableRelease(tag) { assert.equal(tag, stable.tag_name); calls.push('stable-attestation'); },
   async mkdir() {}, async writeFile(file, value) { saved.set(file, value); } };
   await resolveProductionInputs(env, io);
@@ -175,10 +171,10 @@ test('scan guard binds repository+digest, completes after copy, blocks critical 
   const high = structuredClone(scan); high.imageScanFindings.findingSeverityCounts.HIGH = 1;
   assert.throws(() => verifyPromotionScan(high, options));
   const approval = { repository_uri: uri, image_digest: selector.image.digest, scan_sha256: contentHash(high), finding_counts: high.imageScanFindings.findingSeverityCounts,
-    infra_sha: infraSha, window: env.PROD_WRITER_WINDOW, record_url: env.PROD_WINDOW_RECORD_URL };
+    infra_sha: infraSha };
   const approved = { ...options, highApproval: approval, env: { ...env, PROD_SCAN_APPROVAL_SHA256: contentHash(approval) } };
   verifyPromotionScan(high, approved);
-  assert.throws(() => verifyPromotionScan(high, { ...approved, highApproval: { ...approval, window: 'another-window' } }));
+  assert.throws(() => verifyPromotionScan(high, { ...approved, highApproval: { ...approval, infra_sha: '8'.repeat(40) } }));
 });
 
 test('Production remains source-disabled before AWS credentials even when activation/readiness variables are enabled', async () => {

@@ -3,9 +3,8 @@ import { promisify } from 'node:util';
 import { readFile, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { parseJson, sha256, canonicalJson, HASH } from './json-contract.mjs';
-import { verifySelection } from './artifact-consumer.mjs';
-import { assertWriterWindow } from './writer-window.mjs';
+import { parseJson, sha256, canonicalJson, HASH, SHA } from './json-contract.mjs';
+import { verifySelection, loadCommittedSelection } from './artifact-consumer.mjs';
 import { runBetaLifecycle, workloadRevision } from '../.github/scripts/beta-lifecycle.mjs';
 import { runRuntimeVerification } from './verify-runtime-task.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
@@ -17,17 +16,40 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mutations = new Set(['register-task-definition', 'run-task', 'deregister-task-definition', 'put-parameter', 'put-retention-policy']);
 export function validateOperationInputs(env = process.env) {
   if (!['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'migrate', 'verify', 'start', 'stop', 'observe', 'tester-status', 'tester-add', 'tester-replace'].includes(env.INFRA_OPERATION)) throw new Error('Unknown Infra operation');
-  const gate = assertWriterWindow({ token: env.WRITER_WINDOW_INPUT, operation: env.INFRA_OPERATION, env });
-  if (env.GITHUB_REPOSITORY_ID !== '1409047265') throw new Error('Wrong immutable Infra repository');
-  if (!['legacy', 'roles-added', 'retired'].includes(env.INFRA_IDENTITY_PHASE) || env.IDENTITY_PHASE_INPUT !== env.INFRA_IDENTITY_PHASE) throw new Error('Reviewed identity phase mismatch');
-  if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION) || env.RETENTION_PROTECTION_INPUT !== env.INFRA_RETENTION_PROTECTION) throw new Error('Reviewed ECR retention protection mismatch');
-  if (!HASH.test(env.SELECTION_SHA256 ?? '') || env.SELECTION_SHA256 !== env.INFRA_WINDOW_SELECTION_SHA256) throw new Error('Window authorizes another selection');
+  if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
+    || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
+    || env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main' || env.ENABLE_BETA_DEPLOY !== 'true') throw new Error('Protected Infra main executor and activation required');
+  if (env.AWS_ACCOUNT_ID !== '650880818323' || env.AWS_REGION !== 'ap-east-1') throw new Error('Unexpected account/region');
+  if (!['legacy', 'roles-added', 'retired'].includes(env.INFRA_IDENTITY_PHASE)) throw new Error('Explicit identity phase required');
+  if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
+  if (!HASH.test(env.SELECTION_SHA256 ?? '')) throw new Error('Explicit selection hash required');
   if (!/^selections\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(env.SELECTION_FILE ?? '')) throw new Error('Selection must be a reviewed repository file');
   if (env.INFRA_OPERATION.startsWith('tester-')) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
-    if (sha256(payload) !== env.INFRA_WINDOW_TESTERS_SHA256 || (env.INFRA_OPERATION === 'tester-status' && payload !== '[]')) throw new Error('Window authorizes another tester input');
+    if (env.INFRA_OPERATION === 'tester-status' && payload !== '[]') throw new Error('Tester status accepts no mutation payload');
   }
-  return gate;
+  return { source_sha: env.GITHUB_SHA, operation: env.INFRA_OPERATION, selection_file: env.SELECTION_FILE, selection_sha256: env.SELECTION_SHA256 };
+}
+export function selectionBinding(env = process.env, trustedInfraRoot = root) {
+  return { trustedInfraRoot, expectedInfraSha: env.GITHUB_SHA, selectionFile: env.SELECTION_FILE, selectionSha256: env.SELECTION_SHA256 };
+}
+export function betaDeploymentActivity(platform, workload) {
+  const state = stack => stack?.Outputs?.find(output => output.OutputKey === 'BetaActive')?.OutputValue;
+  const platformActive = state(platform); const workloadActive = state(workload);
+  if (!['true', 'false'].includes(platformActive) || !['true', 'false'].includes(workloadActive)) throw new Error('Both Beta activity states must be observed');
+  if (platformActive !== workloadActive) throw new Error(`Mixed Beta activity: Platform=${platformActive}, Workload=${workloadActive}`);
+  return platformActive === 'true';
+}
+export function cdkDeploymentArguments(stack, active, revision, directory, env) {
+  if (typeof active !== 'boolean') throw new Error('Explicit observed Beta activity required');
+  const parameters = stack.includes('Workload') ? Object.entries(revision.parameters).filter(([key]) =>
+    ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) => ['--parameters', `${key}=${value}`]) : [];
+  return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
+    // Native rollback must not reactivate stopped/partially stopped resources.
+    // An unsuccessful inactive deployment remains for explicit reviewed recovery.
+    ...(!active ? ['--no-rollback'] : []), '-c', 'stage=beta', '-c', `betaActive=${active}`,
+    '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
+    '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
 }
 export async function credentialEnvironment(kind, env = process.env) {
   const role = `arn:aws:iam::650880818323:role/beta-infra-${kind}-role`;
@@ -49,31 +71,32 @@ export async function credentialEnvironment(kind, env = process.env) {
   return { ...env, AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
 }
-export async function createRuntimeIo(selector, directory, env = process.env, record) {
+export async function createRuntimeIo(selector, directory, env = process.env, record, { trustedInfraRoot = root, run = execute, assume = credentialEnvironment } = {}) {
   const credentials = new Map();
-  const check = () => validateOperationInputs(env);
+  const check = async () => { validateOperationInputs(env); await loadCommittedSelection(selectionBinding(env, trustedInfraRoot)); };
   const roleEnv = async kind => {
-    if (!credentials.has(kind)) credentials.set(kind, { value: await credentialEnvironment(kind, env), at: Date.now() });
-    if (Date.now() - credentials.get(kind).at > 50 * 60_000) credentials.set(kind, { value: await credentialEnvironment(kind, env), at: Date.now() });
+    await check();
+    if (!credentials.has(kind)) credentials.set(kind, { value: await assume(kind, env), at: Date.now() });
+    if (Date.now() - credentials.get(kind).at > 50 * 60_000) credentials.set(kind, { value: await assume(kind, env), at: Date.now() });
     return credentials.get(kind).value;
   };
   const io = {
     region: 'ap-east-1', now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
     async aws(args) {
-      if (mutations.has(args[1])) check();
+      if (mutations.has(args[1])) await check();
       const awsEnv = await roleEnv('runtime');
       const explicitRegion = args.indexOf('--region');
       if (explicitRegion >= 0 && !['ap-east-1', 'us-east-1'].includes(args[explicitRegion + 1])) throw new Error('Unexpected operation region');
-      const result = await execute('aws', [...args, ...(explicitRegion < 0 ? ['--region', 'ap-east-1'] : []), '--output', 'json'], { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
+      const result = await run('aws', [...args, ...(explicitRegion < 0 ? ['--region', 'ap-east-1'] : []), '--output', 'json'], { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
       return result.stdout.trim() ? parseJson(result.stdout) : {};
     },
     async oneShot(role, revision, argument = '', payload) {
-      check();
+      await check();
       if (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha) throw new Error('Lifecycle selected image differs from deployed revision');
       const awsEnv = await roleEnv('runtime');
       let result;
-      try { result = await execute('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
-        { cwd: root, env: { ...awsEnv, BASH_ENV: path.join(root, '.github/scripts/writer-window-hook.sh'), INFRA_REPOSITORY_DIRECTORY: root }, timeout: 4_200_000, maxBuffer: 10 * 1024 * 1024 });
+      try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
+        { cwd: root, env: { ...awsEnv, BASH_ENV: path.join(root, '.github/scripts/operation-hook.sh'), INFRA_REPOSITORY_DIRECTORY: root }, timeout: 4_200_000, maxBuffer: 10 * 1024 * 1024 });
       } catch { throw new Error('One-shot execution failed; preserve task resources and inspect redacted run evidence'); }
       const tasks = [...new Set([...result.stdout.matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       const definitions = [...new Set([...result.stdout.matchAll(/^Task definition: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
@@ -90,17 +113,15 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       process.stdout.write(result.stdout); process.stderr.write(result.stderr);
     },
     async deploy(stack, active, revision) {
-      check();
+      await check();
       const awsEnv = await roleEnv('deploy');
-      const parameters = stack.includes('Workload') ? Object.entries(revision.parameters).filter(([key]) =>
-        ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) => ['--parameters', `${key}=${value}`]) : [];
-      await execute('npx', ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never', '-c', 'stage=beta', '-c', `betaActive=${active}`,
-        '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`, '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters],
+      await run('npx', cdkDeploymentArguments(stack, active, revision, directory, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       if (stack === 'AnyWearPlatformStack-beta') await enforceBetaPlatformLogRetention(io);
       record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: active, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
     },
     recordRecovery(outcome) { if (record) recordRecovery(record, outcome); },
+    recordLifecycleState(observed) { record?.events.push({ type: 'observed-lifecycle-state', ...observed }); },
     async verifyHealth(url, revision) {
       const deadline = Date.now() + 600_000;
       while (Date.now() < deadline) {
@@ -115,10 +136,9 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
   return io;
 }
 export async function runOperation(env = process.env) {
-  const gate = validateOperationInputs(env);
-  const bytes = await readFile(path.join(root, env.SELECTION_FILE)); const selector = parseJson(bytes);
-  if (sha256(bytes) !== env.SELECTION_SHA256 || bytes.toString('utf8') !== canonicalJson(selector)) throw new Error('Selection must match exact canonical reviewed bytes');
-  const directory = path.join(root, '.service-artifacts/selected'); const verified = await verifySelection(selector, directory, undefined, { trustedInfraRoot: root, expectedInfraSha: env.GITHUB_SHA });
+  validateOperationInputs(env);
+  const binding = selectionBinding(env); const selector = await loadCommittedSelection(binding);
+  const directory = path.join(root, '.service-artifacts/selected'); const verified = await verifySelection(binding, directory);
   const record = createOperationRecord({ env, selector, reviewedStackSources: parseJson(await readFile('deployment-evidence/stack-sources.json')) });
   const io = await createRuntimeIo(selector, directory, env, record);
   try {
@@ -146,17 +166,17 @@ export async function runOperation(env = process.env) {
       const names = { 'deploy-foundation': 'AnyWearFoundationStack', 'deploy-billing': 'AnyWearBillingStack-beta',
         'deploy-platform': 'AnyWearPlatformStack-beta', 'deploy-workload': 'AnyWearWorkloadStack-beta' };
       const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-      const active = platform?.Outputs?.find(output => output.OutputKey === 'BetaActive')?.OutputValue;
-      if (!['true', 'false'].includes(active)) throw new Error('Existing Beta runtime state unproven');
+      const active = betaDeploymentActivity(platform, workload);
+      record.events.push({ type: 'observed-beta-activity', platform_active: active, workload_active: active });
       if (operation === 'deploy-workload') {
         const outputs = Object.fromEntries(platform.Outputs.map(item => [item.OutputKey, item.OutputValue]));
-        if (active === 'true') await runRuntimeVerification({ io, outputs, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
+        if (active) await runRuntimeVerification({ io, outputs, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
         // Selecting an existing immutable previous release is compute rollback.
         // This operation never invokes migrate and never down-migrates the DB.
         revision.parameters.ServiceImageDigest = selector.image.digest; revision.parameters.ServiceCommitSha = selector.image.service_sha;
       } else if (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha) throw new Error('Platform/identity changes must retain the observed running image');
-      await io.deploy(names[operation], active === 'true', revision);
-      if (operation === 'deploy-workload' && active === 'true') {
+      await io.deploy(names[operation], active, revision);
+      if (operation === 'deploy-workload' && active) {
         await io.aws(['ecs', 'wait', 'services-stable', '--cluster', 'beta-anywear', '--services', 'beta-anywear-api', 'beta-anywear-worker']);
         const after = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks[0];
         const url = after.Outputs.find(output => output.OutputKey === 'ApiBaseUrl')?.OutputValue;
@@ -165,7 +185,17 @@ export async function runOperation(env = process.env) {
       }
     }
   }
-  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}; selection ${env.SELECTION_SHA256}; window ${gate.record_url}.\n`);
+  const finalStacks = {};
+  for (const [key, name] of [['platform', 'AnyWearPlatformStack-beta'], ['workload', 'AnyWearWorkloadStack-beta']]) {
+    finalStacks[key] = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', name])).Stacks?.[0];
+  }
+  record.events.push({ type: 'final-beta-activity', ...Object.fromEntries(Object.entries(finalStacks).flatMap(([key, stack]) => [
+    [`${key}_active`, stack?.Outputs?.find(output => output.OutputKey === 'BetaActive')?.OutputValue ?? 'unavailable'],
+    [`${key}_status`, stack?.StackStatus ?? 'unavailable'],
+  ])) });
+  const finalActive = betaDeploymentActivity(finalStacks.platform, finalStacks.workload);
+  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `beta_active=${finalActive}\n`);
+  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}; committed selection ${env.SELECTION_FILE}@${env.SELECTION_SHA256}.\n`);
   record.result = 'succeeded';
   } catch (error) { record.result = 'failed'; throw error; }
   finally { await writeFile('deployment-evidence/operation-record.json', canonicalJson(record)); }

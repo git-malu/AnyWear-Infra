@@ -16,6 +16,7 @@ const parameters = {
 
 function stack(active, workload = false) {
   return {
+    StackStatus: 'UPDATE_COMPLETE',
     Parameters: Object.entries(parameters).map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })),
     Outputs: Object.entries({
       BetaActive: String(active),
@@ -51,6 +52,8 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
       assert.equal(revision.commit, parameters.ServiceCommitSha);
       const event = `oneShot ${role} ${argument}`.trim();
       events.push(event);
+      if (event === 'oneShot lifecycle close') suspended = 'true';
+      if (event === 'oneShot lifecycle open') suspended = 'false';
       if (fail?.(event)) throw new Error(event === 'oneShot lifecycle drain'
         ? 'Beta drain exceeded 60 minutes' : 'Injected operation failure');
     },
@@ -58,6 +61,7 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
       const event = `deploy ${name} ${enabled}`;
       events.push(event);
       if (fail?.(event)) throw new Error('Injected operation failure');
+      if (name === workloadName) workloadActive = enabled; else platformActive = enabled;
     },
     async verifyHealth(url) {
       assert.equal(url, apiUrl);
@@ -67,14 +71,14 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
   return { io, events };
 }
 
-test('operation recovery evidence distinguishes restoration success from dual failure', async () => {
-  for (const failedRecovery of [false, true]) {
-    const { io } = lifecycleIo({ fail: event => event === 'oneShot lifecycle drain' || (failedRecovery && event === 'oneShot lifecycle open') });
-    const outcomes = [];
-    io.recordRecovery = outcome => outcomes.push(outcome);
-    await assert.rejects(runBetaLifecycle('stop', io));
-    assert.deepEqual(outcomes, ['began', failedRecovery ? 'failed' : 'succeeded']);
-  }
+test('stop failure records actual state and requires separately selected start', async () => {
+  const { io, events } = lifecycleIo({ fail: event => event === `deploy ${platformName} false` });
+  const states = []; const outcomes = [];
+  io.recordRecovery = value => outcomes.push(value); io.recordLifecycleState = value => states.push(value);
+  await assert.rejects(runBetaLifecycle('stop', io), /Platform=true.*Workload=false.*admission_suspended=true/);
+  assert.deepEqual(outcomes, ['requires-explicit-start']);
+  assert.equal(states[0].workload_active, 'false'); assert.equal(states[0].platform_status, 'UPDATE_COMPLETE');
+  assert.equal(events.some(event => /^deploy .* true$/.test(event) || event === 'oneShot lifecycle open'), false);
 });
 
 test('stop drains and waits for all tasks before removing Beta network egress', async () => {
@@ -82,47 +86,32 @@ test('stop drains and waits for all tasks before removing Beta network egress', 
   await runBetaLifecycle('stop', io);
   assert.deepEqual(events, [
     'ssm get-parameter',
-    'oneShot lifecycle close', 'oneShot lifecycle drain',
+    'oneShot lifecycle close', 'ssm get-parameter', 'oneShot lifecycle drain',
     'ecs list-tasks RUNNING', 'ecs list-tasks STOPPED',
     `deploy ${workloadName} false`,
     'ecs list-tasks RUNNING', 'ecs list-tasks STOPPED',
-    `deploy ${platformName} false`,
+    `deploy ${platformName} false`, 'ssm get-parameter',
   ]);
 });
 
-test('drain timeout aborts shutdown and restores intake without changing infrastructure', async () => {
-  const { io, events } = lifecycleIo({ fail: (event) => event === 'oneShot lifecycle drain' });
-  await assert.rejects(runBetaLifecycle('stop', io), (error) => {
-    assert.match(error.message, /shutdown aborted; intake restored/);
-    assert.match(error.cause.message, /60 minutes/);
-    return true;
-  });
-  assert.deepEqual(events, ['ssm get-parameter', 'oneShot lifecycle close', 'oneShot lifecycle drain', 'oneShot lifecycle open']);
-});
-
-test('a failed workload stop restores both stacks and verifies health before reopening intake', async () => {
-  const { io, events } = lifecycleIo({ fail: (event) => event === `deploy ${workloadName} false` });
-  await assert.rejects(runBetaLifecycle('stop', io), /shutdown aborted; intake restored/);
-  assert.deepEqual(events.slice(5), [
-    `deploy ${workloadName} false`, `deploy ${platformName} true`, `deploy ${workloadName} true`,
-    'ecs wait', 'verifyHealth', `oneShot verify ${apiUrl}`, 'oneShot lifecycle open',
-  ]);
-});
-
-test('aborted stop preserves a pre-existing admission suspension through drain and infrastructure failures', async () => {
+test('drain and deployment failures preserve closed admission and never restart either stack', async () => {
   for (const failedEvent of ['oneShot lifecycle drain', `deploy ${workloadName} false`, `deploy ${platformName} false`]) {
-    const { io, events } = lifecycleIo({ suspended: 'true', fail: (event) => event === failedEvent });
-    await assert.rejects(runBetaLifecycle('stop', io), /shutdown aborted; prior admission suspension restored/);
-    assert.equal(events[0], 'ssm get-parameter');
-    assert.equal(events.at(-1), 'oneShot lifecycle close');
-    assert.equal(events.includes('oneShot lifecycle open'), false);
-    if (failedEvent.startsWith('deploy')) {
-      assert.deepEqual(events.slice(-6), [
-        `deploy ${platformName} true`, `deploy ${workloadName} true`, 'ecs wait', 'verifyHealth',
-        `oneShot verify ${apiUrl}`, 'oneShot lifecycle close',
-      ]);
+    for (const suspended of ['false', 'true']) {
+      const { io, events } = lifecycleIo({ suspended, fail: event => event === failedEvent });
+      await assert.rejects(runBetaLifecycle('stop', io), error => {
+        assert.match(error.message, /shutdown failed.*admission_suspended=true.*select start separately/);
+        assert.ok(error.cause); return true;
+      });
+      assert.equal(events.some(event => /^deploy .* true$/.test(event) || event === 'oneShot lifecycle open'), false);
+      assert.equal(events.at(-1), 'ssm get-parameter');
     }
   }
+});
+test('native rollback output is reported rather than treated as a successful stopped state', async () => {
+  const { io, events } = lifecycleIo(); const deploy = io.deploy;
+  io.deploy = async (name, enabled) => { if (name === workloadName) return; await deploy(name, enabled); };
+  await assert.rejects(runBetaLifecycle('stop', io), /Platform=false.*Workload=true/);
+  assert.equal(events.some(event => /^deploy .* true$/.test(event)), false);
 });
 
 test('missing, malformed, or unavailable suspension state aborts stop before any mutation', async () => {
@@ -134,17 +123,6 @@ test('missing, malformed, or unavailable suspension state aborts stop before any
   const { io, events } = lifecycleIo({ fail: (event) => event === 'ssm get-parameter' });
   await assert.rejects(runBetaLifecycle('stop', io), /SSM suspension read failed/);
   assert.deepEqual(events, ['ssm get-parameter']);
-});
-
-test('failed recovery keeps intake closed and reports both errors', async () => {
-  const { io, events } = lifecycleIo({ fail: (event) => event.startsWith(`deploy ${workloadName}`) });
-  await assert.rejects(runBetaLifecycle('stop', io), (error) => {
-    assert.ok(error instanceof AggregateError);
-    assert.equal(error.errors.length, 2);
-    assert.match(error.message, /intake remains closed/);
-    return true;
-  });
-  assert.ok(!events.includes('oneShot lifecycle open'));
 });
 
 test('start restores the network before private tasks and opens intake only after verification', async () => {
@@ -182,16 +160,16 @@ test('failed start verification never opens intake', async () => {
 });
 
 test('an already stopped Beta is an idempotent no-op', async () => {
-  const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false });
+  const { io, events } = lifecycleIo({ platformActive: false, workloadActive: false, suspended: 'true' });
   await runBetaLifecycle('stop', io);
-  assert.deepEqual(events, []);
+  assert.deepEqual(events, ['ssm get-parameter']);
 });
 
 test('stop rejects inconsistent platform and workload state before mutating anything', async () => {
   for (const [platformActive, workloadActive] of [[false, true], [true, false]]) {
     const { io, events } = lifecycleIo({ platformActive, workloadActive });
-    await assert.rejects(runBetaLifecycle('stop', io), /partially stopped/);
-    assert.deepEqual(events, []);
+    await assert.rejects(runBetaLifecycle('stop', io), /shutdown failed/);
+    assert.deepEqual(events, ['ssm get-parameter']);
   }
 });
 
@@ -408,7 +386,7 @@ test('valid task descriptions may be reordered and only STOPPED satisfies the ex
   }
 });
 
-test('invalid task inventory aborts stop before CDK and restores the original suspension', async () => {
+test('invalid task inventory aborts stop before CDK and keeps admission closed', async () => {
   for (const suspended of ['false', 'true']) {
     const { io, events } = lifecycleIo({ suspended });
     const aws = io.aws;
@@ -417,11 +395,23 @@ test('invalid task inventory aborts stop before CDK and restores the original su
       return args[0] === 'ecs' && args[1] === 'list-tasks' ? {} : result;
     };
     await assert.rejects(runBetaLifecycle('stop', io), (error) => {
-      assert.match(error.message, /shutdown aborted/);
+      assert.match(error.message, /shutdown failed/);
       assert.match(error.cause.message, /malformed Beta ECS task inventory/);
       return true;
     });
     assert.ok(!events.some((event) => event.startsWith('deploy ')));
-    assert.equal(events.at(-1), `oneShot lifecycle ${suspended === 'true' ? 'close' : 'open'}`);
+    assert.equal(events.at(-1), 'ssm get-parameter');
+    assert.equal(events.includes('oneShot lifecycle open'), false);
+  }
+});
+
+test('a successful close with false or unavailable suspension readback never drains or changes infrastructure', async () => {
+  for (const closedState of ['false', 'invalid', undefined]) {
+    const { io, events } = lifecycleIo(); const aws = io.aws; const oneShot = io.oneShot; let closed = false;
+    io.oneShot = async (...args) => { await oneShot(...args); if (args[2] === 'close') closed = true; };
+    io.aws = async args => { const result = await aws(args); return closed && args[0] === 'ssm' ? { Parameter: { Value: closedState } } : result; };
+    await assert.rejects(runBetaLifecycle('stop', io), /shutdown failed/);
+    assert.equal(events.includes('oneShot lifecycle drain'), false);
+    assert.equal(events.some(event => event.startsWith('deploy ') || event === 'oneShot lifecycle open'), false);
   }
 });

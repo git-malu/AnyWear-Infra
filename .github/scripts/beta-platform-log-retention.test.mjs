@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { enforceBetaPlatformLogRetention } from './beta-platform-log-retention.mjs';
@@ -104,4 +106,11 @@ test('fails closed for post-write retention mismatch, pagination loops, and stac
     assert.equal(io.calls.filter((args) => args[0] === 'logs' && args[1] === 'put-retention-policy').length,
       options.retentionMismatch ? 1 : 0);
   }
+});
+
+test('standalone legacy log-retention adapter fails before cloud access even with an enabled gate', async () => {
+  const execute = promisify(execFile);
+  await assert.rejects(execute(process.execPath, ['.github/scripts/beta-platform-log-retention.mjs'], {
+    env: { ...process.env, GITHUB_REF: 'refs/heads/main', ENABLE_BETA_DEPLOY: 'true', AWS_REGION: 'ap-east-1' }, timeout: 10_000,
+  }), error => error.code === 1 && /Use scripts\/runtime-operation.mjs with the committed selection/.test(error.stderr));
 });

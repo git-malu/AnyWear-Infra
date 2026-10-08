@@ -31,7 +31,7 @@ checkouts or cloud credentials. The matrix compares dev active, Beta active, Bet
 stopped and prod active across the three identity phases, including Foundation and
 Billing, against the preserved Service source templates. Fixture artifacts support
 source tests; deployments use verified sealed Service releases and reviewed
-publication acceptance receipts. CI repeats all three phases with explicit
+canonical committed v2 selections. CI repeats all three phases with explicit
 retention protection and uploads `cdk.matrix/comparison.json` and
 `cdk.protected.matrix/comparison.json` as `infra-source-matrix`.
 
@@ -43,13 +43,12 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 | [bin/infra.ts](bin/infra.ts), `appScope=foundation` | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `appScope=billing` | Separate account billing scope in `us-east-1`; application resources are not synthesized |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
-| [create-publication-candidate.mjs](scripts/create-publication-candidate.mjs) | Independently retrieve exact publication evidence and write a candidate receipt for manager review |
 | [observe-deployment.mjs](scripts/observe-deployment.mjs) | Authenticate deployed templates, artifacts, configuration, schema and application identities |
 | [production.yml](.github/workflows/production.yml) | Future Production scaffold with a pre-AWS blocker until a separately reviewed onboarding PR completes its contract |
 
-Every Beta operation requires a manager-recorded source/expiry/operation/selection/
-phase window. Repository-local Actions concurrency serializes Infra jobs; separate
-Client and E2E writers still require explicit windows and verified cessation.
+Every Beta operation requires protected exact main source, an explicit operation,
+committed selection/hash, reviewed stack sources, identity phase and retention. Repository-local Actions concurrency serializes Infra jobs; separate
+Client and E2E writers still require scheduling coordination and verified cessation.
 Deployment and runtime credentials are distinct. The current CDK CloudFormation
 execution role uses `AdministratorAccess` without a permissions boundary, so the
 deployment chain has account-wide effective authority; the dedicated role names
@@ -57,23 +56,12 @@ do not establish Beta resource isolation.
 Production activation variables cannot bypass its source blocker; keep both
 deployment/readiness gates disabled through #54.
 
-Artifact acceptance compares GitHub's native signed immutable-release statement
-with the full release commit and every asset, then binds the publisher's exact
-completed-success run/attempt through a reviewed receipt committed in Infra.
-The native signature has no workflow/run fields. Review the
-[publication acceptance procedure](docs/runbooks/cutover-and-recovery.md#publication-acceptance)
-before selecting a release; the receipt hash and exact trusted Infra revision are
-deployment inputs.
-The native verifier and fixture come from Service
-`6a0551b3ea83937d3ac350ee78608784bc2d9dc6`, with paths/hashes recorded in
-[vendor provenance](scripts/vendor/provenance.json). Original CDK baseline
-provenance remains separately recorded under `test/baselines`.
-The parser supports exact native predicates v0.1 and v0.2. The genuine v0.2
-fixture comes from a failed publisher; native verification does not qualify that
-release or replace the completed-success publisher and reviewed receipt gates.
-
-Read the [Beta operation runbook](docs/runbooks/beta-infrastructure.md) for exact
-inputs and the [cutover and recovery runbook](docs/runbooks/cutover-and-recovery.md)
-for bootstrap, retention, rollback and old-role retirement. Read
-[AGENTS.md](AGENTS.md) before changing source. Keep live evidence and release
-decisions in #54; these documents describe procedures, not successful executions.
+Artifact verification loads the actual committed canonical v2 selection at an
+explicit trusted Infra root/full source pin and raw file hash. It checks the
+immutable release/tag/source, all five asset identities/sizes/digests/bytes and
+components, one complete native v0.1/v0.2 signed statement across six checks,
+and exact completed-success publisher identity before and after verification.
+Ordinary runtime performs these checks before AWS OIDC. Historical v1 inputs are
+rejected; publication ZIP/receipt/handshake ceremony is retired. See the
+[selection contract](docs/contracts/release-selection.md) and
+[direct verification procedure](docs/runbooks/cutover-and-recovery.md#direct-release-verification).

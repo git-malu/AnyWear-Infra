@@ -9,7 +9,7 @@ artifacts. The [Beta operation runbook](beta-infrastructure.md) owns normal inpu
 
 The initial artifact publisher role must exist before Service can produce sealed
 inputs for application CDK. In a separately assigned Foundation/account-IAM
-operator window, check out the reviewed full Infra source, verify AWS account and
+operator allocation, check out the reviewed full Infra source, verify AWS account and
 `ap-east-1`, and compare the existing Foundation Original template, physical map,
 effective OIDC/role policies and proposed synth. `appScope=foundation` omits
 application/Billing construction and skips the Service artifact loader:
@@ -60,250 +60,55 @@ resource security boundary. Inventory the deployed bootstrap assume/pass chain,
 inline/managed policies and execution role before authorizing that chain. A future
 permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 
-## Publication acceptance
+## Direct release verification
 
-The publication contract uses GitHub's native signed immutable-release statement
-and a separately reviewed immutable receipt in Infra. The signed statement binds
-the full release Git commit and all release assets. It has no publisher workflow,
-run or attempt fields; preserve that distinction when reviewing provenance.
-Service owns the shared publication parser and its fixture. An import publisher
-and the independently proven original component producers remain separate.
+The [v2 committed selection](../contracts/release-selection.md) is the one input
+authority. A source PR reviews the exact release/component identities and hashes.
+The ordinary [runtime workflow](../../.github/workflows/runtime.yml) automatically
+checks actual Service inputs before AWS credentials; source checks themselves
+perform no private native read or deployment. E2E uses the same reviewed verifier
+with its actual immutable Infra checkout, rather than reconstructing a selector
+as an authority. Historical v1 receipts and handshake diagnostics remain preserved
+historical evidence and are explicitly rejected as new runtime inputs.
 
-[publication-acceptance.mjs](../../scripts/publication-acceptance.mjs) exports
-`createPublicationCandidate` for the independent review preparation and
-`loadPublicationAcceptance` for pinned consumer verification. Receipt v1 uses
-`record_type=anywear_service_publication_acceptance` and these exact field groups:
+Verification requires trusted Infra origin/full HEAD and clean tracked/untracked
+source, without replacement refs or hidden index flags. The selected file must be
+a regular tracked canonical blob without path links and its raw bytes must equal
+both the commit and the explicit SHA-256. Verify the immutable release ID/tag/
+source, all five asset IDs/names/uploaded states/API sizes/digests and downloaded
+hashes, then validate Lambda/policy/schema components. Preserve the complete
+native v0.1/v0.2 signed immutable-release statement across `release verify` and
+all five `verify-asset` calls. The native statement does not carry workflow/run
+identity: independently read the exact completed-success publisher main source,
+workflow/run/attempt and both repository/head-repository IDs/owner IDs/logins
+before and after verification. Re-read immutable release identities at the end.
+Unavailable or changed evidence fails closed.
 
-| Fields | Preserved evidence |
-| --- | --- |
-| `schema_version`, `record_type` | Version `1` and the publication-acceptance record identity |
-| `repository`, `producer` | Service repository name/ID/owner ID and complete original manifest publisher identity |
-| `release` | Exact `id`, `tag`, full commit `target`, `manifest_asset_id`, `manifest_sha256`, and sorted `assets` with each `id`, `name`, `sha256`, `size` |
-| `publication` | Exact `artifact_id`, `artifact_name`, `archive_sha256`, `record_sha256`, and original raw `record_base64` |
-| `manager_acceptance_url`, `verified_at` | Manager review-comment reference and UTC verification timestamp; source approval comes from the separate reviewed Infra pin/window |
+The protected Beta job first checks exact main/workflow/account/region, operation,
+selection, explicit identity/retention and stack sources. It then creates a scoped
+read-only App token for AnyWear-Service contents/actions/attestations, verifies
+the selected release, and only then obtains distinct AWS OIDC principals. The CLI
+uses a fresh external empty config and fixes telemetry off, excluding ambient
+credentials, debug/config/Git/Node overrides. Source CI pins CLI 2.101.0 and
+reproduces its original relative device-id write in a credential-free isolated
+Linux network namespace; the fixed environment must preserve strict clean source.
 
-The shared native verifier and fixture are pinned from Service
-`6a0551b3ea83937d3ac350ee78608784bc2d9dc6`. The complete source paths and raw file
-hashes are in [vendor provenance](../../scripts/vendor/provenance.json); retain
-that pin when validating the [native fixture](../../test/fixtures/native-release-source.md).
-The original CDK source-synth baseline has separate Service provenance in
-`test/baselines/provenance.json`.
-The shared parser accepts exact native predicates v0.1 and v0.2. The genuine
-v0.2 fixture is preserved from failed publisher evidence for offline parsing;
-that release remains unselectable without completed-success publication and the
-separate reviewed acceptance gate.
-
-1. Independently retrieve the exact publisher run/attempt from Service using the
-   read-only private-repository access. Require the expected repository,
-   reviewed main source/workflow identity, `completed` status and `success`
-   conclusion. Select the unique bounded Actions ZIP artifact named
-   `service-artifact-publication-<run-id>-<attempt>` and its exact
-   `service-artifact-publication.json` entry. Record the artifact ID, archive hash
-   and raw publication-record byte hash. The ZIP is at most 2 MiB and contains
-   exactly one record of at most 256 KiB; the receipt is at most 1 MiB. Reject
-   duplicates, unexpected ZIP entries, excessive sizes, missing/expired archives
-   or a different attempt. Compare the downloaded ZIP size/hash with the
-   authenticated Actions inventory and its creation interval for that attempt.
-2. Independently retrieve the sealed immutable release and every asset by exact
-   release/asset ID. Verify GitHub's native signed release statement, the full Git
-   commit and all asset names/hashes against the publication record, selected
-   manifest and downloaded bytes. Retain the complete asset inventory and
-   publisher/component producer identities. A partial asset comparison cannot
-   establish acceptance, and the native statement cannot supply absent
-   workflow/run identity.
-3. Use the read-only [candidate CLI](../../scripts/create-publication-candidate.mjs)
-   with the exact preparation selector and designated manager review-comment URL.
-   It independently downloads every selected release asset, verifies the native
-   statement, paginates the bounded publisher artifact inventory, and checks the
-   completed-success publisher attempt before and after retrieval. Candidate
-   creation grants no approval and makes no Git/AWS changes. Preserve the complete original
-   publication record as embedded base64 plus its raw-byte SHA-256, its producer
-   and asset evidence, and the original Actions archive hash. These contents must
-   survive in the tracked receipt for long-term use even when the original
-   Actions archive later expires.
-4. The manager independently reviews the publication/run/release/assets and
-   exact candidate bytes, then records the review handshake in an issue comment.
-   Bind the reviewed receipt hash, manifest hash, full publisher source,
-   run/attempt, release/asset IDs and evidence to that decision. A receipt that
-   merely includes a comment URL does not authorize itself; retain the actual
-   review decision and reviewer identity.
-5. Add the accepted receipt as `publications/<full-manifest-sha256>.json` through
-   the reviewed Infra commit. Add the selector's top-level
-   `publication_acceptance: { file, sha256 }`, where `sha256` hashes the exact raw
-   receipt bytes. Only then authorize the reviewed main writer window for that
-   exact full Infra source, selector/hash, operation and expiry. The receipt
-   review and source/window authorization are separate recorded decisions.
-6. Subsequent consumers compare the live native signed release commit/all assets
-   with the preserved receipt, manifest and raw hashes, and still require the
-   exact publisher run/attempt to be available and completed successfully. Use
-   explicit `trustedInfraRoot`/`expectedInfraSha`: runtime's reviewed main
-   workspace at the window SHA, or E2E's `.infra-source` checkout at its reviewed
-   `compatibility.infra` pin. Require the exact Infra origin/full HEAD and a clean
-   checkout including untracked files. The receipt must be a regular tracked
-   blob in that revision, traverse no linked paths and match its committed bytes
-   and selector raw-byte hash. Missing runs, altered assets/receipts or another
-   checkout fail closed. Later acceptance uses the preserved receipt evidence;
-   expiration of the captured Actions ZIP does not erase it. A vendor directory
-   or URL alone establishes no source trust.
-
-The deployment record preserves `selection.publication_acceptance` with the
-release and component sources, so qualification and rollback use the same reviewed
-receipt rather than selecting another publisher attempt.
-
-For candidate preparation, use the exact release/component IDs/hashes and future
-receipt path. The preliminary selector can have a syntactically valid 64-hex
-placeholder for the yet-unknown receipt hash; that file is only a review input.
-Run the CLI with the configured read-only `GH_TOKEN`:
+A direct invocation uses explicit immutable inputs:
 
 ```sh
-node scripts/create-publication-candidate.mjs \
-  --selection selections/cutover-preparation.json \
-  --output .service-artifacts/publication-candidate.json \
-  --manager-acceptance-url "$REVIEW_COMMENT_URL"
+node scripts/artifact-consumer.mjs \
+  --selection selections/beta-baseline.json --selection-sha256 "$SELECTION_SHA256" \
+  --trusted-infra-root "$TRUSTED_INFRA_ROOT" --infra-sha "$INFRA_SHA" \
+  --output-dir .service-artifacts/selected
 ```
 
-The local candidate is written to `--output`. Stdout reports `candidate_only: true`,
-the exact raw receipt-byte `sha256` and final `publications/<manifest-sha256>.json`
-path. After independent manager review, the Git writer adds those exact receipt
-bytes at that path through the reviewed Infra change and replaces the preparation
-hash with the printed hash in the final selector. Authorize the window only after
-that receipt/source review. The CLI output and a placeholder selector are not
-accepted deployment inputs.
-
-### First publication handshake runner
-
-Use the dispatch-only [publication handshake workflow](../../.github/workflows/publication-handshake.yml)
-and its [guarded wrapper](../../scripts/publication-handshake.mjs) for the first
-candidate after the separately approved Service publisher succeeds. This lane
-uses no AWS/OIDC, runtime environment or deployment permission. Its only App
-token requests Contents/Actions/Attestations read for Service; the ordinary
-workflow token has Contents read. No dependencies are installed in this reader.
-
-Existing sanitized App preflight [run 37725085493, attempt 2](https://github.com/git-malu/AnyWear-Infra/actions/runs/37725085493/attempts/2)
-at Infra `1616783bf604c6c837f32452f039019fc5dd65f5` retained artifact
-`11527742745` (`app-access-37725085493-2`). It observed App `3346940`,
-installation `123158580`, one Service repository `1158460323`, owner `11473072`,
-and a successful Contents/Actions/Attestations read token mint. It recorded
-`actual_native_read_verified=false`; source/read proof and installed settings
-cannot establish actual native release access. The new runner independently
-requires the action-returned installation ID and a live installation-token
-`/installation/repositories?per_page=100` result containing exactly Service,
-plus an independent repository read. Identity/scope/native failure stops it;
-there is no OAuth discovery, fallback token or App-settings repair.
-
-Keep `ENABLE_PUBLICATION_HANDSHAKE=false` during source delivery. The manager
-separately allocates one reader dispatch on the newly reviewed full main SHA
-`W`, after source CI and the actual successful sealed producer output are
-available. Configure only these dedicated repository variables in that window:
-
-| Variable | Required value |
-| --- | --- |
-| `ENABLE_PUBLICATION_HANDSHAKE` | `true` only for the allocated reader run |
-| `PUBLICATION_HANDSHAKE_SOURCE_SHA` | Exact reviewed main executor `W` |
-| `PUBLICATION_HANDSHAKE_ACTOR` | `git-malu` |
-| `PUBLICATION_HANDSHAKE_WINDOW_TOKEN` | Fresh nonsecret allocation token, 16–128 ASCII letters/digits/underscore/hyphen |
-| `PUBLICATION_HANDSHAKE_EXPIRES_AT` | Unexpired UTC ISO timestamp |
-| `PUBLICATION_HANDSHAKE_RECORD_URL` | Exact #54 comment authorizing this reader allocation |
-| `PUBLICATION_HANDSHAKE_REQUEST_SHA256` | SHA-256 of strictly parsed canonical request JSON |
-
-Dispatch has three string inputs: `reviewed_source_sha=W`,
-`writer_window_token=<allocation token>`, and `request_json`. The request is at
-most 16 KiB, rejects duplicate/unknown keys, and contains exactly:
-
-```json
-{
-  "schema_version": 1,
-  "record_type": "anywear_publication_handshake_request",
-  "app": {
-    "app_id": 3346940,
-    "installation_id": 123158580,
-    "permissions_requested": { "contents": "read", "actions": "read", "attestations": "read" }
-  },
-  "producer": {
-    "repository": "git-malu/AnyWear-Service",
-    "workflow_sha": "<actual successful publisher full SHA>",
-    "run_id": "<actual positive JSON number>",
-    "run_attempt": "<actual positive JSON number>"
-  },
-  "release": {
-    "id": "<actual positive JSON number>",
-    "manifest_asset_id": "<actual positive JSON number>",
-    "manifest_sha256": "<final sealed manifest raw SHA-256>",
-    "tag": "service-baseline-<final manifest SHA-256>",
-    "target": "<actual successful publisher full SHA>"
-  },
-  "kind": "deployed-baseline-import",
-  "assets": [
-    { "id": "<number>", "name": "service-artifacts.json", "size": "<number>", "sha256": "<hash>" },
-    { "id": "<number>", "name": "pre-sign-up.zip", "size": "<number>", "sha256": "<hash>" },
-    { "id": "<number>", "name": "post-confirmation.zip", "size": "<number>", "sha256": "<hash>" },
-    { "id": "<number>", "name": "runtime-policy.json", "size": "<number>", "sha256": "<hash>" },
-    { "id": "<number>", "name": "service-schema.json", "size": "<number>", "sha256": "<hash>" }
-  ]
-}
-```
-
-Replace every placeholder with the actual reviewed value; IDs/sizes/run/attempt
-are safe positive JSON numbers. This entry point is restricted to the current
-baseline-import lane. An intake draft or all-zero producer is unselectable.
-Import publication rewrites producer identity, so its final manifest hash and
-asset IDs must be read back from the successful publisher, not copied from
-intake. Request hashing uses `canonicalJson` from
-[json-contract.mjs](../../scripts/json-contract.mjs), independent of whitespace
-and object-key order.
-
-Before the official App action receives its private key, the runner verifies
-dispatch-only event, exact Infra repository/owner/main/workflow identity, actor
-and triggering actor `git-malu`, consumer attempt `1`, exact source across
-input/gate/workflow/run/clean checkout, allocation token/hash/expiry and offline
-native JSON CLI probes. Replacement refs and hidden index flags fail. Every
-remote boundary and final candidate output rechecks source/window/expiry.
-Service reads use only the scoped token; CLI children have an empty GH config
-and no inherited alternate tokens/debug/Git/Node overrides. The private key is
-consumed only by the official action; its token stays step-local and is revoked
-automatically.
-
-The wrapper reuses `createCandidate` with bounded recording IO. It binds the
-externally expected successful producer before trusting manifest provenance,
-checks the sealed release/direct commit tag/full five asset identities and
-bytes, retains the original native release and all five asset JSON results,
-and verifies they contain the same signed statement. Publication ZIP bounds,
-original record bytes, authenticated artifact digest/size/attempt interval and
-before/after publisher reads use the existing parser. The preparation selector
-exists only in memory with its unknown receipt hash; no receipt loader or
-tracked selector is used.
-
-Download artifact `service-publication-handshake-<consumer-run>-1` (90-day
-retention). Its fixed file allowlist contains sanitized status/request/CLI/App
-scope, producer/release/asset inventory, raw native JSON, bounded original ZIP
-and publication record/hashes, candidate/hash only on complete success, and a
-file/hash inventory. A failed job retains partial evidence and a predefined
-failure category; it emits no candidate or raw stderr/environment/credentials.
-`scope_mint_accepted` and `actual_native_read_verified` are separate observations.
-Artifact-upload failure or missing evidence leaves the gate unfinished.
-
-Concurrency serializes this workflow but does not make a window token single
-use or lock other sessions. The manager records the actual consumer run ID,
-checks for duplicate matching dispatches before acceptance, and invalidates an
-allocation with duplicates. Reruns fail attempt `1` and need a fresh reviewed
-dispatch. Close the activation gate after collection/failure and verify actual
-cessation; timeout alone does not release the reader allocation.
-
-Stop at the candidate artifact and independent manager readback. A candidate
-URL/hash does not approve itself. Receipt commit, accepted selection, source
-pin, runtime/compatibility and AWS actions require their separate reviewed
-writer windows. Source PR checks never mint the App token or execute this lane.
-
-Before reviewing retention activation, compare both source matrices across all
-three identity phases. In addition to the default matrix, run:
-
-```sh
-node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --baseline-templates test/baselines --retention-protection true --output cdk.protected.matrix
-```
-
-Review `cdk.protected.matrix/comparison.json` with the default report. Source CI
-produces both reports; real Original templates, physical maps and effective IAM
-remain separate release evidence.
+There is no publication Actions ZIP, executable candidate/receipt/handshake,
+mandatory issue-comment URL, writer token or expiry field in this path. The
+reviewed selection and actual signed release/publisher checks replace that
+ceremony. This source interface does not authorize the #54 cutover: the manager
+still coordinates one rollout writer, resource cessation and the separately
+reviewed maintenance/recovery plan. Foundation-only bootstrap remains below its
+existing separately allocated operator boundary and requires no Service artifact.
 
 ## Bootstrap ECR retention without a sealed-input cycle
 
@@ -379,8 +184,8 @@ that the effective repository policy has the same hash.
    the policy or upload/delete images. Initial policy installation uses the
    separately assigned existing operator, not an expanded runtime role.
 6. Publish/import the sealed Service baseline with the verified policy hash and
-   protected current/rollback list, then complete the independent publication
-   acceptance review above and commit its receipt. Reconcile Platform later with
+   protected current/rollback list, then commit the reviewed v2 selection
+   and verify it through the ordinary workflow described above. Reconcile Platform later with
    the same live artifacts and explicit `retentionProtection=true`, so CDK owns
    the identical policy. Never deploy the default `false` context over the staged
    protection.
@@ -392,7 +197,7 @@ repair; never silently raise the threshold or discard a rollback digest.
 
 If policy installation must be reversed, keep writers frozen, recheck that the
 saved old policy would not expire required digests, and obtain the explicit
-recovery writer/window for that exact original policy. Restore saved policy bytes
+recovery writer for that exact original policy. Restore saved policy bytes
 with the existing authorized operator, or restore absence only when absence was
 the captured original state. Read back and hash the result, recheck digests and
 record the failed protection attempt plus recovery result. Restoring a policy
@@ -415,7 +220,7 @@ producer sources separate from the manifest publisher's workflow SHA/run.
 
 After roles and consumers are proved, freeze old Service infrastructure writers
 and conflicting Client/E2E operations, verify cessation, then assign Infra one
-runtime window. The first Infra reconcile uses the same live image, Client,
+runtime allocation. The first Infra reconcile uses the same live image, Client,
 Lambda bytes and policy. Review real change sets/diffs against original physical
 identities; source-matrix equality alone does not authorize a replacement.
 Verify stable independent Client publication through existing CFN/SSM outputs.
@@ -425,9 +230,10 @@ Exercise reviewed stop/start and compute rollback. `deploy-workload` can select 
 previous immutable release while retaining compatible applied schema; it does not
 run down migrations. `start` retains its explicit forward migration/verification
 sequence for the pinned image, so its schema boundary and rollback compatibility
-must already be reviewed. Failed stop attempts recovery of the original network,
-Workload and admission state; authenticate their final readbacks and keep both
-failure and recovery evidence.
+must already be reviewed. Failed stop never implicitly restores network, Workload or admission. Record
+actual outputs/statuses and admission state, preserve partial/stopped state, and
+select a separately reviewed start after resolving the failure. Native CFN
+rollback may leave active or mixed state; requested false flags are not evidence.
 
 For an ownership failure, suspend the new writer, enumerate its running tasks/CFN
 operations and verify cessation. Restore the recorded legacy source/templates/
@@ -457,7 +263,7 @@ Observe new post-retirement Original templates and actual runtime identities,
 publish a new trusted completed-success Infra deployment record, then run final
 E2E v2 qualification against that exact record in its scheduled window. Pre-retirement
 rehearsal hashes cannot substitute. Preserve deployment/operation/recovery records,
-accepted publication receipts, authenticated before/after observations and exact
+committed selection bytes, signed releases and publisher identities, authenticated before/after observations and exact
 source/run/attempt/artifact hashes before root registration, repository
 reconciliation or resource cleanup.
 
@@ -469,3 +275,9 @@ Future promotion also requires a sealed stable Service release, completed-succes
 exact E2E v2 qualification, digest-preserving promotion and scan policy. Artifact
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
+
+Inactive CDK deployments explicitly pass `--no-rollback` to prevent native
+CloudFormation rollback from restoring activity during stop or stopped-state
+maintenance. Failure leaves partial resource state for explicit reviewed recovery;
+resource replacements unsupported in this mode must fail rather than trigger a
+restart. Preserve actual stack outputs/statuses and admission readback.

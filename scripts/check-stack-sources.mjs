@@ -1,11 +1,13 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseJson, sha256, HASH, exact, matches, SHA } from './json-contract.mjs';
-import { validateOperationInputs } from './runtime-operation.mjs';
+import { validateOperationInputs, selectionBinding } from './runtime-operation.mjs';
+import { loadCommittedSelection } from './artifact-consumer.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 validateOperationInputs();
+await loadCommittedSelection(selectionBinding());
 if (!/^stack-sources\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(process.env.STACK_SOURCES_FILE ?? '') || !HASH.test(process.env.STACK_SOURCES_SHA256 ?? '')) throw new Error('Reviewed stack sources path/hash required');
 const bytes = await readFile(process.env.STACK_SOURCES_FILE);
-if (sha256(bytes) !== process.env.STACK_SOURCES_SHA256) throw new Error('Stack sources bytes differ from manager window');
+if (sha256(bytes) !== process.env.STACK_SOURCES_SHA256) throw new Error('Stack source bytes differ from explicit input hash');
 const rows = parseJson(bytes);
 if (!Array.isArray(rows) || rows.length !== 4 || new Set(rows.map(row => row.stack_name)).size !== 4) throw new Error('Four unique stack sources required');
 for (const row of rows) {

@@ -1,13 +1,13 @@
 import { pathToFileURL } from 'node:url';
 import { canonicalJson, contentHash, matches, HASH, integer } from './json-contract.mjs';
-import { validateProductionWindow, assertQualifiedSelection } from './production-preflight.mjs';
+import { validateProductionContext, assertQualifiedSelection } from './production-preflight.mjs';
 
 // #54 implements the v2 consumer; Production execution is not onboarded. These
 // are source-reviewed future requirements, not an authorization or AWS executor.
 export const PRODUCTION_ONBOARDING_BLOCKERS = Object.freeze([
   'Reviewed cross-account Beta ECR reader and dedicated Production deploy/runtime OIDC principals are not installed.',
   'The authenticated DB verifier and deployment observer currently bind only the Beta account/cluster/workflow; Production contracts and their tests require a separate reviewed change.',
-  'Production account resources, selected and rollback retention, scan-on-push, role boundaries, schema operation windows and recovery evidence are not qualified.',
+  'Production account resources, selected and rollback retention, scan-on-push, role boundaries, explicit schema operations and recovery evidence are not qualified.',
 ]);
 
 export function assertProductionExecutorReady() {
@@ -17,7 +17,7 @@ export function assertProductionExecutorReady() {
 }
 
 export function buildProductionPromotionPlan({ selector, qualification, stableRelease, env = process.env }) {
-  validateProductionWindow(env); assertQualifiedSelection(qualification, selector, env);
+  validateProductionContext(env); assertQualifiedSelection(qualification, selector, env);
   if (stableRelease.id !== Number(env.STABLE_RELEASE_ID) || stableRelease.immutable !== true || stableRelease.draft !== false
     || stableRelease.prerelease !== false || !/^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(stableRelease.tag_name ?? '')) {
     throw new Error('Reviewed sealed stable release required for promotion plan');
@@ -68,12 +68,11 @@ export function verifyPromotionScan(scan, { expectedDigest, expectedRepositoryUr
   }
   if ((counts.CRITICAL ?? 0) > 0 || (counts.UNDEFINED ?? 0) > 0) throw new Error('Critical or unclassified scan findings block promotion');
   if ((counts.HIGH ?? 0) > 0) {
-    // Pin the approval's full scan/window evidence; a boolean cannot accept risk.
+    // Bind any reviewed risk acceptance to the exact scan, image and Infra source.
     matches(env.PROD_SCAN_APPROVAL_SHA256, HASH, 'reviewed scan approval hash');
-    const expected = { repository_uri: expectedRepositoryUri, image_digest: expectedDigest, scan_sha256: contentHash(scan), finding_counts: counts, infra_sha: env.GITHUB_SHA,
-      window: env.PROD_WRITER_WINDOW, record_url: env.PROD_WINDOW_RECORD_URL };
+    const expected = { repository_uri: expectedRepositoryUri, image_digest: expectedDigest, scan_sha256: contentHash(scan), finding_counts: counts, infra_sha: env.GITHUB_SHA };
     if (!highApproval || canonicalJson(highApproval) !== canonicalJson(expected)
-      || contentHash(highApproval) !== env.PROD_SCAN_APPROVAL_SHA256) throw new Error('High findings require exact reviewed scan/window approval evidence');
+      || contentHash(highApproval) !== env.PROD_SCAN_APPROVAL_SHA256) throw new Error('High findings require exact reviewed scan approval evidence');
   }
   return { image_digest: expectedDigest, scan_status: 'COMPLETE', finding_counts: counts, completed_at: findings.imageScanCompletedAt };
 }

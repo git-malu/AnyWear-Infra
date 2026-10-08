@@ -21,9 +21,8 @@ export async function createTestInputs(directory) {
       runtime_policy: { service_sha: serviceSha, file: 'runtime-policy.json', sha256: sha256(policyBytes), content_sha256: contentHash(JSON.parse(policyBytes)) },
       schema: { service_sha: serviceSha, file: 'service-schema.json', sha256: sha256(schemaBytes), journal_sha256: contentHash(journal), current_version: 16, minimum_version: 16 } } };
   const manifestBytes = Buffer.from(JSON.stringify(manifest));
-  const selector = { schema_version: 1, record_type: 'anywear_infra_selection', release: {
+  const selector = { schema_version: 2, record_type: 'anywear_infra_selection', release: {
     repository: 'git-malu/AnyWear-Service', id: 1, manifest_asset_id: 1, manifest_sha256: sha256(manifestBytes) },
-    publication_acceptance: { file: `publications/${sha256(manifestBytes)}.json`, sha256: '9'.repeat(64) },
     image: manifest.components.image, lambdas: { pre_sign_up: { ...manifest.components.lambdas.pre_sign_up, asset_id: 2 }, post_confirmation: { ...manifest.components.lambdas.post_confirmation, asset_id: 3 } },
     runtime_policy: { ...manifest.components.runtime_policy, asset_id: 4 }, schema: { ...manifest.components.schema, asset_id: 5 } };
   for (const [file, bytes] of Object.entries({ 'pre-sign-up.zip': zip, 'post-confirmation.zip': zip, 'runtime-policy.json': policyBytes,

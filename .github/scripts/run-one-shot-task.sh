@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-node scripts/check-window.mjs
+node scripts/check-operation.mjs
 
 if [[ "${1:-}" == "--runtime-checkpoint-protocol" ]]; then
   [[ "$#" -eq 1 ]] || { echo "Invalid runtime checkpoint probe" >&2; exit 2; }
