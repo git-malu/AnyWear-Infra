@@ -29,6 +29,19 @@ Only sanitized status/identity evidence is uploaded; key/token bytes stay inside
 Actions. The workflow has no AWS credentials, OIDC permission, release mutation,
 or deployment step. Close the variable gate after collecting the accepted run.
 
+Before scoped token creation, the same reviewed-source guard permits a
+metadata-only diagnostic: authenticated GET `/app` and
+`/app/installations/123158580`. Its short-lived App JWT exists only in runner
+memory. The uploaded `registration-metadata.json` records sanitized App and
+installation identities, the actual App permissions settings URL, repository
+selection, suspension and configured-versus-installed permissions. It includes
+Attestations read for the later native immutable-release verification review;
+the diagnostic neither requests that scope nor expands any token permission.
+App ownership is recorded separately from installation ownership. Metadata does
+not establish scoped access: the independent single-repository token/read
+checks must still pass. Only the manager opens the exact-head credential gate
+after source review and CI, and closes it after the bounded run.
+
 ## Manager window and immutable inputs
 
 Before enabling a writer, the manager records the exact Infra SHA, operation,

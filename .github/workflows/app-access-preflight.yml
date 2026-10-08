@@ -37,6 +37,11 @@ jobs:
       - name: Verify reviewed checkout before using App credentials
         id: guard
         run: node scripts/app-access-preflight.mjs guard
+      - name: Read sanitized App registration and installation metadata
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: node scripts/app-registration-metadata.mjs
       - name: Create Service read token
         if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
         id: service
