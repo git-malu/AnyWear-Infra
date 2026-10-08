@@ -65,9 +65,12 @@ The native signature has no workflow/run fields. Review the
 before selecting a release; the receipt hash and exact trusted Infra revision are
 deployment inputs.
 The native verifier and fixture come from Service
-`8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce`, with paths/hashes recorded in
+`6a0551b3ea83937d3ac350ee78608784bc2d9dc6`, with paths/hashes recorded in
 [vendor provenance](scripts/vendor/provenance.json). Original CDK baseline
 provenance remains separately recorded under `test/baselines`.
+The parser supports exact native predicates v0.1 and v0.2. The genuine v0.2
+fixture comes from a failed publisher; native verification does not qualify that
+release or replace the completed-success publisher and reviewed receipt gates.
 
 Read the [Beta operation runbook](docs/runbooks/beta-infrastructure.md) for exact
 inputs and the [cutover and recovery runbook](docs/runbooks/cutover-and-recovery.md)

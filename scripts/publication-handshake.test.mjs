@@ -16,6 +16,7 @@ const execute = promisify(execFile);
 const timestamp = '2026-10-08T01:00:00Z';
 const prefix = 'repos/git-malu/AnyWear-Service';
 const repo = { id: 1158460323, full_name: 'git-malu/AnyWear-Service', private: true, owner: { id: 11473072, login: 'git-malu' } };
+const nativeVersions = ['v0.1', 'v0.2'];
 const temporary = async name => mkdtemp(path.join(os.tmpdir(), `anywear-handshake-${name}-`));
 function zip(bytes) {
   let crc = 0xffffffff;
@@ -41,7 +42,7 @@ function original(component) {
     asset_bucket: 'fixture-original-assets', asset_key: `${'8'.repeat(64)}.zip`, code_sha256: component.code_sha256 };
   return result;
 }
-async function publicationFixture() {
+async function publicationFixture(nativeVersion) {
   const source = await temporary('fixture'); const { manifest } = await createTestInputs(source);
   manifest.kind = 'deployed-baseline-import'; manifest.producer.workflow_sha = '2'.repeat(40); manifest.producer.run_id = 91; manifest.producer.run_attempt = 2;
   for (const component of [manifest.components.image, ...Object.values(manifest.components.lambdas), manifest.components.runtime_policy, manifest.components.schema]) {
@@ -61,8 +62,10 @@ async function publicationFixture() {
     event: 'workflow_dispatch', status: 'completed', conclusion: 'success', run_started_at: '2026-10-08T00:00:00Z', updated_at: '2026-10-08T00:30:00Z',
     repository: structuredClone(repo), head_repository: structuredClone(repo) };
   const purl = `pkg:github/${repo.full_name}@${release.tag_name}`;
-  const statement = { _type: 'https://in-toto.io/Statement/v1', predicateType: RELEASE_PREDICATE_TYPE,
-    predicate: { ownerId: '11473072', repositoryId: '1158460323', repository: repo.full_name, releaseId: '73', purl, tag: release.tag_name },
+  const identity = { ownerId: '11473072', repositoryId: '1158460323', repository: repo.full_name, purl, tag: release.tag_name };
+  const statement = { _type: 'https://in-toto.io/Statement/v1',
+    predicateType: nativeVersion === 'v0.1' ? RELEASE_PREDICATE_TYPE : 'https://in-toto.io/attestation/release/v0.2',
+    predicate: nativeVersion === 'v0.1' ? { ...identity, releaseId: '73' } : { ...identity, databaseId: '73', packageId: identity.repositoryId },
     subject: [{ uri: purl, digest: { sha1: request.release.target } }, ...assets.map(asset => ({ name: asset.name, digest: { sha256: asset.sha256 } }))] };
   // Synthetic post-gh results exercise parser/binding. No crypto or live read is claimed.
   const native = { verificationResult: { statement, signature: { certificate: { subjectAlternativeName: 'https://dotcom.releases.github.com' } } },
@@ -76,7 +79,12 @@ async function publicationFixture() {
     size_in_bytes: archive.length, digest: `sha256:${sha256(archive)}`, workflow_run: { id: 91, head_sha: producer.head_sha } };
   return { request, release, producer, manifest, native, recordBytes, archive, artifact, bytes };
 }
-const fixture = await publicationFixture();
+const fixtures = Object.fromEntries(await Promise.all(nativeVersions.map(async version => [version, await publicationFixture(version)])));
+const fixture = fixtures['v0.1'];
+function nativeInputs(request) {
+  return { releaseId: request.release.id, tag: request.release.tag, target: request.release.target,
+    assetHashes: Object.fromEntries(request.assets.map(asset => [asset.name, asset.sha256])) };
+}
 function environment(request = fixture.request) {
   const source = 'a'.repeat(40);
   return { HANDSHAKE_REQUEST_JSON: canonicalJson(request), HANDSHAKE_SOURCE_SHA: source, GITHUB_SHA: source, GITHUB_WORKFLOW_SHA: source,
@@ -88,8 +96,8 @@ function environment(request = fixture.request) {
     PUBLICATION_HANDSHAKE_RECORD_URL: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-6055545064',
     PUBLICATION_HANDSHAKE_REQUEST_SHA256: sha256(canonicalJson(request)) };
 }
-async function attempt({ patch = () => {}, check = async () => {}, installationId = String(INSTALLATION_ID), tokenMintOutcome = 'success' } = {}) {
-  const current = structuredClone(fixture); patch(current);
+async function attempt({ nativeVersion = 'v0.1', patch = () => {}, check = async () => {}, installationId = String(INSTALLATION_ID), tokenMintOutcome = 'success' } = {}) {
+  const current = structuredClone(fixtures[nativeVersion]); patch(current);
   const root = await temporary('attempt'); const evidenceDirectory = path.join(root, 'evidence'); await mkdir(evidenceDirectory);
   const calls = []; let runReads = 0; let nativeReads = 0;
   const io = {
@@ -228,20 +236,24 @@ test('live adapter bounds streamed ZIP, cancels oversized response, and handles 
   const failure = liveReaderIo({ token: 'scoped-test-token', configDirectory: '/empty', fetchImpl: async () => ({ ok: false, status: 404 }) });
   await assert.rejects(failure.api('installation/repositories?per_page=100'), /github-read-failed/);
 });
-test('complete simulated handshake preserves raw native/ZIP/record and candidate without an accepted selector', async () => {
-  const current = await attempt(); const candidate = await current.perform();
-  assert.equal(candidate.producer.workflow_sha, fixture.request.producer.workflow_sha);
-  assert.notEqual(candidate.producer.workflow_sha, fixture.manifest.components.image.service_sha);
-  assert.equal(candidate.publication.record_base64, fixture.recordBytes.toString('base64'));
+for (const nativeVersion of nativeVersions) test(`complete synthetic ${nativeVersion} handshake binds release and five assets without an accepted selector`, async () => {
+  const current = await attempt({ nativeVersion }); const candidate = await current.perform(); const synthetic = current.current;
+  assert.equal(candidate.producer.workflow_sha, synthetic.request.producer.workflow_sha);
+  assert.notEqual(candidate.producer.workflow_sha, synthetic.manifest.components.image.service_sha);
+  assert.equal(candidate.publication.record_base64, Buffer.from(synthetic.recordBytes).toString('base64'));
   assert.equal(current.status.scope_mint_accepted, true); assert.equal(current.status.actual_native_read_verified, true); assert.equal(current.status.verified, true);
   for (const field of ['receipt_committed', 'selection_accepted', 'deployment_authorized', 'mutation_performed']) assert.equal(current.status[field], false);
-  assert.equal(current.calls.filter(value => value.startsWith('native:')).length, 6);
+  assert.deepEqual(current.calls.filter(value => value.startsWith('native:')).sort(), ['native:release', ...ASSET_NAMES.map(name => `native:${name}`)].sort());
   assert.equal(current.calls.filter(value => value === `${prefix}/actions/runs/91/attempts/2`).length, 4);
   const files = await readdir(current.evidenceDirectory);
   assert.equal(files.includes('selection.json'), false); assert.equal(files.includes('receipt.json'), false);
-  assert.ok((await readFile(path.join(current.evidenceDirectory, 'publication.zip'))).equals(fixture.archive));
-  assert.ok((await readFile(path.join(current.evidenceDirectory, 'service-artifact-publication.json'))).equals(fixture.recordBytes));
-  assert.ok((await readFile(path.join(current.evidenceDirectory, 'native-release.json'))).equals(Buffer.from(canonicalJson(fixture.native))));
+  assert.ok((await readFile(path.join(current.evidenceDirectory, 'publication.zip'))).equals(synthetic.archive));
+  assert.ok((await readFile(path.join(current.evidenceDirectory, 'service-artifact-publication.json'))).equals(synthetic.recordBytes));
+  for (const name of ['native-release.json', ...ASSET_NAMES.map(name => `native-${name.replace(/\.(json|zip)$/, '')}.json`)]) {
+    const raw = await readFile(path.join(current.evidenceDirectory, name));
+    assert.ok(raw.equals(Buffer.from(canonicalJson(synthetic.native))));
+    assert.deepEqual(assertNativeReleaseAttestation(parseJson(raw), nativeInputs(synthetic.request)), synthetic.native.verificationResult.statement);
+  }
   const inventory = parseJson(await readFile(path.join(current.evidenceDirectory, 'inventory.json')));
   for (const file of inventory.files) assert.equal(file.sha256, sha256(await readFile(path.join(current.evidenceDirectory, file.name))));
 });
@@ -308,15 +320,26 @@ test('every remote boundary rechecks expiry/source and final source drift preven
   await assert.rejects(final.perform()); assert.equal(final.status.actual_native_read_verified, true); assert.equal(final.status.verified, false);
   assert.equal((await readdir(final.evidenceDirectory)).includes('candidate.json'), false); assert.ok(count > final.calls.length * 2);
 });
-test('successful native commands using different signed statements are rejected', async () => {
-  const differentNative = structuredClone(fixture.native);
+for (const nativeVersion of nativeVersions) test(`synthetic ${nativeVersion} native commands using different policy-valid signed statements are rejected`, async () => {
+  const synthetic = fixtures[nativeVersion]; const differentNative = structuredClone(synthetic.native);
   // Both subject orders bind the complete set, but the signed statements differ.
   differentNative.verificationResult.statement.subject.reverse();
   differentNative.attestation.bundle.dsseEnvelope.payload = Buffer.from(canonicalJson(differentNative.verificationResult.statement)).toString('base64');
-  const expected = { releaseId: fixture.request.release.id, tag: fixture.request.release.tag, target: fixture.request.release.target,
-    assetHashes: Object.fromEntries(fixture.request.assets.map(asset => [asset.name, asset.sha256])) };
-  assertNativeReleaseAttestation(fixture.native, expected); assertNativeReleaseAttestation(differentNative, expected);
-  await rejected({ patch: f => { f.nativeDriftAt = 2; f.differentNative = differentNative; } }, /native-statement-drift/);
+  const expected = nativeInputs(synthetic.request);
+  assertNativeReleaseAttestation(synthetic.native, expected); assertNativeReleaseAttestation(differentNative, expected);
+  await rejected({ nativeVersion, patch: f => { f.nativeDriftAt = 2; f.differentNative = differentNative; } }, /native-statement-drift/);
+});
+
+for (const [label, patch, expected] of [
+  ['completed-failure producer', f => f.producer.conclusion = 'failure', /publisher-verification-failed/],
+  ['missing publication artifact', f => f.artifactInventory = { total_count: 0, artifacts: [] }, /publication-inventory-verification-failed/],
+]) test(`policy-valid synthetic v0.2 cannot qualify a ${label}`, async () => {
+  const synthetic = fixtures['v0.2']; assertNativeReleaseAttestation(synthetic.native, nativeInputs(synthetic.request));
+  const current = await rejected({ nativeVersion: 'v0.2', patch }, expected);
+  assert.equal(current.calls.some(value => value.startsWith('archive:')), false);
+  assert.equal(current.status.selection_accepted, false); assert.equal(current.status.deployment_authorized, false);
+  if (label === 'completed-failure producer') assert.equal(current.calls.some(value => value.startsWith('native:')), false);
+  else { assert.equal(current.calls.filter(value => value.startsWith('native:')).length, 6); assert.equal(current.status.actual_native_read_verified, true); }
 });
 test('artifact expiry crossing during retrieval prevents candidate output at completion', async () => {
   const current = await attempt(); let timestamps = 0;
