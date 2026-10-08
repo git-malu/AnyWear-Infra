@@ -83,11 +83,15 @@ and the independently proven original component producers remain separate.
 | `manager_acceptance_url`, `verified_at` | Manager review-comment reference and UTC verification timestamp; source approval comes from the separate reviewed Infra pin/window |
 
 The shared native verifier and fixture are pinned from Service
-`8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce`. The complete source paths and raw file
+`6a0551b3ea83937d3ac350ee78608784bc2d9dc6`. The complete source paths and raw file
 hashes are in [vendor provenance](../../scripts/vendor/provenance.json); retain
 that pin when validating the [native fixture](../../test/fixtures/native-release-source.md).
 The original CDK source-synth baseline has separate Service provenance in
 `test/baselines/provenance.json`.
+The shared parser accepts exact native predicates v0.1 and v0.2. The genuine
+v0.2 fixture is preserved from failed publisher evidence for offline parsing;
+that release remains unselectable without completed-success publication and the
+separate reviewed acceptance gate.
 
 1. Independently retrieve the exact publisher run/attempt from Service using the
    read-only private-repository access. Require the expected repository,

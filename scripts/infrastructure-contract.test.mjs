@@ -6,6 +6,7 @@ import os from 'node:os';
 import { parseJson, canonicalJson, contentHash, sha256 } from './json-contract.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
 import { validateSelection, verifySelection } from './artifact-consumer.mjs';
+import { assertNativeReleaseAttestation } from './vendor/service-release-attestation.mjs';
 import { validateDeploymentRecord, assertObservedMatchesDeployment, stableLambdaConfiguration } from './deployment-contract.mjs';
 import { assertWriterWindow } from './writer-window.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
@@ -72,33 +73,75 @@ test('publisher run must finish success; release published event is insufficient
   }, async asset(repo, id) { return readFile(path.join(fixtureDirectory, ids.get(id))); }, async attestation() { assert.fail('Early release must not reach attestation'); } };
   await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')), io), /complete successfully/);
 });
-function nativeFixture() {
+function nativeFixture(predicateType = 'https://in-toto.io/attestation/release/v0.1') {
   const tag = `service-artifacts-${selector.image.service_sha}`; const purl = `pkg:github/git-malu/AnyWear-Service@${tag}`;
   const hashes = { 'service-artifacts.json': selector.release.manifest_sha256, ...Object.fromEntries([...Object.values(selector.lambdas), selector.runtime_policy, selector.schema].map(item => [item.file, item.sha256])) };
-  const statement = { _type: 'https://in-toto.io/Statement/v1', predicateType: 'https://in-toto.io/attestation/release/v0.1',
-    predicate: { ownerId: '11473072', repositoryId: '1158460323', repository: 'git-malu/AnyWear-Service', releaseId: '1', purl, tag },
+  const identity = { ownerId: '11473072', repositoryId: '1158460323', repository: 'git-malu/AnyWear-Service', purl, tag };
+  const predicate = predicateType.endsWith('/v0.2') ? { ...identity, databaseId: '1', packageId: '1158460323' } : { ...identity, releaseId: '1' };
+  const statement = { _type: 'https://in-toto.io/Statement/v1', predicateType, predicate,
     subject: [{ uri: purl, digest: { sha1: selector.image.service_sha } }, ...Object.entries(hashes).map(([name, hash]) => ({ name, digest: { sha256: hash } }))] };
   return { verificationResult: { statement, signature: { certificate: { subjectAlternativeName: 'https://dotcom.releases.github.com' } } },
     attestation: { bundle: { dsseEnvelope: { payloadType: 'application/vnd.in-toto+json', payload: Buffer.from(JSON.stringify(statement)).toString('base64'), signatures: [{ sig: 'test-only' }] } } } };
 }
 
-test('authenticated release exact hashes and source are verified before asset use', async () => {
+function selectedArtifactIo(native, conclusion = 'success') {
   const ids = new Map([[1, 'service-artifacts.json'], [2, 'pre-sign-up.zip'], [3, 'post-confirmation.zip'], [4, 'runtime-policy.json'], [5, 'service-schema.json']]);
-  let attestations = 0;
-  const io = { async api(endpoint) {
+  const nativeChecks = [];
+  return { nativeChecks, async api(endpoint) {
     if (endpoint.includes('/releases/')) return { id: 1, immutable: true, draft: false, tag_name: `service-artifacts-${selector.image.service_sha}`,
       assets: [...ids].map(([id, name]) => ({ id, name, state: 'uploaded' })) };
     if (endpoint.includes('/git/ref/')) return { object: { type: 'commit', sha: selector.image.service_sha } };
     return { id: 1, run_attempt: 1, head_sha: manifest.producer.workflow_sha, head_branch: 'main', path: '.github/workflows/service-artifacts.yml',
       repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323, owner: { id: 11473072 } }, head_repository: { full_name: 'git-malu/AnyWear-Service', id: 1158460323 },
-      event: 'workflow_dispatch', status: 'completed', conclusion: 'success' };
-  }, async asset(repo, id) { return readFile(path.join(fixtureDirectory, ids.get(id))); }, async attestation() { attestations++; return nativeFixture(); }, async loadPublicationAcceptance() { return {}; } };
-  const result = await verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')), io);
-  assert.equal(result.schema.minimum_version, 16); assert.equal(attestations, 6);
-  const bytes = await readFile(path.join(fixtureDirectory, 'pre-sign-up.zip'));
-  await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')),
-    { ...io, async asset(repo, id) { return id === 2 ? Buffer.concat([bytes, Buffer.from('tamper')]) : io.asset(repo, id); } }), /Asset bytes differ/);
-});
+      event: 'workflow_dispatch', status: 'completed', conclusion };
+  }, async asset(repo, id) { return readFile(path.join(fixtureDirectory, ids.get(id))); },
+  async attestation(tag, file) { nativeChecks.push(file ? path.basename(file) : 'release'); return native; },
+  async loadPublicationAcceptance() { return {}; } };
+}
+
+for (const predicateType of ['https://in-toto.io/attestation/release/v0.1', 'https://in-toto.io/attestation/release/v0.2']) {
+  test(`authenticated ${predicateType} release preserves one complete signed statement across six checks`, async () => {
+    const native = nativeFixture(predicateType);
+    const original = canonicalJson(native);
+    const io = selectedArtifactIo(native);
+    const result = await verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')), io);
+    assert.equal(result.schema.minimum_version, 16);
+    assert.deepEqual(io.nativeChecks, ['release', 'service-artifacts.json', 'pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json', 'service-schema.json']);
+    assert.equal(canonicalJson(native), original, 'Consumer must preserve the original native statement/envelope');
+    const bytes = await readFile(path.join(fixtureDirectory, 'pre-sign-up.zip'));
+    await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-download-')),
+      { ...io, async asset(repo, id) { return id === 2 ? Buffer.concat([bytes, Buffer.from('tamper')]) : io.asset(repo, id); } }), /Asset bytes differ/);
+  });
+
+  test(`${predicateType} consumer rejects a different policy-valid signed statement for each of the five assets`, async () => {
+    const native = nativeFixture(predicateType);
+    const altered = structuredClone(native);
+    altered.verificationResult.statement.subject.reverse();
+    altered.attestation.bundle.dsseEnvelope.payload = Buffer.from(canonicalJson(altered.verificationResult.statement)).toString('base64');
+    const expected = { releaseId: selector.release.id, tag: `service-artifacts-${selector.image.service_sha}`, target: selector.image.service_sha,
+      assetHashes: { 'service-artifacts.json': selector.release.manifest_sha256,
+        ...Object.fromEntries([...Object.values(selector.lambdas), selector.runtime_policy, selector.schema].map(item => [item.file, item.sha256])) } };
+    assertNativeReleaseAttestation(native, expected); assertNativeReleaseAttestation(altered, expected);
+    for (const mismatch of ['service-artifacts.json', 'pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json', 'service-schema.json']) {
+      const io = selectedArtifactIo(native);
+      await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-mixed-native-')),
+        { ...io, async attestation(tag, file) { return file && path.basename(file) === mismatch ? altered : native; } }),
+        /different native statement/, mismatch);
+    }
+  });
+
+  test(`${predicateType} policy-valid native evidence cannot qualify a failed producer`, async () => {
+    const native = nativeFixture(predicateType);
+    const expected = { releaseId: selector.release.id, tag: `service-artifacts-${selector.image.service_sha}`, target: selector.image.service_sha,
+      assetHashes: { 'service-artifacts.json': selector.release.manifest_sha256,
+        ...Object.fromEntries([...Object.values(selector.lambdas), selector.runtime_policy, selector.schema].map(item => [item.file, item.sha256])) } };
+    assertNativeReleaseAttestation(native, expected);
+    const io = selectedArtifactIo(native, 'failure');
+    await assert.rejects(verifySelection(selector, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-failed-publisher-')), io), /complete successfully/);
+    assert.deepEqual(io.nativeChecks, [], 'Reject failed producer before any native or receipt acceptance');
+  });
+}
+
 test('writer source/ref/window/expiry/operation/artifact and retention phase bind before credentials', () => {
   validateOperationInputs(env);
   for (const patch of [{ INFRA_WINDOW_SHA: '0'.repeat(40) }, { GITHUB_REF: 'refs/heads/branch' }, { INFRA_OPERATION: 'stop' },

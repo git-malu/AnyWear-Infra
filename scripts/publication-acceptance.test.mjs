@@ -8,11 +8,12 @@ import path from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { parseJson, canonicalJson, contentHash, sha256 } from './json-contract.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
-import { RELEASE_PREDICATE_TYPE } from './vendor/service-release-attestation.mjs';
+import { RELEASE_PREDICATE_TYPE, assertNativeReleaseAttestation } from './vendor/service-release-attestation.mjs';
 import { decodePublicationArchive, createPublicationCandidate, validatePublicationAcceptance, loadPublicationAcceptance,
   MAX_PUBLICATION_ARCHIVE_BYTES, MAX_PUBLICATION_RECORD_BYTES } from './publication-acceptance.mjs';
 
 const execute = promisify(execFile);
+const nativeVersions = ['v0.1', 'v0.2'];
 const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), 'anywear-publication-source-'));
 const { selector: originalSelector, manifest } = await createTestInputs(fixtureDirectory);
 const selector = structuredClone(originalSelector); delete selector.publication_acceptance;
@@ -26,20 +27,20 @@ const release = { id: selector.release.id, immutable: true, draft: false, tag_na
       digest: `sha256:${item.sha256}`, state: 'uploaded', size: (await readFile(path.join(fixtureDirectory, item.file))).length }))) };
 const hashes = Object.fromEntries(release.assets.map(asset => [asset.name, asset.digest.slice(7)]));
 const purl = `pkg:github/git-malu/AnyWear-Service@${release.tag_name}`;
-const statement = { _type: 'https://in-toto.io/Statement/v1', predicateType: RELEASE_PREDICATE_TYPE,
-  predicate: { ownerId: '11473072', repositoryId: '1158460323', repository: 'git-malu/AnyWear-Service', releaseId: String(release.id), purl, tag: release.tag_name },
-  subject: [{ uri: purl, digest: { sha1: selector.image.service_sha } }, ...Object.entries(hashes).map(([name, hash]) => ({ name, digest: { sha256: hash } }))] };
-// Cryptographic policy is verified by gh in the handshake. This fixture tests
-// the shared parser and complete signed-statement binding after that boundary.
-const nativeVerification = { verificationResult: { statement, signature: { certificate: { subjectAlternativeName: 'https://dotcom.releases.github.com' } } },
-  attestation: { bundle: { dsseEnvelope: { payload: Buffer.from(canonicalJson(statement)).toString('base64'),
-    payloadType: 'application/vnd.in-toto+json', signatures: [{ sig: 'unit-fixture' }] } } } };
-const publicationRecord = { schema_version: 1, record_type: 'anywear_service_artifact_publication', repository: repo.full_name,
-  release_id: release.id, manifest_asset_id: selector.release.manifest_asset_id, manifest_sha256: selector.release.manifest_sha256,
-  tag: release.tag_name, target: selector.image.service_sha, producer: manifest.producer,
-  assets: Object.fromEntries(release.assets.map(asset => [asset.name, { id: asset.id, size: asset.size, sha256: hashes[asset.name] }])),
-  release_attestation: nativeVerification, native_release_statement_sha256: contentHash(statement) };
-const recordBytes = Buffer.from(`${JSON.stringify(publicationRecord, null, 2)}\n`);
+const nativeInputs = { releaseId: release.id, tag: release.tag_name, target: selector.image.service_sha, assetHashes: hashes };
+
+function nativeFixture(nativeVersion) {
+  const identity = { ownerId: '11473072', repositoryId: '1158460323', repository: repo.full_name, purl, tag: release.tag_name };
+  const statement = { _type: 'https://in-toto.io/Statement/v1',
+    predicateType: nativeVersion === 'v0.1' ? RELEASE_PREDICATE_TYPE : 'https://in-toto.io/attestation/release/v0.2',
+    predicate: nativeVersion === 'v0.1' ? { ...identity, releaseId: String(release.id) }
+      : { ...identity, databaseId: String(release.id), packageId: identity.repositoryId },
+    subject: [{ uri: purl, digest: { sha1: selector.image.service_sha } }, ...Object.entries(hashes).map(([name, hash]) => ({ name, digest: { sha256: hash } }))] };
+  // Synthetic post-gh result: no cryptographic or live publication success is claimed.
+  return { verificationResult: { statement, signature: { certificate: { subjectAlternativeName: 'https://dotcom.releases.github.com' } } },
+    attestation: { bundle: { dsseEnvelope: { payload: Buffer.from(canonicalJson(statement)).toString('base64'),
+      payloadType: 'application/vnd.in-toto+json', signatures: [{ sig: 'unit-fixture' }] } } } };
+}
 
 function crc32(bytes) {
   let crc = 0xffffffff;
@@ -63,13 +64,23 @@ function zip(bytes, { method = 8, descriptor = false, signedDescriptor = true, n
   end.writeUInt32LE(central.length + filename.length, 12); end.writeUInt32LE(local.length + filename.length + data.length + desc.length, 16);
   return Buffer.concat([local, filename, data, desc, central, filename, end]);
 }
-const archiveBytes = zip(recordBytes, { descriptor: true });
-const artifact = { id: 42, name: `service-artifact-publication-${producerRun.id}-${producerRun.run_attempt}`, expired: false,
-  workflow_run: { id: producerRun.id, head_sha: producerRun.head_sha }, created_at: '2026-10-08T00:20:00Z', expires_at: '2099-01-01T00:00:00Z',
-  size_in_bytes: archiveBytes.length, digest: `sha256:${sha256(archiveBytes)}` };
-const input = { selector, manifest, release, producerRun, artifacts: [artifact], archiveBytes, nativeVerification,
-  managerAcceptanceUrl: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-6041978451', verifiedAt: '2026-10-08T01:00:00Z' };
-const candidate = createPublicationCandidate(input);
+function publicationFixture(nativeVersion) {
+  const nativeVerification = nativeFixture(nativeVersion);
+  const publicationRecord = { schema_version: 1, record_type: 'anywear_service_artifact_publication', repository: repo.full_name,
+    release_id: release.id, manifest_asset_id: selector.release.manifest_asset_id, manifest_sha256: selector.release.manifest_sha256,
+    tag: release.tag_name, target: selector.image.service_sha, producer: manifest.producer,
+    assets: Object.fromEntries(release.assets.map(asset => [asset.name, { id: asset.id, size: asset.size, sha256: hashes[asset.name] }])),
+    release_attestation: nativeVerification, native_release_statement_sha256: contentHash(nativeVerification.verificationResult.statement) };
+  const recordBytes = Buffer.from(`${JSON.stringify(publicationRecord, null, 2)}\n`); const archiveBytes = zip(recordBytes, { descriptor: true });
+  const artifact = { id: 42, name: `service-artifact-publication-${producerRun.id}-${producerRun.run_attempt}`, expired: false,
+    workflow_run: { id: producerRun.id, head_sha: producerRun.head_sha }, created_at: '2026-10-08T00:20:00Z', expires_at: '2099-01-01T00:00:00Z',
+    size_in_bytes: archiveBytes.length, digest: `sha256:${sha256(archiveBytes)}` };
+  const input = { selector, manifest, release, producerRun, artifacts: [artifact], archiveBytes, nativeVerification,
+    managerAcceptanceUrl: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-6041978451', verifiedAt: '2026-10-08T01:00:00Z' };
+  return { nativeVerification, publicationRecord, recordBytes, archiveBytes, artifact, input, candidate: createPublicationCandidate(input) };
+}
+const fixtures = Object.fromEntries(nativeVersions.map(version => [version, publicationFixture(version)]));
+const { publicationRecord, recordBytes, archiveBytes, candidate } = fixtures['v0.1'];
 
 test('ZIP parser returns exact original record bytes for store, deflate and signed/unsigned descriptor archives', () => {
   for (const options of [{ method: 0 }, { method: 8 }, { method: 8, descriptor: true }, { method: 8, descriptor: true, signedDescriptor: false }]) {
@@ -103,13 +114,16 @@ test('ZIP parser bounds actual decompression and archive bytes, rejects duplicat
   assert.throws(() => decodePublicationArchive(unsupported));
 });
 
-test('candidate requires exact successful repository/source/run/attempt and unique unexpired attempt artifact', () => {
+for (const nativeVersion of nativeVersions) test(`synthetic ${nativeVersion} candidate requires exact successful repository/source/run/attempt and unique unexpired attempt artifact`, () => {
+  const { candidate, recordBytes, input, artifact, archiveBytes, nativeVerification } = fixtures[nativeVersion];
+  assertNativeReleaseAttestation(nativeVerification, nativeInputs);
   assert.equal(candidate.publication.record_base64, recordBytes.toString('base64'));
   for (const patch of [{ run_attempt: 2 }, { status: 'in_progress' }, { conclusion: 'failure' }, { head_sha: '9'.repeat(40) },
     { repository: { ...repo, id: 1 } }, { head_repository: { ...repo, owner: { id: 1 } } }]) {
     assert.throws(() => createPublicationCandidate({ ...input, producerRun: { ...producerRun, ...patch } }));
   }
   assert.throws(() => createPublicationCandidate({ ...input, artifacts: [artifact, artifact] }), /Exactly one/);
+  assert.throws(() => createPublicationCandidate({ ...input, artifacts: [] }), /Exactly one/);
   for (const patch of [{ name: 'service-artifact-publication-1-2' }, { expired: true }, { expires_at: input.verifiedAt },
     { created_at: '2026-10-07T23:59:00Z' }, { workflow_run: { id: producerRun.id, head_sha: '9'.repeat(40) } },
     { digest: `sha256:${'9'.repeat(64)}` }, { size_in_bytes: archiveBytes.length + 1 }]) {
@@ -118,7 +132,8 @@ test('candidate requires exact successful repository/source/run/attempt and uniq
   assert.throws(() => createPublicationCandidate({ ...input, nativeVerification: undefined }), /First-hand/);
 });
 
-test('receipt binds repository IDs, every live asset size/hash/ID, exact producer and retained original bytes', () => {
+for (const nativeVersion of nativeVersions) test(`synthetic ${nativeVersion} receipt binds repository IDs, every live asset size/hash/ID, exact producer and retained original bytes`, () => {
+  const { candidate, publicationRecord, nativeVerification } = fixtures[nativeVersion];
   validatePublicationAcceptance(candidate, { selector, manifest, release, publicationRecord, nativeVerification });
   for (const mutate of [r => r.schema_version = 2, r => r.repository.id = 1, r => r.producer.run_attempt++,
     r => r.release.id++, r => r.release.target = '9'.repeat(40), r => r.release.assets[0].id++,
@@ -132,7 +147,8 @@ test('receipt binds repository IDs, every live asset size/hash/ID, exact produce
   assert.throws(() => validatePublicationAcceptance(candidate, { selector, manifest, release: changed }));
 });
 
-test('retained publication cannot change native signed subjects or add workflow claims absent from native signature', () => {
+for (const nativeVersion of nativeVersions) test(`synthetic ${nativeVersion} retained publication cannot change native signed subjects or add workflow claims absent from native signature`, () => {
+  const { publicationRecord, recordBytes, candidate } = fixtures[nativeVersion];
   for (const mutate of [r => r.assets['service-artifacts.json'].id++, r => r.native_release_statement_sha256 = '9'.repeat(64),
     r => r.release_attestation.verificationResult.statement.subject.pop(),
     r => r.release_attestation.verificationResult.statement.predicate.workflow_sha = manifest.producer.workflow_sha]) {
@@ -146,22 +162,35 @@ test('retained publication cannot change native signed subjects or add workflow 
   assert.throws(() => validatePublicationAcceptance(receipt, { selector, manifest, release }), /Duplicate/);
 });
 
-async function gitFixture() {
+for (const nativeVersion of nativeVersions) test(`synthetic ${nativeVersion} candidate and receipt reject different policy-valid first-hand signed statements`, () => {
+  const current = fixtures[nativeVersion]; const reordered = structuredClone(current.nativeVerification);
+  reordered.verificationResult.statement.subject.reverse();
+  reordered.attestation.bundle.dsseEnvelope.payload = Buffer.from(canonicalJson(reordered.verificationResult.statement)).toString('base64');
+  const otherVersion = fixtures[nativeVersion === 'v0.1' ? 'v0.2' : 'v0.1'].nativeVerification;
+  for (const differentNative of [reordered, otherVersion]) {
+    assertNativeReleaseAttestation(differentNative, nativeInputs);
+    assert.throws(() => createPublicationCandidate({ ...current.input, nativeVerification: differentNative }), /First-hand native release statement differs/);
+    assert.throws(() => validatePublicationAcceptance(current.candidate, { selector, manifest, release, nativeVerification: differentNative }), /First-hand native release statement differs/);
+  }
+});
+
+async function gitFixture(current = fixtures['v0.1']) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'anywear-publication-git-'));
   const git = async args => (await execute('git', ['-C', root, ...args], { timeout: 30_000 })).stdout.trim();
   await git(['init', '--quiet']); await git(['config', 'user.name', 'Publication contract fixture']);
   await git(['config', 'user.email', 'publication-fixture@invalid.local']); await git(['config', 'core.autocrlf', 'false']);
   await git(['remote', 'add', 'origin', 'https://github.com/git-malu/AnyWear-Infra']);
   await mkdir(path.join(root, 'publications'));
-  const file = `publications/${selector.release.manifest_sha256}.json`; const bytes = Buffer.from(canonicalJson(candidate));
+  const file = `publications/${selector.release.manifest_sha256}.json`; const bytes = Buffer.from(canonicalJson(current.candidate));
   await writeFile(path.join(root, file), bytes); await git(['add', '--', file]); await git(['commit', '--quiet', '-m', 'Receipt fixture']);
   const expectedInfraSha = await git(['rev-parse', 'HEAD']);
   return { root, git, file, bytes, expectedInfraSha, selector: { ...selector, publication_acceptance: { file, sha256: sha256(bytes) } } };
 }
 
-test('Git loader requires explicit reviewed root/pin and a clean tracked regular blob with exact actual bytes', async () => {
-  const fixture = await gitFixture(); const options = { trustedInfraRoot: fixture.root, expectedInfraSha: fixture.expectedInfraSha, manifest, release, nativeVerification };
-  assert.deepEqual(await loadPublicationAcceptance(fixture.selector, options), candidate);
+for (const nativeVersion of nativeVersions) test(`synthetic ${nativeVersion} Git loader requires explicit reviewed root/pin and a clean tracked regular blob with exact actual bytes`, async () => {
+  const current = fixtures[nativeVersion]; const fixture = await gitFixture(current);
+  const options = { trustedInfraRoot: fixture.root, expectedInfraSha: fixture.expectedInfraSha, manifest, release, nativeVerification: current.nativeVerification };
+  assert.deepEqual(await loadPublicationAcceptance(fixture.selector, options), current.candidate);
   await assert.rejects(loadPublicationAcceptance(fixture.selector, { ...options, expectedInfraSha: '9'.repeat(40) }), /HEAD/);
   await assert.rejects(loadPublicationAcceptance(fixture.selector, { ...options, trustedInfraRoot: undefined }), /Explicit/);
   await assert.rejects(loadPublicationAcceptance(fixture.selector, { ...options, expectedInfraSha: undefined }), /reviewed Infra/);

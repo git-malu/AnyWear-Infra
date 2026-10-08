@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { SERVICE_REPOSITORY, parseStrictJson, canonicalJson, exactKeys, positiveInteger } from './service-artifact-contract.mjs';
 
 export const RELEASE_PREDICATE_TYPE = 'https://in-toto.io/attestation/release/v0.1';
+const RELEASE_PREDICATE_TYPE_V02 = 'https://in-toto.io/attestation/release/v0.2';
 
 // This validates the successful `gh release verify[ -asset] --format json`
 // result. Cryptographic verification belongs to gh's GitHub release policy,
@@ -20,9 +21,15 @@ export function assertNativeReleaseAttestation(verified, { releaseId, tag, targe
   if (canonicalJson(parseStrictJson(Buffer.from(envelope.payload, 'base64'))) !== canonicalJson(statement)) throw new Error('Native verified statement differs from signed envelope');
   exactKeys(statement, ['_type', 'predicateType', 'predicate', 'subject'], [], 'native release statement');
   const purl = `pkg:github/${SERVICE_REPOSITORY}@${tag}`;
-  const predicate = { ownerId: '11473072', repositoryId: '1158460323', repository: SERVICE_REPOSITORY,
-    releaseId: String(releaseId), purl, tag };
-  if (statement._type !== 'https://in-toto.io/Statement/v1' || statement.predicateType !== RELEASE_PREDICATE_TYPE
+  const identity = { ownerId: '11473072', repositoryId: '1158460323', repository: SERVICE_REPOSITORY, purl, tag };
+  let predicate;
+  if (statement.predicateType === RELEASE_PREDICATE_TYPE) predicate = { ...identity, releaseId: String(releaseId) };
+  else if (statement.predicateType === RELEASE_PREDICATE_TYPE_V02) {
+    // GitHub's databaseId identifies this release; packageId is the stable repo.
+    predicate = { ...identity, databaseId: String(releaseId), packageId: identity.repositoryId };
+  } else throw new Error('Unsupported native release predicate type');
+  exactKeys(statement.predicate, Object.keys(predicate), [], 'native release predicate');
+  if (statement._type !== 'https://in-toto.io/Statement/v1'
     || canonicalJson(statement.predicate) !== canonicalJson(predicate)) throw new Error('Native release repository/owner/ID/tag differs');
   if (!Array.isArray(statement.subject) || statement.subject.length !== Object.keys(assetHashes).length + 1) throw new Error('Native release subject set differs');
   const expected = [{ uri: purl, digest: { sha1: target } },
