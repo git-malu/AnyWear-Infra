@@ -6,6 +6,29 @@ cutover. Account `650880818323` uses `ap-east-1` for the application and `us-eas
 for Billing. Initial cutover preserves the observed image/Client/Lambda/policy
 tuple and endpoints; ordinary source merges do not choose a newer application.
 
+## Private repository controls and access preflight
+
+The 2026-10-08 setup readback has a `beta` environment limited to the `main`
+branch. Its activation gate is `ENABLE_BETA_DEPLOY=false`. GitHub returned 403
+for private repository rulesets/branch protection under the current plan; the
+environment's branch restriction does not mean `main` has repository branch
+protection. References below to protected main require either supported branch
+protection or the manager's recorded operational freeze: independently reviewed
+exact source, one writer, no peer merges, exact-SHA window/dispatch gates, and
+activation disabled between assigned operations. This does not authorize a
+runtime operation by itself.
+
+[app-access-preflight.yml](../../.github/workflows/app-access-preflight.yml)
+only runs for same-repository PR1 on `codex/issue-54-infra-extraction` after the
+manager sets `APP_ACCESS_REVIEWED_SHA` to that reviewed full head. A second
+checkout/source guard runs before App credentials are used. It requests separate
+single-repository tokens for Service contents/actions read, Infra contents/actions
+read, and root AnyWear issues read. Exact repository/owner IDs, source commits,
+completed-success CI attempts, and the original #54 owner claim are checked.
+Only sanitized status/identity evidence is uploaded; key/token bytes stay inside
+Actions. The workflow has no AWS credentials, OIDC permission, release mutation,
+or deployment step. Close the variable gate after collecting the accepted run.
+
 ## Manager window and immutable inputs
 
 Before enabling a writer, the manager records the exact Infra SHA, operation,
