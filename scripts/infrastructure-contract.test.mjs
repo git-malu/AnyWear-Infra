@@ -16,10 +16,10 @@ import { observeDeployment } from './observe-deployment.mjs';
 
 const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-contract-'));
 const { selector, manifest, schema } = await createTestInputs(fixtureDirectory);
-// The observer independently hashes actual OCI bytes, so use a real manifest
+// The observer independently hashes actual registry manifest bytes, so use a real manifest
 // digest throughout the same signed release/selection fixture.
-const imageManifest = canonicalJson({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json',
-  config: { mediaType: 'application/vnd.oci.image.config.v1+json', size: 2, digest: `sha256:${sha256('{}')}` }, layers: [] });
+const imageManifest = canonicalJson({ schemaVersion: 2, mediaType: 'application/vnd.docker.distribution.manifest.v2+json',
+  config: { mediaType: 'application/vnd.docker.container.image.v1+json', size: 2, digest: `sha256:${sha256('{}')}` }, layers: [] });
 selector.image.digest = `sha256:${sha256(imageManifest)}`;
 const manifestBytes = Buffer.from(canonicalJson(manifest));
 selector.release.manifest_sha256 = sha256(manifestBytes);
@@ -108,7 +108,7 @@ function selectedArtifactIo(native, conclusion = 'success') {
 const workloadOriginal = parseJson(await readFile(new URL('../test/baselines/beta-active/AnyWearWorkloadStack-beta.template.json', import.meta.url)));
 const actualContainerNames = Object.values(workloadOriginal.Resources)
   .filter(resource => resource.Type === 'AWS::ECS::TaskDefinition').flatMap(resource => resource.Properties.ContainerDefinitions.map(container => container.Name));
-function observationIo(drift) {
+function observationIo(drift, ecrResult) {
   const calls = []; let verificationDefinition;
   const stackSources = fixtureRecord().stacks.map(({ template_sha256, ...source }) => source);
   const platformOutputs = { BetaActive: 'true', EcsClusterName: 'beta-anywear', PrivateSubnetIds: 'subnet-a,subnet-b',
@@ -138,7 +138,7 @@ function observationIo(drift) {
     calls.push(args); const argument = flag => args[args.indexOf(flag) + 1];
     switch (`${args[0]}/${args[1]}`) {
       case 'sts/get-caller-identity': return { Account: '650880818323' };
-      case 'ecr/batch-get-image': return { images: [{ imageId: { imageDigest: selector.image.digest }, imageManifest }] };
+      case 'ecr/batch-get-image': return ecrResult ?? { images: [{ imageId: { imageDigest: selector.image.digest }, imageManifest }] };
       case 'cloudformation/describe-stacks': {
         const stack = stacks.find(s => s.StackName === argument('--stack-name') || s.StackId === argument('--stack-name'));
         assert.equal(awsRegion, stack.StackName.includes('Billing') ? 'us-east-1' : 'ap-east-1');
@@ -215,6 +215,31 @@ for (const [repository, workflow] of [['git-malu/AnyWear-Infra', '.github/workfl
     assert.ok(io.calls.some(args => args[1] === 'deregister-task-definition'));
   });
 }
+test('observer accepts duplicate ECR tags when every entry selects one exact Docker v2 manifest', async () => {
+  const ecrResult = { images: [
+    { imageId: { imageDigest: selector.image.digest, imageTag: 'release-a' }, imageManifest },
+    { imageId: { imageDigest: selector.image.digest, imageTag: 'release-b' }, imageManifest },
+  ] };
+  const io = observationIo(undefined, ecrResult);
+  const snapshot = await observeDeployment({ binding, stackSources: io.stackSources, infraSha: binding.expectedInfraSha, io, env: observationEnv(),
+    artifactIo: selectedArtifactIo(nativeFixture('https://in-toto.io/attestation/release/v0.2')) });
+  assert.equal(snapshot.observed.image_digest, selector.image.digest);
+  assert.equal(io.calls.filter(args => args[0] === 'ecr' && args[1] === 'batch-get-image').length, 1);
+});
+test('observer rejects an ECR entry whose digest differs from the selected immutable image', async () => {
+  const ecrResult = { images: [
+    { imageId: { imageDigest: selector.image.digest, imageTag: 'release-a' }, imageManifest },
+    { imageId: { imageDigest: `sha256:${'9'.repeat(64)}`, imageTag: 'foreign' }, imageManifest },
+  ] };
+  const io = observationIo(undefined, ecrResult);
+  await assert.rejects(observeDeployment({ binding, stackSources: io.stackSources, infraSha: binding.expectedInfraSha, io, env: observationEnv(),
+    artifactIo: selectedArtifactIo(nativeFixture('https://in-toto.io/attestation/release/v0.2')) }), /Exact selected OCI manifest unavailable/);
+});
+test('observer rejects ECR manifest bytes whose hash differs from the selected digest', async () => {
+  const io = observationIo(undefined, { images: [{ imageId: { imageDigest: selector.image.digest, imageTag: 'release-a' }, imageManifest: `${imageManifest} ` }] });
+  await assert.rejects(observeDeployment({ binding, stackSources: io.stackSources, infraSha: binding.expectedInfraSha, io, env: observationEnv(),
+    artifactIo: selectedArtifactIo(nativeFixture('https://in-toto.io/attestation/release/v0.2')) }), /Actual OCI manifest bytes differ from sealed selected digest/);
+});
 test('observer rejects wrong-purpose, legacy, missing and mismatched workload identities before launching verification', async () => {
   for (const purpose of ['api', 'worker']) for (const mode of ['wrong-purpose', 'legacy-name', 'missing', 'source', 'digest', 'environment-digest']) {
     const io = observationIo({ purpose, mode });
