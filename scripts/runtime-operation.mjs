@@ -52,6 +52,18 @@ export function cdkDeploymentArguments(stack, active, revision, directory, env) 
     '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
     '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
 }
+const workloadParameterKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'];
+const terminalStackStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
+function assertWorkloadParameterReadback(stack, revision) {
+  if (!terminalStackStatuses.has(stack?.StackStatus)) throw new Error(`Workload stack is not terminal after deploy: ${stack?.StackStatus ?? 'unavailable'}`);
+  const observed = workloadRevision(stack);
+  for (const key of workloadParameterKeys) {
+    if (observed.parameters[key] !== revision.parameters[key]) {
+      throw new Error(`Workload parameter readback mismatch for ${key}`);
+    }
+  }
+  return observed;
+}
 export async function credentialEnvironment(kind, env = process.env) {
   const role = `arn:aws:iam::650880818323:role/beta-infra-${kind}-role`;
   const configured = env[kind === 'deploy' ? 'INFRA_DEPLOY_ROLE_ARN' : 'INFRA_RUNTIME_ROLE_ARN'];
@@ -119,6 +131,12 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       await run('npx', cdkDeploymentArguments(stack, active, revision, directory, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       if (stack === 'AnyWearPlatformStack-beta') await enforceBetaPlatformLogRetention(io);
+      if (stack === 'AnyWearWorkloadStack-beta') {
+        const after = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', stack])).Stacks?.[0];
+        const observed = assertWorkloadParameterReadback(after, revision);
+        record?.events.push({ type: 'workload-parameter-readback', stack_name: stack,
+          stack_status: after.StackStatus, service_sha: observed.commit, image_digest: observed.digest });
+      }
       record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: active, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
     },
     recordRecovery(outcome) { if (record) recordRecovery(record, outcome); },
@@ -155,7 +173,11 @@ export async function runOperation(env = process.env) {
   const images = await io.aws(['ecr', 'describe-images', '--repository-name', repository, '--image-ids', `imageDigest=${selector.image.digest}`]);
   if (images.imageDetails?.length !== 1 || images.imageDetails[0].imageDigest !== selector.image.digest) throw new Error('Selected ECR digest unavailable');
   const operation = env.INFRA_OPERATION;
-  if (['start', 'stop'].includes(operation)) await runBetaLifecycle(operation, io);
+  if (operation === 'start') {
+    const selectedRevision = { ...priorRevision, digest: selector.image.digest, commit: selector.image.service_sha,
+      parameters: { ...priorRevision.parameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha } };
+    await runBetaLifecycle(operation, io, { selectedRevision });
+  } else if (operation === 'stop') await runBetaLifecycle(operation, io);
   else if (operation.startsWith('tester-')) await runTesterAllowlist(operation.slice(7), env.TESTER_EMAILS, io, selector);
   else if (operation !== 'observe') {
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];

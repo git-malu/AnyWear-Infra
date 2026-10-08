@@ -1,6 +1,7 @@
 import { pathToFileURL } from 'node:url';
 const platformStack = 'AnyWearPlatformStack-beta';
 const workloadStack = 'AnyWearWorkloadStack-beta';
+const terminalStackStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
 
 function values(entries, nameKey, valueKey) {
   return Object.fromEntries((entries ?? []).map((entry) => [entry[nameKey], entry[valueKey]]));
@@ -17,6 +18,33 @@ export function workloadRevision(stack) {
     throw new Error('Beta workload parameters are incomplete');
   }
   return { digest, commit, parameters };
+}
+
+function selectedStartRevision(observed, selected) {
+  if (!selected || typeof selected !== 'object'
+    || !/^sha256:[a-f0-9]{64}$/.test(selected.digest ?? '')
+    || !/^[a-f0-9]{40}$/.test(selected.commit ?? '')) {
+    throw new Error('Selected Beta start revision is required and must be immutable');
+  }
+  const revision = workloadRevision(observed);
+  return {
+    ...revision,
+    digest: selected.digest,
+    commit: selected.commit,
+    parameters: {
+      ...revision.parameters,
+      ServiceImageDigest: selected.digest,
+      ServiceCommitSha: selected.commit,
+    },
+  };
+}
+
+function assertStartStack(stack, name) {
+  if (!terminalStackStatuses.has(stack?.StackStatus)) {
+    throw new Error(`Beta ${name} stack is not terminal: ${stack?.StackStatus ?? 'unavailable'}`);
+  }
+  const active = values(stack.Outputs, 'OutputKey', 'OutputValue').BetaActive;
+  if (active !== 'false') throw new Error(`Beta ${name} stack must be inactive before start`);
 }
 
 export async function waitForTasks(io, cluster, { servicesAllowed, timeoutMs = 600_000 }) {
@@ -79,7 +107,7 @@ export async function waitForTasks(io, cluster, { servicesAllowed, timeoutMs = 6
   }
 }
 
-export async function runBetaLifecycle(action, io) {
+export async function runBetaLifecycle(action, io, { selectedRevision } = {}) {
   if (!['start', 'stop'].includes(action)) throw new Error('Beta lifecycle action must be start or stop');
   const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', workloadStack])).Stacks?.[0];
   const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', platformStack])).Stacks?.[0];
@@ -92,15 +120,15 @@ export async function runBetaLifecycle(action, io) {
   if (![output.BetaActive, workloadOutputs.BetaActive].every(value => ['true', 'false'].includes(value))) throw new Error('Both Beta activity states must be observed');
   const active = workloadOutputs.BetaActive === 'true';
   const platformActive = output.BetaActive === 'true';
-  const oneShot = (command) => io.oneShot('lifecycle', revision, command);
-  const deploy = (stack, enabled) => io.deploy(stack, enabled, revision);
-  const healthy = async () => {
+  const oneShot = (command, selected = revision) => io.oneShot('lifecycle', selected, command);
+  const deploy = (stack, enabled, selected = revision) => io.deploy(stack, enabled, selected);
+  const healthy = async (selected = revision) => {
     await io.aws(['ecs', 'wait', 'services-stable', '--cluster', cluster,
       '--services', 'beta-anywear-api', 'beta-anywear-worker']);
     const stack = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', workloadStack])).Stacks[0];
     const outputs = values(stack.Outputs, 'OutputKey', 'OutputValue');
-    await io.verifyHealth(outputs.ApiBaseUrl, revision);
-    await io.oneShot('verify', revision, outputs.ApiBaseUrl);
+    await io.verifyHealth(outputs.ApiBaseUrl, selected);
+    await io.oneShot('verify', selected, outputs.ApiBaseUrl);
   };
   const readAdmissionSuspension = async (operation) => {
     const value = (await io.aws(['ssm', 'get-parameter',
@@ -112,16 +140,20 @@ export async function runBetaLifecycle(action, io) {
   };
 
   if (action === 'start') {
+    assertStartStack(platform, 'Platform');
+    assertStartStack(workload, 'Workload');
+    const startRevision = selectedStartRevision(workload, selectedRevision);
     const priorSuspension = await readAdmissionSuspension('starting');
+    if (priorSuspension !== 'true') throw new Error('Stopped Beta admission must be suspended before starting');
     // Network restoration precedes every private task. Intake stays closed
     // through schema verification, workload rollout, and public health checks.
-    await deploy(platformStack, true);
-    await oneShot('close');
-    await io.oneShot('migrate', revision);
-    await io.oneShot('verify', revision);
-    await deploy(workloadStack, true);
-    await healthy();
-    await oneShot(priorSuspension === 'true' ? 'close' : 'open');
+    await deploy(platformStack, true, startRevision);
+    await oneShot('close', startRevision);
+    await io.oneShot('migrate', startRevision);
+    await io.oneShot('verify', startRevision);
+    await deploy(workloadStack, true, startRevision);
+    await healthy(startRevision);
+    await oneShot('close', startRevision);
     return;
   }
 
