@@ -166,6 +166,130 @@ hash with the printed hash in the final selector. Authorize the window only afte
 that receipt/source review. The CLI output and a placeholder selector are not
 accepted deployment inputs.
 
+### First publication handshake runner
+
+Use the dispatch-only [publication handshake workflow](../../.github/workflows/publication-handshake.yml)
+and its [guarded wrapper](../../scripts/publication-handshake.mjs) for the first
+candidate after the separately approved Service publisher succeeds. This lane
+uses no AWS/OIDC, runtime environment or deployment permission. Its only App
+token requests Contents/Actions/Attestations read for Service; the ordinary
+workflow token has Contents read. No dependencies are installed in this reader.
+
+Existing sanitized App preflight [run 37725085493, attempt 2](https://github.com/git-malu/AnyWear-Infra/actions/runs/37725085493/attempts/2)
+at Infra `1616783bf604c6c837f32452f039019fc5dd65f5` retained artifact
+`11527742745` (`app-access-37725085493-2`). It observed App `3346940`,
+installation `123158580`, one Service repository `1158460323`, owner `11473072`,
+and a successful Contents/Actions/Attestations read token mint. It recorded
+`actual_native_read_verified=false`; source/read proof and installed settings
+cannot establish actual native release access. The new runner independently
+requires the action-returned installation ID and a live installation-token
+`/installation/repositories?per_page=100` result containing exactly Service,
+plus an independent repository read. Identity/scope/native failure stops it;
+there is no OAuth discovery, fallback token or App-settings repair.
+
+Keep `ENABLE_PUBLICATION_HANDSHAKE=false` during source delivery. The manager
+separately allocates one reader dispatch on the newly reviewed full main SHA
+`W`, after source CI and the actual successful sealed producer output are
+available. Configure only these dedicated repository variables in that window:
+
+| Variable | Required value |
+| --- | --- |
+| `ENABLE_PUBLICATION_HANDSHAKE` | `true` only for the allocated reader run |
+| `PUBLICATION_HANDSHAKE_SOURCE_SHA` | Exact reviewed main executor `W` |
+| `PUBLICATION_HANDSHAKE_ACTOR` | `git-malu` |
+| `PUBLICATION_HANDSHAKE_WINDOW_TOKEN` | Fresh nonsecret allocation token, 16–128 ASCII letters/digits/underscore/hyphen |
+| `PUBLICATION_HANDSHAKE_EXPIRES_AT` | Unexpired UTC ISO timestamp |
+| `PUBLICATION_HANDSHAKE_RECORD_URL` | Exact #54 comment authorizing this reader allocation |
+| `PUBLICATION_HANDSHAKE_REQUEST_SHA256` | SHA-256 of strictly parsed canonical request JSON |
+
+Dispatch has three string inputs: `reviewed_source_sha=W`,
+`writer_window_token=<allocation token>`, and `request_json`. The request is at
+most 16 KiB, rejects duplicate/unknown keys, and contains exactly:
+
+```json
+{
+  "schema_version": 1,
+  "record_type": "anywear_publication_handshake_request",
+  "app": {
+    "app_id": 3346940,
+    "installation_id": 123158580,
+    "permissions_requested": { "contents": "read", "actions": "read", "attestations": "read" }
+  },
+  "producer": {
+    "repository": "git-malu/AnyWear-Service",
+    "workflow_sha": "<actual successful publisher full SHA>",
+    "run_id": "<actual positive JSON number>",
+    "run_attempt": "<actual positive JSON number>"
+  },
+  "release": {
+    "id": "<actual positive JSON number>",
+    "manifest_asset_id": "<actual positive JSON number>",
+    "manifest_sha256": "<final sealed manifest raw SHA-256>",
+    "tag": "service-baseline-<final manifest SHA-256>",
+    "target": "<actual successful publisher full SHA>"
+  },
+  "kind": "deployed-baseline-import",
+  "assets": [
+    { "id": "<number>", "name": "service-artifacts.json", "size": "<number>", "sha256": "<hash>" },
+    { "id": "<number>", "name": "pre-sign-up.zip", "size": "<number>", "sha256": "<hash>" },
+    { "id": "<number>", "name": "post-confirmation.zip", "size": "<number>", "sha256": "<hash>" },
+    { "id": "<number>", "name": "runtime-policy.json", "size": "<number>", "sha256": "<hash>" },
+    { "id": "<number>", "name": "service-schema.json", "size": "<number>", "sha256": "<hash>" }
+  ]
+}
+```
+
+Replace every placeholder with the actual reviewed value; IDs/sizes/run/attempt
+are safe positive JSON numbers. This entry point is restricted to the current
+baseline-import lane. An intake draft or all-zero producer is unselectable.
+Import publication rewrites producer identity, so its final manifest hash and
+asset IDs must be read back from the successful publisher, not copied from
+intake. Request hashing uses `canonicalJson` from
+[json-contract.mjs](../../scripts/json-contract.mjs), independent of whitespace
+and object-key order.
+
+Before the official App action receives its private key, the runner verifies
+dispatch-only event, exact Infra repository/owner/main/workflow identity, actor
+and triggering actor `git-malu`, consumer attempt `1`, exact source across
+input/gate/workflow/run/clean checkout, allocation token/hash/expiry and offline
+native JSON CLI probes. Replacement refs and hidden index flags fail. Every
+remote boundary and final candidate output rechecks source/window/expiry.
+Service reads use only the scoped token; CLI children have an empty GH config
+and no inherited alternate tokens/debug/Git/Node overrides. The private key is
+consumed only by the official action; its token stays step-local and is revoked
+automatically.
+
+The wrapper reuses `createCandidate` with bounded recording IO. It binds the
+externally expected successful producer before trusting manifest provenance,
+checks the sealed release/direct commit tag/full five asset identities and
+bytes, retains the original native release and all five asset JSON results,
+and verifies they contain the same signed statement. Publication ZIP bounds,
+original record bytes, authenticated artifact digest/size/attempt interval and
+before/after publisher reads use the existing parser. The preparation selector
+exists only in memory with its unknown receipt hash; no receipt loader or
+tracked selector is used.
+
+Download artifact `service-publication-handshake-<consumer-run>-1` (90-day
+retention). Its fixed file allowlist contains sanitized status/request/CLI/App
+scope, producer/release/asset inventory, raw native JSON, bounded original ZIP
+and publication record/hashes, candidate/hash only on complete success, and a
+file/hash inventory. A failed job retains partial evidence and a predefined
+failure category; it emits no candidate or raw stderr/environment/credentials.
+`scope_mint_accepted` and `actual_native_read_verified` are separate observations.
+Artifact-upload failure or missing evidence leaves the gate unfinished.
+
+Concurrency serializes this workflow but does not make a window token single
+use or lock other sessions. The manager records the actual consumer run ID,
+checks for duplicate matching dispatches before acceptance, and invalidates an
+allocation with duplicates. Reruns fail attempt `1` and need a fresh reviewed
+dispatch. Close the activation gate after collection/failure and verify actual
+cessation; timeout alone does not release the reader allocation.
+
+Stop at the candidate artifact and independent manager readback. A candidate
+URL/hash does not approve itself. Receipt commit, accepted selection, source
+pin, runtime/compatibility and AWS actions require their separate reviewed
+writer windows. Source PR checks never mint the App token or execute this lane.
+
 Before reviewing retention activation, compare both source matrices across all
 three identity phases. In addition to the default matrix, run:
 

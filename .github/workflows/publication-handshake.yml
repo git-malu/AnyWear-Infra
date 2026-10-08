@@ -1,0 +1,110 @@
+name: Reviewed Service publication handshake
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_source_sha:
+        description: Exact reviewed Infra main executor SHA
+        required: true
+        type: string
+      writer_window_token:
+        description: Manager allocation token for this single reader dispatch
+        required: true
+        type: string
+      request_json:
+        description: Strict reviewed final publisher and sealed release request JSON
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: anywear-issue54-publication-handshake
+  cancel-in-progress: false
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      HANDSHAKE_SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
+      HANDSHAKE_WINDOW_TOKEN: ${{ inputs.writer_window_token }}
+      HANDSHAKE_REQUEST_JSON: ${{ inputs.request_json }}
+      ENABLE_PUBLICATION_HANDSHAKE: ${{ vars.ENABLE_PUBLICATION_HANDSHAKE }}
+      PUBLICATION_HANDSHAKE_SOURCE_SHA: ${{ vars.PUBLICATION_HANDSHAKE_SOURCE_SHA }}
+      PUBLICATION_HANDSHAKE_ACTOR: ${{ vars.PUBLICATION_HANDSHAKE_ACTOR }}
+      PUBLICATION_HANDSHAKE_WINDOW_TOKEN: ${{ vars.PUBLICATION_HANDSHAKE_WINDOW_TOKEN }}
+      PUBLICATION_HANDSHAKE_EXPIRES_AT: ${{ vars.PUBLICATION_HANDSHAKE_EXPIRES_AT }}
+      PUBLICATION_HANDSHAKE_RECORD_URL: ${{ vars.PUBLICATION_HANDSHAKE_RECORD_URL }}
+      PUBLICATION_HANDSHAKE_REQUEST_SHA256: ${{ vars.PUBLICATION_HANDSHAKE_REQUEST_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify exact source and reader allocation before App credentials
+        id: guard
+        run: node scripts/publication-handshake.mjs guard
+      - name: Check native JSON verification CLI without network access
+        id: probes
+        run: node scripts/publication-handshake.mjs probes
+      - name: Mint the reviewed Service-only reader
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' && steps.probes.outcome == 'success' }}
+        id: service
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+      - name: Verify the actual publication and emit candidate evidence
+        if: ${{ !cancelled() && steps.service.outcome == 'success' }}
+        id: candidate
+        env:
+          GH_TOKEN: ${{ steps.service.outputs.token }}
+          HANDSHAKE_APP_INSTALLATION_ID: ${{ steps.service.outputs.installation-id }}
+          HANDSHAKE_TOKEN_MINT_OUTCOME: ${{ steps.service.outcome }}
+        run: node scripts/publication-handshake.mjs candidate
+      - name: Finalize sanitized partial or complete evidence
+        if: ${{ always() && steps.guard.outputs.initialized == 'true' }}
+        env:
+          HANDSHAKE_PROBES_OUTCOME: ${{ steps.probes.outcome }}
+          HANDSHAKE_TOKEN_MINT_OUTCOME: ${{ steps.service.outcome }}
+          HANDSHAKE_CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+        run: node scripts/publication-handshake.mjs finalize
+      - name: Preserve the fixed evidence allowlist
+        if: ${{ always() && steps.guard.outputs.initialized == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/status.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/request.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/request-sha256.txt
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/github-cli-version.txt
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/capabilities.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/app-scope.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/producer-before.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/producer-after.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/release.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/service-artifacts.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/asset-hashes.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/artifacts.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/native-release.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/native-service-artifacts.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/native-pre-sign-up.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/native-post-confirmation.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/native-runtime-policy.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/native-service-schema.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/publication.zip
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/service-artifact-publication.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/publication-hashes.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/candidate.json
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/candidate-sha256.txt
+            ${{ runner.temp }}/service-publication-handshake-${{ github.run_id }}-${{ github.run_attempt }}/evidence/inventory.json
+          retention-days: 90
+          if-no-files-found: error
