@@ -22,6 +22,8 @@ jobs:
       - run: bash -n .github/scripts/run-one-shot-task.sh .github/scripts/writer-window-hook.sh
       - name: Compare explicit live Foundation with authenticated Original fixture
         env:
+          AWS_REGION: ap-east-1
+          AWS_DEFAULT_REGION: ap-east-1
           CDK_DEFAULT_ACCOUNT: '650880818323'
           CDK_DEFAULT_REGION: ap-east-1
           BILLING_REGION: us-east-1
