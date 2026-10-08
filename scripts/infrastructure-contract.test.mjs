@@ -12,9 +12,19 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { validateOperationInputs, betaDeploymentActivity } from './runtime-operation.mjs';
 import { verifyRetentionPolicy, verifyProtectedImages, verifyLifecyclePreview } from './ecr-retention.mjs';
+import { observeDeployment } from './observe-deployment.mjs';
 
 const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-contract-'));
-const { selector, manifest } = await createTestInputs(fixtureDirectory);
+const { selector, manifest, schema } = await createTestInputs(fixtureDirectory);
+// The observer independently hashes actual OCI bytes, so use a real manifest
+// digest throughout the same signed release/selection fixture.
+const imageManifest = canonicalJson({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json',
+  config: { mediaType: 'application/vnd.oci.image.config.v1+json', size: 2, digest: `sha256:${sha256('{}')}` }, layers: [] });
+selector.image.digest = `sha256:${sha256(imageManifest)}`;
+const manifestBytes = Buffer.from(canonicalJson(manifest));
+selector.release.manifest_sha256 = sha256(manifestBytes);
+await writeFile(path.join(fixtureDirectory, 'service-artifacts.json'), manifestBytes);
+await writeFile(path.join(fixtureDirectory, 'selection.json'), canonicalJson(selector));
 const sha = '5'.repeat(40);
 const sourceRoot = await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-trusted-contract-'));
 const execute = promisify(execFile);
@@ -94,6 +104,125 @@ function selectedArtifactIo(native, conclusion = 'success') {
   }, async asset(repo, id) { return readFile(path.join(fixtureDirectory, ids.get(id))); },
   async attestation(tag, file) { nativeChecks.push(file ? path.basename(file) : 'release'); return native; } };
 }
+
+const workloadOriginal = parseJson(await readFile(new URL('../test/baselines/beta-active/AnyWearWorkloadStack-beta.template.json', import.meta.url)));
+const actualContainerNames = Object.values(workloadOriginal.Resources)
+  .filter(resource => resource.Type === 'AWS::ECS::TaskDefinition').flatMap(resource => resource.Properties.ContainerDefinitions.map(container => container.Name));
+function observationIo(drift) {
+  const calls = []; let verificationDefinition;
+  const stackSources = fixtureRecord().stacks.map(({ template_sha256, ...source }) => source);
+  const platformOutputs = { BetaActive: 'true', EcsClusterName: 'beta-anywear', PrivateSubnetIds: 'subnet-a,subnet-b',
+    OneShotSecurityGroupId: 'sg-a', VerificationTaskRoleArn: 'arn:aws:iam::650880818323:role/beta-verification-task-role',
+    OneShotExecutionRoleArn: 'arn:aws:iam::650880818323:role/beta-one-shot-execution-role', OneShotLogGroupName: '/anywear/beta/one-shot',
+    DatabaseSecretArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:beta-database', DatabaseHost: 'beta-db.internal',
+    DatabasePort: '5432', DatabaseName: 'anywear', WardrobeBucketName: 'beta-anywear-wardrobe',
+    VtoQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-vto',
+    AutoTaggingQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-auto-tagging',
+    ClientBaseUrl: 'https://d2rztl7o0y7rf8.cloudfront.net' };
+  const workloadOutputs = { BetaActive: 'true', ApiServiceName: 'beta-anywear-api', WorkerServiceName: 'beta-anywear-worker',
+    ApiBaseUrl: 'https://d1pfqujqt29n11.cloudfront.net' };
+  const stacks = stackSources.map(source => ({ StackName: source.stack_name, StackStatus: 'UPDATE_COMPLETE',
+    StackId: `arn:aws:cloudformation:${source.region}:650880818323:stack/${source.stack_name}/fixture`, LastUpdatedTime: '2026-10-08T00:00:00Z',
+    Outputs: Object.entries(source.stack_name.includes('Platform') ? platformOutputs : source.stack_name.includes('Workload') ? workloadOutputs : {})
+      .map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) }));
+  const taskDefinitionArn = purpose => `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:1`;
+  const taskArn = purpose => `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${(purpose === 'api' ? 'b' : 'c').repeat(32)}`;
+  const verificationArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:1';
+  const verificationTask = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`;
+  const migrations = schema.migrations.map(m => ({ id: m.sha256, created_at: m.created_at }));
+  const evidence = { record_type: 'anywear_read_only_runtime', schema_version: 1, service_sha: selector.image.service_sha,
+    image_digest: selector.image.digest, policy_file_sha256: selector.runtime_policy.sha256, policy_content_sha256: selector.runtime_policy.content_sha256,
+    selected_journal_sha256: selector.schema.journal_sha256, selected_migration_ids: migrations, applied_schema_version: schema.current_version,
+    applied_migration_ids: migrations, observed_applied_journal_sha256: contentHash(migrations) };
+  return { stackSources, calls, async aws(args, awsRegion = 'ap-east-1') {
+    calls.push(args); const argument = flag => args[args.indexOf(flag) + 1];
+    switch (`${args[0]}/${args[1]}`) {
+      case 'sts/get-caller-identity': return { Account: '650880818323' };
+      case 'ecr/batch-get-image': return { images: [{ imageId: { imageDigest: selector.image.digest }, imageManifest }] };
+      case 'cloudformation/describe-stacks': {
+        const stack = stacks.find(s => s.StackName === argument('--stack-name') || s.StackId === argument('--stack-name'));
+        assert.equal(awsRegion, stack.StackName.includes('Billing') ? 'us-east-1' : 'ap-east-1');
+        return { Stacks: [stack] };
+      }
+      case 'cloudformation/get-template': return { TemplateBody: argument('--stack-name').includes('Workload') ? workloadOriginal : { Resources: {} } };
+      case 'lambda/get-function': {
+        const name = argument('--function-name'); const selected = name.endsWith('pre-sign-up') ? selector.lambdas.pre_sign_up : selector.lambdas.post_confirmation;
+        return { Configuration: { FunctionArn: `arn:aws:lambda:ap-east-1:650880818323:function:${name}`, FunctionName: name,
+          LastUpdateStatus: 'Successful', CodeSha256: selected.code_sha256, Runtime: selected.runtime, Handler: selected.handler,
+          Role: 'arn:aws:iam::650880818323:role/beta-lambda-role', MemorySize: 128, Timeout: 30, Architectures: ['x86_64'] } };
+      }
+      case 'sqs/get-queue-attributes': {
+        const name = argument('--queue-url').split('/').at(-1); const policy = parseJson(await readFile(path.join(fixtureDirectory, 'runtime-policy.json')))[name.endsWith('vto') ? 'vto' : 'auto-tagging'];
+        return { Attributes: { QueueArn: `arn:aws:sqs:ap-east-1:650880818323:${name}`, VisibilityTimeout: String(policy.queueVisibilitySeconds),
+          RedrivePolicy: JSON.stringify({ maxReceiveCount: policy.maxReceives }) } };
+      }
+      case 'ecs/describe-services': return { services: ['api', 'worker'].map(purpose => ({ serviceName: `beta-anywear-${purpose}`,
+        serviceArn: `arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}`, taskDefinition: taskDefinitionArn(purpose),
+        desiredCount: 1, runningCount: 1, pendingCount: 0, deployments: [{ rolloutState: 'COMPLETED' }] })) };
+      case 'ecs/describe-task-definition': {
+        if (argument('--task-definition') === verificationArn) return { taskDefinition: verificationDefinition };
+        const purpose = argument('--task-definition') === taskDefinitionArn('api') ? 'api' : 'worker';
+        const name = actualContainerNames.find(value => value === (purpose === 'api' ? 'ApiContainer' : 'WorkerContainer'));
+        const container = { name, image: `${selector.image.repository_uri}@${selector.image.digest}`, environment: [
+          { name: 'SERVICE_COMMIT_SHA', value: selector.image.service_sha }, { name: 'IMAGE_DIGEST', value: selector.image.digest }] };
+        const definition = { containerDefinitions: [container] };
+        if (drift?.purpose === purpose) {
+          if (drift.mode === 'wrong-purpose') container.name = purpose === 'api' ? 'WorkerContainer' : 'ApiContainer';
+          if (drift.mode === 'legacy-name') container.name = purpose === 'api' ? 'Api' : 'Worker';
+          if (drift.mode === 'missing') definition.containerDefinitions = [];
+          if (drift.mode === 'source') container.environment[0].value = '9'.repeat(40);
+          if (drift.mode === 'digest') container.image = `${selector.image.repository_uri}@sha256:${'9'.repeat(64)}`;
+          if (drift.mode === 'environment-digest') container.environment[1].value = `sha256:${'9'.repeat(64)}`;
+        }
+        return { taskDefinition: definition };
+      }
+      case 'ecs/list-tasks': return { taskArns: [taskArn(argument('--service-name') === 'beta-anywear-api' ? 'api' : 'worker')] };
+      case 'ecs/describe-tasks': {
+        if (argument('--tasks') === verificationTask) return { tasks: [{ taskArn: verificationTask, taskDefinitionArn: verificationArn, lastStatus: 'STOPPED',
+          containers: [{ name: 'OneShot', exitCode: 0, imageDigest: selector.image.digest }] }] };
+        const purpose = argument('--tasks') === taskArn('api') ? 'api' : 'worker';
+        return { tasks: [{ lastStatus: 'RUNNING', taskDefinitionArn: taskDefinitionArn(purpose), containers: [{ imageDigest: selector.image.digest }] }] };
+      }
+      case 'ecs/register-task-definition': verificationDefinition = parseJson(argument('--cli-input-json')); return { taskDefinition: { taskDefinitionArn: verificationArn } };
+      case 'ecs/run-task': return { tasks: [{ taskArn: verificationTask }] };
+      case 'ecs/wait': case 'ecs/deregister-task-definition': return {};
+      case 'logs/get-log-events': return { events: [{ message: `ANYWEAR_RUNTIME_EVIDENCE:${JSON.stringify(evidence)}` }] };
+      default: assert.fail(`Unexpected observation request ${args[0]}/${args[1]}`);
+    }
+  }, async http(url) {
+    if (url === `${workloadOutputs.ApiBaseUrl}/health`) return { status: 'ok', service_commit: selector.image.service_sha, image_digest: selector.image.digest };
+    assert.match(url, /^https:\/\/d2rztl7o0y7rf8\.cloudfront\.net\/build-metadata\.json\?infra=/);
+    return { component: 'AnyWear-Client', source_commit: '6'.repeat(40) };
+  } };
+}
+const observationEnv = (repository = 'git-malu/AnyWear-Infra', workflow = '.github/workflows/runtime.yml') => ({ ...env,
+  GITHUB_SHA: repository === 'git-malu/AnyWear-Infra' ? binding.expectedInfraSha : '8'.repeat(40), GITHUB_REPOSITORY: repository,
+  GITHUB_WORKFLOW_REF: `${repository}/${workflow}@refs/heads/main`, GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1' });
+for (const [repository, workflow] of [['git-malu/AnyWear-Infra', '.github/workflows/runtime.yml'],
+  ['git-malu/AnyWear-E2E', '.github/workflows/beta-qualification.yml'], ['git-malu/AnyWear-E2E', '.github/workflows/integration.yml']]) {
+  test(`${repository}/${workflow} observes actual workload names through signed inputs and the bounded verifier`, async () => {
+    assert.deepEqual(actualContainerNames, ['ApiContainer', 'WorkerContainer']);
+    const io = observationIo(); const executor = observationEnv(repository, workflow);
+    const snapshot = await observeDeployment({ binding, stackSources: io.stackSources, infraSha: binding.expectedInfraSha, io, env: executor,
+      artifactIo: selectedArtifactIo(nativeFixture('https://in-toto.io/attestation/release/v0.2')) });
+    assert.equal(snapshot.observed.image_digest, selector.image.digest);
+    assert.equal(snapshot.schema.verification.source_sha, binding.expectedInfraSha);
+    assert.equal(snapshot.schema.verification.executor.repository, repository);
+    assert.equal(snapshot.schema.verification.executor.workflow_path, workflow);
+    assert.equal(snapshot.schema.verification.executor.sha, executor.GITHUB_SHA);
+    assert.equal(snapshot.schema.compatibility_result, 'compatible');
+    assert.equal(io.calls.filter(args => args[0] === 'cloudformation' && args[1] === 'describe-stacks').length, 8);
+    assert.ok(io.calls.some(args => args[1] === 'deregister-task-definition'));
+  });
+}
+test('observer rejects wrong-purpose, legacy, missing and mismatched workload identities before launching verification', async () => {
+  for (const purpose of ['api', 'worker']) for (const mode of ['wrong-purpose', 'legacy-name', 'missing', 'source', 'digest', 'environment-digest']) {
+    const io = observationIo({ purpose, mode });
+    await assert.rejects(observeDeployment({ binding, stackSources: io.stackSources, infraSha: binding.expectedInfraSha, io, env: observationEnv(),
+      artifactIo: selectedArtifactIo(nativeFixture()) }), /Actual ECS task definition selection mismatch/, `${purpose}/${mode}`);
+    assert.equal(io.calls.some(args => args[1] === 'register-task-definition'), false, 'Reject before private verification tasks');
+  }
+});
 
 for (const predicateType of ['https://in-toto.io/attestation/release/v0.1', 'https://in-toto.io/attestation/release/v0.2']) {
   test(`authenticated ${predicateType} release preserves one complete signed statement across six checks`, async () => {

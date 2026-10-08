@@ -75,7 +75,7 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
     if (!service.desiredCount || service.runningCount !== service.desiredCount || service.pendingCount !== 0
       || service.deployments?.length !== 1 || service.deployments[0].rolloutState !== 'COMPLETED') throw new Error('ECS workload is not stable');
     const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', service.taskDefinition])).taskDefinition;
-    const container = definition?.containerDefinitions?.find(c => c.name === 'Api' || c.name === 'Worker');
+    const container = definition?.containerDefinitions?.find(c => c.name === (purpose === 'api' ? 'ApiContainer' : 'WorkerContainer'));
     const variables = Object.fromEntries((container?.environment ?? []).map(v => [v.name, v.value]));
     if (container?.image !== `${selector.image.repository_uri}@${selector.image.digest}` || variables.SERVICE_COMMIT_SHA !== selector.image.service_sha
       || variables.IMAGE_DIGEST !== selector.image.digest) throw new Error('Actual ECS task definition selection mismatch');

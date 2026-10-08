@@ -8,7 +8,7 @@ await loadCommittedSelection(selectionBinding());
 if (!/^stack-sources\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(process.env.STACK_SOURCES_FILE ?? '') || !HASH.test(process.env.STACK_SOURCES_SHA256 ?? '')) throw new Error('Reviewed stack sources path/hash required');
 const bytes = await readFile(process.env.STACK_SOURCES_FILE);
 if (sha256(bytes) !== process.env.STACK_SOURCES_SHA256) throw new Error('Stack source bytes differ from explicit input hash');
-const rows = parseJson(bytes);
+const rows = structuredClone(parseJson(bytes));
 if (!Array.isArray(rows) || rows.length !== 4 || new Set(rows.map(row => row.stack_name)).size !== 4) throw new Error('Four unique stack sources required');
 for (const row of rows) {
   exact(row, ['stack_name', 'region', 'source_repository', 'source_sha'], 'stack producer');

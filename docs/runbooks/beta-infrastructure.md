@@ -48,11 +48,29 @@ stays in protected secrets; only the scoped Service token reaches the CLI. Nativ
 CLI capability probes precede App credentials and telemetry is fixed off.
 
 `stack-sources/<reviewed-name>.json` has four unique rows: `stack_name`, `region`,
-`source_repository`, `source_sha`. Retain Service source identity for unchanged
-Foundation/Billing; touched stacks bind the exact Infra executor. Only the
+`source_repository`, `source_sha`. Retain each unchanged stack's actual producer
+repository/full SHA; touched stacks bind the exact Infra executor. Only the
 reviewed Infra `@executor` placeholder resolves to `GITHUB_SHA`; final records
 carry full SHAs. Actual authenticated CFN Original hashes remain independent
 from these reviewed source declarations and source synth comparisons.
+
+The committed [Beta restart map](../../stack-sources/beta-restart.json) retains
+Foundation's accepted Infra bootstrap source
+`88679b61630bc2344258cafb0d35b4d0b02e3a0d` and Billing's Service source
+`58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759`. Their historical operation and
+preservation-overlay evidence remains independent of these four-key rows.
+Platform and Workload use Infra `@executor` because `start` deploys both stacks;
+the merge's actual reviewed main SHA becomes their producer only after the
+operation succeeds. No separate stopped Platform maintenance deployment is
+needed: `start` already reconciles Platform before its pinned migration/verification.
+
+Keep that reviewed main fixed through start and subsequent observation. The
+restart map is valid for later `observe` at the same SHA after both deployments;
+using it at a newer main would wrongly relabel unchanged stacks. Observation
+from newer main requires a separately reviewed fixed map preserving the actual
+deployed Platform/Workload SHAs. Final E2E binds the actual record-producing
+Infra source and deployment record. This source map alone is not runtime proof
+or authorization to activate Beta.
 
 ## Entry points
 
