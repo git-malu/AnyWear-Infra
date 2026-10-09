@@ -40,3 +40,26 @@ test('rejects replica changes outside the Beta Workload stack', () => {
   assert.equal(result.accepted, false);
   assert.equal(result.rejected.length, 2);
 });
+
+test('scopes cleanup template allowances to nonlegacy Beta phases and exact resource prefixes', () => {
+  const before = { Resources: {}, Outputs: {} };
+  const cleanup = { Resources: {
+    CleanupOperationStateMachineABCDEF12: { Type: 'AWS::StepFunctions::StateMachine' },
+  }, Outputs: { CleanupOperationVersion: { Value: 'version-arn' } } };
+  const allowed = compareTemplates(before, cleanup, {
+    phase: 'roles-added', stage: 'beta', stackName: 'AnyWearWorkloadStack-beta',
+  });
+  assert.equal(allowed.accepted, true);
+  const legacy = compareTemplates(before, cleanup, {
+    phase: 'legacy', stage: 'beta', stackName: 'AnyWearWorkloadStack-beta',
+  });
+  assert.equal(legacy.accepted, false);
+  const unrelated = compareTemplates(before, {
+    Resources: { UnrelatedResourceABCDEF12: { Type: 'AWS::S3::Bucket' } }, Outputs: {},
+  }, { phase: 'roles-added', stage: 'beta', stackName: 'AnyWearWorkloadStack-beta' });
+  assert.equal(unrelated.accepted, true);
+  const production = compareTemplates(before, cleanup, {
+    phase: 'roles-added', stage: 'prod', stackName: 'AnyWearWorkloadStack-prod',
+  });
+  assert.equal(production.accepted, false);
+});
