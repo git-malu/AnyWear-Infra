@@ -177,13 +177,25 @@ test('restart map resolves touched executor rows and preserves historical produc
   await assert.rejects(runGuard('close-admission'), /Unchanged runtime\/recovery stack must retain/);
   const runtimeOnly = await readFile(new URL('../stack-sources/beta-runtime-only.json', import.meta.url));
   const producerRows = JSON.parse(runtimeOnly);
-  assert.ok(producerRows.every(row => /^[a-f0-9]{40}$/.test(row.source_sha)));
-  assert.equal(producerRows[1].source_sha, '794991ccbf863812c739ece14feb56ae14f704a1');
-  assert.equal(producerRows[2].source_sha, '794991ccbf863812c739ece14feb56ae14f704a1');
+  // Completed restart 37887802281/1, deployment artifact 11598145428.
+  const deployedProducers = [
+    { stack_name: 'AnyWearFoundationStack', region: 'ap-east-1', source_repository: 'git-malu/AnyWear-Infra',
+      source_sha: '88679b61630bc2344258cafb0d35b4d0b02e3a0d' },
+    { stack_name: 'AnyWearPlatformStack-beta', region: 'ap-east-1', source_repository: 'git-malu/AnyWear-Infra',
+      source_sha: 'bafc3072ea6aee2d5193009c014cb1cf04b43848' },
+    { stack_name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1', source_repository: 'git-malu/AnyWear-Infra',
+      source_sha: 'bafc3072ea6aee2d5193009c014cb1cf04b43848' },
+    { stack_name: 'AnyWearBillingStack-beta', region: 'us-east-1', source_repository: 'git-malu/AnyWear-Service',
+      source_sha: '58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759' },
+  ];
+  assert.deepEqual(producerRows, deployedProducers);
   await writeFile(mapFile, runtimeOnly); await git(['add', 'stack-sources/beta-restart.json']);
   await git(['commit', '--quiet', '-m', 'Reviewed runtime-only producer map']);
-  await runGuard('close-admission', sha256(runtimeOnly));
-  assert.deepEqual(JSON.parse(await readFile(path.join(root, 'deployment-evidence/stack-sources.json'), 'utf8')), producerRows);
+  assert.notEqual(await git(['rev-parse', 'HEAD']), deployedProducers[1].source_sha);
+  for (const operation of ['observe', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission']) {
+    await runGuard(operation, sha256(runtimeOnly));
+    assert.deepEqual(JSON.parse(await readFile(path.join(root, 'deployment-evidence/stack-sources.json'), 'utf8')), deployedProducers);
+  }
   await assert.rejects(runGuard('restore-release', sha256(runtimeOnly)), /Changed stack must bind/);
   await writeFile(mapFile, mapBytes); await git(['add', 'stack-sources/beta-restart.json']);
   await git(['commit', '--quiet', '-m', 'Restore reviewed restart map fixture']);

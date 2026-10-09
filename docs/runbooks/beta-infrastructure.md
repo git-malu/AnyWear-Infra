@@ -166,7 +166,12 @@ service scaling, migration, drain or implicit admission reopening occurs.
 
 For a source-only admission operation, the committed
 [runtime-only map](../../stack-sources/beta-runtime-only.json) retains all four
-actual producers, including Platform/Workload `794991ccbf863812c739ece14feb56ae14f704a1`.
+actual producers, including Platform/Workload `bafc3072ea6aee2d5193009c014cb1cf04b43848`
+from the [successful restart](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281)
+(attempt `1`, deployment artifact `11598145428`). Its deployment-record SHA-256 is
+`13471cd8449d29190d599b2fa4eb302bd7531691fb2085ee23792bb674cac238`.
+Foundation remains Infra `88679b61630bc2344258cafb0d35b4d0b02e3a0d` and Billing
+remains Service `58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759`.
 Its current executor can be newer without relabeling unchanged stack producers.
 If actual producers change, review a new exact map before use. New admission/
 recovery operations reject `@executor` on any untouched stack.
