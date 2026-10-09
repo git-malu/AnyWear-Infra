@@ -2,14 +2,12 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { ComputeRuntime } from './compute-runtime';
 import type { PlatformStack } from './platform-stack';
-import type { IdentityPhase } from './identity-phase';
 import { CleanupOperation } from './cleanup-operation';
 
 export interface WorkloadStackProps extends cdk.StackProps {
   stage: 'beta' | 'prod';
   platform: PlatformStack;
   betaActive?: boolean;
-  identityPhase?: IdentityPhase;
 }
 
 export class WorkloadStack extends cdk.Stack {
@@ -51,7 +49,7 @@ export class WorkloadStack extends cdk.Stack {
       cognitoClientId: platform.userPoolClient.userPoolClientId,
       qWeatherApiKeySecret: platform.qWeatherApiKeySecret,
     });
-    if (props.stage === 'beta' && props.identityPhase !== 'legacy' && platform.cleanupTaskRole
+    if (props.stage === 'beta' && platform.cleanupTaskRole
       && platform.verificationTaskRole && platform.oneShotExecutionRole && platform.oneShotLogGroup
       && platform.database?.secret && platform.vpc && platform.oneShotSecurityGroup) {
       const subnets = props.betaActive === false ? platform.vpc.isolatedSubnets : platform.vpc.privateSubnets;

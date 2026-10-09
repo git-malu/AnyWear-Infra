@@ -28,7 +28,7 @@ function synthesizePlatform(stage: string, betaActive?: boolean, identityPhase?:
 function synthesizeWorkload(stage: 'beta' | 'prod', betaActive?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
   const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, betaActive, artifactInputs, identityPhase });
-  const workload = new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, { stage, platform, betaActive, identityPhase });
+  const workload = new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, { stage, platform, betaActive });
   return Template.fromStack(workload).toJSON();
 }
 

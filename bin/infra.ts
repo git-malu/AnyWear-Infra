@@ -72,7 +72,6 @@ if (stage === 'beta' || stage === 'prod') {
     stage,
     platform,
     betaActive,
-    identityPhase,
     env,
   });
 }
