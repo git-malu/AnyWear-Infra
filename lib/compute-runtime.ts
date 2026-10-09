@@ -40,6 +40,8 @@ export interface ComputeRuntimeProps {
 
 export class ComputeRuntime extends Construct {
   readonly cluster: ecs.Cluster;
+  readonly imageDigest: cdk.CfnParameter;
+  readonly serviceCommit: cdk.CfnParameter;
   readonly loadBalancer?: elasticloadbalancingv2.ApplicationLoadBalancer;
   readonly apiService?: ecs.FargateService;
   readonly workerService?: ecs.FargateService;
@@ -68,6 +70,8 @@ export class ComputeRuntime extends Construct {
       description: 'Exact AnyWear-Service commit represented by the image',
       allowedPattern: '^[a-f0-9]{40}$',
     });
+    this.imageDigest = imageDigest;
+    this.serviceCommit = serviceCommit;
     const providerSecretArn = new cdk.CfnParameter(cdk.Stack.of(this), 'VlmConfigArn', {
       type: 'String',
       description: 'Secrets Manager ARN containing DOUBAO_VLM_API_KEY',

@@ -2,15 +2,19 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { ComputeRuntime } from './compute-runtime';
 import type { PlatformStack } from './platform-stack';
+import type { IdentityPhase } from './identity-phase';
+import { CleanupOperation } from './cleanup-operation';
 
 export interface WorkloadStackProps extends cdk.StackProps {
   stage: 'beta' | 'prod';
   platform: PlatformStack;
   betaActive?: boolean;
+  identityPhase?: IdentityPhase;
 }
 
 export class WorkloadStack extends cdk.Stack {
   readonly compute: ComputeRuntime;
+  readonly cleanupOperation?: CleanupOperation;
 
   constructor(scope: Construct, id: string, props: WorkloadStackProps) {
     super(scope, id, props);
@@ -47,5 +51,33 @@ export class WorkloadStack extends cdk.Stack {
       cognitoClientId: platform.userPoolClient.userPoolClientId,
       qWeatherApiKeySecret: platform.qWeatherApiKeySecret,
     });
+    if (props.stage === 'beta' && props.identityPhase !== 'legacy' && platform.cleanupTaskRole
+      && platform.verificationTaskRole && platform.oneShotExecutionRole && platform.oneShotLogGroup
+      && platform.database?.secret && platform.vpc && platform.oneShotSecurityGroup) {
+      const subnets = props.betaActive === false ? platform.vpc.isolatedSubnets : platform.vpc.privateSubnets;
+      this.cleanupOperation = new CleanupOperation(this, 'CleanupOperation', {
+        cluster: platform.cluster,
+        vpc: platform.vpc,
+        securityGroup: platform.oneShotSecurityGroup,
+        subnets,
+        repository: platform.repository,
+        imageDigest: this.compute.imageDigest.valueAsString,
+        serviceCommit: this.compute.serviceCommit.valueAsString,
+        apiBaseUrl: `https://${this.compute.distribution.distributionDomainName}`,
+        cleanupTaskRole: platform.cleanupTaskRole,
+        verificationTaskRole: platform.verificationTaskRole,
+        executionRole: platform.oneShotExecutionRole,
+        logGroup: platform.oneShotLogGroup,
+        databaseSecretArn: platform.database.secret.secretArn,
+        databaseHost: platform.database.clusterEndpoint.hostname,
+        databasePort: platform.database.clusterEndpoint.port.toString(),
+        databaseName: 'anywear',
+        bucketName: platform.wardrobeBucket.bucketName,
+        vtoQueueUrl: platform.vtoQueue.queueUrl,
+        taggingQueueUrl: platform.autoTaggingQueue.queueUrl,
+        vtoDlqUrl: platform.vtoDeadLetterQueue.queueUrl,
+        taggingDlqUrl: platform.autoTaggingDeadLetterQueue.queueUrl,
+      });
+    }
   }
 }
