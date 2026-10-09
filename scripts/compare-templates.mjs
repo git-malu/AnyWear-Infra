@@ -110,10 +110,24 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
     // CDK analytics is diagnostic metadata rather than a cloud resource update.
     const telemetry = resource?.Type === 'AWS::CDK::Metadata'
       && difference.path === `/Resources/${id}/Properties/Analytics`;
-    if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention) {
+    // Issue #95 S1 is intentionally narrow: only the active Beta API service
+    // desired count and its autoscaling minimum may change from 2 to 1. Keep
+    // task sizes, Worker scaling, Production/Dev and stopped-state templates
+    // covered by the normal exact comparison.
+    const betaS1ReplicaReduction = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta'
+      && ((resource?.Type === 'AWS::ECS::Service'
+        && resource.Properties?.ServiceName === 'beta-anywear-api'
+        && difference.path === `/Resources/${id}/Properties/DesiredCount`
+        && difference.before === 2 && difference.after === 1)
+      || (resource?.Type === 'AWS::ApplicationAutoScaling::ScalableTarget'
+        && difference.path === `/Resources/${id}/Properties/MinCapacity`
+        && difference.before === 2 && difference.after === 1
+        && id.includes('ApiServiceTaskCountTarget')));
+    if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention || betaS1ReplicaReduction) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
-        : protectedRetention ? 'Explicit protected rollback retention activation' : 'CDK diagnostic analytics' });
+        : protectedRetention ? 'Explicit protected rollback retention activation'
+          : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction' : 'CDK diagnostic analytics' });
     } else rejected.push(difference);
   }
   return { phase, stage, stackName, accepted: rejected.length === 0, allowed, rejected };
