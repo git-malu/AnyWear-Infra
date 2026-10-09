@@ -21,3 +21,14 @@ test('successful observation, close failure, and stopped operations keep accurat
   assert.equal(finalizeOperationRecord(fixture('close-admission'), 'success', 'skipped').result, 'failed');
   assert.throws(() => finalizeOperationRecord(fixture('restore-release'), 'unknown', 'success'));
 });
+
+test('any observed active final state requires final observation, while stopped maintenance permits skipping it', () => {
+  for (const operation of ['deploy-platform', 'deploy-workload', 'start', 'observe', 'tester-replace']) {
+    const active = fixture(operation);
+    active.events.push({ type: 'final-beta-activity', platform_active: 'true', workload_active: 'true' });
+    assert.equal(finalizeOperationRecord(active, 'success', 'skipped').result, 'failed');
+    const stopped = fixture(operation);
+    stopped.events.push({ type: 'final-beta-activity', platform_active: 'false', workload_active: 'false' });
+    assert.equal(finalizeOperationRecord(stopped, 'success', 'skipped').result, 'succeeded');
+  }
+});

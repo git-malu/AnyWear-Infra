@@ -10,8 +10,11 @@ export function finalizeOperationRecord(record, operationOutcome, observationOut
   if (!outcomes.includes(operationOutcome) || !outcomes.includes(observationOutcome)
     || record?.record_type !== 'anywear_infra_operation' || record.schema_version !== 2) throw new Error('Invalid final operation outcome');
   record.final_observation = observationOutcome;
+  const finalActivity = record.events?.findLast(event => event.type === 'final-beta-activity');
+  const requiresObservation = finalActivity?.platform_active === 'true' || finalActivity?.workload_active === 'true'
+    || ['restore-release', 'close-admission'].includes(record.operation);
   if (operationOutcome !== 'success' || ['failure', 'cancelled'].includes(observationOutcome)
-    || (['restore-release', 'close-admission'].includes(record.operation) && observationOutcome !== 'success')) {
+    || (requiresObservation && observationOutcome !== 'success')) {
     record.result = 'failed';
     if (record.operation === 'restore-release' && record.recovery === 'not-required') recordRecovery(record, 'requires-explicit-recovery');
   }
