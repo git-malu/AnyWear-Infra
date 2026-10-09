@@ -10,12 +10,15 @@ import { runRuntimeVerification } from './verify-runtime-task.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
 import { createOperationRecord, recordRecovery } from './operation-record.mjs';
+import { readLifecycleStatus } from './lifecycle-status.mjs';
+import { runCloseAdmission } from './admission-operation.mjs';
+import { runRestoreRelease } from './restore-release.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mutations = new Set(['register-task-definition', 'run-task', 'deregister-task-definition', 'put-parameter', 'put-retention-policy']);
 export function validateOperationInputs(env = process.env) {
-  if (!['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'migrate', 'verify', 'start', 'stop', 'observe', 'tester-status', 'tester-add', 'tester-replace'].includes(env.INFRA_OPERATION)) throw new Error('Unknown Infra operation');
+  if (!['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'migrate', 'verify', 'start', 'stop', 'observe', 'tester-status', 'tester-add', 'tester-replace', 'close-admission', 'restore-release'].includes(env.INFRA_OPERATION)) throw new Error('Unknown Infra operation');
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
     || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
     || env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main' || env.ENABLE_BETA_DEPLOY !== 'true') throw new Error('Protected Infra main executor and activation required');
@@ -24,6 +27,10 @@ export function validateOperationInputs(env = process.env) {
   if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
   if (!HASH.test(env.SELECTION_SHA256 ?? '')) throw new Error('Explicit selection hash required');
   if (!/^selections\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(env.SELECTION_FILE ?? '')) throw new Error('Selection must be a reviewed repository file');
+  if (['close-admission', 'restore-release'].includes(env.INFRA_OPERATION)) {
+    if (env.INFRA_IDENTITY_PHASE !== 'retired' || env.INFRA_RETENTION_PROTECTION !== 'true') throw new Error('Admission and release recovery require retired identity and protected retention');
+    if (normalizeTesterEmails(env.TESTER_EMAILS) !== '[]') throw new Error('Admission and release recovery accept no tester mutation payload');
+  }
   if (env.INFRA_OPERATION.startsWith('tester-')) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
     if (env.INFRA_OPERATION === 'tester-status' && payload !== '[]') throw new Error('Tester status accepts no mutation payload');
@@ -89,9 +96,12 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
   const check = async () => { validateOperationInputs(env); await loadCommittedSelection(selectionBinding(env, trustedInfraRoot)); };
   const roleEnv = async kind => {
     await check();
-    if (!credentials.has(kind)) credentials.set(kind, { value: await assume(kind, env), at: Date.now() });
-    if (Date.now() - credentials.get(kind).at > 50 * 60_000) credentials.set(kind, { value: await assume(kind, env), at: Date.now() });
-    return credentials.get(kind).value;
+    if (!credentials.has(kind) || Date.now() - credentials.get(kind).at > 50 * 60_000) {
+      credentials.set(kind, { promise: assume(kind, env), at: Date.now() });
+    }
+    const entry = credentials.get(kind);
+    try { return await entry.promise; }
+    catch (error) { if (credentials.get(kind) === entry) credentials.delete(kind); throw error; }
   };
   const io = {
     region: 'ap-east-1', now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
@@ -101,7 +111,15 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       const explicitRegion = args.indexOf('--region');
       if (explicitRegion >= 0 && !['ap-east-1', 'us-east-1'].includes(args[explicitRegion + 1])) throw new Error('Unexpected operation region');
       const result = await run('aws', [...args, ...(explicitRegion < 0 ? ['--region', 'ap-east-1'] : []), '--output', 'json'], { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
-      return result.stdout.trim() ? parseJson(result.stdout) : {};
+      const observed = result.stdout.trim() ? parseJson(result.stdout) : {};
+      if (args[0] === 'ecs' && args[1] === 'register-task-definition') {
+        record?.events.push({ type: 'runtime-task-definition', task_definition_arn: observed.taskDefinition?.taskDefinitionArn ?? 'unavailable' });
+      }
+      if (args[0] === 'ecs' && args[1] === 'run-task') {
+        record?.events.push({ type: 'runtime-task-started', task_arns: (observed.tasks ?? []).map(task => task.taskArn),
+          result: observed.failures?.length ? 'failed' : 'observed' });
+      }
+      return observed;
     },
     async oneShot(role, revision, argument = '', payload) {
       await check();
@@ -110,20 +128,36 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       let result;
       try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
         { cwd: root, env: { ...awsEnv, BASH_ENV: path.join(root, '.github/scripts/operation-hook.sh'), INFRA_REPOSITORY_DIRECTORY: root }, timeout: 4_200_000, maxBuffer: 10 * 1024 * 1024 });
-      } catch { throw new Error('One-shot execution failed; preserve task resources and inspect redacted run evidence'); }
+      } catch (error) {
+        record?.events.push({ type: 'one-shot-failed', role, action: argument,
+          task_arns: [...new Set([...String(error.stdout ?? '').matchAll(/^Task ARN: (arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32})$/gm)].map(match => match[1]))],
+          task_definition_arns: [...new Set([...String(error.stdout ?? '').matchAll(/^Task definition: (arn:aws:ecs:ap-east-1:650880818323:task-definition\/beta-anywear-[a-z0-9-]+:[1-9][0-9]*)$/gm)].map(match => match[1]))], result: 'failed' });
+        throw new Error('One-shot execution failed; preserve task resources and inspect redacted run evidence');
+      }
       const tasks = [...new Set([...result.stdout.matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       const definitions = [...new Set([...result.stdout.matchAll(/^Task definition: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       if (tasks.length !== 1 || definitions.length !== 1) throw new Error('Unique one-shot identity missing');
+      record?.events.push({ type: 'one-shot-identity', role, action: argument, task_arn: tasks[0], task_definition_arn: definitions[0] });
       const task = (await io.aws(['ecs', 'describe-tasks', '--cluster', 'beta-anywear', '--tasks', tasks[0]])).tasks?.[0];
       const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', definitions[0]])).taskDefinition;
       const actualContainer = task?.containers?.find(item => item.name === 'OneShot');
       const container = definition?.containerDefinitions?.find(item => item.name === 'OneShot');
       if (task?.lastStatus !== 'STOPPED' || task.taskDefinitionArn !== definitions[0] || actualContainer?.exitCode !== 0
         || actualContainer.imageDigest !== selector.image.digest || container?.image !== `${selector.image.repository_uri}@${selector.image.digest}`) throw new Error('Actual one-shot image/result differs from selection');
+      if (role === 'lifecycle' && canonicalJson(container.command) !== canonicalJson(['node', 'dist/ops/beta-lifecycle.js', argument,
+        ...(payload === undefined ? [] : [payload])])) throw new Error('Actual lifecycle command differs from the selected action');
       record?.events.push({ type: 'one-shot', role, action: argument, service_sha: selector.image.service_sha, image_digest: selector.image.digest,
         task_arn: tasks[0], task_definition_arn: definitions[0], command_sha256: sha256(canonicalJson(container.command)),
         ...(payload === undefined ? {} : { payload_sha256: sha256(payload) }), result: 'stopped-success' });
       process.stdout.write(result.stdout); process.stderr.write(result.stderr);
+      if (role === 'lifecycle' && argument === 'status') {
+        const status = await readLifecycleStatus(io, task, definition);
+        record?.events.push({ type: 'lifecycle-status', task_arn: tasks[0], task_definition_arn: definitions[0],
+          status_sha256: sha256(canonicalJson(status)), intake_open: status.intake_open,
+          admission_suspended: status.admission_suspended, tester_count: status.tester_count,
+          database_policy_matches_ssm: status.database_policy_matches_ssm });
+        return status;
+      }
     },
     async deploy(stack, active, revision) {
       await check();
@@ -141,6 +175,14 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
     },
     recordRecovery(outcome) { if (record) recordRecovery(record, outcome); },
     recordLifecycleState(observed) { record?.events.push({ type: 'observed-lifecycle-state', ...observed }); },
+    recordAdmissionState({ state, ...event }) {
+      const { tester_emails, ...values } = state ?? {};
+      record?.events.push({ type: 'admission-state', ...event, state: { ...values,
+        tester_count: Array.isArray(tester_emails) ? tester_emails.length : 'unavailable',
+        tester_emails_sha256: Array.isArray(tester_emails) ? sha256(canonicalJson(tester_emails)) : 'unavailable' } });
+    },
+    recordRestoreStage(event) { record?.events.push({ type: 'restore-stage', ...event }); },
+    recordRestoreState(observed) { record?.events.push({ type: 'restore-state', ...observed }); },
     async verifyHealth(url, revision) {
       const deadline = Date.now() + 600_000;
       while (Date.now() < deadline) {
@@ -157,10 +199,11 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
 export async function runOperation(env = process.env) {
   validateOperationInputs(env);
   const binding = selectionBinding(env); const selector = await loadCommittedSelection(binding);
-  const directory = path.join(root, '.service-artifacts/selected'); const verified = await verifySelection(binding, directory);
+  const directory = path.join(root, '.service-artifacts/selected');
   const record = createOperationRecord({ env, selector, reviewedStackSources: parseJson(await readFile('deployment-evidence/stack-sources.json')) });
-  const io = await createRuntimeIo(selector, directory, env, record);
   try {
+  const verified = await verifySelection(binding, directory);
+  const io = await createRuntimeIo(selector, directory, env, record);
   if ((await io.aws(['sts', 'get-caller-identity'])).Account !== '650880818323') throw new Error('Wrong runtime account');
   for (const row of record.reviewed_stack_sources) {
     const template = (await io.aws(['cloudformation', 'get-template', '--stack-name', row.stack_name, '--template-stage', 'Original', '--region', row.region])).TemplateBody;
@@ -178,6 +221,8 @@ export async function runOperation(env = process.env) {
       parameters: { ...priorRevision.parameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha } };
     await runBetaLifecycle(operation, io, { selectedRevision });
   } else if (operation === 'stop') await runBetaLifecycle(operation, io);
+  else if (operation === 'close-admission') await runCloseAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
+  else if (operation === 'restore-release') await runRestoreRelease({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
   else if (operation.startsWith('tester-')) await runTesterAllowlist(operation.slice(7), env.TESTER_EMAILS, io, selector);
   else if (operation !== 'observe') {
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];

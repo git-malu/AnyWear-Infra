@@ -298,6 +298,15 @@ test('operation main workflow/account/region/selection/identity/retention bind b
     { GITHUB_EVENT_NAME: 'push' }, { GITHUB_WORKFLOW_REF: 'other' }, { ENABLE_BETA_DEPLOY: 'false' }, { AWS_REGION: 'us-east-1' },
     { INFRA_IDENTITY_PHASE: undefined }, { INFRA_RETENTION_PROTECTION: undefined }, { SELECTION_FILE: '../beta.json' }, { SELECTION_SHA256: 'short' }]) assert.throws(() => validateOperationInputs({ ...env, ...patch }));
 });
+
+test('admission close and coherent restore require retired protected context and no tester mutation payload', () => {
+  for (const operation of ['close-admission', 'restore-release']) {
+    const input = { ...env, INFRA_OPERATION: operation, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]' };
+    validateOperationInputs(input);
+    for (const change of [{ INFRA_IDENTITY_PHASE: 'roles-added' }, { INFRA_RETENTION_PROTECTION: 'false' },
+      { TESTER_EMAILS: '["someone@example.com"]' }, { TESTER_EMAILS: undefined }]) assert.throws(() => validateOperationInputs({ ...input, ...change }));
+  }
+});
 test('maintenance deployment preserves both stopped stacks and rejects either mixed or unknown state', () => {
   const stack = value => ({ Outputs: [{ OutputKey: 'BetaActive', OutputValue: value }] });
   assert.equal(betaDeploymentActivity(stack('false'), stack('false')), false);
