@@ -470,6 +470,26 @@ describe('Platform and workload safety controls', () => {
     expect(qweatherHost.Value.Ref).toMatch(/^SsmParameterValue/);
   });
 
+  it('reduces only the active Beta API baseline to one task and keeps Production HA', () => {
+    const beta = Object.values(synthesizeWorkload('beta').Resources) as any[];
+    const prod = Object.values(synthesizeWorkload('prod').Resources) as any[];
+    const service = (resources: any[], name: string) => resources.find((resource) => (
+      resource.Type === 'AWS::ECS::Service' && resource.Properties?.ServiceName === name
+    ));
+    const target = (resources: any[], logicalId: string) => resources.find((resource) => (
+      resource.Type === 'AWS::ApplicationAutoScaling::ScalableTarget' && resource.__logicalId === logicalId
+    ));
+    const betaTargetId = Object.keys(synthesizeWorkload('beta').Resources).find((id) => id.includes('ApiServiceTaskCountTarget'))!;
+    const prodTargetId = Object.keys(synthesizeWorkload('prod').Resources).find((id) => id.includes('ApiServiceTaskCountTarget'))!;
+    const betaWithIds = Object.entries(synthesizeWorkload('beta').Resources).map(([id, resource]) => ({ ...(resource as any), __logicalId: id }));
+    const prodWithIds = Object.entries(synthesizeWorkload('prod').Resources).map(([id, resource]) => ({ ...(resource as any), __logicalId: id }));
+    expect(service(beta, 'beta-anywear-api').Properties.DesiredCount).toBe(1);
+    expect(service(beta, 'beta-anywear-worker').Properties.DesiredCount).toBe(1);
+    expect(target(betaWithIds, betaTargetId).Properties.MinCapacity).toBe(1);
+    expect(service(prod, 'prod-anywear-api').Properties.DesiredCount).toBe(2);
+    expect(target(prodWithIds, prodTargetId).Properties.MinCapacity).toBe(2);
+  });
+
   it('stops only Beta paid workload resources while preserving CloudFront and maintenance origin', () => {
     const template = synthesizeWorkload('beta', false);
     const resources = Object.values(template.Resources) as any[];

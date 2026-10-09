@@ -279,7 +279,8 @@ export class ComputeRuntime extends Construct {
       serviceName: `${props.stage}-anywear-api`,
       cluster: this.cluster,
       taskDefinition: apiTaskDefinition,
-      desiredCount: 2,
+      // Beta's single-user baseline keeps one API task; Production retains HA.
+      desiredCount: props.stage === 'beta' ? 1 : 2,
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
@@ -306,7 +307,7 @@ export class ComputeRuntime extends Construct {
     });
 
     const apiScaling = this.apiService.autoScaleTaskCount({
-      minCapacity: 2,
+      minCapacity: props.stage === 'beta' ? 1 : 2,
       maxCapacity: props.stage === 'prod' ? 10 : 4,
     });
     apiScaling.scaleOnCpuUtilization('ApiCpuScaling', {
