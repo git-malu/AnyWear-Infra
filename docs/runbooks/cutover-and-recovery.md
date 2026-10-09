@@ -5,6 +5,14 @@ not a record of completed AWS actions. Record execution, original resources,
 release decisions and exact recovery outcomes in the issue and protected run
 artifacts. The [Beta operation runbook](beta-infrastructure.md) owns normal inputs.
 
+The procedure's accepted #54 boundary is now recorded: Infra owns the sole
+operational Beta queue, while Service owns application/migration/verification
+source and immutable artifacts. The named legacy Beta role has deny-only trust
+with zero inline or attached grants. This does not claim account-wide IAM
+exclusivity or Beta resource isolation; the inherited Dev wildcard E2E subject,
+`cdk-*` assume-role chain and CloudFormation `AdministratorAccess` execution
+role remain outside scope.
+
 ## Foundation-only bootstrap
 
 The initial artifact publisher role must exist before Service can produce sealed
@@ -235,6 +243,16 @@ actual outputs/statuses and admission state, preserve partial/stopped state, and
 select a separately reviewed start after resolving the failure. Native CFN
 rollback may leave active or mixed state; requested false flags are not evidence.
 
+For #54, the bounded practical recovery was executed as [stop
+37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)
+then [start 37887802281](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281),
+both with historical Infra producer `bafc3072ea6aee2d5193009c014cb1cf04b43848`
+and coherent Service release `407218593`. This does not exercise active
+`restore-release` or automatic failure recovery. Historical release `406706155`
+remains preserved evidence but is byte-incoherent and cannot be selected for
+current rollback. Do not relabel the observed Client/Service tuple or historical
+Infra producer as a newer documentation or executor revision.
+
 For an ownership failure, suspend the new writer, enumerate its running tasks/CFN
 operations and verify cessation. Restore the recorded legacy source/templates/
 assets with exactly one old recovery writer. Do not relabel original Service-era
@@ -263,9 +281,22 @@ Observe new post-retirement Original templates and actual runtime identities,
 publish a new trusted completed-success Infra deployment record, then run final
 E2E v2 qualification against that exact record in its scheduled window. Pre-retirement
 rehearsal hashes cannot substitute. Preserve deployment/operation/recovery records,
-committed selection bytes, signed releases and publisher identities, authenticated before/after observations and exact
-source/run/attempt/artifact hashes before root registration, repository
-reconciliation or resource cleanup.
+committed selection bytes, signed releases and publisher identities, authenticated
+before/after observations and exact source/run/attempt/artifact hashes before root
+registration, repository reconciliation or resource cleanup.
+
+The accepted final correctness evidence is [E2E run
+37949887097](https://github.com/git-malu/AnyWear-E2E/actions/runs/37949887097),
+attempt `1`, with correlated Service cleanup [run
+37950914153](https://github.com/git-malu/AnyWear-Service/actions/runs/37950914153)
+and final admission closure [Infra run
+37951949885](https://github.com/git-malu/AnyWear-Infra/actions/runs/37951949885).
+The deployed Client `8320db0816b1c2d36e79a583160548744fd3d8c0`, Service
+`ab211c8212444b735e614ef9a74f184d24744d6b` and historical Infra observer
+`bafc3072ea6aee2d5193009c014cb1cf04b43848` remain distinct from the newer
+qualification/cleanup executor heads. The suite intentionally skipped public
+registration under closed intake; the observed provider timeout/retry case is a
+correctness observation, not a latency SLA or a provider/network diagnosis.
 
 Production deployment and readiness gates remain disabled. The workflow has a
 source blocker before AWS credential assumption: changing an activation variable
