@@ -123,11 +123,26 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         && difference.path === `/Resources/${id}/Properties/MinCapacity`
         && difference.before === 2 && difference.after === 1
         && id.includes('ApiServiceTaskCountTarget')));
-    if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention || betaS1ReplicaReduction) {
+    // Issue #86 adds a deployment-owned cleanup operation. Its fixed task
+    // definitions, state machine, version and E2E policy are intentionally
+    // new resources; the cross-stack PublishOutput values are the reviewed
+    // bindings needed to wire those tasks to existing Beta resources.
+    const cleanupOperationResource = stage === 'beta' && phase !== 'legacy'
+      && difference.path.startsWith('/Resources/CleanupOperation');
+    const cleanupOperationOutput = stage === 'beta' && phase !== 'legacy'
+      && (difference.path.startsWith('/Outputs/CleanupOperation')
+        || difference.path.startsWith('/Outputs/PublishOutput'));
+    const cleanupExecutionPolicy = stage === 'beta' && phase !== 'legacy'
+      && difference.path.includes('/Resources/OneShotExecutionRoleDefaultPolicy')
+      && difference.path.endsWith('/Properties/PolicyDocument/Statement');
+    if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
+      || betaS1ReplicaReduction || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
-          : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction' : 'CDK diagnostic analytics' });
+          : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
+            : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
+              ? 'Issue #86 fixed Beta cleanup operation binding' : 'CDK diagnostic analytics' });
     } else rejected.push(difference);
   }
   return { phase, stage, stackName, accepted: rejected.length === 0, allowed, rejected };

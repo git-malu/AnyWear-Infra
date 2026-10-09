@@ -25,9 +25,9 @@ function synthesizePlatform(stage: string, betaActive?: boolean, identityPhase?:
   return Template.fromStack(stack).toJSON();
 }
 
-function synthesizeWorkload(stage: 'beta' | 'prod', betaActive?: boolean): Record<string, any> {
+function synthesizeWorkload(stage: 'beta' | 'prod', betaActive?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
-  const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, betaActive, artifactInputs });
+  const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, betaActive, artifactInputs, identityPhase });
   const workload = new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, { stage, platform, betaActive });
   return Template.fromStack(workload).toJSON();
 }
@@ -488,6 +488,30 @@ describe('Platform and workload safety controls', () => {
     expect(target(betaWithIds, betaTargetId).Properties.MinCapacity).toBe(1);
     expect(service(prod, 'prod-anywear-api').Properties.DesiredCount).toBe(2);
     expect(target(prodWithIds, prodTargetId).Properties.MinCapacity).toBe(2);
+  });
+
+  it('publishes a fixed, versioned Beta cleanup state machine with E2E read-only execution', () => {
+    const template = synthesizeWorkload('beta', true, 'roles-added');
+    const resources = Object.values(template.Resources) as any[];
+    const machines = resources.filter((resource) => resource.Type === 'AWS::StepFunctions::StateMachine');
+    const versions = resources.filter((resource) => resource.Type === 'AWS::StepFunctions::StateMachineVersion');
+    const definitions = resources.filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition');
+    expect(machines).toHaveLength(1);
+    expect(machines[0].Properties.StateMachineType).toBe('STANDARD');
+    expect(machines[0].Properties.StateMachineName).toBe('beta-anywear-tester-cleanup');
+    expect(versions).toHaveLength(1);
+    expect(definitions.map((definition) => definition.Properties.Family)).toEqual(expect.arrayContaining([
+      'beta-anywear-cleanup-verify', 'beta-anywear-cleanup',
+    ]));
+    const definition = JSON.stringify(machines[0].Properties.DefinitionString);
+    expect(definition).toContain('beta-tester-cleanup.js');
+    expect(definition).toContain('cleanup_request');
+    const policies = resources.filter((resource) => resource.Type === 'AWS::IAM::Policy');
+    const e2ePolicy = policies.find((policy) => JSON.stringify(policy.Properties.Roles).includes('beta-e2e-qualification-role'));
+    expect(JSON.stringify(e2ePolicy)).toContain('states:StartExecution');
+    expect(JSON.stringify(e2ePolicy)).toContain('states:DescribeExecution');
+    expect(JSON.stringify(e2ePolicy)).toContain('states:GetExecutionHistory');
+    expect(JSON.stringify(e2ePolicy)).not.toContain('ecs:RunTask');
   });
 
   it('stops only Beta paid workload resources while preserving CloudFront and maintenance origin', () => {
