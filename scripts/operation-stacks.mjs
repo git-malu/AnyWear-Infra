@@ -3,6 +3,7 @@ const stackChanges = Object.freeze({
   'deploy-billing': ['AnyWearBillingStack-beta'],
   'deploy-platform': ['AnyWearPlatformStack-beta'],
   'deploy-workload': ['AnyWearWorkloadStack-beta'],
+  'restore-release': ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'],
   start: ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'],
   stop: ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'],
 });

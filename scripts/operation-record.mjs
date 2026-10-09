@@ -14,7 +14,7 @@ export function createOperationRecord({ env, selector, reviewedStackSources }) {
 }
 
 export function recordRecovery(record, outcome) {
-  const transitions = { 'not-required': ['began', 'requires-explicit-start'], began: ['succeeded', 'failed'] };
+  const transitions = { 'not-required': ['began', 'requires-explicit-start', 'requires-explicit-recovery'], began: ['succeeded', 'failed'] };
   if (!transitions[record.recovery]?.includes(outcome)) throw new Error('Invalid recovery evidence transition');
   record.recovery = outcome;
 }

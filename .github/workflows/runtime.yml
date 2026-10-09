@@ -5,7 +5,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-workload, migrate, verify, start, stop, observe, tester-status, tester-add, tester-replace]
+        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-workload, migrate, verify, start, stop, observe, tester-status, tester-add, tester-replace, close-admission, restore-release]
         required: true
       selection_file:
         description: Committed canonical selection in this Infra revision
@@ -110,6 +110,7 @@ jobs:
           role-to-assume: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - name: Observe final authenticated deployment
+        id: observation
         if: steps.operation.outputs.beta_active == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -124,6 +125,12 @@ jobs:
           path: deployment-evidence/deployment-record.json
           retention-days: 90
           if-no-files-found: error
+      - name: Record final observation outcome
+        if: always()
+        env:
+          OPERATION_OUTCOME: ${{ steps.operation.outcome }}
+          OBSERVATION_OUTCOME: ${{ steps.observation.outcome }}
+        run: node scripts/finalize-operation.mjs
       - name: Preserve operation and automatic recovery evidence
         if: always()
         uses: actions/upload-artifact@v4

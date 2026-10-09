@@ -89,13 +89,15 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Reconcile Platform using selected prebuilt Lambda/policy inputs; retain observed image and both stacks' active/stopped state; reject mixed/unknown state |
 | `deploy-workload` | Select the explicit immutable image; verify compatible applied schema before rollout; no implicit migration or down-migration |
+| `restore-release` | Verify the candidate image's actual policy/schema against the applied DB, then reconcile selected Workload and Platform in the same queue; retain retired identity, protected retention, active state and closed admission; qualify the coherent tuple at the end |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
-| `start` | Restore network, suspend admission, run the pinned migration/verification sequence, restore Workload and health, then execute the observed prior admission restoration |
+| `start` | Restore network, suspend admission, run the pinned migration/verification sequence, restore Workload and health, then keep admission suspended |
 | `stop` | Suspend admission, drain, stop Workload, verify task cessation, then stop paid Platform network; require both stopped outputs and closed admission readback; preserve failure state |
 | `observe` | Collect authenticated active-Beta deployment evidence |
 | `tester-status` | Read admission/tester status through the selected existing Service lifecycle command |
 | `tester-add`, `tester-replace` | Update the exact normalized tester list using the selected lifecycle command, with public intake closed |
+| `close-admission` | Verify the deployed selected image/schema, suspend admission through its pinned lifecycle command, then prove DB/SSM consistency and preserve the observed tester list; keep both stacks active |
 
 A dispatch uses reviewed repository files and explicit inputs, for example:
 
@@ -117,9 +119,10 @@ occurs before credentials; operation evidence records the effective normalized
 payload hash for the explicit action. `tester-status` requires the empty array `[]`.
 Add/replace use exact normalized email addresses, at most 50 users and the bounded
 SSM payload size. Their operation evidence records the effective payload hash.
-Service's existing `configure-testers` command closes admission, changes the
-allowlist and restores the recorded suspension state; public intake must already
-be closed. Do not use that path to reopen public registration.
+Service's existing `configure-testers` command changes the allowlist and can resume
+admission; public intake must already be closed. An empty tester payload is not
+proof of suspended admission. Use `close-admission` after an authorized tester
+window to restore suspension while preserving the required observed membership.
 
 After cutover, Service's `beta-testers` entry point retains application-data
 `cleanup` only. Infra owns status/add/replace. `beta-service-data-role` can run
@@ -142,6 +145,57 @@ immutable Service artifact, the reviewed exact payload and the coordinated write
 read-only grants. Verification's read-only behavior comes from the reviewed
 command and its read-only transaction, including the authenticated inspection's
 `repeatable read read only` transaction; secret access alone does not enforce it.
+
+## Admission closure and coherent release recovery
+
+Both `close-admission` and `restore-release` require explicit `identity_phase=retired`,
+`retention_protection=true` and `tester_emails=[]`. Here `[]` means no tester mutation
+payload; it says nothing about the current SSM allowlist. Preserve the complete
+observed membership, `intake_open=false` and suspended admission after any temporary
+qualification policy window. Closing admission does not drain existing backlog.
+
+`close-admission` requires stable active Platform/Workload and the selected image
+already deployed. It verifies that image's actual policy, journal and applied
+schema, runs its pinned lifecycle `close`, then reads all three SSM parameters.
+Its pinned lifecycle `status` must prove suspension/intake/count and
+`database_policy_matches_ssm=true`. Status evidence comes from the authenticated
+stopped task's actual definition and exact CloudWatch log stream, with bounded
+pagination and matching complete scans. Missing, malformed or duplicate status
+fails. Final SSM readback must preserve the original tester membership. No CFN,
+service scaling, migration, drain or implicit admission reopening occurs.
+
+For a source-only admission operation, the committed
+[runtime-only map](../../stack-sources/beta-runtime-only.json) retains all four
+actual producers, including Platform/Workload `794991ccbf863812c739ece14feb56ae14f704a1`.
+Its current executor can be newer without relabeling unchanged stack producers.
+If actual producers change, review a new exact map before use. New admission/
+recovery operations reject `@executor` on any untouched stack.
+
+`restore-release` requires both stacks already active/stable and admission already
+suspended with intake closed. It verifies the selected candidate image's raw
+runtime-policy identity, migration journal and compatibility with the applied DB
+before either CFN deployment. It then deploys selected Workload, verifies its four
+parameters and stable interfaces, deploys selected Platform, and qualifies selected
+health and verification in the same queue. The strict fulltuple observer runs only
+after this coherent sequence. Workload/Platform source rows bind this executor;
+Foundation/Billing retain their explicit historical producers. Review the exact
+Platform component/resource diff and recovery selection before allocating runtime.
+The operation never migrates, starts stopped stacks, changes phase/retention,
+configures testers or reopens admission. It preserves observed membership and
+closed admission at every phase boundary.
+
+An old signed release alone does not establish a usable rollback image: a raw
+policy-byte mismatch fails the existing candidate check even if canonical policy
+and schema match. A reviewed current coherent release is also a recovery input.
+The single-stack `deploy-workload` operation remains strict; when an older
+selection has different Lambda bytes, its final fulltuple observer fails until
+Platform matches. Do not weaken these checks or call that mixed state a successful
+recovery. Any restore failure records its stage, observed CFN parameters/activity,
+admission and task evidence, with `requires-explicit-recovery`; those CFN parameter
+readbacks are not actual running ECS identity proof. It never automatically
+deploys the other stack, reverts or starts/reopens Beta. Final observation failure
+also marks the preserved operation artifact failed. Only a separately reviewed
+recovery may proceed from the observed partial state.
 
 ## Evidence and stopped-state recovery
 

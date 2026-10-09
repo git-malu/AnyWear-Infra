@@ -17,6 +17,8 @@ test('source provenance binds every stack mutated by deployment and lifecycle op
   assert.deepEqual(changedStackNames('deploy-workload'), ['AnyWearWorkloadStack-beta']);
   for (const operation of ['start', 'stop']) assert.deepEqual(changedStackNames(operation), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
   assert.deepEqual(changedStackNames('observe'), []);
+  assert.deepEqual(changedStackNames('close-admission'), []);
+  assert.deepEqual(changedStackNames('restore-release'), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
 });
 
 async function runtimeDeployFixture() {
@@ -82,6 +84,56 @@ test('workload deploy fails closed when CloudFormation parameter readback mismat
   assert.deepEqual(record.events, []);
 });
 
+test('runtime status ignores shell JSON and binds actual stopped task definition and CloudWatch status', async () => {
+  const { root, selector, env, revision } = await runtimeDeployFixture();
+  Object.assign(env, { INFRA_OPERATION: 'close-admission', TESTER_EMAILS: '[]' });
+  const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'c'.repeat(32)}`;
+  const taskDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:9';
+  const actualStatus = { intake_open: false, admission_suspended: true, tester_count: 4, database_policy_matches_ssm: false };
+  const record = { events: [] };
+  const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
+    async assume(kind) { assert.equal(kind, 'runtime'); return { ...env }; },
+    async run(command, args) {
+      if (command === 'bash') return { stdout: `Task ARN: ${taskArn}\nTask definition: ${taskDefinitionArn}\n${JSON.stringify({ ...actualStatus, database_policy_matches_ssm: true })}\n`, stderr: '' };
+      assert.equal(command, 'aws');
+      if (args[1] === 'describe-tasks') return { stdout: JSON.stringify({ tasks: [{ taskArn, taskDefinitionArn,
+        clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear', lastStatus: 'STOPPED',
+        containers: [{ name: 'OneShot', exitCode: 0, imageDigest: selector.image.digest }] }] }) };
+      if (args[1] === 'describe-task-definition') return { stdout: JSON.stringify({ taskDefinition: {
+        family: 'beta-anywear-lifecycle', taskDefinitionArn, containerDefinitions: [{ name: 'OneShot',
+          image: `${selector.image.repository_uri}@${selector.image.digest}`, command: ['node', 'dist/ops/beta-lifecycle.js', 'status'],
+          logConfiguration: { logDriver: 'awslogs', options: { 'awslogs-group': '/anywear/beta/one-shot',
+            'awslogs-region': 'ap-east-1', 'awslogs-stream-prefix': 'beta-anywear-lifecycle' } } }] } }) };
+      assert.equal(args[1], 'get-log-events');
+      assert.equal(args[args.indexOf('--log-stream-name') + 1], `beta-anywear-lifecycle/OneShot/${'c'.repeat(32)}`);
+      return { stdout: JSON.stringify({ events: args.includes('--next-token') ? [] : [{ message: JSON.stringify(actualStatus) }], nextForwardToken: 'end' }) };
+    } });
+  io.sleep = async () => {};
+  assert.deepEqual(await io.oneShot('lifecycle', revision, 'status'), actualStatus);
+  assert.equal(record.events.at(-1).database_policy_matches_ssm, false);
+  assert.equal(record.events.at(-1).status_sha256, sha256(canonicalJson(actualStatus)));
+});
+
+test('parallel admission reads share one dedicated credential request and failed tasks retain exact identities', async () => {
+  const { root, selector, env, revision } = await runtimeDeployFixture();
+  const record = { events: [] }; let assumptions = 0; let awsCalls = 0;
+  const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'d'.repeat(32)}`;
+  const taskDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:10';
+  const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
+    async assume() { assumptions++; await new Promise(resolve => setTimeout(resolve, 10)); return { ...env }; },
+    async run(command) {
+      if (command === 'aws') { awsCalls++; return { stdout: '{}' }; }
+      assert.equal(command, 'bash');
+      const error = new Error('Task failed'); error.stdout = `Task ARN: ${taskArn}\nTask definition: ${taskDefinitionArn}\n`;
+      throw error;
+    } });
+  await Promise.all(['admission_suspended', 'intake_open', 'tester_allowlist'].map(name => io.aws(['ssm', 'get-parameter', '--name', `/anywear/beta/${name}`])));
+  assert.equal(assumptions, 1); assert.equal(awsCalls, 3);
+  await assert.rejects(io.oneShot('lifecycle', revision, 'close'), /One-shot execution failed/);
+  assert.deepEqual(record.events.at(-1), { type: 'one-shot-failed', role: 'lifecycle', action: 'close',
+    task_arns: [taskArn], task_definition_arns: [taskDefinitionArn], result: 'failed' });
+});
+
 test('restart map resolves touched executor rows and preserves historical producers through the actual source guard', async () => {
   const execute = promisify(execFile);
   const root = await mkdtemp(path.join(os.tmpdir(), 'infra-restart-map-'));
@@ -108,6 +160,7 @@ test('restart map resolves touched executor rows and preserves historical produc
       GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
       AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: operation,
       INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector),
+      TESTER_EMAILS: '[]',
       STACK_SOURCES_FILE: 'stack-sources/beta-restart.json', STACK_SOURCES_SHA256: hash },
   });
   for (const operation of ['start', 'stop', 'observe']) {
@@ -120,6 +173,20 @@ test('restart map resolves touched executor rows and preserves historical produc
     assert.equal(rows[3].source_repository, 'git-malu/AnyWear-Service');
     assert.equal(rows[3].source_sha, '58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759');
   }
+  await runGuard('restore-release');
+  await assert.rejects(runGuard('close-admission'), /Unchanged runtime\/recovery stack must retain/);
+  const runtimeOnly = await readFile(new URL('../stack-sources/beta-runtime-only.json', import.meta.url));
+  const producerRows = JSON.parse(runtimeOnly);
+  assert.ok(producerRows.every(row => /^[a-f0-9]{40}$/.test(row.source_sha)));
+  assert.equal(producerRows[1].source_sha, '794991ccbf863812c739ece14feb56ae14f704a1');
+  assert.equal(producerRows[2].source_sha, '794991ccbf863812c739ece14feb56ae14f704a1');
+  await writeFile(mapFile, runtimeOnly); await git(['add', 'stack-sources/beta-restart.json']);
+  await git(['commit', '--quiet', '-m', 'Reviewed runtime-only producer map']);
+  await runGuard('close-admission', sha256(runtimeOnly));
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, 'deployment-evidence/stack-sources.json'), 'utf8')), producerRows);
+  await assert.rejects(runGuard('restore-release', sha256(runtimeOnly)), /Changed stack must bind/);
+  await writeFile(mapFile, mapBytes); await git(['add', 'stack-sources/beta-restart.json']);
+  await git(['commit', '--quiet', '-m', 'Restore reviewed restart map fixture']);
   await assert.rejects(runGuard('start', '9'.repeat(64)), /Stack source bytes differ/);
   for (const [mutate, error] of [
     [rows => rows[1].source_sha = '7'.repeat(40), /Changed stack must bind/],
