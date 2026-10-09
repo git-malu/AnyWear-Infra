@@ -57,7 +57,7 @@ test('scopes cleanup template allowances to nonlegacy Beta phases and exact reso
   const unrelated = compareTemplates(before, {
     Resources: { UnrelatedResourceABCDEF12: { Type: 'AWS::S3::Bucket' } }, Outputs: {},
   }, { phase: 'roles-added', stage: 'beta', stackName: 'AnyWearWorkloadStack-beta' });
-  assert.equal(unrelated.accepted, true);
+  assert.equal(unrelated.accepted, false);
   const production = compareTemplates(before, cleanup, {
     phase: 'roles-added', stage: 'prod', stackName: 'AnyWearWorkloadStack-prod',
   });
