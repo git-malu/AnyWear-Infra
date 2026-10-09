@@ -177,14 +177,14 @@ test('restart map resolves touched executor rows and preserves historical produc
   await assert.rejects(runGuard('close-admission'), /Unchanged runtime\/recovery stack must retain/);
   const runtimeOnly = await readFile(new URL('../stack-sources/beta-runtime-only.json', import.meta.url));
   const producerRows = JSON.parse(runtimeOnly);
-  // Completed restart 37887802281/1, deployment artifact 11598145428.
+  // #95 S1 restore-release 37970047230/1, deployment artifact 11635817118.
   const deployedProducers = [
     { stack_name: 'AnyWearFoundationStack', region: 'ap-east-1', source_repository: 'git-malu/AnyWear-Infra',
       source_sha: '88679b61630bc2344258cafb0d35b4d0b02e3a0d' },
     { stack_name: 'AnyWearPlatformStack-beta', region: 'ap-east-1', source_repository: 'git-malu/AnyWear-Infra',
-      source_sha: 'bafc3072ea6aee2d5193009c014cb1cf04b43848' },
+      source_sha: 'ada13617da0280ca9a7da0798577db286e714edc' },
     { stack_name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1', source_repository: 'git-malu/AnyWear-Infra',
-      source_sha: 'bafc3072ea6aee2d5193009c014cb1cf04b43848' },
+      source_sha: 'ada13617da0280ca9a7da0798577db286e714edc' },
     { stack_name: 'AnyWearBillingStack-beta', region: 'us-east-1', source_repository: 'git-malu/AnyWear-Service',
       source_sha: '58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759' },
   ];
