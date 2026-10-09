@@ -1,10 +1,36 @@
 # Reviewed Beta infrastructure operations
 
 This runbook describes the source entry points for [AnyWear #54](https://github.com/git-malu/AnyWear/issues/54).
-AnyWear-Service remains the deployed infrastructure authority until the recorded
-cutover. Account `650880818323` uses `ap-east-1` for the application and `us-east-1`
-for Billing. Initial cutover preserves the observed image/Client/Lambda/policy
-tuple and endpoints; ordinary source merges do not choose a newer application.
+The verified cutover assigns Infra the sole operational Beta deployment queue.
+AnyWear-Service remains the application, migration, verification and immutable
+artifact publisher. Account `650880818323` uses `ap-east-1` for the application
+and `us-east-1` for Billing. The cutover preserved the observed
+image/Client/Lambda/policy tuple and endpoints; ordinary source merges do not
+choose a newer application.
+
+The accepted IAM boundary is limited to the named legacy Beta role: its trust is
+deny-only with zero inline or attached grants. The inherited Dev wildcard E2E
+subject, `cdk-*` assume-role chain and CloudFormation execution role with
+`AdministratorAccess` and no permissions boundary remain unchanged and outside
+this runbook's #54 claim. Operational single-queue ownership is not account-wide
+IAM exclusivity or Beta resource isolation.
+
+The practical pinned recovery was [stop 37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)
+followed by [start 37887802281](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281),
+using historical Infra producer `bafc3072ea6aee2d5193009c014cb1cf04b43848`
+and coherent Service release `407218593`. Active `restore-release` and
+automatic failure recovery remain unexercised. Historical release `406706155`
+is preserved evidence only: its runtime-policy bytes are incoherent, so it is
+not a selectable rollback input.
+
+The final correctness qualification is [E2E run 37949887097](https://github.com/git-malu/AnyWear-E2E/actions/runs/37949887097),
+with correlated cleanup [Service run 37950914153](https://github.com/git-malu/AnyWear-Service/actions/runs/37950914153)
+and final admission closure [Infra run 37951949885](https://github.com/git-malu/AnyWear-Infra/actions/runs/37951949885).
+It preserves deployed Client `8320db0816b1c2d36e79a583160548744fd3d8c0` and
+Service `ab211c8212444b735e614ef9a74f184d24744d6b` identities separately from
+the newer executor heads. Public registration was intentionally skipped while
+intake was closed; the observed provider timeout/retry case establishes
+correctness only, not a latency SLA.
 
 ## Protected source and direct immutable inputs
 

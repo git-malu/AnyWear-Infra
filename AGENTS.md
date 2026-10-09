@@ -1,8 +1,10 @@
 # AnyWear Infra agent instructions
 
 This repository owns shared AWS infrastructure and environment operations after
-the verified #54 cutover. During bootstrap, AnyWear-Service remains the deployed
-infrastructure authority.
+the verified #54 cutover. Infra is the sole operational Beta deployment queue;
+AnyWear-Service remains the application, migration, verification and immutable
+artifact publisher. Earlier Service-side bootstrap authority is historical
+evidence only and must not be relabeled as an Infra-produced deployment.
 
 - Follow the [AnyWear kanban workflow](https://github.com/git-malu/AnyWear/blob/main/.agents/skills/kanban-workflow/SKILL.md)
   and its [GitHub operations reference](https://github.com/git-malu/AnyWear/blob/main/.agents/skills/kanban-workflow/references/github-operations.md).
@@ -63,6 +65,12 @@ infrastructure authority.
   has transitive account-wide authority, not Beta resource isolation. Review
   effective bootstrap/inline/managed policies, including unmanaged
   `AnyWearBetaPipelineBaseline`, before retirement; synth alone cannot prove IAM.
+- The accepted #54 IAM boundary is scoped: the named legacy Beta role has
+  deny-only trust with zero inline or attached grants, and Infra owns the one
+  operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`
+  assume-role chain and CloudFormation execution role with `AdministratorAccess`
+  and no permissions boundary remain unchanged and outside this scope. Do not
+  claim account-wide IAM exclusivity or Beta resource isolation.
 - `identityPhase=legacy` and `retentionProtection=false` preserve the source
   baseline by default. Role additions, retention activation and old-role
   retirement require separate reviewed diffs/operations. Initial cutover keeps the
@@ -114,8 +122,11 @@ sets retention protection; review both `cdk.matrix/comparison.json` and
 `cdk.protected.matrix/comparison.json`, which CI uploads together.
 
 Review the [Beta runbook](docs/runbooks/beta-infrastructure.md) and
-[cutover/recovery runbook](docs/runbooks/cutover-and-recovery.md). After IAM
-retirement, collect a new deployment record and qualify that exact tuple through
-E2E v2; earlier rehearsal evidence cannot substitute. Preserve source maps,
-original component/build provenance, operation/recovery records and exact
-run/attempt/artifact hashes before workspace cleanup.
+[cutover/recovery runbook](docs/runbooks/cutover-and-recovery.md). The accepted
+#54 qualification is [E2E run 37949887097](https://github.com/git-malu/AnyWear-E2E/actions/runs/37949887097),
+attempt `1`, against reviewed E2E main `b60f2e26adec9ed7c03ee9e671099213321fbb99`;
+its correlated Service cleanup is [run 37950914153](https://github.com/git-malu/AnyWear-Service/actions/runs/37950914153),
+and final admission closure is [Infra run 37951949885](https://github.com/git-malu/AnyWear-Infra/actions/runs/37951949885).
+This evidence verifies correctness for the recorded tuple, not a latency SLA.
+Preserve source maps, original component/build provenance, operation/recovery
+records and exact run/attempt/artifact hashes before workspace cleanup.

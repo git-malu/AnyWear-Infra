@@ -4,9 +4,10 @@ Private repository for AnyWear's shared AWS CDK application and infrastructure
 operations. Extraction is tracked in [AnyWear #54](https://github.com/git-malu/AnyWear/issues/54).
 
 This repository contains the CDK app, source checks and reviewed Beta operation
-entry point. AnyWear-Service remains the deployed infrastructure authority until
-the separately recorded #54 cutover. Source delivery does not establish AWS
-deployment, writer handoff or runtime acceptance.
+entry point. The verified #54 cutover assigns Infra the sole operational Beta
+deployment queue. AnyWear-Service remains the application, migration,
+verification and immutable artifact publisher; source delivery alone does not
+establish AWS deployment or runtime acceptance.
 
 The accepted [ownership ADR](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/ADR/0021-shared-infrastructure-repository.md)
 assigns shared infrastructure to Infra, immutable application artifacts to Service,
@@ -55,6 +56,31 @@ deployment chain has account-wide effective authority; the dedicated role names
 do not establish Beta resource isolation.
 Production activation variables cannot bypass its source blocker; keep both
 deployment/readiness gates disabled through #54.
+
+The accepted #54 IAM boundary is deliberately scoped: the named legacy Beta role
+retains deny-only trust and zero inline or attached grants, while the inherited
+Dev wildcard E2E subject, `cdk-*` assume-role chain and CloudFormation execution
+role with `AdministratorAccess` and no permissions boundary remain unchanged.
+Infra's operational queue is not an account-wide IAM exclusivity or Beta
+resource-isolation claim. The practical pinned recovery was [stop
+37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)
+followed by [start 37887802281](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281),
+both at historical Infra producer `bafc3072ea6aee2d5193009c014cb1cf04b43848`
+with Service release `407218593`. Active `restore-release` and automatic
+failure recovery were not exercised; historical release `406706155` remains
+preserved evidence but is byte-incoherent and unselectable.
+
+The final correctness qualification is [E2E run
+37949887097](https://github.com/git-malu/AnyWear-E2E/actions/runs/37949887097),
+with correlated cleanup [Service run
+37950914153](https://github.com/git-malu/AnyWear-Service/actions/runs/37950914153)
+and admission closure [Infra run
+37951949885](https://github.com/git-malu/AnyWear-Infra/actions/runs/37951949885).
+These records retain the deployed Client `8320db0816b1c2d36e79a583160548744fd3d8c0`
+and Service `ab211c8212444b735e614ef9a74f184d24744d6b` identities separately
+from newer executor heads. Public registration remained intentionally skipped
+while intake was closed; the recorded provider timeout/retry case is a
+correctness observation, not a latency guarantee.
 
 Artifact verification loads the actual committed canonical v2 selection at an
 explicit trusted Infra root/full source pin and raw file hash. It checks the
