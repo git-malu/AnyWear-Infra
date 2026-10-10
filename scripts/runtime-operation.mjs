@@ -13,6 +13,7 @@ import { createOperationRecord, recordRecovery } from './operation-record.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runCloseAdmission } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
+import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -161,6 +162,11 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
     },
     async deploy(stack, active, revision) {
       await check();
+      if (['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'].includes(stack)) {
+        const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
+        const fence = await assertCleanupCapabilityQuiescent(io, workload);
+        record?.events.push({ type: 'cleanup-capability-cessation', ...fence });
+      }
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDeploymentArguments(stack, active, revision, directory, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });

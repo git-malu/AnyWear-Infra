@@ -39,7 +39,7 @@ async function runtimeDeployFixture() {
   const revision = { digest: selector.image.digest, commit: selector.image.service_sha,
     parameters: { ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha,
       VlmConfigArn: 'arn:secret', CloudFrontPrefixListId: 'pl-test' } };
-  const stack = (digest = revision.digest, commit = revision.commit) => ({ StackStatus: 'UPDATE_COMPLETE', Parameters: [
+  const stack = (digest = revision.digest, commit = revision.commit) => ({ StackStatus: 'UPDATE_COMPLETE', Outputs: [], Parameters: [
     { ParameterKey: 'ServiceImageDigest', ParameterValue: digest }, { ParameterKey: 'ServiceCommitSha', ParameterValue: commit },
     { ParameterKey: 'VlmConfigArn', ParameterValue: revision.parameters.VlmConfigArn },
     { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: revision.parameters.CloudFrontPrefixListId },
@@ -55,13 +55,16 @@ test('workload deploy records exact parameter readback before success', async ()
     async run(command, args) {
       commands.push([command, args]);
       if (command === 'npx') return { stdout: '', stderr: '' };
-      if (command === 'aws') return { stdout: JSON.stringify({ Stacks: [stack()] }), stderr: '' };
+      if (command === 'aws') return { stdout: JSON.stringify(args[1] === 'list-tasks' ? { taskArns: [] }
+        : args[1] === 'get-template' ? { TemplateBody: { Resources: {} } } : { Stacks: [stack()] }), stderr: '' };
       throw new Error(`Unexpected command ${command}`);
     },
   });
   await io.deploy('AnyWearWorkloadStack-beta', true, revision);
   assert.ok(commands.some(([command]) => command === 'npx'));
-  assert.deepEqual(record.events, [
+  assert.equal(record.events[0].type, 'cleanup-capability-cessation');
+  assert.equal(record.events[0].manager_result_reconciliation_required, true);
+  assert.deepEqual(record.events.slice(1), [
     { type: 'workload-parameter-readback', stack_name: 'AnyWearWorkloadStack-beta', stack_status: 'UPDATE_COMPLETE',
       service_sha: revision.commit, image_digest: revision.digest },
     { type: 'stack-deploy', stack_name: 'AnyWearWorkloadStack-beta', beta_active: true,
@@ -74,14 +77,37 @@ test('workload deploy fails closed when CloudFormation parameter readback mismat
   const record = { events: [] };
   const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
     async assume() { return { ...env }; },
-    async run(command) {
+    async run(command, args) {
       if (command === 'npx') return { stdout: '', stderr: '' };
-      if (command === 'aws') return { stdout: JSON.stringify({ Stacks: [stack(`sha256:${'f'.repeat(64)}`, 'e'.repeat(40))] }), stderr: '' };
+      if (command === 'aws') return { stdout: JSON.stringify(args[1] === 'list-tasks' ? { taskArns: [] }
+        : args[1] === 'get-template' ? { TemplateBody: { Resources: {} } } : { Stacks: [stack(`sha256:${'f'.repeat(64)}`, 'e'.repeat(40))] }), stderr: '' };
       throw new Error(`Unexpected command ${command}`);
     },
   });
   await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', false, revision), /Workload parameter readback mismatch for ServiceImageDigest/);
-  assert.deepEqual(record.events, []);
+  assert.deepEqual(record.events.map(event => event.type), ['cleanup-capability-cessation']);
+});
+
+test('Platform and Workload replacements never invoke CDK when a cleanup execution is active', async () => {
+  const { root, selector, env, revision, stack } = await runtimeDeployFixture();
+  const machine = 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup';
+  let deploys = 0;
+  const io = await createRuntimeIo(selector, '/verified/assets', env, undefined, { trustedInfraRoot: root,
+    async assume(kind) { assert.equal(kind, 'runtime'); return { ...env }; },
+    async run(command, args) {
+      if (command === 'npx') { deploys++; throw new Error('Unexpected deployment'); }
+      if (args[1] === 'describe-stacks') return { stdout: JSON.stringify({ Stacks: [{ ...stack(), Outputs: [
+        { OutputKey: 'CleanupOperationCleanupStateMachineArn3993CAF0', OutputValue: machine },
+      ] }] }) };
+      assert.equal(args[1], 'list-executions');
+      return { stdout: JSON.stringify({ executions: [{ stateMachineArn: machine,
+        executionArn: machine.replace(':stateMachine:', ':execution:') + ':cleanup-active', status: 'RUNNING' }] }) };
+    },
+  });
+  for (const name of ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']) {
+    await assert.rejects(io.deploy(name, true, revision), /cleanup resource inventory/);
+  }
+  assert.equal(deploys, 0);
 });
 
 test('runtime status ignores shell JSON and binds actual stopped task definition and CloudWatch status', async () => {
@@ -234,8 +260,13 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
     VlmConfigArn: 'arn:secret', CloudFrontPrefixListId: 'pl-test' } };
   const commands = []; let credentials = 0; const boundary = new Error('No deployment executed');
   const io = await createRuntimeIo(selector, '/verified/assets', env, undefined, { trustedInfraRoot: root,
-    async assume(kind) { credentials++; assert.equal(kind, 'deploy'); return { ...env }; },
-    async run(command, args) { assert.equal(command, 'npx'); commands.push(args); throw boundary; },
+    async assume(kind) { credentials++; assert.ok(['runtime', 'deploy'].includes(kind)); return { ...env }; },
+    async run(command, args) {
+      if (command === 'aws') return { stdout: JSON.stringify(args[1] === 'list-tasks' ? { taskArns: [] }
+        : args[1] === 'get-template' ? { TemplateBody: { Resources: {} } }
+          : { Stacks: [{ StackStatus: 'UPDATE_COMPLETE', Outputs: [] }] }), stderr: '' };
+      assert.equal(command, 'npx'); commands.push(args); throw boundary;
+    },
   });
   for (const name of ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']) {
     await assert.rejects(io.deploy(name, false, revision), error => error === boundary);
@@ -255,7 +286,7 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
   }
   await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, revision), error => error === boundary);
   assert.equal(commands.at(-1).includes('--no-rollback'), false); assert.ok(commands.at(-1).includes('betaActive=true'));
-  assert.equal(credentials, 1);
+  assert.equal(credentials, 2);
   // Use the pinned bundled CLI, whose internal unbundled parser is not a public API.
   const help = await execute(process.execPath, ['node_modules/aws-cdk/bin/cdk', ...commands[0].slice(1), '--help'], { timeout: 15_000 });
   assert.match(help.stdout, /--no-rollback/); assert.match(help.stdout, /Rollback stack to stable state/);

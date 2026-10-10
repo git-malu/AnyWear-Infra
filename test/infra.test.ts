@@ -500,11 +500,12 @@ describe('Platform and workload safety controls', () => {
     expect(machines[0].Properties.StateMachineType).toBe('STANDARD');
     expect(machines[0].Properties.StateMachineName).toBe('beta-anywear-tester-cleanup');
     expect(versions).toHaveLength(1);
+    expect(Object.keys(template.Outputs)).toContain('CleanupOperationCleanupStateMachineArn3993CAF0');
     expect(definitions.map((definition) => definition.Properties.Family)).toEqual(expect.arrayContaining([
       'beta-anywear-cleanup-verify', 'beta-anywear-cleanup',
     ]));
     const definition = JSON.stringify(machines[0].Properties.DefinitionString);
-    expect(definition).toContain('beta-tester-cleanup.js');
+    expect(definition).toContain('beta-cleanup-operation.js');
     expect(definition).toContain('cleanup_request');
     const policies = resources.filter((resource) => resource.Type === 'AWS::IAM::Policy');
     const e2ePolicy = policies.find((policy) => JSON.stringify(policy.Properties.Roles).includes('beta-e2e-qualification-role'));

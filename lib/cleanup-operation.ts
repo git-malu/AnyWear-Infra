@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
-import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -63,6 +62,7 @@ export class CleanupOperation extends Construct {
         image, command, environment,
         logging: ecs.LogDrivers.awsLogs({ logGroup: props.logGroup, streamPrefix: family }),
       });
+      definition.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
       return definition;
     };
 
@@ -72,7 +72,7 @@ export class CleanupOperation extends Construct {
     );
     this.cleanupTaskDefinition = taskDefinition(
       'CleanupTaskDefinition', 'beta-anywear-cleanup', props.cleanupTaskRole,
-      ['node', 'dist/ops/beta-tester-cleanup.js'], {
+      ['node', 'dist/ops/beta-cleanup-operation.js'], {
         ...commonEnvironment, SQS_VTO_DLQ_URL: props.vtoDlqUrl, SQS_AUTO_TAGGING_DLQ_URL: props.taggingDlqUrl,
       },
     );
@@ -81,59 +81,128 @@ export class CleanupOperation extends Construct {
       roleName: 'beta-anywear-tester-cleanup-operation',
       assumedBy: new iam.ServicePrincipal('states.amazonaws.com'),
     });
-    const target = { launchTarget: new tasks.EcsFargateLaunchTarget(), cluster: props.cluster,
-      taskDefinition: this.verificationTaskDefinition, subnets: { subnets: props.subnets },
-      securityGroups: [props.securityGroup], assignPublicIp: false,
-      integrationPattern: sfn.IntegrationPattern.RUN_JOB };
-    const verify = new tasks.EcsRunTask(this, 'Verify', { ...target, resultPath: '$.verification' });
-    const cleanup = new tasks.EcsRunTask(this, 'Cleanup', {
-      ...target, taskDefinition: this.cleanupTaskDefinition, resultPath: '$.cleanup',
-      containerOverrides: [{ containerDefinition: this.cleanupTaskDefinition.defaultContainer!,
-        command: sfn.JsonPath.array('node', 'dist/ops/beta-tester-cleanup.js', sfn.JsonPath.stringAt('$.cleanup_request')) as unknown as string[],
-      }],
+    const stack = cdk.Stack.of(this);
+    const taskArn = stack.formatArn({ service: 'ecs', resource: 'task',
+      resourceName: 'beta-anywear/*', arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME });
+    stateMachineRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['ecs:RunTask'],
+      resources: [this.verificationTaskDefinition.taskDefinitionArn, this.cleanupTaskDefinition.taskDefinitionArn],
+      conditions: { ArnEquals: { 'ecs:cluster': props.cluster.clusterArn } },
+    }));
+    stateMachineRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['ecs:StopTask', 'ecs:DescribeTasks'], resources: [taskArn],
+      conditions: { ArnEquals: { 'ecs:cluster': props.cluster.clusterArn } },
+    }));
+    stateMachineRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'],
+      resources: [props.verificationTaskRole.roleArn, props.cleanupTaskRole.roleArn, props.executionRole.roleArn],
+      conditions: { StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } },
+    }));
+    stateMachineRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['events:PutTargets', 'events:PutRule', 'events:DescribeRule'],
+      resources: [stack.formatArn({ service: 'events', resource: 'rule', resourceName: 'StepFunctionsGetEventsForECSTaskRule' })],
+    }));
+    // CDK EcsRunTask defaults to the latest family revision. Bind the complete
+    // task-definition Ref so a published machine version also fixes its tasks.
+    const runTask = (id: string, definition: ecs.FargateTaskDefinition, resultPath: string, command?: string) => new sfn.CustomState(this, id, {
+      stateJson: {
+        Type: 'Task', Resource: `arn:${stack.partition}:states:::ecs:runTask.sync`, ResultPath: resultPath,
+        Parameters: {
+          Cluster: props.cluster.clusterArn, TaskDefinition: definition.taskDefinitionArn, LaunchType: 'FARGATE',
+          'ClientToken.$': `States.Hash(States.Format('{}:${id.toLowerCase()}', $$.Execution.Id), 'SHA-256')`,
+          NetworkConfiguration: { AwsvpcConfiguration: {
+            Subnets: props.subnets.map(subnet => subnet.subnetId), SecurityGroups: [props.securityGroup.securityGroupId], AssignPublicIp: 'DISABLED',
+          } },
+          ...(command ? { Overrides: { ContainerOverrides: [{ Name: 'OneShot', 'Command.$': command }] } } : {}),
+        },
+      },
     });
-    const invalid = new sfn.Fail(this, 'InvalidRequest', { error: 'InvalidCleanupOperation', cause: 'The fixed Beta cleanup envelope is incomplete' });
+    const verify = runTask('Verify', this.verificationTaskDefinition, '$.verification');
+    const cleanup = runTask('Cleanup', this.cleanupTaskDefinition, '$.cleanup',
+      "States.Array('node', 'dist/ops/beta-cleanup-operation.js', $.request_binding.envelope)");
+    const captureRequest = new sfn.Pass(this, 'CaptureRequest', {
+      parameters: { 'envelope.$': 'States.JsonToString($)' }, resultPath: '$.request_binding',
+    });
+    const invalid = new sfn.Fail(this, 'InvalidRequest', { error: 'InvalidCleanupOperation', cause: 'The cleanup envelope must bind the deployed Service identity' });
     const validate = new sfn.Choice(this, 'ValidateEnvelope')
       .when(sfn.Condition.and(
         sfn.Condition.numberEquals('$.schema_version', 1),
-        sfn.Condition.isPresent('$.operation_id'),
-        sfn.Condition.isPresent('$.run_scope'),
-        sfn.Condition.isPresent('$.request_sha256'),
-        sfn.Condition.isPresent('$.service_commit_sha'),
-        sfn.Condition.isPresent('$.service_image_digest'),
-        sfn.Condition.isPresent('$.cleanup_request'),
-      ), verify)
+        sfn.Condition.isString('$.operation_id'), sfn.Condition.not(sfn.Condition.stringEquals('$.operation_id', '')),
+        sfn.Condition.isString('$.run_scope'), sfn.Condition.not(sfn.Condition.stringEquals('$.run_scope', '')),
+        sfn.Condition.isString('$.request_sha256'), sfn.Condition.not(sfn.Condition.stringEquals('$.request_sha256', '')),
+        sfn.Condition.isString('$.service_commit_sha'), sfn.Condition.stringEquals('$.service_commit_sha', props.serviceCommit),
+        sfn.Condition.isString('$.service_image_digest'), sfn.Condition.stringEquals('$.service_image_digest', props.imageDigest),
+        sfn.Condition.isString('$.cleanup_request'), sfn.Condition.not(sfn.Condition.stringEquals('$.cleanup_request', '')),
+      ), captureRequest)
       .otherwise(invalid);
+    const taskFailed = new sfn.Fail(this, 'TaskFailed', {
+      error: 'CleanupTaskNotSuccessful', cause: 'A unique stopped OneShot task with exit code zero and the deployed image is required',
+    });
+    const successfulTask = (resultPath: string, definition: ecs.FargateTaskDefinition) => sfn.Condition.and(
+      sfn.Condition.isString(`${resultPath}.TaskArn`),
+      sfn.Condition.stringMatches(`${resultPath}.TaskArn`, taskArn),
+      sfn.Condition.isPresent(`${resultPath}.ClusterArn`),
+      sfn.Condition.stringEquals(`${resultPath}.ClusterArn`, props.cluster.clusterArn),
+      sfn.Condition.isPresent(`${resultPath}.TaskDefinitionArn`),
+      sfn.Condition.stringEquals(`${resultPath}.TaskDefinitionArn`, definition.taskDefinitionArn),
+      sfn.Condition.isPresent(`${resultPath}.LastStatus`),
+      sfn.Condition.stringEquals(`${resultPath}.LastStatus`, 'STOPPED'),
+      sfn.Condition.isPresent(`${resultPath}.Containers[0].Name`),
+      sfn.Condition.stringEquals(`${resultPath}.Containers[0].Name`, 'OneShot'),
+      sfn.Condition.isPresent(`${resultPath}.Containers[0].LastStatus`),
+      sfn.Condition.stringEquals(`${resultPath}.Containers[0].LastStatus`, 'STOPPED'),
+      sfn.Condition.isPresent(`${resultPath}.Containers[0].ExitCode`),
+      sfn.Condition.numberEquals(`${resultPath}.Containers[0].ExitCode`, 0),
+      sfn.Condition.isPresent(`${resultPath}.Containers[0].ImageDigest`),
+      sfn.Condition.stringEquals(`${resultPath}.Containers[0].ImageDigest`, props.imageDigest),
+      sfn.Condition.not(sfn.Condition.isPresent(`${resultPath}.Containers[1]`)),
+    );
+    const verified = new sfn.Choice(this, 'VerificationSucceeded')
+      .when(successfulTask('$.verification', this.verificationTaskDefinition), cleanup).otherwise(taskFailed);
     const result = new sfn.Pass(this, 'CleanupResult', {
       parameters: {
         schema_version: 1,
         operation_id: sfn.JsonPath.stringAt('$.operation_id'),
         request_sha256: sfn.JsonPath.stringAt('$.request_sha256'),
         run_scope: sfn.JsonPath.stringAt('$.run_scope'),
-        transaction_committed: true,
-        verification_task_arn: sfn.JsonPath.stringAt('$.verification.Tasks[0].TaskArn'),
-        verification_task_status: 'SUCCEEDED',
-        cleanup_task_arn: sfn.JsonPath.stringAt('$.cleanup.Tasks[0].TaskArn'),
-        cleanup_task_status: 'SUCCEEDED',
+        record_type: 'anywear_beta_cleanup_tasks',
+        service_commit_sha: props.serviceCommit, service_image_digest: props.imageDigest,
+        cluster_arn: props.cluster.clusterArn, log_group_name: props.logGroup.logGroupName,
+        verification_task_arn: sfn.JsonPath.stringAt('$.verification.TaskArn'),
+        verification_task_definition_arn: sfn.JsonPath.stringAt('$.verification.TaskDefinitionArn'),
+        verification_task_status: sfn.JsonPath.stringAt('$.verification.LastStatus'),
+        verification_exit_code: sfn.JsonPath.numberAt('$.verification.Containers[0].ExitCode'),
+        verification_log_stream_prefix: 'beta-anywear-cleanup-verify',
+        cleanup_task_arn: sfn.JsonPath.stringAt('$.cleanup.TaskArn'),
+        cleanup_task_definition_arn: sfn.JsonPath.stringAt('$.cleanup.TaskDefinitionArn'),
+        cleanup_task_status: sfn.JsonPath.stringAt('$.cleanup.LastStatus'),
+        cleanup_exit_code: sfn.JsonPath.numberAt('$.cleanup.Containers[0].ExitCode'),
+        cleanup_log_stream_prefix: 'beta-anywear-cleanup',
       },
     });
-    verify.next(cleanup).next(result);
+    const cleaned = new sfn.Choice(this, 'CleanupSucceeded')
+      .when(successfulTask('$.cleanup', this.cleanupTaskDefinition), result).otherwise(taskFailed);
+    captureRequest.next(verify).next(verified);
+    cleanup.next(cleaned);
     this.stateMachine = new sfn.StateMachine(this, 'StateMachine', {
       stateMachineName: 'beta-anywear-tester-cleanup', stateMachineType: sfn.StateMachineType.STANDARD,
       role: stateMachineRole, definitionBody: sfn.DefinitionBody.fromChainable(validate),
       timeout: cdk.Duration.minutes(30),
       logs: { destination: props.logGroup, level: sfn.LogLevel.ERROR, includeExecutionData: false },
     });
+    this.stateMachine.node.addDependency(stateMachineRole);
+    this.stateMachine.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
     this.stateMachineVersion = new sfn.CfnStateMachineVersion(this, 'StateMachineVersion', {
       stateMachineArn: this.stateMachine.stateMachineArn,
       stateMachineRevisionId: this.stateMachine.stateMachineRevisionId,
       description: 'Immutable Beta tester cleanup operation capability',
     });
-    this.stateMachineVersion.addDependency(this.stateMachine.node.defaultChild as cdk.CfnResource);
+    this.stateMachineVersion.addResourceDependency(this.stateMachine.node.defaultChild as cdk.CfnResource);
+    this.stateMachineVersion.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
 
     const e2e = iam.Role.fromRoleName(this, 'E2EQualificationRole', 'beta-e2e-qualification-role');
     const executionArn = cdk.Stack.of(this).formatArn({ service: 'states', resource: 'execution',
-      resourceName: 'beta-anywear-tester-cleanup:*', arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME });
+      resourceName: 'beta-anywear-tester-cleanup:*', arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME });
     e2e.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['states:StartExecution'], resources: [this.stateMachineVersion.attrArn],
     }));
@@ -142,6 +211,28 @@ export class CleanupOperation extends Construct {
     }));
     e2e.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['states:ListExecutions'], resources: [this.stateMachine.stateMachineArn],
+    }));
+    e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['ecs:DescribeTasks'], resources: [taskArn],
+      conditions: { ArnEquals: { 'ecs:cluster': props.cluster.clusterArn } },
+    }));
+    e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['ecs:DescribeTaskDefinition'],
+      resources: [this.verificationTaskDefinition.taskDefinitionArn, this.cleanupTaskDefinition.taskDefinitionArn],
+    }));
+    e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['logs:GetLogEvents'],
+      resources: ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup'].map(prefix =>
+        stack.formatArn({ service: 'logs', resource: 'log-group',
+          resourceName: `${props.logGroup.logGroupName}:log-stream:${prefix}/OneShot/*`,
+          arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME })),
+    }));
+    const runtime = iam.Role.fromRoleName(this, 'InfraRuntimeRole', 'beta-infra-runtime-role');
+    runtime.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['states:ListExecutions'], resources: [this.stateMachine.stateMachineArn],
+    }));
+    runtime.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['states:DescribeExecution'], resources: [executionArn],
     }));
     new cdk.CfnOutput(this, 'CleanupStateMachineArn', { value: this.stateMachine.stateMachineArn });
     new cdk.CfnOutput(this, 'CleanupStateMachineVersionArn', { value: this.stateMachineVersion.attrArn });
