@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { parseFixtureRequest, validateFixtureInputs, fixtureSessionPolicy, fixtureCredentials,
-  assertFixtureDefinition, assertStoppedFixture, readFixtureState, readFixtureResult, executeFixture, fixtureFamily, fixtureMarker } from './cleanup-acceptance.mjs';
+  assertFixtureDefinition, assertStoppedFixture, readFixtureState, readFixtureResult, executeFixture, fixtureOperationRecord, persistFixtureRecord, fixtureFamily, fixtureMarker } from './cleanup-acceptance.mjs';
 import { canonicalJson, sha256 } from './json-contract.mjs';
 
 const cluster = 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear';
@@ -71,7 +73,7 @@ function fixture(overrides = {}) {
       default: throw new Error(`Unexpected fixture AWS call ${args[1]}`);
     }
   } };
-  return { io, calls, stacks, stateMachineVersionArn, runTask: async (input, roles) => { launched = { input, roles }; return { tasks: [{ taskArn }] }; }, launch: () => launched };
+  return { io, calls, stacks, stateMachineVersionArn, runTask: async (input, roles, beforeLaunch) => { await beforeLaunch(); launched = { input, roles }; return { tasks: [{ taskArn }] }; }, launch: () => launched };
 }
 
 test('dedicated protected executor and exact canonical captured slots reject unsafe inputs', () => {
@@ -171,10 +173,77 @@ test('successful operation records actual task and committed Service proof while
   await executeFixture({ ...f, selector, env, record });
   assert.equal(record.task_arn, taskArn); assert.equal(record.service_result.transaction_committed, true);
   assert.equal(record.launch_attempted, true);
+  assert.deepEqual(record.launch_response, { task_arns: [taskArn], task_count: 1, failure_count: 0, unidentified_task_count: 0, identities_truncated: false });
+  assert.deepEqual(record.task_observation, { task_arn: taskArn, cluster_arn: cluster, task_definition_arn: taskDefinitionArn,
+    status: 'STOPPED', container: { name: 'OneShot', status: 'STOPPED', exit_code: 0, image_digest: selector.image.digest }, overrides: task.overrides });
   assert.equal(f.launch().input.taskDefinition, taskDefinitionArn);
   assert.deepEqual(f.launch().input.overrides, task.overrides);
   assert.equal(f.launch().input.networkConfiguration.awsvpcConfiguration.assignPublicIp, 'DISABLED');
   assert.ok(f.calls.every(args => !['register-task-definition', 'deregister-task-definition', 'stop-task', 'put-parameter', 'update-stack'].includes(args[1])));
+});
+
+test('operation record binds exact reviewed stack-source file and raw hash before credentials', () => {
+  assert.deepEqual(fixtureOperationRecord(env).stack_sources, { file: env.STACK_SOURCES_FILE, sha256: env.STACK_SOURCES_SHA256 });
+  for (const change of [{ STACK_SOURCES_FILE: '../map.json' }, { STACK_SOURCES_SHA256: 'invalid' }]) {
+    assert.throws(() => fixtureOperationRecord({ ...env, ...change }));
+  }
+});
+
+test('durable launch checkpoint precedes mutation and preserves unknown submission after interruption', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cleanup86-checkpoint-'));
+  const file = path.join(directory, 'operation.json');
+  try {
+    const f = fixture(); const record = fixtureOperationRecord(env); let attempts = 0;
+    await assert.rejects(executeFixture({ ...f, selector, env, record, checkpoint: value => persistFixtureRecord(value, file),
+      runTask: async (input, roles, beforeLaunch) => {
+        await beforeLaunch();
+        const durable = JSON.parse(await readFile(file, 'utf8'));
+        assert.equal(durable.launch_attempted, true);
+        assert.equal(durable.launch_input_sha256, sha256(canonicalJson(input)));
+        assert.equal(durable.task_arn, undefined);
+        attempts++;
+        throw new Error('Simulated interruption after AWS submission');
+      } }), /Simulated interruption/);
+    assert.equal(attempts, 1);
+    const durable = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(durable.launch_attempted, true); assert.equal(durable.result, 'failed');
+    assert.equal(durable.task_arn, undefined);
+    assert.ok(f.calls.every(args => args[1] !== 'stop-task'));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('failed pre-mutation checkpoint prevents RunTask and no retry occurs', async () => {
+  const f = fixture(); let attempts = 0;
+  await assert.rejects(executeFixture({ ...f, selector, env, checkpoint: async () => { throw new Error('Storage unavailable'); },
+    runTask: async (input, roles, beforeLaunch) => { await beforeLaunch(); attempts++; return { tasks: [{ taskArn }] }; } }), /Storage unavailable/);
+  assert.equal(attempts, 0);
+});
+
+test('returned identities persist before rejection of partial or ambiguous launch responses', async () => {
+  for (const response of [{ tasks: [{ taskArn }], failures: [{ reason: 'partial' }] },
+    { tasks: [{ taskArn }, {}] }, { tasks: [{ taskArn }, { taskArn: taskArn.replace(/c{32}$/, 'd'.repeat(32)) }] },
+    { tasks: [{}] }, {}]) {
+    const f = fixture(); const snapshots = []; let attempts = 0;
+    await assert.rejects(executeFixture({ ...f, selector, env, record: fixtureOperationRecord(env), checkpoint: async value => snapshots.push(structuredClone(value)),
+      runTask: async (input, roles, beforeLaunch) => { await beforeLaunch(); attempts++; return response; } }), /Unique fixture launch/);
+    assert.equal(attempts, 1);
+    const durable = snapshots.at(-1);
+    assert.equal(durable.launch_attempted, true);
+    assert.deepEqual(durable.launch_response.task_arns, (response.tasks ?? []).map(task => task.taskArn).filter(arn => typeof arn === 'string'));
+    if (response.tasks?.length === 1 && response.tasks[0].taskArn) assert.equal(durable.task_arn, taskArn);
+    assert.equal(durable.service_result, undefined);
+  }
+});
+
+test('returned unique identity survives interrupted tracking and observation persists before log proof', async () => {
+  const f = fixture({ 'describe-tasks': () => { throw new Error('Tracking interrupted'); } }); const snapshots = [];
+  await assert.rejects(executeFixture({ ...f, selector, env, checkpoint: async value => snapshots.push(structuredClone(value)) }), /Tracking interrupted/);
+  assert.equal(snapshots.at(-1).task_arn, taskArn);
+  const failedLogs = fixture({ 'get-log-events': () => { throw new Error('Log unavailable'); } }); const observed = [];
+  await assert.rejects(executeFixture({ ...failedLogs, selector, env, checkpoint: async value => observed.push(structuredClone(value)) }), /Log unavailable/);
+  assert.equal(observed.at(-1).task_observation.status, 'STOPPED');
+  assert.equal(observed.at(-1).task_observation.container.exit_code, 0);
+  assert.equal(observed.at(-1).service_result, undefined);
 });
 
 test('real admission parser adapter issues only the exact SSM action and identities allowed by the read session', async () => {

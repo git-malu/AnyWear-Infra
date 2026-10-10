@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, writeFile, mkdir, lstat, realpath } from 'node:fs/promises';
+import { readFile, mkdir, lstat, realpath, open, rename } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseJson, exact, canonicalJson, sha256, SHA, HASH } from './json-contract.mjs';
@@ -287,7 +288,7 @@ async function assertNoActiveFixture(io) {
   return arns;
 }
 
-export async function executeFixture({ io, runTask, selector, env, stateMachineVersionArn, guard = async () => {}, record = {} }) {
+export async function executeFixture({ io, runTask, selector, env, stateMachineVersionArn, guard = async () => {}, record = {}, checkpoint = async () => {} }) {
   validateFixtureInputs(env);
   const before = await readFixtureState(io, selector, env, stateMachineVersionArn);
   record.original = before;
@@ -303,11 +304,20 @@ export async function executeFixture({ io, runTask, selector, env, stateMachineV
     clientToken: sha256(`${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${env.FIXTURE_ACTION}:${env.FIXTURE_REQUEST}:${env.FIXTURE_TASK_DEFINITION_ARN}`),
     networkConfiguration: { awsvpcConfiguration: { subnets, securityGroups: [before.platform.OneShotSecurityGroupId], assignPublicIp: 'DISABLED' } },
     overrides: { containerOverrides: [{ name: 'OneShot', command: [...command, env.FIXTURE_ACTION, env.FIXTURE_REQUEST] }] } };
-  record.launch_attempted = true; record.launch_input_sha256 = sha256(canonicalJson(input));
-  const launched = await runTask(input, [before.definition.taskRoleArn, before.definition.executionRoleArn]);
-  if (launched.failures?.length || launched.tasks?.length !== 1 || !taskPattern.test(launched.tasks[0]?.taskArn ?? '')) throw new Error('Unique fixture launch identity unavailable; do not retry uncertain mutation');
+  const launched = await runTask(input, [before.definition.taskRoleArn, before.definition.executionRoleArn], async () => {
+    record.launch_attempted = true; record.launch_input_sha256 = sha256(canonicalJson(input));
+    await checkpoint(record);
+  });
+  const tasks = Array.isArray(launched?.tasks) ? launched.tasks : [];
+  record.launch_response = { task_arns: tasks.slice(0, 100).map(task => task?.taskArn).filter(arn => taskPattern.test(arn ?? '')),
+    task_count: Array.isArray(launched?.tasks) ? tasks.length : null,
+    failure_count: Array.isArray(launched?.failures) ? launched.failures.length : launched?.failures === undefined ? 0 : null,
+    unidentified_task_count: tasks.filter(task => !taskPattern.test(task?.taskArn ?? '')).length,
+    identities_truncated: tasks.length > 100 };
+  if (tasks.length === 1 && taskPattern.test(tasks[0]?.taskArn ?? '')) record.task_arn = tasks[0].taskArn;
+  await checkpoint(record);
+  if (record.launch_attempted !== true || record.launch_response.failure_count !== 0 || tasks.length !== 1 || !record.task_arn) throw new Error('Unique fixture launch identity unavailable; do not retry uncertain mutation');
   const taskArn = launched.tasks[0].taskArn;
-  record.task_arn = taskArn;
   const deadline = io.now() + 15 * 60_000;
   let task;
   while (io.now() < deadline) {
@@ -320,6 +330,12 @@ export async function executeFixture({ io, runTask, selector, env, stateMachineV
     await io.sleep(5000);
   }
   assertStoppedFixture(task, env, selector, parseFixtureRequest(env.FIXTURE_REQUEST));
+  const overrides = structuredClone(task.overrides);
+  for (const [key, value] of [['cpu', '512'], ['memory', '1024']]) if (overrides[key] === value) delete overrides[key];
+  record.task_observation = { task_arn: task.taskArn, cluster_arn: task.clusterArn, task_definition_arn: task.taskDefinitionArn,
+    status: task.lastStatus, container: { name: task.containers[0].name, status: task.containers[0].lastStatus,
+      exit_code: task.containers[0].exitCode, image_digest: task.containers[0].imageDigest }, overrides };
+  await checkpoint(record);
   record.service_result = await readFixtureResult(io, task, selector, env);
   await guard();
   const after = await readFixtureState(io, selector, env, stateMachineVersionArn);
@@ -328,14 +344,30 @@ export async function executeFixture({ io, runTask, selector, env, stateMachineV
   return record;
 }
 
-export async function runFixture(env = process.env) {
+export function fixtureOperationRecord(env = process.env) {
   const request = validateFixtureInputs(env);
-  const record = { schema_version: 1, record_type: 'anywear_beta_cleanup_acceptance_operation', result: 'failed',
+  return { schema_version: 1, record_type: 'anywear_beta_cleanup_acceptance_operation', result: 'failed',
     executor: { repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, workflow_ref: env.GITHUB_WORKFLOW_REF,
       run_id: env.GITHUB_RUN_ID, run_attempt: env.GITHUB_RUN_ATTEMPT },
     fixture_source_sha: env.FIXTURE_SOURCE_SHA, task_definition_arn: env.FIXTURE_TASK_DEFINITION_ARN,
+    stack_sources: { file: env.STACK_SOURCES_FILE, sha256: env.STACK_SOURCES_SHA256 },
     action: env.FIXTURE_ACTION, run_scope: request.run_scope, request_sha256: sha256(env.FIXTURE_REQUEST) };
+}
+
+export async function persistFixtureRecord(record, file) {
+  const bytes = `${JSON.stringify(record, null, 2)}\n`;
+  if (Buffer.byteLength(bytes) > 2 * 1024 * 1024) throw new Error('Fixture evidence exceeds its bounded artifact size');
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, 'wx', 0o600);
+  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  await rename(temporary, file);
+}
+
+export async function runFixture(env = process.env) {
+  const request = validateFixtureInputs(env);
+  const record = fixtureOperationRecord(env);
   await mkdir(path.join(root, 'deployment-evidence'), { recursive: true });
+  const checkpoint = value => persistFixtureRecord(value, path.join(root, 'deployment-evidence/cleanup-acceptance-operation.json'));
   try {
     const { selector, binding, sources } = await fixturePreflight(env);
     record.selection = { file: env.SELECTION_FILE, sha256: env.SELECTION_SHA256, service_sha: selector.image.service_sha, image_digest: selector.image.digest };
@@ -349,19 +381,20 @@ export async function runFixture(env = process.env) {
       { env: child, timeout: 60_000, maxBuffer: 2 * 1024 * 1024 })).stdout);
     const identity = await aws(['sts', 'get-caller-identity']);
     if (identity.Account !== '650880818323' || !identity.Arn?.startsWith('arn:aws:sts::650880818323:assumed-role/beta-infra-runtime-role/')) throw new Error('Wrong authenticated fixture principal');
-    await executeFixture({ selector, env, record, stateMachineVersionArn: bootstrap.manifest.frozen_tuple.state_machine_version_arn,
+    await executeFixture({ selector, env, record, checkpoint, stateMachineVersionArn: bootstrap.manifest.frozen_tuple.state_machine_version_arn,
       guard: async () => { await fixturePreflight(env); await verifyBootstrapOrigin(env, selector, request); },
       io: { aws, now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) },
-      runTask: async (input, roles) => {
+      runTask: async (input, roles, beforeLaunch) => {
         const runPolicy = fixtureSessionPolicy('run', env, roles);
         const runEnv = await fixtureCredentials('run', runPolicy, env);
         await fixturePreflight(env);
         await verifyBootstrapOrigin(env, selector, request);
+        await beforeLaunch();
         return aws(['ecs', 'run-task', '--cli-input-json', JSON.stringify(input)], runEnv);
       } });
     record.result = 'committed-result-and-preserved-state-verified';
   } finally {
-    await writeFile(path.join(root, 'deployment-evidence/cleanup-acceptance-operation.json'), `${JSON.stringify(record, null, 2)}\n`);
+    await checkpoint(record);
   }
 }
 
