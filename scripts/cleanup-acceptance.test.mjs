@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parseFixtureRequest, validateFixtureInputs, fixtureSessionPolicy, fixtureCredentials,
-  assertFixtureDefinition, assertStoppedFixture, readFixtureResult, executeFixture, fixtureFamily, fixtureMarker } from './cleanup-acceptance.mjs';
+  assertFixtureDefinition, assertStoppedFixture, readFixtureState, readFixtureResult, executeFixture, fixtureFamily, fixtureMarker } from './cleanup-acceptance.mjs';
 import { canonicalJson, sha256 } from './json-contract.mjs';
 
 const cluster = 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear';
@@ -175,6 +175,26 @@ test('successful operation records actual task and committed Service proof while
   assert.deepEqual(f.launch().input.overrides, task.overrides);
   assert.equal(f.launch().input.networkConfiguration.awsvpcConfiguration.assignPublicIp, 'DISABLED');
   assert.ok(f.calls.every(args => !['register-task-definition', 'deregister-task-definition', 'stop-task', 'put-parameter', 'update-stack'].includes(args[1])));
+});
+
+test('real admission parser adapter issues only the exact SSM action and identities allowed by the read session', async () => {
+  const f = fixture();
+  const policy = JSON.parse(fixtureSessionPolicy('read', env));
+  const grant = policy.Statement.find(statement => statement.Action === 'ssm:GetParameters');
+  const aws = f.io.aws;
+  f.io.aws = async args => {
+    if (args[0] === 'ssm') {
+      assert.equal(args[1], 'get-parameters');
+      assert.equal(args[2], '--names');
+      assert.equal(args.length, 4);
+      assert.ok(grant.Resource.includes(`arn:aws:ssm:ap-east-1:650880818323:parameter${args[3]}`));
+    }
+    return aws(args);
+  };
+  const state = await readFixtureState(f.io, selector, env, stateMachineVersionArn);
+  assert.deepEqual(state.admission, { admission_suspended: true, intake_open: false, tester_emails: [] });
+  assert.deepEqual(f.calls.filter(args => args[0] === 'ssm').map(args => args[3]).sort(),
+    ['/anywear/beta/admission_suspended', '/anywear/beta/intake_open', '/anywear/beta/tester_allowlist']);
 });
 
 test('inactive, mixed, drifted, paginated or active fixture states reject before launching', async () => {
