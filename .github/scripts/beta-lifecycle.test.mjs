@@ -12,6 +12,8 @@ const parameters = {
   ServiceCommitSha: 'b'.repeat(40),
   VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:beta-vlm',
   CloudFrontPrefixListId: 'pl-example',
+  BetaApiSizingProfile: 's2-api',
+  BetaSizingTelemetry: 'true',
 };
 
 function stack(active, workload = false) {
@@ -66,6 +68,8 @@ function lifecycleIo({ platformActive = true, workloadActive = true, suspended =
     async deploy(name, enabled, revision) {
       assert.equal(revision.digest, expectedRevision.digest);
       assert.equal(revision.commit, expectedRevision.commit);
+      assert.equal(revision.parameters.BetaApiSizingProfile, parameters.BetaApiSizingProfile);
+      assert.equal(revision.parameters.BetaSizingTelemetry, parameters.BetaSizingTelemetry);
       revisions.push({ role: 'deploy', argument: `deploy ${name} ${enabled}`, digest: revision.digest, commit: revision.commit });
       const event = `deploy ${name} ${enabled}`;
       events.push(event);

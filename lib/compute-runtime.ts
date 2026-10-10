@@ -36,6 +36,8 @@ export interface ComputeRuntimeProps {
   loadBalancerSecurityGroup: ec2.SecurityGroup;
   operationsTopic?: sns.ITopic;
   betaActive?: boolean;
+  betaApiS2Condition?: cdk.CfnCondition;
+  betaSizingTelemetry?: string;
 }
 
 export class ComputeRuntime extends Construct {
@@ -226,6 +228,8 @@ export class ComputeRuntime extends Construct {
       SQS_AUTO_TAGGING_QUEUE_URL: props.autoTaggingQueue.queueUrl,
       SERVICE_COMMIT_SHA: serviceCommit.valueAsString,
       IMAGE_DIGEST: imageDigest.valueAsString,
+      ...(props.stage === 'beta' && props.betaSizingTelemetry !== undefined
+        ? { BETA_SIZING_TELEMETRY: props.betaSizingTelemetry } : {}),
     };
 
     const apiTaskDefinition = new ecs.FargateTaskDefinition(this, 'ApiTaskDefinition', {
@@ -235,6 +239,12 @@ export class ComputeRuntime extends Construct {
       taskRole: apiTaskRole,
       executionRole: apiExecutionRole,
     });
+    if (props.stage === 'beta' && props.betaApiS2Condition) {
+      // One retained profile selects the complete candidate pair; S1 is default.
+      const task = apiTaskDefinition.node.defaultChild as ecs.CfnTaskDefinition;
+      task.cpu = cdk.Token.asString(cdk.Fn.conditionIf(props.betaApiS2Condition.logicalId, '256', '512'));
+      task.memory = cdk.Token.asString(cdk.Fn.conditionIf(props.betaApiS2Condition.logicalId, '512', '1024'));
+    }
     apiTaskDefinition.addContainer('ApiContainer', {
       image,
       command: ['node', 'dist/api.js'],

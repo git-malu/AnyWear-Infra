@@ -180,6 +180,48 @@ for lifecycle/deploy and tester payload only for admission. Use the actual
 reviewed filenames, phase and retention setting. Initial role bootstrap uses the [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
 because no sealed Service release is needed to create the artifact publisher role.
 
+## Retained Beta sizing and temporary telemetry
+
+Issue #95 adds retained Workload parameters without changing lifecycle authority.
+`BetaApiSizingProfile` defaults to `s1` (API CPU 512 / memory 1024 MiB); `s2-api`
+selects CPU 256 / memory 512 MiB together. The S2 profile remains an unqualified
+candidate until the manager records same-image acceptance and recovery evidence.
+Worker remains CPU 1024 / memory 2048 MiB, and API desired/minimum counts stay 1/1.
+`BetaSizingTelemetry` defaults to `false` and supplies `BETA_SIZING_TELEMETRY`
+to both API and Worker. The selected Service artifact must implement the telemetry
+contract before the manager considers enabling it; Infra source checks alone do
+not establish that application behavior.
+
+Only `beta-deploy.yml` exposes `beta_api_sizing_profile=preserve|s1|s2-api` and
+`beta_sizing_telemetry=preserve|enable|disable`, both defaulting to `preserve`.
+Absent or ordinary inputs retain both observed parameters through maintenance,
+stop/start and release recovery. A pre-parameter deployment means S1 and telemetry
+off. Unknown retained values fail before workload helper operations. An explicit
+override is allowed only for `deploy-workload` on already-active, coherent Beta,
+with the selected Service SHA/digest exactly matching the observed image. Other
+operations reject overrides before credentials. Fixed `runtime.yml` has no sizing
+or telemetry input. Neither input starts Beta or grants an environment writer.
+
+For a manager-authorized measurement, dispatch the reviewed `beta-deploy.yml`
+with `operation=deploy-workload`, the unchanged immutable selection/stack-source
+inputs and explicit profile/telemetry values. Preserve exact parameter readback
+in the `workload-parameter-readback` event. The final authenticated observer also
+records a `beta-sizing-state` event with both actual ECS task-definition ARNs,
+CPU/memory and telemetry environment values. It rejects mismatches. These events
+belong to the operation artifact; the strict v2 deployment snapshot stays unchanged.
+State-only observation records retained values but cannot prove running telemetry.
+
+After measurement, explicitly dispatch the reviewed current-main workload operation
+with `beta_sizing_telemetry=disable`, the unchanged Service image and reviewed
+stack-source binding. Use `beta_api_sizing_profile=s1` in that operation when
+restoring S1, or `preserve` when retaining an accepted profile. Verify
+`BetaSizingTelemetry=false`, both actual containers reporting telemetry `false`,
+stable service rollout and the final observer/health result. An ordinary `preserve`
+input or a stop/start cycle does not disable telemetry. If Beta is stopped or its
+state is unknown, preserve that state and request the manager's environment
+decision; never reactivate Beta to restore telemetry. This source delivery has no
+deployment, runtime acceptance or telemetry-off restoration claim.
+
 ## Tester and cleanup ownership
 
 Admission dispatch alone supplies `tester_emails` as a JSON string. Input normalization

@@ -31,6 +31,18 @@ on:
       retention_protection:
         type: boolean
         required: true
+      beta_api_sizing_profile:
+        description: Retain sizing or explicitly select S1/S2 on active Beta with the same Service image
+        type: choice
+        options: [preserve, s1, s2-api]
+        default: preserve
+        required: true
+      beta_sizing_telemetry:
+        description: Retain telemetry or explicitly enable/disable on active Beta with the same Service image
+        type: choice
+        options: [preserve, enable, disable]
+        default: preserve
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -72,3 +84,5 @@ jobs:
       - uses: ./.github/actions/beta-operation
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          beta_api_sizing_profile: ${{ inputs.beta_api_sizing_profile }}
+          beta_sizing_telemetry: ${{ inputs.beta_sizing_telemetry }}

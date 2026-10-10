@@ -2,6 +2,7 @@ import { workloadRevision } from '../.github/scripts/beta-lifecycle.mjs';
 import { readAdmissionState, assertClosedAdmission } from './admission-operation.mjs';
 import { assertVerificationExecutor, runRuntimeVerification } from './verify-runtime-task.mjs';
 import { canonicalJson, sha256, SHA } from './json-contract.mjs';
+import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-sizing-profile.mjs';
 
 const platformName = 'AnyWearPlatformStack-beta';
 const workloadName = 'AnyWearWorkloadStack-beta';
@@ -33,6 +34,9 @@ function assertParameters(workload, selected) {
   const actual = workloadRevision(workload);
   for (const key of parameterKeys) {
     if (actual.parameters[key] !== selected.parameters[key]) throw new Error(`Restore parameter readback mismatch for ${key}`);
+  }
+  for (const retained of [retainedBetaSizingProfile, retainedBetaSizingTelemetry]) {
+    if (retained(actual.parameters) !== retained(selected.parameters)) throw new Error('Restore retained Beta sizing parameter readback mismatch');
   }
 }
 
@@ -103,6 +107,8 @@ export async function runRestoreRelease({ io, selector, manifest, schema, infraS
     const originalOutputs = outputs(platform); const originalWorkloadOutputs = outputs(workload);
     if (!originalWorkloadOutputs.ApiBaseUrl) throw new Error('Restore API interface unavailable');
     const current = workloadRevision(workload);
+    retainedBetaSizingProfile(current.parameters);
+    retainedBetaSizingTelemetry(current.parameters);
     const selected = { ...current, digest: selector.image.digest, commit: selector.image.service_sha,
       parameters: { ...current.parameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha } };
     // Reuse the existing strict immutable revision and preserved-parameter checks.

@@ -44,6 +44,8 @@ async function runtimeDeployFixture() {
     { ParameterKey: 'ServiceImageDigest', ParameterValue: digest }, { ParameterKey: 'ServiceCommitSha', ParameterValue: commit },
     { ParameterKey: 'VlmConfigArn', ParameterValue: revision.parameters.VlmConfigArn },
     { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: revision.parameters.CloudFrontPrefixListId },
+    { ParameterKey: 'BetaApiSizingProfile', ParameterValue: revision.parameters.BetaApiSizingProfile ?? 's1' },
+    { ParameterKey: 'BetaSizingTelemetry', ParameterValue: revision.parameters.BetaSizingTelemetry ?? 'false' },
   ] });
   return { root, selector, env, revision, stack };
 }
@@ -67,7 +69,7 @@ test('workload deploy records exact parameter readback before success', async ()
   assert.equal(record.events[0].manager_result_reconciliation_required, true);
   assert.deepEqual(record.events.slice(1), [
     { type: 'workload-parameter-readback', stack_name: 'AnyWearWorkloadStack-beta', stack_status: 'UPDATE_COMPLETE',
-      service_sha: revision.commit, image_digest: revision.digest },
+      service_sha: revision.commit, image_digest: revision.digest, beta_api_sizing_profile: 's1', beta_sizing_telemetry: 'false' },
     { type: 'stack-deploy', stack_name: 'AnyWearWorkloadStack-beta', beta_active: true,
       source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' },
   ]);
@@ -110,6 +112,116 @@ test('Platform and Workload replacements never invoke CDK when a cleanup executi
     await assert.rejects(io.deploy(name, true, revision), /cleanup resource inventory/);
   }
   assert.equal(deploys, 0);
+});
+
+test('sizing selection and current-main S1 rollback retain image and verify actual profile readback', async () => {
+  const { root, selector, env, revision, stack } = await runtimeDeployFixture();
+  revision.parameters.BetaApiSizingProfile = 's2-api';
+  revision.parameters.BetaSizingTelemetry = 'true';
+  env.INFRA_BETA_API_SIZING_PROFILE = 's1';
+  env.INFRA_BETA_SIZING_TELEMETRY = 'disable';
+  const record = { events: [] }; const commands = [];
+  const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
+    async assume() { return { ...env }; },
+    async run(command, args) {
+      commands.push([command, args]);
+      if (command === 'npx') return { stdout: '', stderr: '' };
+      const actual = stack();
+      actual.Parameters.find(parameter => parameter.ParameterKey === 'BetaApiSizingProfile').ParameterValue = 's1';
+      actual.Parameters.find(parameter => parameter.ParameterKey === 'BetaSizingTelemetry').ParameterValue = 'false';
+      return { stdout: JSON.stringify(args[1] === 'list-tasks' ? { taskArns: [] }
+        : args[1] === 'get-template' ? { TemplateBody: { Resources: {} } } : { Stacks: [actual] }), stderr: '' };
+    },
+  });
+  await io.deploy('AnyWearWorkloadStack-beta', true, revision);
+  const arguments_ = commands.find(([command]) => command === 'npx')[1];
+  assert.ok(arguments_.includes('AnyWearWorkloadStack-beta:BetaApiSizingProfile=s1'));
+  assert.ok(arguments_.includes(`AnyWearWorkloadStack-beta:ServiceImageDigest=${selector.image.digest}`));
+  assert.ok(arguments_.includes(`AnyWearWorkloadStack-beta:ServiceCommitSha=${selector.image.service_sha}`));
+  assert.ok(arguments_.includes('AnyWearWorkloadStack-beta:BetaSizingTelemetry=false'));
+  const readback = record.events.find(event => event.type === 'workload-parameter-readback');
+  assert.equal(readback.beta_api_sizing_profile, 's1');
+  assert.equal(readback.beta_sizing_telemetry, 'false');
+  assert.equal(revision.parameters.BetaApiSizingProfile, 's2-api', 'Do not overwrite the observed input');
+  assert.equal(revision.parameters.BetaSizingTelemetry, 'true', 'Do not overwrite observed telemetry');
+});
+
+test('sizing changes reject stopped Beta, unknown profiles and image changes before deploy credentials', async () => {
+  const { root, selector, env, revision } = await runtimeDeployFixture();
+  env.INFRA_BETA_API_SIZING_PROFILE = 's2-api';
+  let calls = 0;
+  const io = await createRuntimeIo(selector, '/verified/assets', env, undefined, { trustedInfraRoot: root,
+    async assume() { calls++; throw new Error('Unexpected credentials'); },
+    async run() { calls++; throw new Error('Unexpected mutation'); },
+  });
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', false, revision), /already-active/);
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', undefined, revision), /observed Beta activity/);
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, {
+    ...revision, parameters: { ...revision.parameters, BetaApiSizingProfile: 'other' },
+  }), /Unknown retained/);
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, { ...revision, digest: `sha256:${'f'.repeat(64)}` }), /retain the selected Service/);
+  assert.equal(calls, 0);
+});
+
+test('sizing rollback fails on profile readback mismatch', async () => {
+  const { root, selector, env, revision, stack } = await runtimeDeployFixture();
+  env.INFRA_BETA_API_SIZING_PROFILE = 's2-api';
+  const io = await createRuntimeIo(selector, '/verified/assets', env, undefined, { trustedInfraRoot: root,
+    async assume() { return { ...env }; },
+    async run(command, args) {
+      return command === 'npx' ? { stdout: '', stderr: '' }
+        : { stdout: JSON.stringify(args[1] === 'list-tasks' ? { taskArns: [] }
+          : args[1] === 'get-template' ? { TemplateBody: { Resources: {} } } : { Stacks: [stack()] }), stderr: '' };
+    },
+  });
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, revision), /readback mismatch for BetaApiSizingProfile/);
+});
+
+test('telemetry enable is forwarded and actual parameter readback is required', async () => {
+  for (const mismatch of [false, true]) {
+    const { root, selector, env, revision, stack } = await runtimeDeployFixture();
+    env.INFRA_BETA_SIZING_TELEMETRY = 'enable';
+    const record = { events: [] }; let deployed = false;
+    const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
+      async assume() { return { ...env }; },
+      async run(command, args) {
+        if (command === 'npx') {
+          assert.ok(args.includes('AnyWearWorkloadStack-beta:BetaSizingTelemetry=true'));
+          deployed = true; return { stdout: '', stderr: '' };
+        }
+        const actual = stack();
+        actual.Parameters.find(row => row.ParameterKey === 'BetaSizingTelemetry').ParameterValue = deployed && !mismatch ? 'true' : 'false';
+        return { stdout: JSON.stringify(args[1] === 'list-tasks' ? { taskArns: [] }
+          : args[1] === 'get-template' ? { TemplateBody: { Resources: {} } } : { Stacks: [actual] }) };
+      },
+    });
+    if (mismatch) {
+      await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, revision), /readback mismatch for BetaSizingTelemetry/);
+      assert.equal(record.events.some(event => event.type === 'stack-deploy'), false);
+    } else {
+      await io.deploy('AnyWearWorkloadStack-beta', true, revision);
+      assert.equal(record.events.find(event => event.type === 'workload-parameter-readback').beta_sizing_telemetry, 'true');
+    }
+  }
+});
+
+test('telemetry overrides reject stopped/unknown state, malformed retained values and image changes before credentials', async () => {
+  const { root, selector, env, revision } = await runtimeDeployFixture();
+  env.INFRA_BETA_SIZING_TELEMETRY = 'enable';
+  let calls = 0;
+  const io = await createRuntimeIo(selector, '/verified/assets', env, undefined, { trustedInfraRoot: root,
+    async assume() { calls++; throw new Error('Unexpected credentials'); },
+    async run() { calls++; throw new Error('Unexpected command'); },
+  });
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', false, revision), /already-active/);
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', undefined, revision), /observed Beta activity/);
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, {
+    ...revision, parameters: { ...revision.parameters, BetaSizingTelemetry: 'enable' },
+  }), /Unknown retained/);
+  for (const changed of [{ digest: `sha256:${'f'.repeat(64)}` }, { commit: 'f'.repeat(40) }]) {
+    await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, { ...revision, ...changed }), /retain the selected Service/);
+  }
+  assert.equal(calls, 0);
 });
 
 test('runtime status ignores shell JSON and binds actual stopped task definition and CloudWatch status', async () => {
@@ -285,6 +397,8 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
         `AnyWearWorkloadStack-beta:ServiceCommitSha=${selector.image.service_sha}`,
         'AnyWearWorkloadStack-beta:VlmConfigArn=arn:secret',
         'AnyWearWorkloadStack-beta:CloudFrontPrefixListId=pl-test',
+        'AnyWearWorkloadStack-beta:BetaApiSizingProfile=s1',
+        'AnyWearWorkloadStack-beta:BetaSizingTelemetry=false',
       ]);
       assert.equal(parameterArgs.some(value => value.startsWith('ServiceImageDigest=')), false);
     } else assert.equal(args.includes('--parameters'), false);

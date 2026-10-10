@@ -10,6 +10,7 @@ const workload = (desired = 2, min = 2, service = 'beta-anywear-api') => ({
       Type: 'AWS::ApplicationAutoScaling::ScalableTarget', Properties: { MinCapacity: min },
     },
   },
+  Parameters: {},
   Outputs: {},
 });
 
@@ -40,6 +41,122 @@ test('rejects replica changes outside the Beta Workload stack', () => {
   });
   assert.equal(result.accepted, false);
   assert.equal(result.rejected.length, 2);
+});
+
+const apiTaskId = 'ComputeRuntimeApiTaskDefinitionABCDEF12';
+const sizedTask = (cpu = '512', memory = '1024', family = 'beta-anywear-api', id = apiTaskId) => ({
+  Resources: {
+    [id]: { Type: 'AWS::ECS::TaskDefinition', Properties: {
+      Family: family, Cpu: cpu, Memory: memory,
+      ContainerDefinitions: [{ Name: 'ApiContainer', HealthCheck: { StartPeriod: 30 } }],
+    } },
+  },
+  Parameters: {},
+  Outputs: {},
+});
+const betaWorkload = { stage: 'beta', stackName: 'AnyWearWorkloadStack-beta' };
+const profiledTask = (family = 'beta-anywear-api', id = apiTaskId) => ({
+  ...sizedTask({ 'Fn::If': ['BetaApiS2', '256', '512'] }, { 'Fn::If': ['BetaApiS2', '512', '1024'] }, family, id),
+  Parameters: { BetaApiSizingProfile: { Type: 'String', Default: 's1', AllowedValues: ['s1', 's2-api'],
+    Description: 'Retained Beta API sizing profile; s2-api is an unqualified Issue #95 candidate' } },
+  Conditions: { BetaApiS2: { 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] } },
+});
+
+test('allows only the complete S2 Beta API size candidate in each identity phase', () => {
+  for (const phase of ['legacy', 'roles-added', 'retired']) {
+    const result = compareTemplates(sizedTask(), profiledTask(), { ...betaWorkload, phase });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(result.allowed.map(({ path }) => path), [
+      `/Resources/${apiTaskId}/Properties/Cpu`, `/Resources/${apiTaskId}/Properties/Memory`, '/Parameters/BetaApiSizingProfile', '/Conditions',
+    ]);
+  }
+});
+
+test('rejects new sizing declarations when active API still uses fixed S1 CPU and memory', () => {
+  const after = profiledTask();
+  Object.assign(after.Resources[apiTaskId].Properties, { Cpu: '512', Memory: '1024' });
+  const result = compareTemplates(sizedTask(), after, betaWorkload);
+  assert.equal(result.accepted, false);
+  assert.deepEqual(result.rejected.map(({ path }) => path), ['/Parameters/BetaApiSizingProfile', '/Conditions']);
+});
+
+test('new active sizing declarations require both exact expressions even when only one size changes', () => {
+  for (const [property, stale, wrongPair] of [['Cpu', '512', '1024'], ['Memory', '1024', '2048']]) {
+    for (const mismatch of [stale, { 'Fn::If': ['BetaApiS2', '128', wrongPair] }]) {
+      const after = profiledTask(); after.Resources[apiTaskId].Properties[property] = mismatch;
+      const result = compareTemplates(sizedTask(), after, betaWorkload);
+      assert.equal(result.accepted, false);
+      assert.ok(result.rejected.some(({ path }) => path === '/Parameters/BetaApiSizingProfile'));
+      assert.ok(result.rejected.some(({ path }) => path === '/Conditions'));
+    }
+  }
+});
+
+test('permits declaration-only sizing retention only in an explicitly stopped template', () => {
+  const stopped = { Resources: {}, Parameters: {}, Outputs: { BetaActive: { Value: 'false' } } };
+  const declarations = profiledTask();
+  for (const phase of ['legacy', 'roles-added', 'retired']) {
+    const after = { ...stopped, Parameters: declarations.Parameters, Conditions: declarations.Conditions };
+    const result = compareTemplates(stopped, after, { ...betaWorkload, phase });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(result.allowed.map(({ path }) => path), ['/Parameters/BetaApiSizingProfile', '/Conditions']);
+  }
+  for (const outputs of [{}, { BetaActive: { Value: 'true' } }]) {
+    const before = { ...stopped, Outputs: outputs };
+    assert.equal(compareTemplates(before, { ...before, Parameters: declarations.Parameters,
+      Conditions: declarations.Conditions }, betaWorkload).accepted, false);
+  }
+});
+
+test('rejects incomplete or arbitrary S2 size changes and nonbaseline sizes', () => {
+  for (const [cpu, memory] of [['256', '1024'], ['512', '512'], ['128', '512'], ['256', '768']]) {
+    assert.equal(compareTemplates(sizedTask(), sizedTask(cpu, memory), betaWorkload).accepted, false);
+  }
+  assert.equal(compareTemplates(sizedTask('1024', '2048'), sizedTask('256', '512'), betaWorkload).accepted, false);
+  for (const mutate of [
+    (task) => task.Resources[apiTaskId].Properties.Cpu = '256',
+    (task) => task.Resources[apiTaskId].Properties.Memory['Fn::If'][2] = '2048',
+    (task) => task.Parameters.BetaApiSizingProfile.Default = 's2-api',
+    (task) => task.Parameters.BetaApiSizingProfile.AllowedValues.push('other'),
+    (task) => task.Conditions.BetaApiS2['Fn::Equals'][1] = 's1',
+    (task) => task.Conditions.Other = { 'Fn::Equals': ['x', 'x'] },
+  ]) {
+    const after = profiledTask(); mutate(after);
+    assert.equal(compareTemplates(sizedTask(), after, betaWorkload).accepted, false);
+  }
+});
+
+test('rejects Worker/helper size changes and an unrelated logical ID under S2', () => {
+  for (const [family, id] of [
+    ['beta-anywear-worker', apiTaskId],
+    ['beta-anywear-cleanup', apiTaskId],
+    ['beta-anywear-api', 'OtherApiTaskDefinitionABCDEF12'],
+  ]) {
+    assert.equal(compareTemplates(sizedTask('512', '1024', family, id),
+      profiledTask(family, id), betaWorkload).accepted, false);
+  }
+});
+
+test('rejects S2 size changes outside the exact Beta Workload stack', () => {
+  for (const options of [
+    { stage: 'prod', stackName: 'AnyWearWorkloadStack-prod' },
+    { stage: 'dev', stackName: 'AnyWearWorkloadStack-dev' },
+    { stage: 'beta', stackName: 'AnyWearPlatformStack-beta' },
+  ]) {
+    assert.equal(compareTemplates(sizedTask(), profiledTask(), options).accepted, false);
+  }
+});
+
+test('does not hide container, output or resource drift alongside the S2 size pair', () => {
+  const before = sizedTask();
+  const after = profiledTask();
+  after.Resources[apiTaskId].Properties.ContainerDefinitions[0].HealthCheck.StartPeriod = 1;
+  after.Outputs.ApiBaseUrl = { Value: 'https://changed.example' };
+  after.Resources.UnrelatedResourceABCDEF12 = { Type: 'AWS::S3::Bucket' };
+  const result = compareTemplates(before, after, betaWorkload);
+  assert.equal(result.accepted, false);
+  assert.equal(result.allowed.length, 4);
+  assert.equal(result.rejected.length, 3);
 });
 
 test('scopes cleanup template allowances to nonlegacy Beta phases and exact resource prefixes', () => {
@@ -83,4 +200,37 @@ test('fixture allowances require complete reviewed resources and reject broadene
     assert.equal(compareTemplates(before, bad, options).accepted, false);
   }
   assert.equal(compareTemplates(before, fixture, { ...options, phase: 'legacy' }).accepted, false);
+});
+
+const telemetryTask = (enabled = false, purpose = 'api') => {
+  const result = sizedTask('512', '1024', `beta-anywear-${purpose}`, `ComputeRuntime${purpose === 'api' ? 'Api' : 'Worker'}TaskDefinitionABCDEF12`);
+  const container = Object.values(result.Resources)[0].Properties.ContainerDefinitions[0];
+  container.Environment = [{ Name: 'STAGE', Value: 'beta' }];
+  if (enabled) {
+    result.Parameters.BetaSizingTelemetry = { Type: 'String', Default: 'false', AllowedValues: ['false', 'true'],
+      Description: 'Retained Beta API and Worker sizing telemetry; disabled by default' };
+    container.Environment.unshift({ Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } });
+  }
+  return result;
+};
+
+test('telemetry comparator permits only the exact default-off parameter and API/Worker environment reference', () => {
+  for (const purpose of ['api', 'worker']) {
+    assert.equal(compareTemplates(telemetryTask(false, purpose), telemetryTask(true, purpose), betaWorkload).accepted, true);
+    for (const mutate of [
+      after => after.Parameters.BetaSizingTelemetry.Default = 'true',
+      after => after.Parameters.BetaSizingTelemetry.AllowedValues.push('other'),
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].Environment[0].Value = 'true',
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].Environment[1].Value = 'prod',
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].Environment.push({ Name: 'OTHER', Value: 'x' }),
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].HealthCheck.StartPeriod = 1,
+    ]) {
+      const after = telemetryTask(true, purpose); mutate(after);
+      assert.equal(compareTemplates(telemetryTask(false, purpose), after, betaWorkload).accepted, false);
+    }
+    for (const options of [{ stage: 'prod', stackName: 'AnyWearWorkloadStack-prod' },
+      { stage: 'dev', stackName: 'AnyWearWorkloadStack-dev' }, { stage: 'beta', stackName: 'AnyWearPlatformStack-beta' }]) {
+      assert.equal(compareTemplates(telemetryTask(false, purpose), telemetryTask(true, purpose), options).accepted, false);
+    }
+  }
 });

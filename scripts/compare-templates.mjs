@@ -130,8 +130,8 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.path === `/Resources/${id}/Properties/Analytics`;
     // Issue #95 S1 is intentionally narrow: only the active Beta API service
     // desired count and its autoscaling minimum may change from 2 to 1. Keep
-    // task sizes, Worker scaling, Production/Dev and stopped-state templates
-    // covered by the normal exact comparison.
+    // Worker scaling, Production/Dev and stopped-state templates covered by
+    // the normal exact comparison. S2 sizes are checked separately below.
     const betaS1ReplicaReduction = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta'
       && ((resource?.Type === 'AWS::ECS::Service'
         && resource.Properties?.ServiceName === 'beta-anywear-api'
@@ -141,6 +141,62 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         && difference.path === `/Resources/${id}/Properties/MinCapacity`
         && difference.before === 2 && difference.after === 1
         && id.includes('ApiServiceTaskCountTarget')));
+    // The retained profile defaults to S1 and atomically selects S2. Require
+    // its complete declaration and exact paired expressions; other drift fails.
+    const same = (value, expected) => JSON.stringify(canonical(value)) === JSON.stringify(canonical(expected));
+    const profileParameter = { Type: 'String', Default: 's1', AllowedValues: ['s1', 's2-api'],
+      Description: 'Retained Beta API sizing profile; s2-api is an unqualified Issue #95 candidate' };
+    const profileCondition = { 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] };
+    const betaProfileScope = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta';
+    const profileDeclaration = same(after.Parameters?.BetaApiSizingProfile, profileParameter)
+      && same(after.Conditions?.BetaApiS2, profileCondition);
+    const apiTasks = Object.entries(after.Resources ?? {}).filter(([candidateId, candidate]) =>
+      candidate?.Type === 'AWS::ECS::TaskDefinition' && (candidate.Properties?.Family === 'beta-anywear-api'
+        || /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(candidateId)));
+    const profileSizePair = properties => same(properties?.Cpu, { 'Fn::If': ['BetaApiS2', '256', '512'] })
+      && same(properties?.Memory, { 'Fn::If': ['BetaApiS2', '512', '1024'] });
+    // A declaration-only change must not pass when active compute ignores it.
+    const profileBinding = apiTasks.length === 0 ? after.Outputs?.BetaActive?.Value === 'false'
+      && !Object.values(after.Resources ?? {}).some(candidate => candidate?.Type === 'AWS::ECS::Service'
+        && candidate.Properties?.ServiceName === 'beta-anywear-api')
+      : apiTasks.length === 1 && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(apiTasks[0][0])
+        && apiTasks[0][1].Properties?.Family === 'beta-anywear-api' && profileSizePair(apiTasks[0][1].Properties);
+    const betaSizingDeclaration = betaProfileScope && profileDeclaration && profileBinding && difference.before === undefined
+      && ((difference.path === '/Parameters/BetaApiSizingProfile' && same(difference.after, profileParameter))
+        || (difference.path === '/Conditions/BetaApiS2' && same(difference.after, profileCondition))
+        || (difference.path === '/Conditions' && same(difference.after, { BetaApiS2: profileCondition })));
+    const candidateResource = after.Resources?.[id];
+    const telemetryParameter = { Type: 'String', Default: 'false', AllowedValues: ['false', 'true'],
+      Description: 'Retained Beta API and Worker sizing telemetry; disabled by default' };
+    const telemetryDeclaration = betaProfileScope && same(after.Parameters?.BetaSizingTelemetry, telemetryParameter);
+    const betaTelemetryDeclaration = telemetryDeclaration && difference.before === undefined
+      && difference.path === '/Parameters/BetaSizingTelemetry' && same(difference.after, telemetryParameter);
+    const betaTelemetryEnvironment = telemetryDeclaration
+      && /^ComputeRuntime(Api|Worker)TaskDefinition[A-F0-9]{8}$/.test(id)
+      && resource?.Type === 'AWS::ECS::TaskDefinition' && candidateResource?.Type === resource.Type
+      && ['beta-anywear-api', 'beta-anywear-worker'].includes(resource.Properties?.Family)
+      && resource.Properties.Family === candidateResource.Properties?.Family
+      && difference.path === `/Resources/${id}/Properties/ContainerDefinitions`
+      && Array.isArray(difference.before) && difference.before.length === 1
+      && Array.isArray(difference.after) && difference.after.length === 1
+      && (() => {
+        const containers = structuredClone(difference.after);
+        const entries = containers[0].Environment;
+        if (!Array.isArray(entries)) return false;
+        const selected = entries.filter(entry => entry.Name === 'BETA_SIZING_TELEMETRY');
+        if (selected.length !== 1 || !same(selected[0], { Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } })) return false;
+        containers[0].Environment = entries.filter(entry => entry.Name !== 'BETA_SIZING_TELEMETRY');
+        return same(containers, difference.before);
+      })();
+    const betaS2ApiSize = betaProfileScope && profileDeclaration
+      && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
+      && resource?.Type === 'AWS::ECS::TaskDefinition'
+      && candidateResource?.Type === 'AWS::ECS::TaskDefinition'
+      && resource.Properties?.Family === 'beta-anywear-api'
+      && candidateResource.Properties?.Family === 'beta-anywear-api'
+      && resource.Properties.Cpu === '512' && resource.Properties.Memory === '1024'
+      && profileSizePair(candidateResource.Properties)
+      && ['Cpu', 'Memory'].some((property) => difference.path === `/Resources/${id}/Properties/${property}`);
     // Issue #86 adds a deployment-owned cleanup operation. Its fixed task
     // definitions, state machine, version and E2E policy are intentionally
     // new resources; the cross-stack PublishOutput values are the reviewed
@@ -154,12 +210,16 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.path.includes('/Resources/OneShotExecutionRoleDefaultPolicy')
       && difference.path.endsWith('/Properties/PolicyDocument/Statement');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
-      || betaS1ReplicaReduction || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
+      || betaS1ReplicaReduction || betaS2ApiSize || betaSizingDeclaration
+      || betaTelemetryDeclaration || betaTelemetryEnvironment
+      || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
           : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
-            : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
+            : betaS2ApiSize || betaSizingDeclaration ? 'Issue #95 retained Beta API size profile (S2 runtime unqualified)'
+              : betaTelemetryDeclaration || betaTelemetryEnvironment ? 'Issue #95 retained Beta sizing telemetry (disabled by default)'
+              : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
               ? 'Issue #86 fixed Beta cleanup operation binding' : 'CDK diagnostic analytics' });
     } else rejected.push(difference);
   }

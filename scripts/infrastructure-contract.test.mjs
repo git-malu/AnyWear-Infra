@@ -135,7 +135,8 @@ function observationIo(drift, ecrResult) {
     image_digest: selector.image.digest, policy_file_sha256: selector.runtime_policy.sha256, policy_content_sha256: selector.runtime_policy.content_sha256,
     selected_journal_sha256: selector.schema.journal_sha256, selected_migration_ids: migrations, applied_schema_version: schema.current_version,
     applied_migration_ids: migrations, observed_applied_journal_sha256: contentHash(migrations) };
-  return { stackSources, calls, async aws(args, awsRegion = 'ap-east-1') {
+  const sizingEvents = [];
+  return { stackSources, calls, sizingEvents, recordBetaSizingState(event) { sizingEvents.push(event); }, async aws(args, awsRegion = 'ap-east-1') {
     calls.push(args); const argument = flag => args[args.indexOf(flag) + 1];
     switch (`${args[0]}/${args[1]}`) {
       case 'sts/get-caller-identity': return { Account: '650880818323' };
@@ -166,7 +167,8 @@ function observationIo(drift, ecrResult) {
         const name = actualContainerNames.find(value => value === (purpose === 'api' ? 'ApiContainer' : 'WorkerContainer'));
         const container = { name, image: `${selector.image.repository_uri}@${selector.image.digest}`, environment: [
           { name: 'SERVICE_COMMIT_SHA', value: selector.image.service_sha }, { name: 'IMAGE_DIGEST', value: selector.image.digest }] };
-        const definition = { containerDefinitions: [container] };
+        const definition = { taskDefinitionArn: taskDefinitionArn(purpose), cpu: purpose === 'api' ? '512' : '1024',
+          memory: purpose === 'api' ? '1024' : '2048', containerDefinitions: [container] };
         if (drift?.purpose === purpose) {
           if (drift.mode === 'wrong-purpose') container.name = purpose === 'api' ? 'WorkerContainer' : 'ApiContainer';
           if (drift.mode === 'legacy-name') container.name = purpose === 'api' ? 'Api' : 'Worker';
@@ -212,6 +214,11 @@ for (const [repository, workflow] of [['git-malu/AnyWear-Infra', '.github/workfl
     assert.equal(snapshot.schema.verification.executor.workflow_path, workflow);
     assert.equal(snapshot.schema.verification.executor.sha, executor.GITHUB_SHA);
     assert.equal(snapshot.schema.compatibility_result, 'compatible');
+    assert.equal(io.sizingEvents.length, 1);
+    assert.equal(io.sizingEvents[0].beta_api_sizing_profile, 's1');
+    assert.equal(io.sizingEvents[0].beta_sizing_telemetry, 'false');
+    assert.equal(io.sizingEvents[0].ecs.worker.cpu, '1024');
+    assert.equal(Object.hasOwn(snapshot.observed, 'beta_sizing'), false);
     assert.equal(io.calls.filter(args => args[0] === 'cloudformation' && args[1] === 'describe-stacks').length, 8);
     assert.ok(io.calls.some(args => args[1] === 'deregister-task-definition'));
   });
