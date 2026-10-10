@@ -16,13 +16,15 @@ import { runRestoreRelease } from './restore-release.mjs';
 import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
-import { validateBetaSizingInput, retainedBetaSizingProfile, selectBetaSizingProfile } from './beta-sizing-profile.mjs';
+import { validateBetaSizingInput, validateBetaTelemetryInput, retainedBetaSizingProfile, retainedBetaSizingTelemetry,
+  betaSizingChangeRequested, selectBetaSizingParameters } from './beta-sizing-profile.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export function validateOperationInputs(env = process.env) {
   const boundary = operationBoundary(env);
   validateBetaSizingInput(env);
+  validateBetaTelemetryInput(env);
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
     || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
     || !boundary.readOnly && env.ENABLE_BETA_DEPLOY !== 'true') throw new Error('Protected Infra main executor and activation required');
@@ -57,10 +59,9 @@ export function betaDeploymentActivity(platform, workload) {
 }
 export function cdkDeploymentArguments(stack, active, revision, directory, env) {
   if (typeof active !== 'boolean') throw new Error('Explicit observed Beta activity required');
-  const preservedParameters = stack.includes('Workload') ? { ...revision.parameters,
-    BetaApiSizingProfile: selectBetaSizingProfile(revision.parameters, env, active) } : {};
+  const preservedParameters = stack.includes('Workload') ? selectBetaSizingParameters(revision.parameters, env, active) : {};
   const parameters = stack.includes('Workload') ? Object.entries(preservedParameters).filter(([key]) =>
-    ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId', 'BetaApiSizingProfile'].includes(key)).flatMap(([key, value]) =>
+    workloadParameterKeys.includes(key)).flatMap(([key, value]) =>
     ['--parameters', `${stack}:${key}=${value}`]) : [];
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
     // Native rollback must not reactivate stopped/partially stopped resources.
@@ -69,7 +70,8 @@ export function cdkDeploymentArguments(stack, active, revision, directory, env) 
     '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
     '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
 }
-const workloadParameterKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId', 'BetaApiSizingProfile'];
+const workloadParameterKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId',
+  'BetaApiSizingProfile', 'BetaSizingTelemetry'];
 const terminalStackStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
 function assertWorkloadParameterReadback(stack, revision) {
   if (!terminalStackStatuses.has(stack?.StackStatus)) throw new Error(`Workload stack is not terminal after deploy: ${stack?.StackStatus ?? 'unavailable'}`);
@@ -199,10 +201,9 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       assertDeployAllowed(env, stack);
       await check();
       const selected = stack === 'AnyWearWorkloadStack-beta' ? {
-        ...revision, parameters: { ...revision.parameters,
-          BetaApiSizingProfile: selectBetaSizingProfile(revision.parameters, env, active) },
+        ...revision, parameters: selectBetaSizingParameters(revision.parameters, env, active),
       } : revision;
-      if (stack === 'AnyWearWorkloadStack-beta' && validateBetaSizingInput(env) !== 'preserve'
+      if (stack === 'AnyWearWorkloadStack-beta' && betaSizingChangeRequested(env)
         && (selected.digest !== selector.image.digest || selected.commit !== selector.image.service_sha)) {
         throw new Error('Sizing changes must retain the selected Service image');
       }
@@ -220,7 +221,8 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
         const observed = assertWorkloadParameterReadback(after, selected);
         record?.events.push({ type: 'workload-parameter-readback', stack_name: stack,
           stack_status: after.StackStatus, service_sha: observed.commit, image_digest: observed.digest,
-          beta_api_sizing_profile: observed.parameters.BetaApiSizingProfile });
+          beta_api_sizing_profile: observed.parameters.BetaApiSizingProfile,
+          beta_sizing_telemetry: observed.parameters.BetaSizingTelemetry });
       }
       record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: active, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
     },
@@ -234,6 +236,7 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
     },
     recordRestoreStage(event) { record?.events.push({ type: 'restore-stage', ...event }); },
     recordRestoreState(observed) { record?.events.push({ type: 'restore-state', ...observed }); },
+    recordBetaSizingState(observed) { record?.events.push({ type: 'beta-sizing-state', ...observed }); },
     async http(url) {
       const response = await fetch(url, { headers: { 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error('Deployed application identity unavailable');
@@ -283,6 +286,7 @@ export async function runOperation(env = process.env) {
   const priorRevision = workloadRevision(prior);
   if (['start', 'stop', 'deploy-workload', 'restore-release'].includes(env.INFRA_OPERATION)) {
     retainedBetaSizingProfile(priorRevision.parameters);
+    retainedBetaSizingTelemetry(priorRevision.parameters);
   }
   record.original_runtime = { service_sha: priorRevision.commit, image_digest: priorRevision.digest };
   const repository = selector.image.repository_uri.split('/').slice(1).join('/');
@@ -310,8 +314,8 @@ export async function runOperation(env = process.env) {
       const active = betaDeploymentActivity(platform, workload);
       record.events.push({ type: 'observed-beta-activity', platform_active: active, workload_active: active });
       if (operation === 'deploy-workload') {
-        selectBetaSizingProfile(revision.parameters, env, active);
-        if (validateBetaSizingInput(env) !== 'preserve'
+        selectBetaSizingParameters(revision.parameters, env, active);
+        if (betaSizingChangeRequested(env)
           && (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha)) {
           throw new Error('Sizing changes must retain the observed Service image');
         }

@@ -38,6 +38,16 @@ test('six manual entry schemas select only their family and preserve the protect
     assert.equal(Object.hasOwn(inputs, 'identity_phase'), cdk);
     assert.equal(Object.hasOwn(inputs, 'retention_protection'), cdk);
     assert.equal(Object.hasOwn(inputs, 'tester_emails'), file.includes('admission'));
+    assert.equal(Object.hasOwn(inputs, 'beta_api_sizing_profile'), file.includes('beta-deploy'));
+    assert.equal(Object.hasOwn(inputs, 'beta_sizing_telemetry'), file.includes('beta-deploy'));
+    if (file.includes('beta-deploy')) {
+      assert.deepEqual(inputs.beta_api_sizing_profile.options, ['preserve', 's1', 's2-api']);
+      assert.deepEqual(inputs.beta_sizing_telemetry.options, ['preserve', 'enable', 'disable']);
+      assert.equal(inputs.beta_api_sizing_profile.default, 'preserve');
+      assert.equal(inputs.beta_sizing_telemetry.default, 'preserve');
+      assert.equal(workflow.jobs.operation.steps[1].with.beta_api_sizing_profile, '${{ inputs.beta_api_sizing_profile }}');
+      assert.equal(workflow.jobs.operation.steps[1].with.beta_sizing_telemetry, '${{ inputs.beta_sizing_telemetry }}');
+    }
     const job = workflow.jobs.operation;
     assert.equal(job.environment, 'beta');
     assert.deepEqual(job.permissions, { contents: 'read', 'id-token': 'write' });
@@ -50,11 +60,31 @@ test('six manual entry schemas select only their family and preserve the protect
   }
   const common = yaml.load(await readFile(new URL('../.github/actions/beta-operation/action.yml', import.meta.url), 'utf8'));
   const steps = common.runs.steps;
+  for (const key of ['beta_api_sizing_profile', 'beta_sizing_telemetry']) assert.equal(common.inputs[key].default, 'preserve');
+  for (const step of steps.filter(step => step.run?.includes('check-operation.mjs') || ['operation', 'observation'].includes(step.id))) {
+    assert.equal(step.env.INFRA_BETA_API_SIZING_PROFILE, '${{ inputs.beta_api_sizing_profile }}');
+    assert.equal(step.env.INFRA_BETA_SIZING_TELEMETRY, '${{ inputs.beta_sizing_telemetry }}');
+  }
   assert.ok(steps.findIndex(step => step.run?.includes('check-operation.mjs')) < steps.findIndex(step => step.id === 'app'));
   assert.ok(steps.findIndex(step => step.run?.includes('release verify-asset')) < steps.findIndex(step => step.id === 'app'));
   assert.equal(steps.some(step => step.uses?.includes('configure-aws-credentials')), false);
   assert.equal(steps.find(step => step.id === 'observation').run, 'node scripts/observe-operation.mjs');
   for (const step of steps.filter(step => step.uses === 'actions/upload-artifact@v4')) assert.equal(step.with['retention-days'], 90);
+});
+
+test('preflight rejects explicit sizing/telemetry in other operations before OIDC or commands', async () => {
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    if (operation === 'deploy-workload') continue;
+    const env = envFor(file, operation);
+    for (const change of [{ INFRA_BETA_API_SIZING_PROFILE: 's1' }, { INFRA_BETA_API_SIZING_PROFILE: 's2-api' },
+      { INFRA_BETA_SIZING_TELEMETRY: 'enable' }, { INFRA_BETA_SIZING_TELEMETRY: 'disable' }]) {
+      let calls = 0;
+      await assert.rejects(credentialEnvironment('runtime', { ...env, ...change }, 'operation', {
+        async requestToken() { calls++; }, async run() { calls++; },
+      }), /restricted to deploy-workload/);
+      assert.equal(calls, 0);
+    }
+  }
 });
 
 test('preflight rejects every cross-family operation before credentials and permits disabled-gate state reads', () => {

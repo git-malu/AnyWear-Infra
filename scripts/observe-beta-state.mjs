@@ -1,5 +1,6 @@
 import { canonicalJson, sha256 } from './json-contract.mjs';
 import { readAdmissionState } from './admission-operation.mjs';
+import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-sizing-profile.mjs';
 
 // This records infrastructure/SSM state only; it cannot establish DB/schema equality.
 export async function observeBetaState(io) {
@@ -11,6 +12,11 @@ export async function observeBetaState(io) {
     if (stack?.StackName !== name || typeof stack.StackStatus !== 'string') throw new Error('Beta state stack identity unavailable');
     stacks.push({ stack_name: name, status: stack.StackStatus,
       beta_active: stack.Outputs?.find(row => row.OutputKey === 'BetaActive')?.OutputValue ?? 'unavailable' });
+    if (name === 'AnyWearWorkloadStack-beta') {
+      const parameters = Object.fromEntries((stack.Parameters ?? []).map(row => [row.ParameterKey, row.ParameterValue]));
+      state.beta_sizing = { beta_api_sizing_profile: retainedBetaSizingProfile(parameters),
+        beta_sizing_telemetry: retainedBetaSizingTelemetry(parameters), runtime_verification: 'not-applicable' };
+    }
   }
   const admission = await readAdmissionState(io);
   state.admission = { admission_suspended: admission.admission_suspended, intake_open: admission.intake_open,

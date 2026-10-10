@@ -499,6 +499,11 @@ describe('Platform and workload safety controls', () => {
       const task = (family: string) => tasks.find((resource) => resource.Properties.Family === family);
       expect(template.Parameters.BetaApiSizingProfile).toMatchObject({ Default: 's1', AllowedValues: ['s1', 's2-api'] });
       expect(template.Conditions.BetaApiS2).toEqual({ 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] });
+      expect(template.Parameters.BetaSizingTelemetry).toMatchObject({ Type: 'String', Default: 'false', AllowedValues: ['false', 'true'] });
+      for (const family of ['beta-anywear-api', 'beta-anywear-worker']) {
+        expect(task(family).Properties.ContainerDefinitions[0].Environment.filter((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY'))
+          .toEqual([{ Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } }]);
+      }
       for (const profile of ['s1', 's2-api']) {
         const resolveSize = (value: any) => {
           const [condition, whenTrue, whenFalse] = value['Fn::If'];
@@ -513,6 +518,7 @@ describe('Platform and workload safety controls', () => {
       if (phase !== 'legacy') {
         for (const family of ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup']) {
           expect(task(family).Properties).toMatchObject({ Cpu: '512', Memory: '1024' });
+          expect(task(family).Properties.ContainerDefinitions[0].Environment.some((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY')).toBe(false);
         }
       }
       const resources = Object.values(template.Resources) as any[];
@@ -535,6 +541,10 @@ describe('Platform and workload safety controls', () => {
     expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-worker').Properties)
       .toMatchObject({ Cpu: '1024', Memory: '2048' });
     expect(synthesizeWorkload('prod').Parameters.BetaApiSizingProfile).toBeUndefined();
+    expect(synthesizeWorkload('prod').Parameters.BetaSizingTelemetry).toBeUndefined();
+    for (const task of tasks) {
+      expect(task.Properties.ContainerDefinitions[0].Environment.some((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY')).toBe(false);
+    }
   });
 
   it('publishes a fixed, versioned Beta cleanup state machine with E2E read-only execution', () => {
@@ -575,6 +585,8 @@ describe('Platform and workload safety controls', () => {
     expect(template.Outputs.ApiBaseUrl).toBeDefined();
     expect(template.Parameters.BetaApiSizingProfile.Default).toBe('s1');
     expect(template.Parameters.BetaApiSizingProfile.AllowedValues).toEqual(['s1', 's2-api']);
+    expect(template.Parameters.BetaSizingTelemetry.Default).toBe('false');
+    expect(template.Parameters.BetaSizingTelemetry.AllowedValues).toEqual(['false', 'true']);
   });
 
   it('allows the Beta database to pause at zero ACU after five minutes without connections', () => {

@@ -9,6 +9,7 @@ import { verifySelection, loadCommittedSelection } from './artifact-consumer.mjs
 import { runRuntimeVerification, assertVerificationExecutor } from './verify-runtime-task.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration, account, region, INFRA_REPOSITORY } from './deployment-contract.mjs';
 import { qualifiedWorkflowPaths } from './operation-boundaries.mjs';
+import { observeBetaSizing } from './observe-beta-sizing.mjs';
 export { validateDeploymentRecord, assertObservedMatchesDeployment } from './deployment-contract.mjs';
 const execute = promisify(execFile);
 const outputMap = stack => Object.fromEntries((stack.Outputs ?? []).map(item => [item.OutputKey, item.OutputValue]));
@@ -79,7 +80,7 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
   }
   const services = await io.aws(['ecs', 'describe-services', '--cluster', platform.EcsClusterName, '--services', workload.ApiServiceName, workload.WorkerServiceName]);
   if (services.failures?.length || services.services?.length !== 2) throw new Error('ECS service observation incomplete');
-  const ecs = {};
+  const ecs = {}; const definitions = {};
   for (const service of services.services) {
     const purpose = service.serviceName === workload.ApiServiceName ? 'api' : service.serviceName === workload.WorkerServiceName ? 'worker' : undefined;
     if (!purpose || ecs[purpose]) throw new Error('Foreign or duplicate ECS service');
@@ -88,7 +89,8 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
     const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', service.taskDefinition])).taskDefinition;
     const container = definition?.containerDefinitions?.find(c => c.name === (purpose === 'api' ? 'ApiContainer' : 'WorkerContainer'));
     const variables = Object.fromEntries((container?.environment ?? []).map(v => [v.name, v.value]));
-    if (container?.image !== `${selector.image.repository_uri}@${selector.image.digest}` || variables.SERVICE_COMMIT_SHA !== selector.image.service_sha
+    if (definition?.taskDefinitionArn !== service.taskDefinition
+      || container?.image !== `${selector.image.repository_uri}@${selector.image.digest}` || variables.SERVICE_COMMIT_SHA !== selector.image.service_sha
       || variables.IMAGE_DIGEST !== selector.image.digest) throw new Error('Actual ECS task definition selection mismatch');
     const listed = await io.aws(['ecs', 'list-tasks', '--cluster', platform.EcsClusterName, '--service-name', service.serviceName, '--desired-status', 'RUNNING']);
     if (listed.taskArns?.length !== service.runningCount) throw new Error('Actual ECS task inventory incomplete');
@@ -96,7 +98,9 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
     if (tasks.failures?.length || tasks.tasks?.length !== listed.taskArns.length || tasks.tasks.some(task => task.lastStatus !== 'RUNNING'
       || task.taskDefinitionArn !== service.taskDefinition || task.containers.some(c => c.imageDigest !== selector.image.digest))) throw new Error('Running ECS digest differs from selected image');
     ecs[purpose] = { service_arn: service.serviceArn, task_definition_arn: service.taskDefinition, image_digest: selector.image.digest };
+    definitions[purpose] = definition;
   }
+  const sizing = observeBetaSizing(actualStacks.get('AnyWearWorkloadStack-beta'), definitions);
   const endpoints = { api: workload.ApiBaseUrl, client: `https://${platform.ClientDistributionDomainName}` };
   // Older outputs expose ClientBaseUrl; domain fallback is only that exact deployed interface.
   if (platform.ClientBaseUrl) endpoints.client = platform.ClientBaseUrl;
@@ -117,6 +121,8 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
     if (after?.StackId !== original.StackId || after.StackStatus !== original.StackStatus
       || (after.LastUpdatedTime ?? after.CreationTime) !== (original.LastUpdatedTime ?? original.CreationTime)) throw new Error('Stack changed during authenticated observation');
   }
+  // Keep sizing evidence in the operation record; the v2 E2E snapshot stays exact.
+  io.recordBetaSizingState?.(sizing);
   return snapshot;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

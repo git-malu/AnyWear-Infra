@@ -165,3 +165,36 @@ test('fixture allowances require complete reviewed resources and reject broadene
   }
   assert.equal(compareTemplates(before, fixture, { ...options, phase: 'legacy' }).accepted, false);
 });
+
+const telemetryTask = (enabled = false, purpose = 'api') => {
+  const result = sizedTask('512', '1024', `beta-anywear-${purpose}`, `ComputeRuntime${purpose === 'api' ? 'Api' : 'Worker'}TaskDefinitionABCDEF12`);
+  const container = Object.values(result.Resources)[0].Properties.ContainerDefinitions[0];
+  container.Environment = [{ Name: 'STAGE', Value: 'beta' }];
+  if (enabled) {
+    result.Parameters.BetaSizingTelemetry = { Type: 'String', Default: 'false', AllowedValues: ['false', 'true'],
+      Description: 'Retained Beta API and Worker sizing telemetry; disabled by default' };
+    container.Environment.unshift({ Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } });
+  }
+  return result;
+};
+
+test('telemetry comparator permits only the exact default-off parameter and API/Worker environment reference', () => {
+  for (const purpose of ['api', 'worker']) {
+    assert.equal(compareTemplates(telemetryTask(false, purpose), telemetryTask(true, purpose), betaWorkload).accepted, true);
+    for (const mutate of [
+      after => after.Parameters.BetaSizingTelemetry.Default = 'true',
+      after => after.Parameters.BetaSizingTelemetry.AllowedValues.push('other'),
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].Environment[0].Value = 'true',
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].Environment[1].Value = 'prod',
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].Environment.push({ Name: 'OTHER', Value: 'x' }),
+      after => Object.values(after.Resources)[0].Properties.ContainerDefinitions[0].HealthCheck.StartPeriod = 1,
+    ]) {
+      const after = telemetryTask(true, purpose); mutate(after);
+      assert.equal(compareTemplates(telemetryTask(false, purpose), after, betaWorkload).accepted, false);
+    }
+    for (const options of [{ stage: 'prod', stackName: 'AnyWearWorkloadStack-prod' },
+      { stage: 'dev', stackName: 'AnyWearWorkloadStack-dev' }, { stage: 'beta', stackName: 'AnyWearPlatformStack-beta' }]) {
+      assert.equal(compareTemplates(telemetryTask(false, purpose), telemetryTask(true, purpose), options).accepted, false);
+    }
+  }
+});

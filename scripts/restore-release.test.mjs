@@ -23,7 +23,8 @@ const stackOutputs = values => entries(values, 'OutputKey', 'OutputValue');
 function fixture(options = {}) {
   const calls = []; const actions = []; const stages = []; const states = []; const recovery = [];
   const admission = { admission_suspended: 'true', intake_open: 'false', tester_allowlist: canonicalJson(options.testers ?? fourTesters), ...options.admission };
-  const preserved = { VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:retained-vlm', CloudFrontPrefixListId: 'pl-retained' };
+  const preserved = { VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:retained-vlm', CloudFrontPrefixListId: 'pl-retained',
+    ...(options.preParameters ? {} : { BetaApiSizingProfile: 's2-api', BetaSizingTelemetry: 'true' }) };
   const originalParameters = { ServiceImageDigest: `sha256:${'a'.repeat(64)}`, ServiceCommitSha: 'b'.repeat(40), ...preserved };
   const platform = { StackStatus: 'UPDATE_COMPLETE', Outputs: stackOutputs(outputs) };
   const workload = { StackStatus: 'UPDATE_COMPLETE', Parameters: entries(originalParameters, 'ParameterKey', 'ParameterValue'),
@@ -58,6 +59,8 @@ function fixture(options = {}) {
       if (options.failDeploy === name) throw new Error('Deployment failed');
       if (name === workloadName) {
         workload.Parameters = entries(revision.parameters, 'ParameterKey', 'ParameterValue');
+        if (options.materializeDefaults) workload.Parameters.push(
+          { ParameterKey: 'BetaApiSizingProfile', ParameterValue: 's1' }, { ParameterKey: 'BetaSizingTelemetry', ParameterValue: 'false' });
         if (options.parameterDrift) workload.Parameters.find(row => row.ParameterKey === options.parameterDrift).ParameterValue = 'unreviewed';
         if (options.activityDrift) workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false';
         if (options.workloadInterfaceDrift) workload.Outputs.find(row => row.OutputKey === 'ApiBaseUrl').OutputValue = 'https://changed.example.com';
@@ -115,6 +118,32 @@ test('invalid source, executor, phase or retention fails before authenticated re
   }
 });
 
+test('restore normalizes pre-parameter S1/off source after defaults materialize during deployment', async () => {
+  const { io, input } = fixture({ preParameters: true, materializeDefaults: true });
+  await runRestoreRelease(input);
+  assert.deepEqual(io.workload.Parameters.filter(row => row.ParameterKey.startsWith('Beta')), [
+    { ParameterKey: 'BetaApiSizingProfile', ParameterValue: 's1' }, { ParameterKey: 'BetaSizingTelemetry', ParameterValue: 'false' },
+  ]);
+  assert.equal(io.stages.at(-1).stage, 'final-readback');
+  assert.equal(io.stages.at(-1).result, 'succeeded');
+});
+
+test('restore final readback rejects a valid but changed sizing profile or telemetry setting', async () => {
+  for (const [key, value] of [['BetaApiSizingProfile', 's1'], ['BetaSizingTelemetry', 'false']]) {
+    const { io, input } = fixture({ onStage(stage, currentIo) {
+      if (stage.stage === 'selected-runtime-qualification' && stage.result === 'succeeded') {
+        currentIo.workload.Parameters.find(row => row.ParameterKey === key).ParameterValue = value;
+      }
+    } });
+    await assert.rejects(runRestoreRelease(input), error => {
+      assert.match(error.message, /failed at final-readback/);
+      assert.match(error.cause.message, /retained Beta sizing parameter readback mismatch/);
+      return true;
+    });
+    assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
+  }
+});
+
 test('inactive, mixed, unstable or open admission performs no candidate task or deploy and preserves failure readback', async () => {
   const cases = [
     io => { for (const stack of [io.platform, io.workload]) stack.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
@@ -161,6 +190,8 @@ test('parameter, activity, output and admission drift abort at the next boundary
   for (const [options, stage] of [
     [{ parameterDrift: 'VlmConfigArn' }, 'workload-stable-readback'],
     [{ parameterDrift: 'ServiceImageDigest' }, 'workload-stable-readback'],
+    [{ parameterDrift: 'BetaApiSizingProfile' }, 'workload-stable-readback'],
+    [{ parameterDrift: 'BetaSizingTelemetry' }, 'workload-stable-readback'],
     [{ activityDrift: true }, 'workload-stable-readback'],
     [{ workloadInterfaceDrift: true }, 'workload-stable-readback'],
     [{ platformInterfaceDrift: true }, 'selected-runtime-qualification'],

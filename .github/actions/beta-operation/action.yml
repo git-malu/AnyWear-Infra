@@ -4,6 +4,12 @@ inputs:
   app_private_key:
     required: true
     description: Protected read-only Service App key
+  beta_api_sizing_profile:
+    default: preserve
+    description: Beta API profile; explicit changes belong only to active deploy-workload
+  beta_sizing_telemetry:
+    default: preserve
+    description: Beta sizing telemetry; explicit changes belong only to active deploy-workload
 runs:
   using: composite
   steps:
@@ -14,6 +20,9 @@ runs:
       shell: bash
     - name: Validate operation family, committed source and stack provenance before credentials
       shell: bash
+      env:
+        INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
+        INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
       run: |
         mkdir -p deployment-evidence
         node scripts/check-operation.mjs
@@ -40,6 +49,8 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app.outputs.token }}
+        INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
+        INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
       run: node scripts/runtime-operation.mjs
     - name: Observe final authenticated deployment with a restricted verification session
       id: observation
@@ -47,6 +58,8 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app.outputs.token }}
+        INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
+        INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
       run: node scripts/observe-operation.mjs
     - name: Preserve exact final observation record
       if: steps.operation.outputs.requires_qualification == 'true'

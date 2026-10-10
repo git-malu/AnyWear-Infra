@@ -155,6 +155,28 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         || (difference.path === '/Conditions/BetaApiS2' && same(difference.after, profileCondition))
         || (difference.path === '/Conditions' && same(difference.after, { BetaApiS2: profileCondition })));
     const candidateResource = after.Resources?.[id];
+    const telemetryParameter = { Type: 'String', Default: 'false', AllowedValues: ['false', 'true'],
+      Description: 'Retained Beta API and Worker sizing telemetry; disabled by default' };
+    const telemetryDeclaration = betaProfileScope && same(after.Parameters?.BetaSizingTelemetry, telemetryParameter);
+    const betaTelemetryDeclaration = telemetryDeclaration && difference.before === undefined
+      && difference.path === '/Parameters/BetaSizingTelemetry' && same(difference.after, telemetryParameter);
+    const betaTelemetryEnvironment = telemetryDeclaration
+      && /^ComputeRuntime(Api|Worker)TaskDefinition[A-F0-9]{8}$/.test(id)
+      && resource?.Type === 'AWS::ECS::TaskDefinition' && candidateResource?.Type === resource.Type
+      && ['beta-anywear-api', 'beta-anywear-worker'].includes(resource.Properties?.Family)
+      && resource.Properties.Family === candidateResource.Properties?.Family
+      && difference.path === `/Resources/${id}/Properties/ContainerDefinitions`
+      && Array.isArray(difference.before) && difference.before.length === 1
+      && Array.isArray(difference.after) && difference.after.length === 1
+      && (() => {
+        const containers = structuredClone(difference.after);
+        const entries = containers[0].Environment;
+        if (!Array.isArray(entries)) return false;
+        const selected = entries.filter(entry => entry.Name === 'BETA_SIZING_TELEMETRY');
+        if (selected.length !== 1 || !same(selected[0], { Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } })) return false;
+        containers[0].Environment = entries.filter(entry => entry.Name !== 'BETA_SIZING_TELEMETRY');
+        return same(containers, difference.before);
+      })();
     const betaS2ApiSize = betaProfileScope && profileDeclaration
       && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
       && resource?.Type === 'AWS::ECS::TaskDefinition'
@@ -179,12 +201,14 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.path.endsWith('/Properties/PolicyDocument/Statement');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
       || betaS1ReplicaReduction || betaS2ApiSize || betaSizingDeclaration
+      || betaTelemetryDeclaration || betaTelemetryEnvironment
       || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
           : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
             : betaS2ApiSize || betaSizingDeclaration ? 'Issue #95 retained Beta API size profile (S2 runtime unqualified)'
+              : betaTelemetryDeclaration || betaTelemetryEnvironment ? 'Issue #95 retained Beta sizing telemetry (disabled by default)'
               : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
               ? 'Issue #86 fixed Beta cleanup operation binding' : 'CDK diagnostic analytics' });
     } else rejected.push(difference);
