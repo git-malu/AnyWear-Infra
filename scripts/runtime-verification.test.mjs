@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import vm from 'node:vm';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runtimeCommandBytes, runRuntimeVerification } from './verify-runtime-task.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
-import { contentHash } from './json-contract.mjs';
+import { canonicalJson, contentHash, parseJson } from './json-contract.mjs';
+import { createRuntimeIo } from './runtime-operation.mjs';
+import { createOperationRecord } from './operation-record.mjs';
 
 const { selector, manifest, schema } = await createTestInputs(await mkdtemp(path.join(os.tmpdir(), 'infra-verify-')));
 const sha = '5'.repeat(40);
@@ -76,5 +80,60 @@ test('verification binds actual stopped image/code/roles, schema and executor, a
     const drift = mockIo(mode);
     await assert.rejects(runRuntimeVerification({ io: drift, outputs, selector, manifest, schema, infraSha: sha, env }));
     if (mode === 'running') assert.ok(!drift.calls.some(call => call[1] === 'deregister-task-definition'));
+  }
+});
+
+test('final qualification appends authenticated task events to the actual parsed operation file on success and failure', async () => {
+  const execute = promisify(execFile);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'infra-parsed-qualification-'));
+  const git = async args => (await execute('git', ['-C', root, ...args])).stdout.trim();
+  await git(['init', '--quiet']); await git(['config', 'core.autocrlf', 'false']);
+  await git(['config', 'user.name', 'Qualification fixture']); await git(['config', 'user.email', 'fixture@invalid.local']);
+  await git(['remote', 'add', 'origin', 'https://github.com/git-malu/AnyWear-Infra.git']);
+  await mkdir(path.join(root, 'selections')); await mkdir(path.join(root, 'deployment-evidence'));
+  await writeFile(path.join(root, '.gitignore'), 'deployment-evidence/\n');
+  await writeFile(path.join(root, 'selections/beta.json'), canonicalJson(selector));
+  await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
+  const source = await git(['rev-parse', 'HEAD']);
+  const runtimeEnv = { ...env, GITHUB_SHA: source, GITHUB_REPOSITORY_ID: '1409047265', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: 'observe', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
+    SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector) };
+  const interfaces = { ...outputs, VerificationTaskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-verification-task',
+    OneShotExecutionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution' };
+  const file = path.join(root, 'deployment-evidence/operation-record.json');
+  for (const mode of [undefined, 'exit']) {
+    const original = createOperationRecord({ env: runtimeEnv, selector, reviewedStackSources: Array(4).fill({}) });
+    original.result = 'succeeded';
+    original.events.push({ type: 'final-beta-activity', platform_active: 'true', workload_active: 'true' });
+    await writeFile(file, canonicalJson(original));
+    const operation = parseJson(await readFile(file));
+    assert.equal(Object.getOwnPropertyDescriptor(operation, 'events').writable, false);
+    const mocked = mockIo(mode); const purposes = [];
+    const io = await createRuntimeIo(selector, '/verified/assets', runtimeEnv, operation, { trustedInfraRoot: root, purpose: 'qualification',
+      async assume(kind, passed, purpose) { assert.equal(kind, 'runtime'); purposes.push(purpose); return passed; },
+      async run(command, args) { assert.equal(command, 'aws'); return { stdout: JSON.stringify(await mocked.aws(args)) }; },
+    });
+    try {
+      const verification = runRuntimeVerification({ io, outputs: interfaces, selector, manifest, schema, infraSha: source, env: runtimeEnv });
+      if (mode) await assert.rejects(verification, /Actual stopped verification image\/result mismatch/);
+      else assert.equal((await verification).schema.compatibility_result, 'compatible');
+    } finally {
+      await writeFile(file, canonicalJson(operation));
+    }
+    assert.deepEqual(purposes, ['qualification']);
+    const persisted = parseJson(await readFile(file));
+    assert.deepEqual(persisted.events, [...original.events,
+      { type: 'runtime-task-definition', task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:1' },
+      { type: 'runtime-task-started', task_arns: [`arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`], result: 'observed' },
+    ]);
+    assert.equal(persisted.result, 'succeeded');
+    assert.deepEqual(persisted.selection, original.selection);
+    assert.ok(mocked.calls.some(call => call[1] === 'deregister-task-definition'));
+    await execute(process.execPath, [fileURLToPath(new URL('./finalize-operation.mjs', import.meta.url))], { cwd: root,
+      env: { ...process.env, OPERATION_OUTCOME: 'success', OBSERVATION_OUTCOME: mode ? 'failure' : 'success' } });
+    const finalized = parseJson(await readFile(file));
+    assert.equal(finalized.result, mode ? 'failed' : 'succeeded');
+    assert.equal(finalized.final_observation, mode ? 'failure' : 'success');
+    assert.deepEqual(finalized.events, persisted.events);
   }
 });
