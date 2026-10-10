@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { finalizeOperationRecord } from './finalize-operation.mjs';
+import { canonicalJson, parseJson } from './json-contract.mjs';
 
 const fixture = operation => ({ record_type: 'anywear_infra_operation', schema_version: 2, operation,
   result: 'succeeded', recovery: 'not-required', events: [{ type: 'restore-stage', stage: 'final-readback', result: 'succeeded' }] });
@@ -31,4 +38,49 @@ test('any observed active final state requires final observation, while stopped 
     stopped.events.push({ type: 'final-beta-activity', platform_active: 'false', workload_active: 'false' });
     assert.equal(finalizeOperationRecord(stopped, 'success', 'skipped').result, 'succeeded');
   }
+});
+
+test('finalizer CLI rewrites strictly parsed state and ordinary records with accurate success, failure and recovery evidence', async () => {
+  const execute = promisify(execFile);
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-finalize-file-'));
+  await mkdir(path.join(directory, 'deployment-evidence'));
+  const file = path.join(directory, 'deployment-evidence/operation-record.json');
+  const script = fileURLToPath(new URL('./finalize-operation.mjs', import.meta.url));
+  const cases = [
+    ['state', 'success', 'skipped', 'succeeded', 'not-required', false],
+    ['state', 'failure', 'skipped', 'failed', 'not-required', false],
+    ['observe', 'success', 'success', 'succeeded', 'not-required', true],
+    ['observe', 'success', 'failure', 'failed', 'not-required', true],
+    ['observe', 'success', 'skipped', 'failed', 'not-required', true],
+    ['stop', 'success', 'skipped', 'succeeded', 'not-required', false],
+    ['stop', 'failure', 'skipped', 'failed', 'not-required', false],
+    ['restore-release', 'success', 'failure', 'failed', 'requires-explicit-recovery', true],
+    ['restore-release', 'cancelled', 'skipped', 'failed', 'requires-explicit-recovery', true],
+    ['close-admission', 'failure', 'skipped', 'failed', 'not-required', true],
+  ];
+  for (const [operation, operationOutcome, observationOutcome, result, recovery, active] of cases) {
+    const record = fixture(operation);
+    record.final_observation = operation === 'state' ? 'not-applicable' : 'pending';
+    record.events.push({ type: 'final-beta-activity', platform_active: String(active), workload_active: String(active) });
+    if (operation === 'state') record.state_observation = { qualification: 'not-applicable', admission: { tester_count: 2 } };
+    await writeFile(file, canonicalJson(record));
+    const parsed = parseJson(await readFile(file));
+    assert.equal(Object.getOwnPropertyDescriptor(parsed, 'final_observation').writable, false);
+    const run = () => execute(process.execPath, [script], { cwd: directory, timeout: 10_000,
+      env: { ...process.env, OPERATION_OUTCOME: operationOutcome, OBSERVATION_OUTCOME: observationOutcome } });
+    await run();
+    const finalized = parseJson(await readFile(file));
+    assert.equal(finalized.final_observation, operation === 'state' ? 'not-applicable' : observationOutcome);
+    assert.equal(finalized.result, result); assert.equal(finalized.recovery, recovery);
+    assert.deepEqual(finalized.events, record.events);
+    if (operation === 'state') assert.deepEqual(finalized.state_observation, record.state_observation);
+    const first = await readFile(file, 'utf8');
+    await run();
+    assert.equal(await readFile(file, 'utf8'), first);
+  }
+  const duplicate = '{"record_type":"anywear_infra_operation","schema_version":2,"operation":"state","result":"succeeded","result":"failed"}';
+  await writeFile(file, duplicate);
+  await assert.rejects(execute(process.execPath, [script], { cwd: directory,
+    env: { ...process.env, OPERATION_OUTCOME: 'success', OBSERVATION_OUTCOME: 'skipped' } }), /Duplicate JSON key/);
+  assert.equal(await readFile(file, 'utf8'), duplicate);
 });

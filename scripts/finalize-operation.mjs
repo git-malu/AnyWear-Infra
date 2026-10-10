@@ -25,5 +25,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const file = 'deployment-evidence/operation-record.json';
   let bytes;
   try { bytes = await readFile(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (bytes) await writeFile(file, canonicalJson(finalizeOperationRecord(parseJson(bytes), process.env.OPERATION_OUTCOME, process.env.OBSERVATION_OUTCOME)));
+  if (bytes) await writeFile(file, canonicalJson(finalizeOperationRecord(structuredClone(parseJson(bytes)), process.env.OPERATION_OUTCOME, process.env.OBSERVATION_OUTCOME)));
 }
