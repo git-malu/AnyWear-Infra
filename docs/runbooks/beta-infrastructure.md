@@ -172,6 +172,69 @@ read-only grants. Verification's read-only behavior comes from the reviewed
 command and its read-only transaction, including the authenticated inspection's
 `repeatable read read only` transaction; secret access alone does not enforce it.
 
+Issue #86's fixed cleanup capability lives in Workload as the versioned
+`beta-anywear-tester-cleanup` Standard state machine, with a 30-minute timeout.
+`CleanupStateMachineVersionArn` is the execution input; the unversioned
+`CleanupStateMachineArn` is for inventory. Its published definition binds both
+complete ECS task-definition ARNs, their selected image, roles, private network
+and commands. A latest task-family revision is never an execution input.
+Each task supplies a distinct 64-character SHA-256 ECS client token derived
+from the machine execution ARN and fixed verify/cleanup suffix. No general
+state retry reruns cleanup after an uncertain outcome.
+The envelope supplies schema version 1, string `operation_id`, `run_scope`,
+`request_sha256`, `service_commit_sha`, `service_image_digest` and serialized
+`cleanup_request`. Service identity must equal the deployed Workload parameters
+before verification starts. The original envelope is serialized before either
+task adds result data, then passed to Service's fixed
+`dist/ops/beta-cleanup-operation.js` wrapper for complete request validation.
+
+Both optimized ECS `.sync` results must identify the exact cluster and task
+definition, `LastStatus=STOPPED`, exactly one `OneShot` container, `ExitCode=0`
+and the selected image digest. Missing, nonzero, mismatched or ambiguous task
+results fail; verification failure prevents cleanup. Successful machine output
+is `anywear_beta_cleanup_tasks` schema version 1. It carries operation/hash/scope,
+selected Service identity, cluster/log group, both actual task and definition
+ARNs, stopped statuses, exit codes and fixed log-stream prefixes. It does not
+assert a database commit from task completion alone.
+
+Before Cognito deletion, E2E independently authenticates the exact immutable
+machine version/input, stopped ECS tasks/definitions and fixed CloudWatch stream.
+It requires one complete `ANYWEAR_BETA_CLEANUP_RESULT=` record from the selected
+Service wrapper after cleanup returns, with matching operation/hash/scope and
+Service identity plus `transaction_committed=true`. Duplicate, missing or
+truncated proof rejects the cleanup result. E2E receives only the additional
+fixed task-definition/cluster task reads and the two fixed log prefixes; it
+cannot register or run cleanup tasks, pass their roles or change data directly.
+Publishing this capability is source delivery only. A new selected Service
+release containing the wrapper, manager-coordinated active-Beta deployment,
+authenticated deployed version and E2E qualification remain separate gates.
+
+The named machine, immutable versions and fixed task revisions have CloudFormation
+`Retain` deletion and update-replacement policies. Retention preserves evidence;
+it does not authorize invocation of a previous capability. Invocation and the
+machine role's task-launch policy grant only the current exact version/revisions.
+Before updating the cleanup capability, its roles/tasks or selected Service,
+the manager must inventory matching executions, execution history and cluster
+tasks, then reconcile every running, unknown or unresolved result. No such
+operation may span a capability update: updating the shared machine role can
+revoke the preceding version's exact task grants. If recovery must invoke an
+older retained version after an update, first review an explicit bounded list of
+its exact version/task ARNs and their compatibility; no wildcard, latest-family
+fallback or retention-only claim supplies that authority. Retained resources
+remain in the manager's environment inventory for separately authorized cleanup.
+
+Immediately before every Platform or Workload CDK call, including start/stop and recovery,
+the runtime checks the exact synthesized cleanup output name and performs two
+matching complete bounded execution/task inventory scans. Active, pending,
+unknown, malformed, incomplete or changing inventories block deployment. The
+cleanup task-family filters use the existing cluster-scoped ECS read permission;
+IAM does not restrict that read to individual task families. Historical terminal
+failures are recorded for the manager's separate mandatory result reconciliation
+instead of permanently blocking every future deployment. A terminal failure is
+not proof of transaction rollback or successful cleanup recovery. First install
+requires stable Workload output and Original template absence plus cleanup-family
+task cessation; the manager also checks retained orphan machines outside the stack.
+
 ## Admission closure and coherent release recovery
 
 Both `close-admission` and `restore-release` require explicit `identity_phase=retired`,
