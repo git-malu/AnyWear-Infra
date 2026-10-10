@@ -1,0 +1,70 @@
+name: Beta tester admission
+run-name: Beta ${{ inputs.operation }} at ${{ github.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [tester-status, tester-add, tester-replace, close-admission]
+        required: true
+      selection_file:
+        description: Committed canonical selection in this Infra revision
+        default: selections/beta-baseline.json
+        type: string
+        required: true
+      selection_sha256:
+        description: Exact raw hash of the committed selection
+        type: string
+        required: true
+      stack_sources_file:
+        description: Reviewed per-stack producer source JSON path
+        type: string
+        required: true
+      stack_sources_sha256:
+        description: Exact raw hash of the reviewed stack source file
+        type: string
+        required: true
+      tester_emails:
+        description: Explicit email JSON array for tester-add or tester-replace; otherwise []
+        type: string
+        default: '[]'
+permissions:
+  contents: read
+concurrency:
+  group: anywear-infra-runtime
+  cancel-in-progress: false
+jobs:
+  operation:
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_DEPLOY == 'true'
+    environment: beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+      CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      BILLING_REGION: us-east-1
+      ENABLE_BETA_DEPLOY: ${{ vars.ENABLE_BETA_DEPLOY }}
+      INFRA_OPERATION: ${{ inputs.operation }}
+      TESTER_EMAILS: ${{ inputs.tester_emails }}
+      INFRA_IDENTITY_PHASE: retired
+      INFRA_RETENTION_PROTECTION: 'true'
+      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
+      SELECTION_FILE: ${{ inputs.selection_file }}
+      SELECTION_SHA256: ${{ inputs.selection_sha256 }}
+      STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
+      STACK_SOURCES_SHA256: ${{ inputs.stack_sources_sha256 }}
+      GH_TELEMETRY: disabled
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/beta-operation
+        with:
+          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}

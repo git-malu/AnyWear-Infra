@@ -1,28 +1,17 @@
-name: Reviewed Beta infrastructure operation
-run-name: Beta ${{ inputs.operation }} · ${{ github.sha }}
+name: Qualified Beta observation
+run-name: Beta observe at ${{ github.sha }}
 on:
   workflow_dispatch:
     inputs:
-      operation:
-        type: choice
-        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-workload, migrate, verify, start, stop, observe, tester-status, tester-add, tester-replace, close-admission, restore-release]
-        required: true
       selection_file:
         description: Committed canonical selection in this Infra revision
         default: selections/beta-baseline.json
         type: string
         required: true
       selection_sha256:
+        description: Exact raw hash of the committed selection
         type: string
         required: true
-      identity_phase:
-        type: choice
-        options: [legacy, roles-added, retired]
-        default: legacy
-        required: true
-      retention_protection:
-        type: boolean
-        default: false
       stack_sources_file:
         description: Reviewed per-stack producer source JSON path
         type: string
@@ -31,10 +20,6 @@ on:
         description: Exact raw hash of the reviewed stack source file
         type: string
         required: true
-      tester_emails:
-        description: Explicit email JSON array, normalized before execution
-        type: string
-        default: '[]'
 permissions:
   contents: read
 concurrency:
@@ -57,11 +42,10 @@ jobs:
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       BILLING_REGION: us-east-1
       ENABLE_BETA_DEPLOY: ${{ vars.ENABLE_BETA_DEPLOY }}
-      INFRA_OPERATION: ${{ inputs.operation }}
-      TESTER_EMAILS: ${{ inputs.tester_emails }}
-      INFRA_IDENTITY_PHASE: ${{ inputs.identity_phase }}
-      INFRA_RETENTION_PROTECTION: ${{ inputs.retention_protection }}
-      INFRA_DEPLOY_ROLE_ARN: ${{ vars.INFRA_DEPLOY_ROLE_ARN }}
+      INFRA_OPERATION: observe
+      TESTER_EMAILS: '[]'
+      INFRA_IDENTITY_PHASE: retired
+      INFRA_RETENTION_PROTECTION: 'true'
       INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
       SELECTION_FILE: ${{ inputs.selection_file }}
       SELECTION_SHA256: ${{ inputs.selection_sha256 }}
@@ -73,69 +57,6 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/beta-operation
         with:
-          node-version: 24
-      - run: npm ci
-      - name: Validate committed source, selection and stack provenance before credentials
-        run: |
-          mkdir -p deployment-evidence
-          node scripts/check-operation.mjs
-          node scripts/check-stack-sources.mjs
-      - name: Check native release verification CLI before credentials
-        run: |
-          gh --version | tee deployment-evidence/github-cli-version.txt
-          gh release verify --format json --help > /dev/null
-          gh release verify-asset --format json --help > /dev/null
-      - name: Create read-only private artifact token
-        id: app
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: 3346940
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: git-malu
-          repositories: AnyWear-Service
-          permission-contents: read
-          permission-actions: read
-          permission-attestations: read
-      - name: Execute selected operation with distinct OIDC principals
-        id: operation
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: node scripts/runtime-operation.mjs
-      - name: Configure observation role
-        if: steps.operation.outputs.beta_active == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Observe final authenticated deployment
-        id: observation
-        if: steps.operation.outputs.beta_active == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: |
-          node scripts/check-operation.mjs
-          node scripts/observe-deployment.mjs --selection "$SELECTION_FILE" --selection-sha256 "$SELECTION_SHA256" --stack-sources deployment-evidence/stack-sources.json --output deployment-evidence/deployment-record.json --trusted-infra-root "$GITHUB_WORKSPACE" --infra-sha "$GITHUB_SHA"
-      - name: Preserve exact final deployment record
-        if: steps.operation.outputs.beta_active == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence/deployment-record.json
-          retention-days: 90
-          if-no-files-found: error
-      - name: Record final observation outcome
-        if: always()
-        env:
-          OPERATION_OUTCOME: ${{ steps.operation.outcome }}
-          OBSERVATION_OUTCOME: ${{ steps.observation.outcome }}
-        run: node scripts/finalize-operation.mjs
-      - name: Preserve operation and automatic recovery evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence/operation-record.json
-          retention-days: 90
-          if-no-files-found: warn
+          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}

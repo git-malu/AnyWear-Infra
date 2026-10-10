@@ -49,7 +49,17 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   start stacks or reopen admission; inactive CDK deploys use `--no-rollback` so
   native CFN failure cannot silently reactivate resources; preserve actual state and select start
   separately. Requested flags do not prove stopped state after CFN rollback.
-- Use `runtime.yml` for ordinary Beta operations. Initial `appScope=foundation`
+- Use the six bounded Beta entry points in the [operations catalog](README.md#operations):
+  `runtime.yml` is fixed task-mutating qualified observation for E2E compatibility;
+  `beta-observe.yml` is read-only state with restricted STS credentials and works
+  with activation disabled; lifecycle, deployment/recovery, schema and admission
+  each reject cross-family operations before credentials. Only the manager may
+  dispatch lifecycle or change Beta switches; start/reactivation requires explicit
+  user consent. Preserve session restrictions for final qualification, actual
+  workflow record identity and the existing v2 E2E producer boundary. Existing
+  OIDC trust is repository/environment scoped, not workflow scoped; source/session
+  checks do not narrow inherited task-role or downstream CDK authority.
+  Initial `appScope=foundation`
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.

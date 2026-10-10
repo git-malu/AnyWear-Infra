@@ -86,7 +86,8 @@ function assertStatusMatchesAdmission(status, state) {
 
 export async function runCloseAdmission({ io, selector, manifest, schema, infraSha, env = process.env, verifyRuntime = runRuntimeVerification }) {
   // Source rejection must precede any authenticated activity or lifecycle task.
-  if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra') throw new Error('Protected Infra admission executor required');
+  if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra'
+    || env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main') throw new Error('Protected Infra admission executor required');
   assertVerificationExecutor(infraSha, env);
   try {
     const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];

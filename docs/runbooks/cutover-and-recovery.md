@@ -51,7 +51,7 @@ this same external mode for all CDK construction, avoiding a later collision.
 This creates the six dedicated roles while retaining the old Beta trust/grants.
 Read back roles, immutable OIDC subjects and effective policies before configuring
 consumers. Keep the old executor usable until its jobs and rollback obligations
-have ended. Ordinary `runtime.yml` deployment later requires a sealed selection;
+have ended. Ordinary `beta-deploy.yml` deployment later requires a sealed selection;
 that requirement does not apply to this explicit Foundation-only operator path.
 `appScope=billing` similarly synthesizes only Billing and requires its separately
 assigned `us-east-1` window.
@@ -72,7 +72,8 @@ permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 
 The [v2 committed selection](../contracts/release-selection.md) is the one input
 authority. A source PR reviews the exact release/component identities and hashes.
-The ordinary [runtime workflow](../../.github/workflows/runtime.yml) automatically
+All six [bounded Beta workflows](beta-infrastructure.md#entry-points), including
+the read-only observer, automatically
 checks actual Service inputs before AWS credentials; source checks themselves
 perform no private native read or deployment. E2E uses the same reviewed verifier
 with its actual immutable Infra checkout, rather than reconstructing a selector
@@ -93,9 +94,12 @@ before and after verification. Re-read immutable release identities at the end.
 Unavailable or changed evidence fails closed.
 
 The protected Beta job first checks exact main/workflow/account/region, operation,
-selection, explicit identity/retention and stack sources. It then creates a scoped
+selection and stack sources, with explicit identity/retention only for CDK
+families and fixed protected source context for other entries. It then creates a scoped
 read-only App token for AnyWear-Service contents/actions/attestations, verifies
-the selected release, and only then obtains distinct AWS OIDC principals. The CLI
+the selected release, and only then obtains operation-specific restricted AWS
+OIDC sessions. Final qualification also uses a restricted session, not a role-wide
+credential action. The CLI
 uses a fresh external empty config and fixes telemetry off, excluding ambient
 credentials, debug/config/Git/Node overrides. Source CI pins CLI 2.101.0 and
 reproduces its original relative device-id write in a credential-free isolated
@@ -242,6 +246,16 @@ must already be reviewed. Failed stop never implicitly restores network, Workloa
 actual outputs/statuses and admission state, preserve partial/stopped state, and
 select a separately reviewed start after resolving the failure. Native CFN
 rollback may leave active or mixed state; requested false flags are not evidence.
+
+Current dispatches use `beta-lifecycle.yml` for manager-owned start/stop and
+`beta-deploy.yml` for maintenance or `restore-release`. Restore never migrates,
+starts stopped stacks or reopens admission; stop failures preserve actual partial
+state and still require a separate explicit start decision. Inactive CDK deploys
+retain `--no-rollback`. A separately coordinated fixed `runtime.yml` observation
+produces the E2E-compatible v2 record after changes; family observations identify
+their actual workflow and are not accepted as legacy E2E inputs. Read-only
+`beta-observe.yml` remains available with activation false, including recovery
+diagnosis, and cannot start tasks or qualify database/schema state.
 
 For #54, the bounded practical recovery was executed as [stop
 37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)

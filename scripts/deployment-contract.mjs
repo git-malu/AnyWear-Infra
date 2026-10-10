@@ -17,7 +17,7 @@ const migrations = (rows, label) => {
     previous = row.created_at; ids.add(row.id);
   }
 };
-export function validateSchemaEvidence(schema) {
+export function validateSchemaEvidence(schema, { infraWorkflows = ['.github/workflows/runtime.yml'] } = {}) {
   exact(schema, ['selected_journal_sha256', 'observed_applied_journal_sha256', 'selected_migration_ids',
     'applied_migration_ids', 'selected_current_version', 'minimum_schema_version', 'minimum_migration_count', 'applied_schema_version',
     'compatibility_result', 'verification'], 'schema evidence');
@@ -42,13 +42,13 @@ export function validateSchemaEvidence(schema) {
   exact(schema.verification.executor, ['repository', 'sha', 'workflow_path', 'run_id', 'run_attempt'], 'verification executor');
   const executor = schema.verification.executor;
   if (![INFRA_REPOSITORY, 'git-malu/AnyWear-E2E'].includes(executor.repository)
-    || !(executor.repository === INFRA_REPOSITORY ? ['.github/workflows/runtime.yml'] : ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml']).includes(executor.workflow_path)) throw new Error('Untrusted verification executor');
+    || !(executor.repository === INFRA_REPOSITORY ? infraWorkflows : ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml']).includes(executor.workflow_path)) throw new Error('Untrusted verification executor');
   matches(executor.sha, SHA, 'executor source'); integer(executor.run_id, 'executor run'); integer(executor.run_attempt, 'executor attempt');
   matches(schema.verification.task_arn, /^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32}$/, 'verification task');
   matches(schema.verification.task_definition_arn, /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/beta-anywear-artifact-verify:[1-9][0-9]*$/, 'verification task definition');
   return schema;
 }
-export function validateSnapshot(snapshot) {
+export function validateSnapshot(snapshot, options) {
   exact(snapshot, ['stacks', 'observed', 'schema'], 'observation');
   if (!Array.isArray(snapshot.stacks) || snapshot.stacks.length !== 4) throw new Error('Four deployed stacks required');
   const names = new Set();
@@ -77,7 +77,7 @@ export function validateSnapshot(snapshot) {
   }
   exact(observed.endpoints, ['api', 'client'], 'endpoints');
   for (const url of Object.values(observed.endpoints)) matches(url, /^https:\/\/[a-z0-9]+\.cloudfront\.net$/, 'CloudFront endpoint');
-  validateSchemaEvidence(snapshot.schema);
+  validateSchemaEvidence(snapshot.schema, options);
   equal(snapshot.schema.verification.service_sha, observed.service_sha, 'Verified image producer');
   equal(snapshot.schema.verification.image_digest, observed.image_digest, 'Verified digest');
   return snapshot;

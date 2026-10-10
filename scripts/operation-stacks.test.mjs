@@ -9,6 +9,7 @@ import { createRuntimeIo } from './runtime-operation.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
 import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
+import { workflowOperations } from './operation-boundaries.mjs';
 
 test('source provenance binds every stack mutated by deployment and lifecycle operations', () => {
   assert.deepEqual(changedStackNames('deploy-foundation'), ['AnyWearFoundationStack']);
@@ -33,7 +34,7 @@ async function runtimeDeployFixture() {
   await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
   const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', GITHUB_REF: 'refs/heads/main',
     GITHUB_SHA: await git(['rev-parse', 'HEAD']), GITHUB_EVENT_NAME: 'workflow_dispatch',
-    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-deploy.yml@refs/heads/main',
     AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: 'deploy-workload',
     INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector) };
   const revision = { digest: selector.image.digest, commit: selector.image.service_sha,
@@ -105,6 +106,7 @@ test('Platform and Workload replacements never invoke CDK when a cleanup executi
     },
   });
   for (const name of ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']) {
+    env.INFRA_OPERATION = name.includes('Platform') ? 'deploy-platform' : 'deploy-workload';
     await assert.rejects(io.deploy(name, true, revision), /cleanup resource inventory/);
   }
   assert.equal(deploys, 0);
@@ -112,7 +114,8 @@ test('Platform and Workload replacements never invoke CDK when a cleanup executi
 
 test('runtime status ignores shell JSON and binds actual stopped task definition and CloudWatch status', async () => {
   const { root, selector, env, revision } = await runtimeDeployFixture();
-  Object.assign(env, { INFRA_OPERATION: 'close-admission', TESTER_EMAILS: '[]' });
+  Object.assign(env, { INFRA_OPERATION: 'close-admission', TESTER_EMAILS: '[]',
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main' });
   const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'c'.repeat(32)}`;
   const taskDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:9';
   const actualStatus = { intake_open: false, admission_suspended: true, tester_count: 4, database_policy_matches_ssm: false };
@@ -142,6 +145,8 @@ test('runtime status ignores shell JSON and binds actual stopped task definition
 
 test('parallel admission reads share one dedicated credential request and failed tasks retain exact identities', async () => {
   const { root, selector, env, revision } = await runtimeDeployFixture();
+  Object.assign(env, { INFRA_OPERATION: 'close-admission', TESTER_EMAILS: '[]',
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main' });
   const record = { events: [] }; let assumptions = 0; let awsCalls = 0;
   const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'d'.repeat(32)}`;
   const taskDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:10';
@@ -183,7 +188,7 @@ test('restart map resolves touched executor rows and preserves historical produc
   const runGuard = async (operation, hash = sha256(mapBytes)) => execute(process.execPath, ['scripts/check-stack-sources.mjs'], {
     cwd: root, timeout: 30_000, env: { ...process.env, GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
       GITHUB_REF: 'refs/heads/main', GITHUB_SHA: await git(['rev-parse', 'HEAD']), GITHUB_EVENT_NAME: 'workflow_dispatch',
-      GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
+      GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/${Object.keys(workflowOperations).find(file => workflowOperations[file].includes(operation))}@refs/heads/main`,
       AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: operation,
       INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector),
       TESTER_EMAILS: '[]',
@@ -253,7 +258,7 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
   await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
   const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', GITHUB_REF: 'refs/heads/main',
     GITHUB_SHA: await git(['rev-parse', 'HEAD']), GITHUB_EVENT_NAME: 'workflow_dispatch',
-    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-lifecycle.yml@refs/heads/main',
     AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: 'stop',
     INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector) };
   const revision = { parameters: { ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha,

@@ -1,6 +1,8 @@
 # Reviewed Beta infrastructure operations
 
-This runbook describes the source entry points for [AnyWear #54](https://github.com/git-malu/AnyWear/issues/54).
+This runbook describes the bounded source entry points delivered by
+[AnyWear #104](https://github.com/git-malu/AnyWear/issues/104), retaining the
+independent historical cutover evidence from [AnyWear #54](https://github.com/git-malu/AnyWear/issues/54).
 The verified cutover assigns Infra the sole operational Beta deployment queue.
 AnyWear-Service remains the application, migration, verification and immutable
 artifact publisher. Account `650880818323` uses `ap-east-1` for the application
@@ -46,8 +48,9 @@ source-disabled Production workflow.
 Environment configuration supplies account `650880818323`, region `ap-east-1`,
 `INFRA_DEPLOY_ROLE_ARN=arn:aws:iam::650880818323:role/beta-infra-deploy-role`,
 `INFRA_RUNTIME_ROLE_ARN=arn:aws:iam::650880818323:role/beta-infra-runtime-role` and
-the activation gate. Dispatch supplies the operation, committed selection file/raw
-hash, stack-source file/raw hash, identity phase and retention boolean explicitly.
+the activation gate. Every dispatch supplies committed selection file/raw hash
+and stack-source file/raw hash. Operation, identity/retention and tester inputs
+are exposed only by the relevant family in the [entry-point table](#entry-points).
 The canonical [selection schema v2](../contracts/release-selection.md) binds full
 independent Service component producers, release/asset IDs, hashes and ECR digest.
 
@@ -100,10 +103,43 @@ or authorization to activate Beta.
 
 ## Entry points
 
-[runtime.yml](../../.github/workflows/runtime.yml) runs on manual dispatch, reviewed
-main, the `beta` environment and an open activation gate. It validates committed source/selection and actual Service release inputs
-before AWS credentials, then assumes dedicated deploy/runtime roles
-as needed. All its operations share the Infra queue.
+All six workflows use manual dispatch, exact reviewed main, the `beta` environment
+and shared non-cancelling queue `anywear-infra-runtime`. Their local composite
+[executor](../../.github/actions/beta-operation/action.yml) rejects cross-family
+operations, verifies committed selection/stack-source hashes, probes native CLI
+capability before App credentials, and verifies the complete immutable Service
+release/publisher before AWS credentials. All task/deployment entries require
+`ENABLE_BETA_DEPLOY=true`; the read-only observer remains available when false.
+The environment restricts branches to main; no required-reviewer rule is currently
+configured. Manager approval/writer allocation remains a separate operational gate.
+
+| Workflow | Dispatch operation | Additional inputs / AWS boundary |
+| --- | --- | --- |
+| [runtime.yml](../../.github/workflows/runtime.yml) | Fixed `observe`; no operation input | Qualified observation with artifact-verification task; legacy E2E producer |
+| [beta-observe.yml](../../.github/workflows/beta-observe.yml) | Fixed `state`; no operation input | CFN and SSM read-only session; no tasks/PassRole/deploy role or schema assertion |
+| [beta-lifecycle.yml](../../.github/workflows/beta-lifecycle.yml) | `start`, `stop` | Explicit required identity phase/retention; deploy and bounded lifecycle/schema task sessions |
+| [beta-deploy.yml](../../.github/workflows/beta-deploy.yml) | Four `deploy-*`, `restore-release` | Explicit required identity phase/retention; stack-specific deployment and selected verification tasks |
+| [beta-schema.yml](../../.github/workflows/beta-schema.yml) | `migrate`, `verify` | Selected corresponding task only |
+| [beta-admission.yml](../../.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `close-admission` | Only entry accepting `tester_emails`; verification/lifecycle tasks, no CDK |
+
+Every dispatch requires selection file/raw hash and stack-source file/raw hash.
+Non-CDK entries omit identity/retention inputs and fix `retired`/`true` source
+context, which does not change CFN or prove observed IAM/retention state. CDK
+entries accept explicit values without silently choosing a legacy/unprotected
+context. Only the Kanban manager dispatches start/stop or changes activation;
+starting/reactivating Beta requires explicit user consent. Source delivery alone
+does not grant an environment writer or establish runtime acceptance.
+
+Every STS assumption includes an inline session restriction of at most 2048
+characters. Task register/run/PassRole are limited to the operation's exact
+families/roles; source guards also validate helper command/action. Direct writes
+to ECR/SSM and unrelated tasks/deployments are rejected. Final qualification uses
+a distinct session allowing only `artifact-verify` plus verification/execution
+PassRole. Inherited credentials/profile/config are discarded. No role/grant/trust
+or CDK resource is added. Existing OIDC trust binds Infra/environment, not workflow;
+these reviewed source/session checks do not enforce workflow identity in IAM or
+restrict the existing task roles' application privileges. Downstream CDK authority
+remains unchanged. Unsupported reads still fail against existing role grants.
 Every runtime CDK call explicitly selects `legacyRoleOwnership=external` for
 this account. Foundation never constructs or adopts the external legacy roles.
 The `managed` source/simulation mode is used only by the independently labeled
@@ -120,7 +156,8 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
 | `start` | Restore network, suspend admission, run the pinned migration/verification sequence, restore Workload and health, then keep admission suspended |
 | `stop` | Suspend admission, drain, stop Workload, verify task cessation, then stop paid Platform network; require both stopped outputs and closed admission readback; preserve failure state |
-| `observe` | Collect authenticated active-Beta deployment evidence |
+| `observe` | Collect authenticated active-Beta deployment evidence by launching a verification task; not AWS read-only |
+| `state` | Record Platform/Workload status/activity and sanitized SSM admission state; no DB/schema/policy qualification |
 | `tester-status` | Read admission/tester status through the selected existing Service lifecycle command |
 | `tester-add`, `tester-replace` | Update the exact normalized tester list using the selected lifecycle command, with public intake closed |
 | `close-admission` | Verify the deployed selected image/schema, suspend admission through its pinned lifecycle command, then prove DB/SSM consistency and preserve the observed tester list; keep both stacks active |
@@ -129,18 +166,19 @@ A dispatch uses reviewed repository files and explicit inputs, for example:
 
 ```sh
 gh workflow run runtime.yml --repo git-malu/AnyWear-Infra --ref main \
-  -f operation=observe \
   -f selection_file=selections/cutover.json -f selection_sha256="$SELECTION_SHA256" \
-  -f identity_phase=roles-added -f retention_protection=true \
   -f stack_sources_file=stack-sources/cutover.json -f stack_sources_sha256="$STACK_SOURCES_SHA256"
 ```
 
-Use the actual reviewed filenames, phase and retention setting for the selected operation. Initial role bootstrap uses the [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
+For state-only observation use `beta-observe.yml` with the same four inputs. For
+other families select their workflow/operation, adding identity/retention only
+for lifecycle/deploy and tester payload only for admission. Use the actual
+reviewed filenames, phase and retention setting. Initial role bootstrap uses the [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
 because no sealed Service release is needed to create the artifact publisher role.
 
 ## Tester and cleanup ownership
 
-Tester dispatch supplies `tester_emails` as a JSON string. Input normalization
+Admission dispatch alone supplies `tester_emails` as a JSON string. Input normalization
 occurs before credentials; operation evidence records the effective normalized
 payload hash for the explicit action. `tester-status` requires the empty array `[]`.
 Add/replace use exact normalized email addresses, at most 50 users and the bounded
@@ -228,8 +266,12 @@ the runtime checks the exact synthesized cleanup output name and performs two
 matching complete bounded execution/task inventory scans. Active, pending,
 unknown, malformed, incomplete or changing inventories block deployment. The
 cleanup task-family filters use the existing cluster-scoped ECS read permission;
-IAM does not restrict that read to individual task families. Historical terminal
-failures are recorded for the manager's separate mandatory result reconciliation
+IAM does not restrict that read to individual task families. The family executor
+admits the exact cleanup machine/execution read ARNs only
+for Platform/Workload deployment, recovery and lifecycle operation sessions.
+Read-only state and final qualification sessions receive no Step Functions
+permissions; neither can replace the cleanup capability or invoke cleanup.
+Historical terminal failures are recorded for the manager's separate mandatory result reconciliation
 instead of permanently blocking every future deployment. A terminal failure is
 not proof of transaction rollback or successful cleanup recovery. First install
 requires stable Workload output and Original template absence plus cleanup-family
@@ -237,8 +279,10 @@ task cessation; the manager also checks retained orphan machines outside the sta
 
 ## Admission closure and coherent release recovery
 
-Both `close-admission` and `restore-release` require explicit `identity_phase=retired`,
-`retention_protection=true` and `tester_emails=[]`. Here `[]` means no tester mutation
+Both `close-admission` and `restore-release` require `identity_phase=retired`,
+`retention_protection=true` source context. Admission fixes this context;
+deploy recovery requires the explicit inputs. `close-admission` accepts only
+`tester_emails=[]`; deployment does not expose that payload. Here `[]` means no tester mutation
 payload; it says nothing about the current SSM allowlist. Preserve the complete
 observed membership, `intake_open=false` and suspended admission after any temporary
 qualification policy window. Closing admission does not drain existing backlog.
@@ -255,10 +299,11 @@ service scaling, migration, drain or implicit admission reopening occurs.
 
 For a source-only admission operation, the committed
 [runtime-only map](../../stack-sources/beta-runtime-only.json) retains all four
-actual producers, including Platform/Workload `bafc3072ea6aee2d5193009c014cb1cf04b43848`
-from the [successful restart](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281)
-(attempt `1`, deployment artifact `11598145428`). Its deployment-record SHA-256 is
-`13471cd8449d29190d599b2fa4eb302bd7531691fb2085ee23792bb674cac238`.
+recorded producers, including Platform/Workload `ada13617da0280ca9a7da0798577db286e714edc`
+from [S1 release restore](https://github.com/git-malu/AnyWear-Infra/actions/runs/37970047230)
+(attempt `1`, deployment artifact `11635817118`). The earlier successful restart
+and its original deployment record remain historical evidence, not the current
+map's Platform/Workload source.
 Foundation remains Infra `88679b61630bc2344258cafb0d35b4d0b02e3a0d` and Billing
 remains Service `58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759`.
 Its current executor can be newer without relabeling unchanged stack producers.
@@ -311,13 +356,31 @@ successful recovery does not turn the failed operation into success. Failures
 before record creation can leave no artifact; preserve Actions logs and the
 manager record rather than manufacture a successful operation record.
 
-For active Beta, `observe-deployment.mjs` writes deployment v2 from actual Original
+For active Beta, the fixed `runtime.yml` observation writes the unchanged
+`anywear_infra_deployment` v2 from actual Original
 CFN templates, Lambda CodeSha/stable configuration, running ECS definitions and
 digests, queue settings, Client metadata/endpoints and a bounded read-only schema
 task. It hashes template content, not AWS CLI response wrappers. The queue hash
 proves only observed queue settings; full runtime policy and applied DB migrations
 come from the exact-image verification task. The HTTP minimum-schema value does
 not prove the applied DB version.
+
+Other task families retain the same strict final snapshot but emit
+`anywear_infra_family_observation` with their actual workflow path, not fabricated
+`runtime.yml` provenance. Existing E2E accepts only the legacy v2 producer;
+consumer expansion needs a separately reviewed pin/contract. Run fixed qualified
+observation after coordinated family changes to produce that compatible input.
+Offline source checks do not establish new runtime-interface acceptance. After
+integration, the manager must coordinate gate-disabled read-only observation,
+fixed qualified observation with restricted sessions against the retained tuple,
+and E2E acceptance of the exact resulting legacy record. No AWS resource/template
+deployment is implied by this source split.
+The read-only observer emits `anywear_infra_state` inside its operation artifact,
+records final activity/status plus sanitized admission counts/hashes, and labels
+qualification Not Applicable. Failed reads retain known partial state and mark
+the operation failed. This record never claims DB policy equality or applied
+schema. Observation remains possible while stopped or partially stopped and
+never changes activation or starts tasks.
 
 The unchanged image's one-shot inspection embeds Infra's reviewed read-only
 command; it does not assume newly added Service code. Evidence binds command hash,

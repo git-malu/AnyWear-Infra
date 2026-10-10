@@ -1,12 +1,14 @@
-import { readFile } from 'node:fs/promises';
 import { sha256, parseJson, exact, canonicalJson, matches, SHA, integer } from './json-contract.mjs';
 import { assertSchemaCompatibility } from './vendor/service-artifact-contract.mjs';
 import { INFRA_REPOSITORY, region } from './deployment-contract.mjs';
+import { qualifiedWorkflowPaths } from './operation-boundaries.mjs';
+import { runtimeCommandBytes } from './runtime-command.mjs';
+export { runtimeCommandBytes } from './runtime-command.mjs';
 
 export function assertVerificationExecutor(infraSha, env = process.env) {
   matches(infraSha, SHA, 'reviewed verification Infra source'); matches(env.GITHUB_SHA, SHA, 'verification executor source');
   integer(Number(env.GITHUB_RUN_ID), 'verification run'); integer(Number(env.GITHUB_RUN_ATTEMPT), 'verification attempt');
-  const paths = env.GITHUB_REPOSITORY === INFRA_REPOSITORY ? ['.github/workflows/runtime.yml']
+  const paths = env.GITHUB_REPOSITORY === INFRA_REPOSITORY ? qualifiedWorkflowPaths
     : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E' ? ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml'] : [];
   if (!paths.some(file => env.GITHUB_WORKFLOW_REF === `${env.GITHUB_REPOSITORY}/${file}@refs/heads/main`)
     || env.GITHUB_REF !== 'refs/heads/main' || env.AWS_ACCOUNT_ID !== '650880818323' || env.AWS_REGION !== region
@@ -88,16 +90,4 @@ export async function runRuntimeVerification({ io, outputs, selector, manifest, 
       if (actual.tasks?.[0]?.lastStatus === 'STOPPED') { check(); await io.aws(['ecs', 'deregister-task-definition', '--task-definition', taskDefinitionArn]); }
     }
   }
-}
-export async function runtimeCommandBytes() {
-  // Embed this exact shared contract in the unchanged image's one-shot command;
-  // no newly added Service module/path is assumed. Hash the entire command.
-  const shared = (await readFile(new URL('./json-contract.mjs', import.meta.url), 'utf8'))
-    .replace("import { createHash } from 'node:crypto';", "const { createHash } = require('node:crypto');")
-    .replace(/^export /gm, '');
-  const command = await readFile(new URL('../.github/scripts/read-only-runtime.cjs', import.meta.url), 'utf8');
-  const inner = `${shared}\n${command}`;
-  // A parent-enforced OS process timeout also covers synchronous reads/hashing;
-  // an event-loop timer alone cannot enforce that part of a total deadline.
-  return Buffer.from(`const {spawnSync}=require('node:child_process');\nconst result=spawnSync(process.execPath,['-e',${JSON.stringify(inner)}],{timeout:30000,killSignal:'SIGKILL',maxBuffer:1048576});\nif(result.error||result.status!==0){console.error('Read-only evidence process deadline/result failed');process.exit(1);}\nprocess.stdout.write(result.stdout);\n`);
 }
