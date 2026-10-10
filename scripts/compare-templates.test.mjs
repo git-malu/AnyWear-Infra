@@ -10,6 +10,7 @@ const workload = (desired = 2, min = 2, service = 'beta-anywear-api') => ({
       Type: 'AWS::ApplicationAutoScaling::ScalableTarget', Properties: { MinCapacity: min },
     },
   },
+  Parameters: {},
   Outputs: {},
 });
 
@@ -50,16 +51,23 @@ const sizedTask = (cpu = '512', memory = '1024', family = 'beta-anywear-api', id
       ContainerDefinitions: [{ Name: 'ApiContainer', HealthCheck: { StartPeriod: 30 } }],
     } },
   },
+  Parameters: {},
   Outputs: {},
 });
 const betaWorkload = { stage: 'beta', stackName: 'AnyWearWorkloadStack-beta' };
+const profiledTask = (family = 'beta-anywear-api', id = apiTaskId) => ({
+  ...sizedTask({ 'Fn::If': ['BetaApiS2', '256', '512'] }, { 'Fn::If': ['BetaApiS2', '512', '1024'] }, family, id),
+  Parameters: { BetaApiSizingProfile: { Type: 'String', Default: 's1', AllowedValues: ['s1', 's2-api'],
+    Description: 'Retained Beta API sizing profile; s2-api is an unqualified Issue #95 candidate' } },
+  Conditions: { BetaApiS2: { 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] } },
+});
 
 test('allows only the complete S2 Beta API size candidate in each identity phase', () => {
   for (const phase of ['legacy', 'roles-added', 'retired']) {
-    const result = compareTemplates(sizedTask(), sizedTask('256', '512'), { ...betaWorkload, phase });
+    const result = compareTemplates(sizedTask(), profiledTask(), { ...betaWorkload, phase });
     assert.equal(result.accepted, true);
     assert.deepEqual(result.allowed.map(({ path }) => path), [
-      `/Resources/${apiTaskId}/Properties/Cpu`, `/Resources/${apiTaskId}/Properties/Memory`,
+      `/Resources/${apiTaskId}/Properties/Cpu`, `/Resources/${apiTaskId}/Properties/Memory`, '/Parameters/BetaApiSizingProfile', '/Conditions',
     ]);
   }
 });
@@ -69,6 +77,17 @@ test('rejects incomplete or arbitrary S2 size changes and nonbaseline sizes', ()
     assert.equal(compareTemplates(sizedTask(), sizedTask(cpu, memory), betaWorkload).accepted, false);
   }
   assert.equal(compareTemplates(sizedTask('1024', '2048'), sizedTask('256', '512'), betaWorkload).accepted, false);
+  for (const mutate of [
+    (task) => task.Resources[apiTaskId].Properties.Cpu = '256',
+    (task) => task.Resources[apiTaskId].Properties.Memory['Fn::If'][2] = '2048',
+    (task) => task.Parameters.BetaApiSizingProfile.Default = 's2-api',
+    (task) => task.Parameters.BetaApiSizingProfile.AllowedValues.push('other'),
+    (task) => task.Conditions.BetaApiS2['Fn::Equals'][1] = 's1',
+    (task) => task.Conditions.Other = { 'Fn::Equals': ['x', 'x'] },
+  ]) {
+    const after = profiledTask(); mutate(after);
+    assert.equal(compareTemplates(sizedTask(), after, betaWorkload).accepted, false);
+  }
 });
 
 test('rejects Worker/helper size changes and an unrelated logical ID under S2', () => {
@@ -78,7 +97,7 @@ test('rejects Worker/helper size changes and an unrelated logical ID under S2', 
     ['beta-anywear-api', 'OtherApiTaskDefinitionABCDEF12'],
   ]) {
     assert.equal(compareTemplates(sizedTask('512', '1024', family, id),
-      sizedTask('256', '512', family, id), betaWorkload).accepted, false);
+      profiledTask(family, id), betaWorkload).accepted, false);
   }
 });
 
@@ -88,19 +107,19 @@ test('rejects S2 size changes outside the exact Beta Workload stack', () => {
     { stage: 'dev', stackName: 'AnyWearWorkloadStack-dev' },
     { stage: 'beta', stackName: 'AnyWearPlatformStack-beta' },
   ]) {
-    assert.equal(compareTemplates(sizedTask(), sizedTask('256', '512'), options).accepted, false);
+    assert.equal(compareTemplates(sizedTask(), profiledTask(), options).accepted, false);
   }
 });
 
 test('does not hide container, output or resource drift alongside the S2 size pair', () => {
   const before = sizedTask();
-  const after = sizedTask('256', '512');
+  const after = profiledTask();
   after.Resources[apiTaskId].Properties.ContainerDefinitions[0].HealthCheck.StartPeriod = 1;
   after.Outputs.ApiBaseUrl = { Value: 'https://changed.example' };
   after.Resources.UnrelatedResourceABCDEF12 = { Type: 'AWS::S3::Bucket' };
   const result = compareTemplates(before, after, betaWorkload);
   assert.equal(result.accepted, false);
-  assert.equal(result.allowed.length, 2);
+  assert.equal(result.allowed.length, 4);
   assert.equal(result.rejected.length, 3);
 });
 

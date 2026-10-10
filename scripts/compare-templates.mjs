@@ -141,17 +141,29 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         && difference.path === `/Resources/${id}/Properties/MinCapacity`
         && difference.before === 2 && difference.after === 1
         && id.includes('ApiServiceTaskCountTarget')));
-    // Accept only the complete S2 API size pair on its existing logical ID.
-    // A partial size change or any other task/container drift still fails.
+    // The retained profile defaults to S1 and atomically selects S2. Require
+    // its complete declaration and exact paired expressions; other drift fails.
+    const same = (value, expected) => JSON.stringify(canonical(value)) === JSON.stringify(canonical(expected));
+    const profileParameter = { Type: 'String', Default: 's1', AllowedValues: ['s1', 's2-api'],
+      Description: 'Retained Beta API sizing profile; s2-api is an unqualified Issue #95 candidate' };
+    const profileCondition = { 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] };
+    const betaProfileScope = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta';
+    const profileDeclaration = same(after.Parameters?.BetaApiSizingProfile, profileParameter)
+      && same(after.Conditions?.BetaApiS2, profileCondition);
+    const betaSizingDeclaration = betaProfileScope && profileDeclaration && difference.before === undefined
+      && ((difference.path === '/Parameters/BetaApiSizingProfile' && same(difference.after, profileParameter))
+        || (difference.path === '/Conditions/BetaApiS2' && same(difference.after, profileCondition))
+        || (difference.path === '/Conditions' && same(difference.after, { BetaApiS2: profileCondition })));
     const candidateResource = after.Resources?.[id];
-    const betaS2ApiSize = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta'
+    const betaS2ApiSize = betaProfileScope && profileDeclaration
       && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
       && resource?.Type === 'AWS::ECS::TaskDefinition'
       && candidateResource?.Type === 'AWS::ECS::TaskDefinition'
       && resource.Properties?.Family === 'beta-anywear-api'
       && candidateResource.Properties?.Family === 'beta-anywear-api'
       && resource.Properties.Cpu === '512' && resource.Properties.Memory === '1024'
-      && candidateResource.Properties.Cpu === '256' && candidateResource.Properties.Memory === '512'
+      && same(candidateResource.Properties.Cpu, { 'Fn::If': ['BetaApiS2', '256', '512'] })
+      && same(candidateResource.Properties.Memory, { 'Fn::If': ['BetaApiS2', '512', '1024'] })
       && ['Cpu', 'Memory'].some((property) => difference.path === `/Resources/${id}/Properties/${property}`);
     // Issue #86 adds a deployment-owned cleanup operation. Its fixed task
     // definitions, state machine, version and E2E policy are intentionally
@@ -166,12 +178,13 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.path.includes('/Resources/OneShotExecutionRoleDefaultPolicy')
       && difference.path.endsWith('/Properties/PolicyDocument/Statement');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
-      || betaS1ReplicaReduction || betaS2ApiSize || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
+      || betaS1ReplicaReduction || betaS2ApiSize || betaSizingDeclaration
+      || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
           : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
-            : betaS2ApiSize ? 'Issue #95 S2 Beta API size candidate (runtime unqualified)'
+            : betaS2ApiSize || betaSizingDeclaration ? 'Issue #95 retained Beta API size profile (S2 runtime unqualified)'
               : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
               ? 'Issue #86 fixed Beta cleanup operation binding' : 'CDK diagnostic analytics' });
     } else rejected.push(difference);

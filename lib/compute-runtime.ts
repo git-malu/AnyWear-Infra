@@ -36,6 +36,7 @@ export interface ComputeRuntimeProps {
   loadBalancerSecurityGroup: ec2.SecurityGroup;
   operationsTopic?: sns.ITopic;
   betaActive?: boolean;
+  betaApiS2Condition?: cdk.CfnCondition;
 }
 
 export class ComputeRuntime extends Construct {
@@ -230,12 +231,17 @@ export class ComputeRuntime extends Construct {
 
     const apiTaskDefinition = new ecs.FargateTaskDefinition(this, 'ApiTaskDefinition', {
       family: `${props.stage}-anywear-api`,
-      // Issue #95 S2 candidate; runtime headroom and latency remain unqualified.
-      cpu: props.stage === 'beta' ? 256 : 512,
-      memoryLimitMiB: props.stage === 'beta' ? 512 : 1024,
+      cpu: 512,
+      memoryLimitMiB: 1024,
       taskRole: apiTaskRole,
       executionRole: apiExecutionRole,
     });
+    if (props.stage === 'beta' && props.betaApiS2Condition) {
+      // One retained profile selects the complete candidate pair; S1 is default.
+      const task = apiTaskDefinition.node.defaultChild as ecs.CfnTaskDefinition;
+      task.cpu = cdk.Token.asString(cdk.Fn.conditionIf(props.betaApiS2Condition.logicalId, '256', '512'));
+      task.memory = cdk.Token.asString(cdk.Fn.conditionIf(props.betaApiS2Condition.logicalId, '512', '1024'));
+    }
     apiTaskDefinition.addContainer('ApiContainer', {
       image,
       command: ['node', 'dist/api.js'],

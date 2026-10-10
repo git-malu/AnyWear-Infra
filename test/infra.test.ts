@@ -497,7 +497,18 @@ describe('Platform and workload safety controls', () => {
         resource.Type === 'AWS::ECS::TaskDefinition'
       )) as any[];
       const task = (family: string) => tasks.find((resource) => resource.Properties.Family === family);
-      expect(task('beta-anywear-api').Properties).toMatchObject({ Cpu: '256', Memory: '512' });
+      expect(template.Parameters.BetaApiSizingProfile).toMatchObject({ Default: 's1', AllowedValues: ['s1', 's2-api'] });
+      expect(template.Conditions.BetaApiS2).toEqual({ 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] });
+      for (const profile of ['s1', 's2-api']) {
+        const resolveSize = (value: any) => {
+          const [condition, whenTrue, whenFalse] = value['Fn::If'];
+          const [parameter, expected] = template.Conditions[condition]['Fn::Equals'];
+          expect(parameter).toEqual({ Ref: 'BetaApiSizingProfile' });
+          return profile === expected ? whenTrue : whenFalse;
+        };
+        expect([resolveSize(task('beta-anywear-api').Properties.Cpu), resolveSize(task('beta-anywear-api').Properties.Memory)])
+          .toEqual(profile === 's1' ? ['512', '1024'] : ['256', '512']);
+      }
       expect(task('beta-anywear-worker').Properties).toMatchObject({ Cpu: '1024', Memory: '2048' });
       if (phase !== 'legacy') {
         for (const family of ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup']) {
@@ -523,6 +534,7 @@ describe('Platform and workload safety controls', () => {
       .toMatchObject({ Cpu: '512', Memory: '1024' });
     expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-worker').Properties)
       .toMatchObject({ Cpu: '1024', Memory: '2048' });
+    expect(synthesizeWorkload('prod').Parameters.BetaApiSizingProfile).toBeUndefined();
   });
 
   it('publishes a fixed, versioned Beta cleanup state machine with E2E read-only execution', () => {
@@ -561,6 +573,8 @@ describe('Platform and workload safety controls', () => {
     expect(resources.filter((resource) => resource.Type === 'AWS::S3::Bucket')).toHaveLength(1);
     expect(template.Outputs.BetaActive.Value).toBe('false');
     expect(template.Outputs.ApiBaseUrl).toBeDefined();
+    expect(template.Parameters.BetaApiSizingProfile.Default).toBe('s1');
+    expect(template.Parameters.BetaApiSizingProfile.AllowedValues).toEqual(['s1', 's2-api']);
   });
 
   it('allows the Beta database to pause at zero ACU after five minutes without connections', () => {

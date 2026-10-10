@@ -16,11 +16,13 @@ import { runRestoreRelease } from './restore-release.mjs';
 import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
+import { validateBetaSizingInput, selectBetaSizingProfile } from './beta-sizing-profile.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export function validateOperationInputs(env = process.env) {
   const boundary = operationBoundary(env);
+  validateBetaSizingInput(env);
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
     || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
     || !boundary.readOnly && env.ENABLE_BETA_DEPLOY !== 'true') throw new Error('Protected Infra main executor and activation required');
@@ -55,8 +57,10 @@ export function betaDeploymentActivity(platform, workload) {
 }
 export function cdkDeploymentArguments(stack, active, revision, directory, env) {
   if (typeof active !== 'boolean') throw new Error('Explicit observed Beta activity required');
-  const parameters = stack.includes('Workload') ? Object.entries(revision.parameters).filter(([key]) =>
-    ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'].includes(key)).flatMap(([key, value]) =>
+  const preservedParameters = stack.includes('Workload') ? { ...revision.parameters,
+    BetaApiSizingProfile: selectBetaSizingProfile(revision.parameters, env, active) } : {};
+  const parameters = stack.includes('Workload') ? Object.entries(preservedParameters).filter(([key]) =>
+    ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId', 'BetaApiSizingProfile'].includes(key)).flatMap(([key, value]) =>
     ['--parameters', `${stack}:${key}=${value}`]) : [];
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
     // Native rollback must not reactivate stopped/partially stopped resources.
@@ -65,7 +69,7 @@ export function cdkDeploymentArguments(stack, active, revision, directory, env) 
     '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
     '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
 }
-const workloadParameterKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'];
+const workloadParameterKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId', 'BetaApiSizingProfile'];
 const terminalStackStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
 function assertWorkloadParameterReadback(stack, revision) {
   if (!terminalStackStatuses.has(stack?.StackStatus)) throw new Error(`Workload stack is not terminal after deploy: ${stack?.StackStatus ?? 'unavailable'}`);
@@ -194,20 +198,29 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
       assertDeployAllowed(env, stack);
       await check();
+      const selected = stack === 'AnyWearWorkloadStack-beta' ? {
+        ...revision, parameters: { ...revision.parameters,
+          BetaApiSizingProfile: selectBetaSizingProfile(revision.parameters, env, active) },
+      } : revision;
+      if (stack === 'AnyWearWorkloadStack-beta' && validateBetaSizingInput(env) !== 'preserve'
+        && (selected.digest !== selector.image.digest || selected.commit !== selector.image.service_sha)) {
+        throw new Error('Sizing changes must retain the selected Service image');
+      }
       if (['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'].includes(stack)) {
         const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
         const fence = await assertCleanupCapabilityQuiescent(io, workload);
         record?.events.push({ type: 'cleanup-capability-cessation', ...fence });
       }
       const awsEnv = await roleEnv('deploy');
-      await run('npx', cdkDeploymentArguments(stack, active, revision, directory, env),
+      await run('npx', cdkDeploymentArguments(stack, active, selected, directory, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       if (stack === 'AnyWearPlatformStack-beta') await enforceBetaPlatformLogRetention(io);
       if (stack === 'AnyWearWorkloadStack-beta') {
         const after = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', stack])).Stacks?.[0];
-        const observed = assertWorkloadParameterReadback(after, revision);
+        const observed = assertWorkloadParameterReadback(after, selected);
         record?.events.push({ type: 'workload-parameter-readback', stack_name: stack,
-          stack_status: after.StackStatus, service_sha: observed.commit, image_digest: observed.digest });
+          stack_status: after.StackStatus, service_sha: observed.commit, image_digest: observed.digest,
+          beta_api_sizing_profile: observed.parameters.BetaApiSizingProfile });
       }
       record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: active, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
     },
@@ -294,6 +307,10 @@ export async function runOperation(env = process.env) {
       const active = betaDeploymentActivity(platform, workload);
       record.events.push({ type: 'observed-beta-activity', platform_active: active, workload_active: active });
       if (operation === 'deploy-workload') {
+        if (validateBetaSizingInput(env) !== 'preserve'
+          && (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha)) {
+          throw new Error('Sizing changes must retain the observed Service image');
+        }
         const outputs = Object.fromEntries(platform.Outputs.map(item => [item.OutputKey, item.OutputValue]));
         if (active) await runRuntimeVerification({ io, outputs, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
         // Selecting an existing immutable previous release is compute rollback.
