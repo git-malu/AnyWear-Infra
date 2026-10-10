@@ -93,17 +93,27 @@ describe('Fixed cleanup execution proof', () => {
   it.each(['verification', 'cleanup'])('rejects failed, missing and ambiguous %s task results', (key) => {
     const name = key === 'verification' ? 'Verify' : 'Cleanup';
     const choice = states[key === 'verification' ? 'VerificationSucceeded' : 'CleanupSucceeded'];
-    expect(matches(choice.Choices[0], { [key]: response(name) })).toBe(true);
+    const validTask = response(name);
+    const validContainer = validTask.Containers[0];
+    const taskWithoutStatus: Partial<typeof validTask> = { ...validTask };
+    const containerWithoutStatus: Partial<typeof validContainer> = { ...validContainer };
+    const containerWithoutExit: Partial<typeof validContainer> = { ...validContainer };
+    delete taskWithoutStatus.LastStatus;
+    delete containerWithoutStatus.LastStatus;
+    delete containerWithoutExit.ExitCode;
+    expect(matches(choice.Choices[0], { [key]: validTask })).toBe(true);
     const badResults = [
-      { ...response(name), LastStatus: 'RUNNING' },
-      { ...response(name), TaskDefinitionArn: `${states[name].Parameters.TaskDefinition}0` },
-      { ...response(name), ClusterArn: clusterArn.replace('beta-anywear', 'other') },
-      { ...response(name), Containers: [{ Name: 'OneShot', ExitCode: 1, ImageDigest: digest }] },
-      { ...response(name), Containers: [{ Name: 'OneShot', ImageDigest: digest }] },
-      { ...response(name), Containers: [{ Name: 'Other', ExitCode: 0, ImageDigest: digest }] },
-      { ...response(name), Containers: [{ Name: 'OneShot', ExitCode: 0, ImageDigest: `sha256:${'d'.repeat(64)}` }] },
-      { ...response(name), Containers: [{ ...response(name).Containers[0], LastStatus: 'RUNNING' }] },
-      { ...response(name), Containers: [...response(name).Containers, ...response(name).Containers] },
+      { ...validTask, LastStatus: 'RUNNING' },
+      taskWithoutStatus,
+      { ...validTask, TaskDefinitionArn: `${states[name].Parameters.TaskDefinition}0` },
+      { ...validTask, ClusterArn: clusterArn.replace('beta-anywear', 'other') },
+      { ...validTask, Containers: [{ ...validContainer, ExitCode: 1 }] },
+      { ...validTask, Containers: [containerWithoutExit] },
+      { ...validTask, Containers: [{ ...validContainer, Name: 'Other' }] },
+      { ...validTask, Containers: [{ ...validContainer, ImageDigest: `sha256:${'d'.repeat(64)}` }] },
+      { ...validTask, Containers: [{ ...validContainer, LastStatus: 'RUNNING' }] },
+      { ...validTask, Containers: [containerWithoutStatus] },
+      { ...validTask, Containers: [...validTask.Containers, ...validTask.Containers] },
       {},
     ];
     for (const task of badResults) expect(matches(choice.Choices[0], { [key]: task })).toBe(false);
