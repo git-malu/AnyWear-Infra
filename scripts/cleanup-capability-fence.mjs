@@ -3,11 +3,11 @@ import { canonicalJson, parseJson, sha256 } from './json-contract.mjs';
 const machineArn = 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup';
 const executionPattern = /^arn:aws:states:ap-east-1:650880818323:execution:beta-anywear-tester-cleanup:[A-Za-z0-9_-]{1,80}$/;
 const taskPattern = /^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32}$/;
-const definitionPattern = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/beta-anywear-cleanup(?:-verify)?:[1-9][0-9]*$/;
+const definitionPattern = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/beta-anywear-cleanup(?:-verify|-acceptance)?:[1-9][0-9]*$/;
 const terminalExecutions = new Set(['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'ABORTED']);
 const taskStates = new Set(['PROVISIONING', 'PENDING', 'ACTIVATING', 'RUNNING', 'DEACTIVATING', 'STOPPING', 'DEPROVISIONING', 'STOPPED']);
 const stackStates = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
-const families = ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup'];
+const families = ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup', 'beta-anywear-cleanup-acceptance'];
 
 // This code proves resource cessation only. The manager separately reconciles
 // pending owners and committed/unknown operation results before any replacement.

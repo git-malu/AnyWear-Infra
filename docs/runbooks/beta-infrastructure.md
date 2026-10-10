@@ -10,6 +10,10 @@ and `us-east-1` for Billing. The cutover preserved the observed
 image/Client/Lambda/policy tuple and endpoints; ordinary source merges do not
 choose a newer application.
 
+The separately protected [cleanup acceptance fixture](beta-cleanup-acceptance.md)
+records #86's source order, immutable bootstrap proof, narrowed task authority and
+manager-coordinated qualification/recovery boundary.
+
 The accepted IAM boundary is limited to the named legacy Beta role: its trust is
 deny-only with zero inline or attached grants. The inherited Dev wildcard E2E
 subject, `cdk-*` assume-role chain and CloudFormation execution role with
