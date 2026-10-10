@@ -16,7 +16,7 @@ import { runRestoreRelease } from './restore-release.mjs';
 import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
-import { validateBetaSizingInput, selectBetaSizingProfile } from './beta-sizing-profile.mjs';
+import { validateBetaSizingInput, retainedBetaSizingProfile, selectBetaSizingProfile } from './beta-sizing-profile.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -281,6 +281,9 @@ export async function runOperation(env = process.env) {
   }
   const prior = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
   const priorRevision = workloadRevision(prior);
+  if (['start', 'stop', 'deploy-workload', 'restore-release'].includes(env.INFRA_OPERATION)) {
+    retainedBetaSizingProfile(priorRevision.parameters);
+  }
   record.original_runtime = { service_sha: priorRevision.commit, image_digest: priorRevision.digest };
   const repository = selector.image.repository_uri.split('/').slice(1).join('/');
   const images = await io.aws(['ecr', 'describe-images', '--repository-name', repository, '--image-ids', `imageDigest=${selector.image.digest}`]);
@@ -307,6 +310,7 @@ export async function runOperation(env = process.env) {
       const active = betaDeploymentActivity(platform, workload);
       record.events.push({ type: 'observed-beta-activity', platform_active: active, workload_active: active });
       if (operation === 'deploy-workload') {
+        selectBetaSizingProfile(revision.parameters, env, active);
         if (validateBetaSizingInput(env) !== 'preserve'
           && (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha)) {
           throw new Error('Sizing changes must retain the observed Service image');
