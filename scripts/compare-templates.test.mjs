@@ -72,6 +72,42 @@ test('allows only the complete S2 Beta API size candidate in each identity phase
   }
 });
 
+test('rejects new sizing declarations when active API still uses fixed S1 CPU and memory', () => {
+  const after = profiledTask();
+  Object.assign(after.Resources[apiTaskId].Properties, { Cpu: '512', Memory: '1024' });
+  const result = compareTemplates(sizedTask(), after, betaWorkload);
+  assert.equal(result.accepted, false);
+  assert.deepEqual(result.rejected.map(({ path }) => path), ['/Parameters/BetaApiSizingProfile', '/Conditions']);
+});
+
+test('new active sizing declarations require both exact expressions even when only one size changes', () => {
+  for (const [property, stale, wrongPair] of [['Cpu', '512', '1024'], ['Memory', '1024', '2048']]) {
+    for (const mismatch of [stale, { 'Fn::If': ['BetaApiS2', '128', wrongPair] }]) {
+      const after = profiledTask(); after.Resources[apiTaskId].Properties[property] = mismatch;
+      const result = compareTemplates(sizedTask(), after, betaWorkload);
+      assert.equal(result.accepted, false);
+      assert.ok(result.rejected.some(({ path }) => path === '/Parameters/BetaApiSizingProfile'));
+      assert.ok(result.rejected.some(({ path }) => path === '/Conditions'));
+    }
+  }
+});
+
+test('permits declaration-only sizing retention only in an explicitly stopped template', () => {
+  const stopped = { Resources: {}, Parameters: {}, Outputs: { BetaActive: { Value: 'false' } } };
+  const declarations = profiledTask();
+  for (const phase of ['legacy', 'roles-added', 'retired']) {
+    const after = { ...stopped, Parameters: declarations.Parameters, Conditions: declarations.Conditions };
+    const result = compareTemplates(stopped, after, { ...betaWorkload, phase });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(result.allowed.map(({ path }) => path), ['/Parameters/BetaApiSizingProfile', '/Conditions']);
+  }
+  for (const outputs of [{}, { BetaActive: { Value: 'true' } }]) {
+    const before = { ...stopped, Outputs: outputs };
+    assert.equal(compareTemplates(before, { ...before, Parameters: declarations.Parameters,
+      Conditions: declarations.Conditions }, betaWorkload).accepted, false);
+  }
+});
+
 test('rejects incomplete or arbitrary S2 size changes and nonbaseline sizes', () => {
   for (const [cpu, memory] of [['256', '1024'], ['512', '512'], ['128', '512'], ['256', '768']]) {
     assert.equal(compareTemplates(sizedTask(), sizedTask(cpu, memory), betaWorkload).accepted, false);

@@ -150,7 +150,18 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
     const betaProfileScope = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta';
     const profileDeclaration = same(after.Parameters?.BetaApiSizingProfile, profileParameter)
       && same(after.Conditions?.BetaApiS2, profileCondition);
-    const betaSizingDeclaration = betaProfileScope && profileDeclaration && difference.before === undefined
+    const apiTasks = Object.entries(after.Resources ?? {}).filter(([candidateId, candidate]) =>
+      candidate?.Type === 'AWS::ECS::TaskDefinition' && (candidate.Properties?.Family === 'beta-anywear-api'
+        || /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(candidateId)));
+    const profileSizePair = properties => same(properties?.Cpu, { 'Fn::If': ['BetaApiS2', '256', '512'] })
+      && same(properties?.Memory, { 'Fn::If': ['BetaApiS2', '512', '1024'] });
+    // A declaration-only change must not pass when active compute ignores it.
+    const profileBinding = apiTasks.length === 0 ? after.Outputs?.BetaActive?.Value === 'false'
+      && !Object.values(after.Resources ?? {}).some(candidate => candidate?.Type === 'AWS::ECS::Service'
+        && candidate.Properties?.ServiceName === 'beta-anywear-api')
+      : apiTasks.length === 1 && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(apiTasks[0][0])
+        && apiTasks[0][1].Properties?.Family === 'beta-anywear-api' && profileSizePair(apiTasks[0][1].Properties);
+    const betaSizingDeclaration = betaProfileScope && profileDeclaration && profileBinding && difference.before === undefined
       && ((difference.path === '/Parameters/BetaApiSizingProfile' && same(difference.after, profileParameter))
         || (difference.path === '/Conditions/BetaApiS2' && same(difference.after, profileCondition))
         || (difference.path === '/Conditions' && same(difference.after, { BetaApiS2: profileCondition })));
@@ -184,8 +195,7 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && resource.Properties?.Family === 'beta-anywear-api'
       && candidateResource.Properties?.Family === 'beta-anywear-api'
       && resource.Properties.Cpu === '512' && resource.Properties.Memory === '1024'
-      && same(candidateResource.Properties.Cpu, { 'Fn::If': ['BetaApiS2', '256', '512'] })
-      && same(candidateResource.Properties.Memory, { 'Fn::If': ['BetaApiS2', '512', '1024'] })
+      && profileSizePair(candidateResource.Properties)
       && ['Cpu', 'Memory'].some((property) => difference.path === `/Resources/${id}/Properties/${property}`);
     // Issue #86 adds a deployment-owned cleanup operation. Its fixed task
     // definitions, state machine, version and E2E policy are intentionally
