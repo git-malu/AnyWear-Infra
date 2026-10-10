@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import { ComputeRuntime } from './compute-runtime';
 import type { PlatformStack } from './platform-stack';
 import { CleanupOperation } from './cleanup-operation';
+import { CleanupAcceptance } from './cleanup-acceptance';
 
 export interface WorkloadStackProps extends cdk.StackProps {
   stage: 'beta' | 'prod';
@@ -13,6 +14,7 @@ export interface WorkloadStackProps extends cdk.StackProps {
 export class WorkloadStack extends cdk.Stack {
   readonly compute: ComputeRuntime;
   readonly cleanupOperation?: CleanupOperation;
+  readonly cleanupAcceptance?: CleanupAcceptance;
 
   constructor(scope: Construct, id: string, props: WorkloadStackProps) {
     super(scope, id, props);
@@ -53,7 +55,7 @@ export class WorkloadStack extends cdk.Stack {
       && platform.verificationTaskRole && platform.oneShotExecutionRole && platform.oneShotLogGroup
       && platform.database?.secret && platform.vpc && platform.oneShotSecurityGroup) {
       const subnets = props.betaActive === false ? platform.vpc.isolatedSubnets : platform.vpc.privateSubnets;
-      this.cleanupOperation = new CleanupOperation(this, 'CleanupOperation', {
+      const cleanupProps = {
         cluster: platform.cluster,
         vpc: platform.vpc,
         securityGroup: platform.oneShotSecurityGroup,
@@ -75,7 +77,9 @@ export class WorkloadStack extends cdk.Stack {
         taggingQueueUrl: platform.autoTaggingQueue.queueUrl,
         vtoDlqUrl: platform.vtoDeadLetterQueue.queueUrl,
         taggingDlqUrl: platform.autoTaggingDeadLetterQueue.queueUrl,
-      });
+      };
+      this.cleanupOperation = new CleanupOperation(this, 'CleanupOperation', cleanupProps);
+      this.cleanupAcceptance = new CleanupAcceptance(this, 'CleanupAcceptance', cleanupProps);
     }
   }
 }

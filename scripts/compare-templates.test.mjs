@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { compareTemplates } from './compare-templates.mjs';
 
 const workload = (desired = 2, min = 2, service = 'beta-anywear-api') => ({
@@ -62,4 +63,24 @@ test('scopes cleanup template allowances to nonlegacy Beta phases and exact reso
     phase: 'roles-added', stage: 'prod', stackName: 'AnyWearWorkloadStack-prod',
   });
   assert.equal(production.accepted, false);
+});
+
+test('fixture allowances require complete reviewed resources and reject broadened IAM or task configuration', () => {
+  const fixture = JSON.parse(readFileSync(new URL('../test/fixtures/cleanup-acceptance-resources.json', import.meta.url), 'utf8'));
+  const before = { Resources: {}, Outputs: {} };
+  const options = { phase: 'retired', stage: 'beta', stackName: 'AnyWearWorkloadStack-beta' };
+  assert.equal(compareTemplates(before, fixture, options).accepted, true);
+  const [taskId, policyId] = Object.keys(fixture.Resources);
+  for (const mutate of [f => f.Resources[policyId].Properties.PolicyDocument.Statement[0].Resource = '*',
+    f => delete f.Resources[policyId].Properties.PolicyDocument.Statement[0].Condition,
+    f => f.Resources[policyId].Properties.PolicyDocument.Statement[1].Resource = ['*'],
+    f => f.Resources[policyId].Properties.PolicyDocument.Statement[2].Effect = 'Deny',
+    f => f.Resources[policyId].Properties.PolicyDocument.Statement.push({ Effect: 'Allow', Action: '*', Resource: '*' }),
+    f => f.Resources[taskId].Properties.ContainerDefinitions[0].Environment.push({ Name: 'OTHER', Value: 'override' }),
+    f => f.Resources[taskId].Properties.TaskRoleArn = 'other-role', f => f.Resources[taskId].DeletionPolicy = 'Delete',
+    f => f.Outputs.CleanupAcceptanceTaskDefinitionArn.Value.Ref = 'other-task']) {
+    const bad = structuredClone(fixture); mutate(bad);
+    assert.equal(compareTemplates(before, bad, options).accepted, false);
+  }
+  assert.equal(compareTemplates(before, fixture, { ...options, phase: 'legacy' }).accepted, false);
 });

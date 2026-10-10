@@ -1,0 +1,116 @@
+name: Protected Beta cleanup acceptance fixture
+run-name: Cleanup acceptance ${{ inputs.action }} · ${{ github.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [prepare, inspect, release-task, cleanup]
+        required: true
+      request:
+        description: Canonical captured run_scope and exact fixture slots 2 and 3
+        type: string
+        required: true
+      bootstrap_origin:
+        description: Canonical exact protected E2E bootstrap run and immutable artifact origin
+        type: string
+        required: true
+      task_definition_arn:
+        description: Complete current Workload fixture task revision
+        type: string
+        required: true
+      fixture_source_sha:
+        description: Exact recorded deployed Workload Infra producer
+        type: string
+        required: true
+      selection_file:
+        type: string
+        required: true
+      selection_sha256:
+        type: string
+        required: true
+      stack_sources_file:
+        type: string
+        required: true
+      stack_sources_sha256:
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: anywear-infra-runtime
+  cancel-in-progress: false
+jobs:
+  fixture:
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_CLEANUP_ACCEPTANCE == 'true'
+    environment: beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
+      ENABLE_BETA_CLEANUP_ACCEPTANCE: ${{ vars.ENABLE_BETA_CLEANUP_ACCEPTANCE }}
+      FIXTURE_ACTION: ${{ inputs.action }}
+      FIXTURE_REQUEST: ${{ inputs.request }}
+      BOOTSTRAP_ORIGIN: ${{ inputs.bootstrap_origin }}
+      FIXTURE_TASK_DEFINITION_ARN: ${{ inputs.task_definition_arn }}
+      FIXTURE_SOURCE_SHA: ${{ inputs.fixture_source_sha }}
+      SELECTION_FILE: ${{ inputs.selection_file }}
+      SELECTION_SHA256: ${{ inputs.selection_sha256 }}
+      STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
+      STACK_SOURCES_SHA256: ${{ inputs.stack_sources_sha256 }}
+      GH_TELEMETRY: disabled
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Validate dedicated executor and committed inputs before credentials
+        run: node scripts/cleanup-acceptance.mjs --preflight
+      - name: Check native release verification capability before credentials
+        run: |
+          gh release verify --format json --help > /dev/null
+          gh release verify-asset --format json --help > /dev/null
+      - name: Create read-only private artifact token
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+      - name: Create separate read-only E2E bootstrap token
+        id: bootstrap
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: AnyWear-E2E
+          permission-contents: read
+          permission-actions: read
+      - name: Verify immutable publication then run the fixed fixture with narrowed sessions
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          E2E_BOOTSTRAP_TOKEN: ${{ steps.bootstrap.outputs.token }}
+        run: node scripts/cleanup-acceptance.mjs
+      - name: Preserve fixture result and unresolved launch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-cleanup-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-evidence/cleanup-acceptance-operation.json
+          retention-days: 90
+          if-no-files-found: warn

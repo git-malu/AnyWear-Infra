@@ -1,0 +1,296 @@
+{
+  "Resources": {
+    "CleanupAcceptanceTaskDefinition8951905F": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "ContainerDefinitions": [
+          {
+            "Command": [
+              "node",
+              "dist/ops/beta-cleanup-acceptance-fixture.js"
+            ],
+            "Environment": [
+              {
+                "Name": "STAGE",
+                "Value": "beta"
+              },
+              {
+                "Name": "NODE_ENV",
+                "Value": "production"
+              },
+              {
+                "Name": "AWS_REGION",
+                "Value": "ap-east-1"
+              },
+              {
+                "Name": "BETA_CLEANUP_ACCEPTANCE_ISSUE",
+                "Value": "86"
+              },
+              {
+                "Name": "SERVICE_COMMIT_SHA",
+                "Value": {
+                  "Ref": "ServiceCommitSha"
+                }
+              },
+              {
+                "Name": "IMAGE_DIGEST",
+                "Value": {
+                  "Ref": "ServiceImageDigest"
+                }
+              },
+              {
+                "Name": "DB_SECRET_ARN",
+                "Value": {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputRefAnyWearDatabaseSecretAttachment4886B38144EA741B"
+                  }
+                }
+              },
+              {
+                "Name": "DB_HOST",
+                "Value": {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointAddress8F10C00D"
+                  }
+                }
+              },
+              {
+                "Name": "DB_PORT",
+                "Value": {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointPort898B970A"
+                  }
+                }
+              },
+              {
+                "Name": "DB_NAME",
+                "Value": "anywear"
+              },
+              {
+                "Name": "S3_BUCKET_NAME",
+                "Value": {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputRefAnyWearWardrobeBucket61DCC096146CB5ED"
+                  }
+                }
+              },
+              {
+                "Name": "TASK_TRANSPORT",
+                "Value": "sqs"
+              },
+              {
+                "Name": "SQS_VTO_QUEUE_URL",
+                "Value": {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputRefAsyncRuntimeVtoQueue7826D09D30543F7E"
+                  }
+                }
+              },
+              {
+                "Name": "SQS_AUTO_TAGGING_QUEUE_URL",
+                "Value": {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputRefAsyncRuntimeAutoTaggingQueueEC10AA508CE2FD1E"
+                  }
+                }
+              }
+            ],
+            "Essential": true,
+            "Image": {
+              "Fn::Join": [
+                "",
+                [
+                  {
+                    "Fn::Select": [
+                      4,
+                      {
+                        "Fn::Split": [
+                          ":",
+                          {
+                            "Fn::GetStackOutput": {
+                              "StackName": "AnyWearPlatformStack-beta",
+                              "Region": "ap-east-1",
+                              "OutputName": "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  ".dkr.ecr.",
+                  {
+                    "Fn::Select": [
+                      3,
+                      {
+                        "Fn::Split": [
+                          ":",
+                          {
+                            "Fn::GetStackOutput": {
+                              "StackName": "AnyWearPlatformStack-beta",
+                              "Region": "ap-east-1",
+                              "OutputName": "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  ".",
+                  {
+                    "Ref": "AWS::URLSuffix"
+                  },
+                  "/",
+                  {
+                    "Fn::GetStackOutput": {
+                      "StackName": "AnyWearPlatformStack-beta",
+                      "Region": "ap-east-1",
+                      "OutputName": "PublishOutputRefAsyncRuntimeServiceRepository6535F885E981090C"
+                    }
+                  },
+                  "@",
+                  {
+                    "Ref": "ServiceImageDigest"
+                  }
+                ]
+              ]
+            },
+            "LogConfiguration": {
+              "LogDriver": "awslogs",
+              "Options": {
+                "awslogs-group": {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputRefOneShotLogGroup31A8D153831F5076"
+                  }
+                },
+                "awslogs-stream-prefix": "beta-anywear-cleanup-acceptance",
+                "awslogs-region": "ap-east-1"
+              }
+            },
+            "Name": "OneShot"
+          }
+        ],
+        "Cpu": "512",
+        "ExecutionRoleArn": {
+          "Fn::GetStackOutput": {
+            "StackName": "AnyWearPlatformStack-beta",
+            "Region": "ap-east-1",
+            "OutputName": "PublishOutputFnGetAttOneShotExecutionRoleE1BB48E7Arn39CA2DDF"
+          }
+        },
+        "Family": "beta-anywear-cleanup-acceptance",
+        "Memory": "1024",
+        "NetworkMode": "awsvpc",
+        "RequiresCompatibilities": [
+          "FARGATE"
+        ],
+        "TaskRoleArn": {
+          "Fn::GetStackOutput": {
+            "StackName": "AnyWearPlatformStack-beta",
+            "Region": "ap-east-1",
+            "OutputName": "PublishOutputFnGetAttCleanupTaskRoleF315C2CAArn2EB4E994"
+          }
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "CleanupAcceptanceInfraRuntimeRoleDefaultPolicy46F77405": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "ecs:RunTask",
+              "Condition": {
+                "ArnEquals": {
+                  "ecs:cluster": {
+                    "Fn::GetStackOutput": {
+                      "StackName": "AnyWearPlatformStack-beta",
+                      "Region": "ap-east-1",
+                      "OutputName": "PublishOutputFnGetAttClusterEB0386A7Arn0CAA3DA3"
+                    }
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "CleanupAcceptanceTaskDefinition8951905F"
+              }
+            },
+            {
+              "Action": "iam:PassRole",
+              "Condition": {
+                "StringEquals": {
+                  "iam:PassedToService": "ecs-tasks.amazonaws.com"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputFnGetAttCleanupTaskRoleF315C2CAArn2EB4E994"
+                  }
+                },
+                {
+                  "Fn::GetStackOutput": {
+                    "StackName": "AnyWearPlatformStack-beta",
+                    "Region": "ap-east-1",
+                    "OutputName": "PublishOutputFnGetAttOneShotExecutionRoleE1BB48E7Arn39CA2DDF"
+                  }
+                }
+              ]
+            },
+            {
+              "Action": "logs:GetLogEvents",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:logs:ap-east-1:650880818323:log-group:",
+                    {
+                      "Fn::GetStackOutput": {
+                        "StackName": "AnyWearPlatformStack-beta",
+                        "Region": "ap-east-1",
+                        "OutputName": "PublishOutputRefOneShotLogGroup31A8D153831F5076"
+                      }
+                    },
+                    ":log-stream:beta-anywear-cleanup-acceptance/OneShot/*"
+                  ]
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "DefaultPolicy",
+        "Roles": [
+          "beta-infra-runtime-role"
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "CleanupAcceptanceTaskDefinitionArn": {
+      "Value": {
+        "Ref": "CleanupAcceptanceTaskDefinition8951905F"
+      }
+    }
+  }
+}

@@ -32,7 +32,7 @@ test('complete stable resource scans preserve terminal failures for manager resu
   assert.deepEqual(result.terminal_failed_execution_arns, [execution]);
   assert.equal(result.manager_result_reconciliation_required, true);
   assert.equal(calls.filter(args => args[1] === 'list-executions').length, 2);
-  assert.equal(calls.filter(args => args[1] === 'list-tasks').length, 8);
+  assert.equal(calls.filter(args => args[1] === 'list-tasks').length, 12);
   assert.ok(calls.every(args => !['stop-task', 'start-execution', 'redrive-execution'].includes(args[1])));
 });
 
@@ -63,6 +63,16 @@ test('cleanup task inventory requires unique exact stopped tasks and rejects run
     const { io } = fixture({ 'list-tasks': listings, 'describe-tasks': () => actual });
     await assert.rejects(assertCleanupCapabilityQuiescent(io, workload), /inventory|blocks replacement/);
   }
+});
+
+test('separate acceptance fixture tasks also block capability replacement until stopped', async () => {
+  const task = { taskArn, clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
+    taskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:7', lastStatus: 'RUNNING' };
+  const { io } = fixture({ 'list-tasks': args => ({ taskArns: args.includes('beta-anywear-cleanup-acceptance') ? [taskArn] : [] }),
+    'describe-tasks': () => ({ tasks: [task] }) });
+  await assert.rejects(assertCleanupCapabilityQuiescent(io, workload), /blocks replacement/);
+  task.lastStatus = 'STOPPED';
+  assert.equal((await assertCleanupCapabilityQuiescent(io, workload)).cleanup_task_count, 1);
 });
 
 test('complete bounded pagination rejects loops, missing pages and oversized or foreign results', async () => {
