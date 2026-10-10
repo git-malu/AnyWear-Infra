@@ -130,8 +130,8 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.path === `/Resources/${id}/Properties/Analytics`;
     // Issue #95 S1 is intentionally narrow: only the active Beta API service
     // desired count and its autoscaling minimum may change from 2 to 1. Keep
-    // task sizes, Worker scaling, Production/Dev and stopped-state templates
-    // covered by the normal exact comparison.
+    // Worker scaling, Production/Dev and stopped-state templates covered by
+    // the normal exact comparison. S2 sizes are checked separately below.
     const betaS1ReplicaReduction = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta'
       && ((resource?.Type === 'AWS::ECS::Service'
         && resource.Properties?.ServiceName === 'beta-anywear-api'
@@ -141,6 +141,18 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         && difference.path === `/Resources/${id}/Properties/MinCapacity`
         && difference.before === 2 && difference.after === 1
         && id.includes('ApiServiceTaskCountTarget')));
+    // Accept only the complete S2 API size pair on its existing logical ID.
+    // A partial size change or any other task/container drift still fails.
+    const candidateResource = after.Resources?.[id];
+    const betaS2ApiSize = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta'
+      && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
+      && resource?.Type === 'AWS::ECS::TaskDefinition'
+      && candidateResource?.Type === 'AWS::ECS::TaskDefinition'
+      && resource.Properties?.Family === 'beta-anywear-api'
+      && candidateResource.Properties?.Family === 'beta-anywear-api'
+      && resource.Properties.Cpu === '512' && resource.Properties.Memory === '1024'
+      && candidateResource.Properties.Cpu === '256' && candidateResource.Properties.Memory === '512'
+      && ['Cpu', 'Memory'].some((property) => difference.path === `/Resources/${id}/Properties/${property}`);
     // Issue #86 adds a deployment-owned cleanup operation. Its fixed task
     // definitions, state machine, version and E2E policy are intentionally
     // new resources; the cross-stack PublishOutput values are the reviewed
@@ -154,12 +166,13 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.path.includes('/Resources/OneShotExecutionRoleDefaultPolicy')
       && difference.path.endsWith('/Properties/PolicyDocument/Statement');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
-      || betaS1ReplicaReduction || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
+      || betaS1ReplicaReduction || betaS2ApiSize || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
           : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
-            : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
+            : betaS2ApiSize ? 'Issue #95 S2 Beta API size candidate (runtime unqualified)'
+              : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
               ? 'Issue #86 fixed Beta cleanup operation binding' : 'CDK diagnostic analytics' });
     } else rejected.push(difference);
   }

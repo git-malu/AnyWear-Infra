@@ -490,6 +490,41 @@ describe('Platform and workload safety controls', () => {
     expect(target(prodWithIds, prodTargetId).Properties.MinCapacity).toBe(2);
   });
 
+  it.each(['legacy', 'roles-added', 'retired'] as const)(
+    'synthesizes the Beta S2 API candidate while preserving Worker and helper sizes in %s', (phase) => {
+      const template = synthesizeWorkload('beta', true, phase);
+      const tasks = Object.values(template.Resources).filter((resource: any) => (
+        resource.Type === 'AWS::ECS::TaskDefinition'
+      )) as any[];
+      const task = (family: string) => tasks.find((resource) => resource.Properties.Family === family);
+      expect(task('beta-anywear-api').Properties).toMatchObject({ Cpu: '256', Memory: '512' });
+      expect(task('beta-anywear-worker').Properties).toMatchObject({ Cpu: '1024', Memory: '2048' });
+      if (phase !== 'legacy') {
+        for (const family of ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup']) {
+          expect(task(family).Properties).toMatchObject({ Cpu: '512', Memory: '1024' });
+        }
+      }
+      const resources = Object.values(template.Resources) as any[];
+      for (const name of ['beta-anywear-api', 'beta-anywear-worker']) {
+        expect(resources.find((resource) => resource.Type === 'AWS::ECS::Service'
+          && resource.Properties.ServiceName === name).Properties.DesiredCount).toBe(1);
+      }
+      const targets = resources.filter((resource) => resource.Type === 'AWS::ApplicationAutoScaling::ScalableTarget');
+      expect(targets).toHaveLength(2);
+      expect(targets.map((resource) => resource.Properties.MinCapacity)).toEqual([1, 1]);
+    },
+  );
+
+  it('preserves Production API and Worker sizes outside the Beta S2 candidate', () => {
+    const tasks = Object.values(synthesizeWorkload('prod').Resources).filter((resource: any) => (
+      resource.Type === 'AWS::ECS::TaskDefinition'
+    )) as any[];
+    expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-api').Properties)
+      .toMatchObject({ Cpu: '512', Memory: '1024' });
+    expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-worker').Properties)
+      .toMatchObject({ Cpu: '1024', Memory: '2048' });
+  });
+
   it('publishes a fixed, versioned Beta cleanup state machine with E2E read-only execution', () => {
     const template = synthesizeWorkload('beta', true, 'roles-added');
     const resources = Object.values(template.Resources) as any[];

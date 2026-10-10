@@ -230,8 +230,9 @@ export class ComputeRuntime extends Construct {
 
     const apiTaskDefinition = new ecs.FargateTaskDefinition(this, 'ApiTaskDefinition', {
       family: `${props.stage}-anywear-api`,
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      // Issue #95 S2 candidate; runtime headroom and latency remain unqualified.
+      cpu: props.stage === 'beta' ? 256 : 512,
+      memoryLimitMiB: props.stage === 'beta' ? 512 : 1024,
       taskRole: apiTaskRole,
       executionRole: apiExecutionRole,
     });
