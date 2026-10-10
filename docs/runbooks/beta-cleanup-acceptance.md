@@ -85,9 +85,12 @@ timing, and the frozen Service/capability/fixture/selection/stack-map tuple.
 
 1. Bootstrap captures both fresh identities and exact request strings, retaining
    both until teardown.
-2. Manager fixture `prepare`/`inspect` precede E2E refusals, proving pending inert
-   primary DB state and intact sentinel state.
-3. Manager `inspect`/`release-task` precede qualification. E2E publishes immutable
+2. Manager fixture `prepare`/`inspect` precede an active-task-only refusal run.
+   Manager then authenticates a fresh `inspect` proving both identities unchanged.
+   A second `refusals` run performs only the mismatch case, importing the exact
+   active-refusal origin and that fresh inspection. A second manager inspection
+   again proves both unchanged. Both runs retain the same bootstrap and tuple.
+3. That second `inspect` and `release-task` precede qualification. E2E publishes immutable
    operation intent and started/pending evidence, then deliberately ends tracking.
 4. Fresh recovery imports exact preceding evidence and resumes the same execution
    and request, proving committed primary cleanup and repeat safety. No new
