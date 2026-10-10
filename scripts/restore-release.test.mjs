@@ -10,7 +10,7 @@ import { canonicalJson, sha256 } from './json-contract.mjs';
 const { selector, manifest, schema } = await createTestInputs(await mkdtemp(path.join(os.tmpdir(), 'infra-restore-')));
 const infraSha = '5'.repeat(40);
 const env = { GITHUB_SHA: infraSha, GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
-  GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
+  GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-deploy.yml@refs/heads/main',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]' };
 const platformName = 'AnyWearPlatformStack-beta'; const workloadName = 'AnyWearWorkloadStack-beta';
 const fourTesters = ['beta-worker-0@example.com', 'beta-worker-1@example.com', 'first@example.com', 'second@example.com'];

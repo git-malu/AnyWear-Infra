@@ -7,7 +7,8 @@ import { parseJson, canonicalJson, contentHash, sha256 } from './json-contract.m
 import { createTestInputs } from './create-test-inputs.mjs';
 import { validateSelection, verifySelection } from './artifact-consumer.mjs';
 import { assertNativeReleaseAttestation } from './vendor/service-release-attestation.mjs';
-import { validateDeploymentRecord, assertObservedMatchesDeployment, stableLambdaConfiguration } from './deployment-contract.mjs';
+import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration } from './deployment-contract.mjs';
+import { qualifiedWorkflowPaths } from './operation-boundaries.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { validateOperationInputs, betaDeploymentActivity } from './runtime-operation.mjs';
@@ -301,7 +302,9 @@ test('operation main workflow/account/region/selection/identity/retention bind b
 
 test('admission close and coherent restore require retired protected context and no tester mutation payload', () => {
   for (const operation of ['close-admission', 'restore-release']) {
-    const input = { ...env, INFRA_OPERATION: operation, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]' };
+    const workflow = operation === 'close-admission' ? 'beta-admission' : 'beta-deploy';
+    const input = { ...env, GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/.github/workflows/${workflow}.yml@refs/heads/main`,
+      INFRA_OPERATION: operation, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]' };
     validateOperationInputs(input);
     for (const change of [{ INFRA_IDENTITY_PHASE: 'roles-added' }, { INFRA_RETENTION_PROTECTION: 'false' },
       { TESTER_EMAILS: '["someone@example.com"]' }, { TESTER_EMAILS: undefined }]) assert.throws(() => validateOperationInputs({ ...input, ...change }));
@@ -326,6 +329,27 @@ test('deployment strict binding rejects legacy, undeclared artifact and template
   const value = structuredClone(snapshot); value.stacks[0].template_sha256 = '0'.repeat(64);
   assert.throws(() => assertObservedMatchesDeployment(record, value), /differs/);
 });
+test('valid family observations retain actual provenance and cannot satisfy the legacy E2E deployment contract', () => {
+  const legacy = recordWithIds();
+  validateDeploymentRecord(legacy);
+  assertObservedMatchesDeployment(legacy, { stacks: legacy.stacks, observed: legacy.observed, schema: legacy.schema });
+  for (const file of qualifiedWorkflowPaths.filter(file => !file.endsWith('/runtime.yml'))) {
+    const record = recordWithIds();
+    record.record_type = 'anywear_infra_family_observation';
+    record.infra.workflow_path = file;
+    record.infra.workflow_ref = `git-malu/AnyWear-Infra/${file}@refs/heads/main`;
+    record.schema.verification.executor.workflow_path = file;
+    const snapshot = { stacks: record.stacks, observed: record.observed, schema: record.schema };
+    validateSnapshot(snapshot, { infraWorkflows: [file] });
+    assert.throws(() => validateDeploymentRecord(record), /Unknown deployment schema/);
+    record.record_type = 'anywear_infra_deployment';
+    assert.throws(() => validateDeploymentRecord(record), /Unexpected deployment workflow/);
+    record.infra = structuredClone(legacy.infra);
+    assert.throws(() => validateDeploymentRecord(record), /Untrusted verification executor/);
+    assert.throws(() => assertObservedMatchesDeployment(legacy, snapshot), /Untrusted verification executor/);
+  }
+});
+
 test('schema16 image accepts compatible DB17 with independently hashed applied journal', () => {
   const record = recordWithIds(); record.schema.applied_schema_version = 17;
   record.schema.applied_migration_ids = [...record.schema.selected_migration_ids, { id: '9'.repeat(64), created_at: 2000 }];

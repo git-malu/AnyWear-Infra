@@ -8,6 +8,7 @@ import { parseJson, contentHash, canonicalJson, exact, matches, SHA, sha256 } fr
 import { verifySelection, loadCommittedSelection } from './artifact-consumer.mjs';
 import { runRuntimeVerification, assertVerificationExecutor } from './verify-runtime-task.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration, account, region, INFRA_REPOSITORY } from './deployment-contract.mjs';
+import { qualifiedWorkflowPaths } from './operation-boundaries.mjs';
 export { validateDeploymentRecord, assertObservedMatchesDeployment } from './deployment-contract.mjs';
 const execute = promisify(execFile);
 const outputMap = stack => Object.fromEntries((stack.Outputs ?? []).map(item => [item.OutputKey, item.OutputValue]));
@@ -108,7 +109,7 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
   const runtime = await runRuntimeVerification({ io, outputs: platform, selector, manifest: selected.manifest, schema: selected.schema, infraSha, env });
   const snapshot = { stacks, observed: { service_sha: health.service_commit, image_digest: health.image_digest, ecs, lambdas,
     policy_content_sha256: runtime.policy_content_sha256, queue_config_sha256: contentHash(queueConfig), client_sha: client.source_commit, endpoints }, schema: runtime.schema };
-  validateSnapshot(snapshot);
+  validateSnapshot(snapshot, { infraWorkflows: qualifiedWorkflowPaths });
   // End the observation with stack-version checks to detect a deployment crossing
   // the bounded task window; E2E independently repeats the full snapshot after suite.
   for (const [name, original] of actualStacks) {

@@ -40,22 +40,46 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 
 | Entry point | Purpose |
 | --- | --- |
-| [runtime.yml](.github/workflows/runtime.yml) | Manual protected-main Beta deployment, migration, verification, lifecycle, observation and tester-allowlist operations |
+| [runtime.yml](.github/workflows/runtime.yml) | Fixed qualified `observe`; preserves the existing E2E trusted v2 producer interface; starts an ECS verification task |
+| [beta-observe.yml](.github/workflows/beta-observe.yml) | Fixed AWS read-only state/SSM status; usable with activation disabled; no tasks or schema qualification |
+| [beta-lifecycle.yml](.github/workflows/beta-lifecycle.yml) | Manager-owned `start` / `stop` with the existing coordinated sequence |
+| [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release` |
+| [beta-schema.yml](.github/workflows/beta-schema.yml) | Selected-image `migrate` / `verify` tasks |
+| [beta-admission.yml](.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `close-admission`; status still starts tasks |
 | [bin/infra.ts](bin/infra.ts), `appScope=foundation` | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `appScope=billing` | Separate account billing scope in `us-east-1`; application resources are not synthesized |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
 | [observe-deployment.mjs](scripts/observe-deployment.mjs) | Authenticate deployed templates, artifacts, configuration, schema and application identities |
 | [production.yml](.github/workflows/production.yml) | Future Production scaffold with a pre-AWS blocker until a separately reviewed onboarding PR completes its contract |
 
-Every Beta operation requires protected exact main source, an explicit operation,
-committed selection/hash, reviewed stack sources, identity phase and retention. Repository-local Actions concurrency serializes Infra jobs; separate
+Every Beta entry requires exact reviewed main, protected `beta`, committed
+selection/hash, reviewed stack sources/hash and complete native release/publisher
+verification before AWS credentials. Only deployment/lifecycle expose explicit
+identity phase and retention inputs; other entries fix a protected source context
+without asserting observed IAM state or changing CFN. Only admission accepts
+tester payloads. All task/deployment entries require `ENABLE_BETA_DEPLOY=true`;
+read-only state remains available when false. Repository-local Actions concurrency serializes Infra jobs; separate
 Client and E2E writers still require scheduling coordination and verified cessation.
-Deployment and runtime credentials are distinct. The current CDK CloudFormation
+Deployment and runtime credentials are distinct, with operation-specific STS
+session restrictions and source/IO guards. Final qualification assumes another
+restricted runtime session permitting only the artifact-verifier task and its
+verification/execution PassRole. The read-only session has no ECS or PassRole
+permissions. Existing OIDC trust identifies Infra/environment, not workflow;
+these source/session boundaries do not create an IAM-enforced workflow trust
+boundary or restrict the capabilities of existing task roles. The current CDK CloudFormation
 execution role uses `AdministratorAccess` without a permissions boundary, so the
 deployment chain has account-wide effective authority; the dedicated role names
 do not establish Beta resource isolation.
 Production activation variables cannot bypass its source blocker; keep both
 deployment/readiness gates disabled through #54.
+
+All six manual entries share `anywear-infra-runtime` without cancellation.
+Only `runtime.yml` produces the legacy `anywear_infra_deployment` v2 accepted by
+E2E. Other task families emit `anywear_infra_family_observation` with their actual
+workflow path; this is not an accepted E2E deployment input. Read-only observation
+emits sanitized `anywear_infra_state` inside its operation record and makes no
+DB/policy/schema claim. See the [Beta runbook](docs/runbooks/beta-infrastructure.md)
+for dispatch schemas, permissions, lifecycle authority and recovery.
 
 The accepted #54 IAM boundary is deliberately scoped: the named legacy Beta role
 retains deny-only trust and zero inline or attached grants, while the inherited

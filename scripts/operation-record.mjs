@@ -1,10 +1,12 @@
 import { canonicalJson, sha256, SHA, matches } from './json-contract.mjs';
+import { operationBoundary } from './operation-boundaries.mjs';
 
 export function createOperationRecord({ env, selector, reviewedStackSources }) {
   matches(env.GITHUB_SHA, SHA, 'operation executor source');
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || !Array.isArray(reviewedStackSources) || reviewedStackSources.length !== 4) throw new Error('Operation provenance unavailable');
-  return { schema_version: 2, record_type: 'anywear_infra_operation', operation: env.INFRA_OPERATION,
-    executor: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: '.github/workflows/runtime.yml',
+  const boundary = operationBoundary(env);
+  return { schema_version: 2, record_type: 'anywear_infra_operation', operation: env.INFRA_OPERATION, family: boundary.family,
+    executor: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: boundary.workflow,
       run_id: Number(env.GITHUB_RUN_ID), run_attempt: Number(env.GITHUB_RUN_ATTEMPT) },
     context: { account: env.AWS_ACCOUNT_ID, region: env.AWS_REGION, identity_phase: env.INFRA_IDENTITY_PHASE, retention_protection: env.INFRA_RETENTION_PROTECTION === 'true' },
     selection: { file: env.SELECTION_FILE, sha256: sha256(canonicalJson(selector)), release: selector.release,

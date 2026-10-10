@@ -14,15 +14,16 @@ import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runCloseAdmission } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
+import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
+import { observeBetaState } from './observe-beta-state.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const mutations = new Set(['register-task-definition', 'run-task', 'deregister-task-definition', 'put-parameter', 'put-retention-policy']);
 export function validateOperationInputs(env = process.env) {
-  if (!['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'migrate', 'verify', 'start', 'stop', 'observe', 'tester-status', 'tester-add', 'tester-replace', 'close-admission', 'restore-release'].includes(env.INFRA_OPERATION)) throw new Error('Unknown Infra operation');
+  const boundary = operationBoundary(env);
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
     || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
-    || env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main' || env.ENABLE_BETA_DEPLOY !== 'true') throw new Error('Protected Infra main executor and activation required');
+    || !boundary.readOnly && env.ENABLE_BETA_DEPLOY !== 'true') throw new Error('Protected Infra main executor and activation required');
   if (env.AWS_ACCOUNT_ID !== '650880818323' || env.AWS_REGION !== 'ap-east-1') throw new Error('Unexpected account/region');
   if (!['legacy', 'roles-added', 'retired'].includes(env.INFRA_IDENTITY_PHASE)) throw new Error('Explicit identity phase required');
   if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
@@ -35,6 +36,10 @@ export function validateOperationInputs(env = process.env) {
   if (env.INFRA_OPERATION.startsWith('tester-')) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
     if (env.INFRA_OPERATION === 'tester-status' && payload !== '[]') throw new Error('Tester status accepts no mutation payload');
+  }
+  if (!boundary.workflow.endsWith('beta-admission.yml') && env.TESTER_EMAILS !== undefined && env.TESTER_EMAILS !== '[]') throw new Error('Tester payload belongs only to admission');
+  for (const key of ['RUNTIME_DRILL_RUN_SCOPE', 'RUNTIME_DRILL_CHECKPOINT_PROTOCOL', 'LIFECYCLE_EVIDENCE_RUN_SCOPE', 'LIFECYCLE_EVIDENCE_ASYNC']) {
+    if (env[key]) throw new Error('Experimental task scopes are not ordinary Beta workflow inputs');
   }
   return { source_sha: env.GITHUB_SHA, operation: env.INFRA_OPERATION, selection_file: env.SELECTION_FILE, selection_sha256: env.SELECTION_SHA256 };
 }
@@ -72,7 +77,16 @@ function assertWorkloadParameterReadback(stack, revision) {
   }
   return observed;
 }
-export async function credentialEnvironment(kind, env = process.env) {
+export function cleanAwsEnvironment(env) {
+  const result = { ...env };
+  for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN',
+    'AWS_PROFILE', 'AWS_DEFAULT_PROFILE', 'AWS_ROLE_ARN', 'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONTAINER_AUTHORIZATION_TOKEN', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE']) delete result[key];
+  return { ...result, AWS_CONFIG_FILE: '/dev/null', AWS_SHARED_CREDENTIALS_FILE: '/dev/null', AWS_EC2_METADATA_DISABLED: 'true' };
+}
+export async function credentialEnvironment(kind, env = process.env, purpose = 'operation', { requestToken = fetch, run = execute } = {}) {
+  validateOperationInputs(env);
+  const policy = sessionPolicy(kind, env, purpose);
   const role = `arn:aws:iam::650880818323:role/beta-infra-${kind}-role`;
   const configured = env[kind === 'deploy' ? 'INFRA_DEPLOY_ROLE_ARN' : 'INFRA_RUNTIME_ROLE_ARN'];
   if (configured !== role) throw new Error('Dedicated Infra role is not configured');
@@ -80,37 +94,51 @@ export async function credentialEnvironment(kind, env = process.env) {
   const request = new URL(env.ACTIONS_ID_TOKEN_REQUEST_URL);
   if (request.protocol !== 'https:' || !request.hostname.endsWith('.actions.githubusercontent.com')) throw new Error('Unexpected OIDC request endpoint');
   request.searchParams.set('audience', 'sts.amazonaws.com');
-  const response = await fetch(request, { headers: { Authorization: `Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` }, signal: AbortSignal.timeout(15_000) });
+  const response = await requestToken(request, { headers: { Authorization: `Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` }, signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error('OIDC token retrieval failed');
   const token = (await response.json()).value;
   if (typeof token !== 'string' || !token) throw new Error('OIDC token missing');
-  const assumed = parseJson((await execute('aws', ['sts', 'assume-role-with-web-identity', '--role-arn', role,
-    '--role-session-name', `infra-${kind}-${env.GITHUB_RUN_ID}`, '--web-identity-token', token, '--duration-seconds', '3600', '--output', 'json'],
-    { timeout: 60_000, maxBuffer: 1024 * 1024 })).stdout);
+  let assumed;
+  try {
+    assumed = parseJson((await run('aws', ['sts', 'assume-role-with-web-identity', '--role-arn', role,
+      '--role-session-name', `infra-${kind}-${env.GITHUB_RUN_ID}`, '--web-identity-token', token, '--policy', policy, '--duration-seconds', '3600', '--output', 'json'],
+      { env: cleanAwsEnvironment(env), timeout: 60_000, maxBuffer: 1024 * 1024 })).stdout);
+  } catch {
+    // execFile errors include token-bearing arguments; keep them out of logs.
+    throw new Error('Dedicated restricted STS assumption failed');
+  }
   if (!assumed.AssumedRoleUser?.Arn?.startsWith(`arn:aws:sts::650880818323:assumed-role/beta-infra-${kind}-role/`)) throw new Error('Dedicated assumed principal mismatch');
   const credentials = assumed.Credentials;
-  return { ...env, AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
+  return { ...cleanAwsEnvironment(env), AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
 }
-export async function createRuntimeIo(selector, directory, env = process.env, record, { trustedInfraRoot = root, run = execute, assume = credentialEnvironment } = {}) {
+export async function createRuntimeIo(selector, directory, env = process.env, record, { trustedInfraRoot = root, run = execute, assume = credentialEnvironment, purpose = 'operation' } = {}) {
   const credentials = new Map();
   const check = async () => { validateOperationInputs(env); await loadCommittedSelection(selectionBinding(env, trustedInfraRoot)); };
   const roleEnv = async kind => {
     await check();
-    if (!credentials.has(kind) || Date.now() - credentials.get(kind).at > 50 * 60_000) {
-      credentials.set(kind, { promise: assume(kind, env), at: Date.now() });
+    sessionPolicy(kind, env, purpose);
+    const key = `${kind}:${purpose}`;
+    if (!credentials.has(key) || Date.now() - credentials.get(key).at > 50 * 60_000) {
+      credentials.set(key, { promise: assume(kind, env, purpose), at: Date.now() });
     }
-    const entry = credentials.get(kind);
+    const entry = credentials.get(key);
     try { return await entry.promise; }
-    catch (error) { if (credentials.get(kind) === entry) credentials.delete(kind); throw error; }
+    catch (error) { if (credentials.get(key) === entry) credentials.delete(key); throw error; }
   };
   const io = {
     region: 'ap-east-1', now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-    async aws(args) {
-      if (mutations.has(args[1])) await check();
-      const awsEnv = await roleEnv('runtime');
+    async aws(args, awsRegion) {
+      assertAwsAllowed(env, args, purpose);
+      if (args[0] === 'ecs' && args[1] === 'register-task-definition') {
+        const definition = parseJson(args[args.indexOf('--cli-input-json') + 1]);
+        if (definition.containerDefinitions?.length !== 1
+          || definition.containerDefinitions[0].image !== `${selector.image.repository_uri}@${selector.image.digest}`) throw new Error('Task registration must retain the selected immutable image');
+      }
+      if (awsRegion) args = [...args, '--region', awsRegion];
       const explicitRegion = args.indexOf('--region');
       if (explicitRegion >= 0 && !['ap-east-1', 'us-east-1'].includes(args[explicitRegion + 1])) throw new Error('Unexpected operation region');
+      const awsEnv = await roleEnv('runtime');
       const result = await run('aws', [...args, ...(explicitRegion < 0 ? ['--region', 'ap-east-1'] : []), '--output', 'json'], { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
       const observed = result.stdout.trim() ? parseJson(result.stdout) : {};
       if (args[0] === 'ecs' && args[1] === 'register-task-definition') {
@@ -123,6 +151,8 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       return observed;
     },
     async oneShot(role, revision, argument = '', payload) {
+      if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
+      assertOneShotAllowed(env, role, argument, payload);
       await check();
       if (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha) throw new Error('Lifecycle selected image differs from deployed revision');
       const awsEnv = await roleEnv('runtime');
@@ -161,6 +191,8 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       }
     },
     async deploy(stack, active, revision) {
+      if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
+      assertDeployAllowed(env, stack);
       await check();
       if (['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'].includes(stack)) {
         const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
@@ -189,6 +221,11 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
     },
     recordRestoreStage(event) { record?.events.push({ type: 'restore-stage', ...event }); },
     recordRestoreState(observed) { record?.events.push({ type: 'restore-state', ...observed }); },
+    async http(url) {
+      const response = await fetch(url, { headers: { 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) throw new Error('Deployed application identity unavailable');
+      return parseJson(Buffer.from(await response.arrayBuffer()));
+    },
     async verifyHealth(url, revision) {
       const deadline = Date.now() + 600_000;
       while (Date.now() < deadline) {
@@ -214,6 +251,20 @@ export async function runOperation(env = process.env) {
   for (const row of record.reviewed_stack_sources) {
     const template = (await io.aws(['cloudformation', 'get-template', '--stack-name', row.stack_name, '--template-stage', 'Original', '--region', row.region])).TemplateBody;
     record.original_stack_templates.push({ stack_name: row.stack_name, region: row.region, template_sha256: sha256(canonicalJson(typeof template === 'string' ? parseJson(template) : template)) });
+  }
+  if (env.INFRA_OPERATION === 'state') {
+    try { record.state_observation = await observeBetaState(io); }
+    catch (error) { record.state_observation = error.observedState; throw error; }
+    finally {
+      record.events.push({ type: 'final-beta-activity', ...Object.fromEntries((record.state_observation?.stacks ?? []).flatMap(stack => {
+        const key = stack.stack_name.includes('Platform') ? 'platform' : 'workload';
+        return [[`${key}_active`, stack.beta_active], [`${key}_status`, stack.status]];
+      })) });
+    }
+    record.final_observation = 'not-applicable';
+    record.result = 'succeeded';
+    if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, 'requires_qualification=false\n');
+    return;
   }
   const prior = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
   const priorRevision = workloadRevision(prior);
@@ -268,7 +319,7 @@ export async function runOperation(env = process.env) {
     [`${key}_status`, stack?.StackStatus ?? 'unavailable'],
   ])) });
   const finalActive = betaDeploymentActivity(finalStacks.platform, finalStacks.workload);
-  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `beta_active=${finalActive}\n`);
+  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `beta_active=${finalActive}\nrequires_qualification=${finalActive}\n`);
   if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}; committed selection ${env.SELECTION_FILE}@${env.SELECTION_SHA256}.\n`);
   record.result = 'succeeded';
   } catch (error) { record.result = 'failed'; throw error; }

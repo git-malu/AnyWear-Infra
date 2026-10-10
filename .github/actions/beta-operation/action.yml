@@ -1,0 +1,73 @@
+name: Reviewed Beta operation
+description: Verify reviewed source and immutable Service inputs before family-restricted AWS sessions
+inputs:
+  app_private_key:
+    required: true
+    description: Protected read-only Service App key
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - run: npm ci
+      shell: bash
+    - name: Validate operation family, committed source and stack provenance before credentials
+      shell: bash
+      run: |
+        mkdir -p deployment-evidence
+        node scripts/check-operation.mjs
+        node scripts/check-stack-sources.mjs
+    - name: Check native release verification CLI before credentials
+      shell: bash
+      run: |
+        gh --version | tee deployment-evidence/github-cli-version.txt
+        gh release verify --format json --help > /dev/null
+        gh release verify-asset --format json --help > /dev/null
+    - name: Create read-only private artifact token
+      id: app
+      uses: actions/create-github-app-token@v3
+      with:
+        app-id: 3346940
+        private-key: ${{ inputs.app_private_key }}
+        owner: git-malu
+        repositories: AnyWear-Service
+        permission-contents: read
+        permission-actions: read
+        permission-attestations: read
+    - name: Execute selected operation with restricted OIDC sessions
+      id: operation
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.app.outputs.token }}
+      run: node scripts/runtime-operation.mjs
+    - name: Observe final authenticated deployment with a restricted verification session
+      id: observation
+      if: steps.operation.outputs.requires_qualification == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.app.outputs.token }}
+      run: node scripts/observe-operation.mjs
+    - name: Preserve exact final observation record
+      if: steps.operation.outputs.requires_qualification == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+        path: deployment-evidence/deployment-record.json
+        retention-days: 90
+        if-no-files-found: error
+    - name: Record final observation outcome
+      if: always()
+      shell: bash
+      env:
+        OPERATION_OUTCOME: ${{ steps.operation.outcome }}
+        OBSERVATION_OUTCOME: ${{ steps.observation.outcome }}
+      run: node scripts/finalize-operation.mjs
+    - name: Preserve operation and recovery evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
+        path: deployment-evidence/operation-record.json
+        retention-days: 90
+        if-no-files-found: warn
