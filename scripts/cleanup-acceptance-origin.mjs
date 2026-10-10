@@ -43,6 +43,7 @@ export function assertBootstrapArtifact(artifact, origin, kind) {
   if (artifact.id !== origin.artifact_id || artifact.expired !== false || artifact.name !== `beta-cleanup-acceptance-${kind}-${origin.run_id}-${origin.run_attempt}`
     || artifact.digest !== `sha256:${origin.artifact_sha256}` || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 1 || artifact.size_in_bytes > 2 * 1024 * 1024
     || artifact.workflow_run?.id !== origin.run_id || artifact.workflow_run.head_sha !== origin.source_sha || artifact.workflow_run.head_branch !== 'main'
+    || artifact.workflow_run.repository_id !== 1317091305 || artifact.workflow_run.head_repository_id !== 1317091305
     || !timestamp(artifact.created_at) || !timestamp(artifact.expires_at)
     || Date.parse(artifact.expires_at) <= Date.now()) throw new Error('Exact unexpired bootstrap artifact/digest required');
 }

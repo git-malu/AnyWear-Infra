@@ -36,8 +36,8 @@ coherent Service image. Fixture execution requires a final committed four-stack
 map with explicit SHAs and rejects every `@executor`. Foundation lifecycle,
 Billing and Client publication are outside this operation.
 
-Issue #104's finalizer repair and truthful gate-false acceptance independently
-block Deployment. Fixture source checks do not release that runtime gate.
+Deployment requires issue #104's reviewed finalizer repair and truthful gate-false
+acceptance. Fixture source checks do not satisfy that independent prerequisite.
 
 ## Fixed authority and inputs
 

@@ -44,6 +44,7 @@ test('bootstrap origin/run/artifact rejects incomplete, unprotected, reused or e
   }
   for (const mutate of [a => a.expired = true, a => a.expires_at = '2000-01-01T00:00:00Z', a => delete a.created_at,
     a => a.digest = `sha256:${'0'.repeat(64)}`, a => a.size_in_bytes = 2 * 1024 * 1024 + 1,
+    a => a.workflow_run.repository_id++, a => a.workflow_run.head_repository_id++,
     a => a.workflow_run.head_branch = 'candidate', a => a.name += '-reused']) {
     const bad = structuredClone(fixture.bootstrapArtifact); mutate(bad); assert.throws(() => assertBootstrapArtifact(bad, fixture.origin, 'bootstrap'));
   }

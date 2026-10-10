@@ -39,7 +39,8 @@ export function cleanupAcceptanceBootstrap() {
     repository: repo, head_repository: repo, created_at: '2026-10-10T01:00:00Z', updated_at: '2026-10-10T01:00:06Z' };
   const artifact = (value, kind, created_at) => ({ id: value.artifact_id, name: `beta-cleanup-acceptance-${kind}-123-1`,
     expired: false, digest: `sha256:${value.artifact_sha256}`, size_in_bytes: 5000, created_at,
-    expires_at: '2099-01-01T00:00:00Z', workflow_run: { id: 123, head_sha: producer.source_sha, head_branch: 'main' } });
+    expires_at: '2099-01-01T00:00:00Z', workflow_run: { id: 123, head_sha: producer.source_sha, head_branch: 'main',
+      repository_id: 1317091305, head_repository_id: 1317091305 } });
   const intentArtifact = artifact(intentOrigin, 'intent', '2026-10-10T01:00:02Z');
   const bootstrapArtifact = artifact(origin, 'bootstrap', '2026-10-10T01:00:05Z');
   const accounts = identities.map((identity, index) => ({ email: identity.email, mode: 'worker', status: 'provisioning',
