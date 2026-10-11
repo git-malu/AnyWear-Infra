@@ -168,11 +168,16 @@ export function assertFixtureDefinition(definition, outputs, selector, env) {
     SERVICE_COMMIT_SHA: selector.image.service_sha, IMAGE_DIGEST: selector.image.digest,
     DB_SECRET_ARN: outputs.DatabaseSecretArn, DB_HOST: outputs.DatabaseHost, DB_PORT: outputs.DatabasePort, DB_NAME: outputs.DatabaseName,
     S3_BUCKET_NAME: outputs.WardrobeBucketName, TASK_TRANSPORT: 'sqs', SQS_VTO_QUEUE_URL: outputs.VtoQueueUrl, SQS_AUTO_TAGGING_QUEUE_URL: outputs.AutoTaggingQueueUrl };
+  const logConfiguration = container.logConfiguration;
+  const secretOptions = logConfiguration?.secretOptions;
+  if (secretOptions !== undefined && (!Array.isArray(secretOptions) || secretOptions.length !== 0)) throw new Error('Fixture command/image/environment/log configuration mismatch');
+  const normalizedLogConfiguration = { ...logConfiguration };
+  if (secretOptions !== undefined) delete normalizedLogConfiguration.secretOptions;
   if (Object.values(expected).some(value => typeof value !== 'string' || !value) || container.name !== 'OneShot' || container.essential !== true
     || container.image !== `${selector.image.repository_uri}@${selector.image.digest}` || canonicalJson(container.command) !== canonicalJson(command)
     || canonicalJson(environment) !== canonicalJson(expected) || (container.entryPoint !== undefined && (!Array.isArray(container.entryPoint) || container.entryPoint.length !== 0)) || container.secrets?.length
     || container.mountPoints?.length || definition.volumes?.length || definition.pidMode !== undefined || definition.ipcMode !== undefined
-    || canonicalJson(container.logConfiguration) !== canonicalJson({ logDriver: 'awslogs', options: {
+    || canonicalJson(normalizedLogConfiguration) !== canonicalJson({ logDriver: 'awslogs', options: {
       'awslogs-group': '/anywear/beta/one-shot', 'awslogs-region': 'ap-east-1', 'awslogs-stream-prefix': fixtureFamily } })) throw new Error('Fixture command/image/environment/log configuration mismatch');
   return definition;
 }
