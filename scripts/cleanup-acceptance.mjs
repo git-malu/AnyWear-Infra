@@ -227,6 +227,15 @@ export function assertStoppedFixture(task, env, selector, request) {
   for (const [key, value] of [['cpu', '512'], ['memory', '1024']]) {
     if (observed?.[key] === value) delete observed[key];
   }
+  // ECS describe-tasks includes an empty inference accelerator override list
+  // even when RunTask supplied no accelerator overrides. Non-empty values
+  // remain forbidden because they alter the reviewed fixture execution.
+  const inferenceAcceleratorOverrides = observed?.inferenceAcceleratorOverrides;
+  if (inferenceAcceleratorOverrides !== undefined
+    && (!Array.isArray(inferenceAcceleratorOverrides) || inferenceAcceleratorOverrides.length !== 0)) {
+    throw new Error('Non-empty inference accelerator overrides are forbidden');
+  }
+  if (inferenceAcceleratorOverrides !== undefined) delete observed.inferenceAcceleratorOverrides;
   const container = task?.containers?.[0];
   if (!taskPattern.test(task?.taskArn ?? '') || task.clusterArn !== cluster || task.taskDefinitionArn !== env.FIXTURE_TASK_DEFINITION_ARN
     || task.lastStatus !== 'STOPPED' || task.containers?.length !== 1 || container.name !== 'OneShot' || container.lastStatus !== 'STOPPED'

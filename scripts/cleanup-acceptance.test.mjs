@@ -174,10 +174,13 @@ test('fixed definition rejects image, command, environment, role, volume and log
 test('stopped fixture proof isolates exit, status, identity, digest and forbidden overrides', () => {
   assertStoppedFixture(task, env, selector, request);
   assertStoppedFixture({ ...task, overrides: { ...task.overrides, cpu: '512', memory: '1024' } }, env, selector, request);
+  assertStoppedFixture({ ...task, overrides: { ...task.overrides, inferenceAcceleratorOverrides: [] } }, env, selector, request);
   for (const mutate of [t => t.lastStatus = 'RUNNING', t => t.taskDefinitionArn = `${taskDefinitionArn}0`, t => t.clusterArn += '0',
     t => t.containers[0].exitCode = 1, t => delete t.containers[0].exitCode, t => t.containers[0].lastStatus = 'RUNNING',
     t => t.containers[0].imageDigest += '0', t => t.containers[0].name = 'Other', t => t.containers.push(t.containers[0]),
     t => t.overrides.cpu = '1024', t => t.overrides.memory = '2048', t => t.overrides.taskRoleArn = platform.CleanupTaskRoleArn,
+    t => t.overrides.inferenceAcceleratorOverrides = [{ deviceName: 'device', deviceType: 'device' }],
+    t => t.overrides.inferenceAcceleratorOverrides = {},
     t => t.overrides.containerOverrides[0].environment = [{ name: 'STAGE', value: 'prod' }],
     t => t.overrides.containerOverrides[0].command[2] = 'cleanup']) {
     const bad = structuredClone(task); mutate(bad); assert.throws(() => assertStoppedFixture(bad, env, selector, request));
