@@ -566,7 +566,13 @@ describe('Platform and workload safety controls', () => {
     expect(definition).toContain('cleanup_request');
     const policies = resources.filter((resource) => resource.Type === 'AWS::IAM::Policy');
     const e2ePolicy = policies.find((policy) => JSON.stringify(policy.Properties.Roles).includes('beta-e2e-qualification-role'));
-    expect(JSON.stringify(e2ePolicy)).toContain('states:StartExecution');
+    const startExecution = e2ePolicy.Properties.PolicyDocument.Statement.find((statement: any) =>
+      [statement.Action].flat().includes('states:StartExecution'));
+    expect(startExecution).toBeDefined();
+    expect([startExecution.Resource].flat()).toHaveLength(2);
+    expect(JSON.stringify(startExecution.Resource)).toContain('CleanupOperationStateMachine');
+    expect(JSON.stringify(startExecution.Resource)).toContain('CleanupOperationStateMachineVersion');
+    expect(JSON.stringify(startExecution.Resource)).not.toContain('*');
     expect(JSON.stringify(e2ePolicy)).toContain('states:DescribeExecution');
     expect(JSON.stringify(e2ePolicy)).toContain('states:GetExecutionHistory');
     expect(JSON.stringify(e2ePolicy)).not.toContain('ecs:RunTask');
