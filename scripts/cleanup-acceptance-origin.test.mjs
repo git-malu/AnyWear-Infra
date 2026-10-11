@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalJson } from './json-contract.mjs';
-import { parseBootstrapOrigin, assertBootstrapRun, assertBootstrapArtifact, assertBootstrapManifests,
+import { parseBootstrapOrigin, canonicalizeBootstrapOrigin, assertBootstrapRun, assertBootstrapArtifact, assertBootstrapManifests,
   assertBootstrapBudget, verifyBootstrapOrigin } from './cleanup-acceptance-origin.mjs';
 import { cleanupAcceptanceBootstrap } from '../test/fixtures/cleanup-acceptance-bootstrap.mjs';
 
@@ -48,6 +48,16 @@ test('bootstrap origin/run/artifact rejects incomplete, unprotected, reused or e
     a => a.workflow_run.head_branch = 'candidate', a => a.name += '-reused']) {
     const bad = structuredClone(fixture.bootstrapArtifact); mutate(bad); assert.throws(() => assertBootstrapArtifact(bad, fixture.origin, 'bootstrap'));
   }
+});
+
+test('workflow-boundary origin canonicalization preserves exact validated fields', () => {
+  const reordered = JSON.stringify(fixture.origin);
+  const canonical = canonicalizeBootstrapOrigin(reordered);
+  assert.equal(canonical, canonicalJson(fixture.origin));
+  assert.deepEqual(parseBootstrapOrigin(canonical), fixture.origin);
+  assert.equal(canonicalizeBootstrapOrigin(` ${reordered}`), canonical);
+  for (const value of [JSON.stringify({ ...fixture.origin, extra: true }), JSON.stringify({ ...fixture.origin, run_id: '123' }),
+    reordered.replace('"run_id":123', '"run_id":123,"run_id":123'), 'x'.repeat(2049)]) assert.throws(() => canonicalizeBootstrapOrigin(value));
 });
 
 test('bootstrap binds creation timing, exact captured UUIDs, scope, frozen tuple and cleanup bytes', () => {
