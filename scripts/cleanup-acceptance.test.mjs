@@ -99,6 +99,10 @@ test('read and run STS sessions are independent, bounded and omit broad runtime 
   assert.ok(Buffer.byteLength(read) <= 2048); assert.ok(Buffer.byteLength(run) <= 2048);
   assert.doesNotMatch(read, /RunTask|PassRole|Register|PutParameter|StopTask/);
   assert.doesNotMatch(run, /Register|Deregister|StopTask|ssm:|states:|cloudformation:|ecr:|logs:/);
+  const readPolicy = JSON.parse(read);
+  const taskDefinitionRead = readPolicy.Statement.find(statement => statement.Action === 'ecs:DescribeTaskDefinition');
+  assert.equal(taskDefinitionRead.Resource, '*');
+  assert.deepEqual(taskDefinitionRead.Condition, { StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } });
   const policy = JSON.parse(run);
   assert.equal(policy.Statement[0].Resource, taskDefinitionArn);
   assert.deepEqual(policy.Statement[1].Resource, [platform.CleanupTaskRoleArn, platform.OneShotExecutionRoleArn]);

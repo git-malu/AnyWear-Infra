@@ -92,10 +92,13 @@ export function fixtureSessionPolicy(kind, env, roles) {
   if (!definitionPattern.test(env.FIXTURE_TASK_DEFINITION_ARN ?? '')) throw new Error('Exact fixture revision required');
   const statement = (Action, Resource, Condition) => ({ Effect: 'Allow', Action, Resource, ...(Condition ? { Condition } : {}) });
   const clusterCondition = { ArnEquals: { 'ecs:cluster': cluster } };
+  const regionalCondition = { StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } };
   const statements = kind === 'read' ? [
     statement(['cloudformation:DescribeStacks', 'cloudformation:GetTemplate'], stackNames.map(stackArn)),
     statement('ssm:GetParameters', admissionArns),
-    statement('ecs:DescribeTaskDefinition', env.FIXTURE_TASK_DEFINITION_ARN),
+    // ECS DescribeTaskDefinition does not support resource-level permissions;
+    // retain the regional boundary while using the required wildcard resource.
+    statement('ecs:DescribeTaskDefinition', '*', regionalCondition),
     statement('ecs:ListTasks', '*', clusterCondition),
     statement('ecs:DescribeTasks', 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/*', clusterCondition),
     statement('logs:GetLogEvents', logArn),
