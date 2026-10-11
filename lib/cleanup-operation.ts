@@ -204,7 +204,10 @@ export class CleanupOperation extends Construct {
     const executionArn = cdk.Stack.of(this).formatArn({ service: 'states', resource: 'execution',
       resourceName: 'beta-anywear-tester-cleanup:*', arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME });
     e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-      actions: ['states:StartExecution'], resources: [this.stateMachineVersion.attrArn],
+      // Step Functions authorizes StartExecution against the unqualified
+      // state-machine ARN even when the caller submits the reviewed version
+      // ARN. Keep both exact ARNs; neither resource is wildcarded.
+      actions: ['states:StartExecution'], resources: [this.stateMachine.stateMachineArn, this.stateMachineVersion.attrArn],
     }));
     e2e.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['states:DescribeExecution', 'states:GetExecutionHistory'], resources: [executionArn],
