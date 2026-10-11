@@ -148,6 +148,14 @@ test('credential failures omit secret argv and reject unrecognized session kinds
   }), error => error.message === 'Fixture OIDC request failed' && !error.cause && !error.stack.includes('secret-request'));
 });
 
+test('fixed definition accepts absent or empty entryPoint and rejects non-empty drift', () => {
+  assertFixtureDefinition(definition, platform, selector, env);
+  const empty = structuredClone(definition); empty.containerDefinitions[0].entryPoint = [];
+  assertFixtureDefinition(empty, platform, selector, env);
+  const invalid = structuredClone(definition); invalid.containerDefinitions[0].entryPoint = ['sh'];
+  assert.throws(() => assertFixtureDefinition(invalid, platform, selector, env));
+});
+
 test('fixed definition rejects image, command, environment, role, volume and log drift', () => {
   assertFixtureDefinition(definition, platform, selector, env);
   for (const mutate of [d => d.taskRoleArn = platform.OneShotExecutionRoleArn, d => d.family = 'other', d => d.cpu = '1024',
