@@ -74,6 +74,9 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
+      - name: Canonicalize validated bootstrap origin
+        run: |
+          node --input-type=module -e 'import { canonicalizeBootstrapOrigin } from "./scripts/cleanup-acceptance-origin.mjs"; process.stdout.write(`BOOTSTRAP_ORIGIN=${canonicalizeBootstrapOrigin(process.env.BOOTSTRAP_ORIGIN)}\n`);' >> "$GITHUB_ENV"
       - name: Validate dedicated executor and committed inputs before credentials
         run: node scripts/cleanup-acceptance.mjs --preflight
       - name: Check native release verification capability before credentials

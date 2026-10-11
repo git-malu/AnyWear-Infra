@@ -315,6 +315,7 @@ test('result requires one complete matching committed marker across bounded stab
 test('dedicated workflow keeps its own default-closed gate, queue, executor and read-only artifact access', async () => {
   const workflow = await readFile(new URL('../.github/workflows/beta-cleanup-acceptance.yml', import.meta.url), 'utf8');
   assert.match(workflow, /ENABLE_BETA_CLEANUP_ACCEPTANCE == 'true'/);
+  assert.ok(workflow.indexOf('Canonicalize validated bootstrap origin') < workflow.indexOf('--preflight'));
   assert.match(workflow, /group: anywear-infra-runtime\s+cancel-in-progress: false/);
   assert.match(workflow, /environment: beta/);
   assert.match(workflow, /permission-actions: read/);
