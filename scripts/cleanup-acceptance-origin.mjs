@@ -23,6 +23,13 @@ export function parseBootstrapOrigin(json) {
   return origin;
 }
 
+export function canonicalizeBootstrapOrigin(json) {
+  const origin = exact(parseJson(json), originFields, 'bootstrap origin');
+  validateOrigin(origin);
+  if (typeof json !== 'string' || Buffer.byteLength(json) > 2048) throw new Error('Bounded bootstrap origin required');
+  return canonicalJson(origin);
+}
+
 function validateOrigin(origin) {
   if (origin.repository !== repository || origin.workflow_path !== workflow || !SHA.test(origin.source_sha ?? '')
     || !HASH.test(origin.artifact_sha256 ?? '') || !HASH.test(origin.manifest_sha256 ?? '')) throw new Error('Exact protected E2E origin and digests required');
