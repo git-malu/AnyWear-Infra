@@ -170,7 +170,7 @@ export function assertFixtureDefinition(definition, outputs, selector, env) {
     S3_BUCKET_NAME: outputs.WardrobeBucketName, TASK_TRANSPORT: 'sqs', SQS_VTO_QUEUE_URL: outputs.VtoQueueUrl, SQS_AUTO_TAGGING_QUEUE_URL: outputs.AutoTaggingQueueUrl };
   if (Object.values(expected).some(value => typeof value !== 'string' || !value) || container.name !== 'OneShot' || container.essential !== true
     || container.image !== `${selector.image.repository_uri}@${selector.image.digest}` || canonicalJson(container.command) !== canonicalJson(command)
-    || canonicalJson(environment) !== canonicalJson(expected) || container.entryPoint !== undefined || container.secrets?.length
+    || canonicalJson(environment) !== canonicalJson(expected) || (container.entryPoint !== undefined && (!Array.isArray(container.entryPoint) || container.entryPoint.length !== 0)) || container.secrets?.length
     || container.mountPoints?.length || definition.volumes?.length || definition.pidMode !== undefined || definition.ipcMode !== undefined
     || canonicalJson(container.logConfiguration) !== canonicalJson({ logDriver: 'awslogs', options: {
       'awslogs-group': '/anywear/beta/one-shot', 'awslogs-region': 'ap-east-1', 'awslogs-stream-prefix': fixtureFamily } })) throw new Error('Fixture command/image/environment/log configuration mismatch');
