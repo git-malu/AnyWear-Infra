@@ -23,3 +23,4 @@ cdk.protected.matrix/
 cdk.live-foundation/
 *.zip
 !test/fixtures/placeholder.zip
+.worktree/
