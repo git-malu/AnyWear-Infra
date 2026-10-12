@@ -24,7 +24,7 @@ function fixture(overrides = {}) {
   return { io, calls };
 }
 
-test('complete stable resource scans preserve terminal failures for manager result reconciliation', async () => {
+test('complete stable resource scans preserve terminal failures for separate result reconciliation', async () => {
   const failed = { ...completed, status: 'FAILED' };
   const { io, calls } = fixture({ 'list-executions': () => ({ executions: [failed] }), 'describe-execution': () => failed });
   const result = await assertCleanupCapabilityQuiescent(io, workload);

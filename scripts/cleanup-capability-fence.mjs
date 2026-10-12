@@ -9,8 +9,8 @@ const taskStates = new Set(['PROVISIONING', 'PENDING', 'ACTIVATING', 'RUNNING', 
 const stackStates = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
 const families = ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup', 'beta-anywear-cleanup-acceptance'];
 
-// This code proves resource cessation only. The manager separately reconciles
-// pending owners and committed/unknown operation results before any replacement.
+// This code proves resource cessation only. Pending owners and committed or
+// unknown operation results require separate reconciliation before replacement.
 export async function assertCleanupCapabilityQuiescent(io, workload) {
   if (!stackStates.has(workload?.StackStatus) || !Array.isArray(workload.Outputs)
     || workload.Outputs.some(row => typeof row?.OutputKey !== 'string' || typeof row.OutputValue !== 'string')) throw new Error('Stable Workload cleanup capability inventory required');

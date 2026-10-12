@@ -29,8 +29,8 @@ npx cdk synth AnyWearFoundationStack -c appScope=foundation -c identityPhase=rol
   -c legacyRoleOwnership=external
 ```
 
-Once the manager accepts that exact source/diff and records the operator/writer
-window, the existing authorized operator can reconcile only Foundation:
+After review of that exact source/diff and recording the operator/writer window,
+the existing authorized operator can reconcile only Foundation:
 
 ```sh
 npx cdk deploy AnyWearFoundationStack --exclusively \
@@ -117,8 +117,8 @@ node scripts/artifact-consumer.mjs \
 There is no publication Actions ZIP, executable candidate/receipt/handshake,
 mandatory issue-comment URL, writer token or expiry field in this path. The
 reviewed selection and actual signed release/publisher checks replace that
-ceremony. This source interface does not authorize the #54 cutover: the manager
-still coordinates one rollout writer, resource cessation and the separately
+ceremony. This source interface does not authorize the #54 cutover, which still
+requires one rollout writer, resource cessation and the separately
 reviewed maintenance/recovery plan. Foundation-only bootstrap remains below its
 existing separately allocated operator boundary and requires no Service artifact.
 
@@ -188,7 +188,7 @@ that the effective repository policy has the same hash.
    put-lifecycle-policy`. Re-read its canonical hash, exact tags and all required
    digests, preview the effective policy again, and verify the policy has not
    changed during preview. Preserve both policy readbacks and preview results.
-5. Under manager-approved Infra execution, `node scripts/ecr-retention.mjs required-images.json`
+5. Under explicitly authorized Infra execution, `node scripts/ecr-retention.mjs required-images.json`
    validates the same rules/tags/bounds and completed preview, using
    `ECR_RETENTION_VERIFIED_POLICY_SHA256` to bind the approved hash. The required
    file is an array of exact `service_sha`/`digest` objects. The runtime role can
@@ -247,7 +247,7 @@ actual outputs/statuses and admission state, preserve partial/stopped state, and
 select a separately reviewed start after resolving the failure. Native CFN
 rollback may leave active or mixed state; requested false flags are not evidence.
 
-Current dispatches use `beta-lifecycle.yml` for manager-owned start/stop and
+Current dispatches use `beta-lifecycle.yml` for start/stop and
 `beta-deploy.yml` for maintenance or `restore-release`. Restore never migrates,
 starts stopped stacks or reopens admission; stop failures preserve actual partial
 state and still require a separate explicit start decision. Inactive CDK deploys

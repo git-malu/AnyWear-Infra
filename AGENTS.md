@@ -6,8 +6,6 @@ AnyWear-Service remains the application, migration, verification and immutable
 artifact publisher. Earlier Service-side bootstrap authority is historical
 evidence only and must not be relabeled as an Infra-produced deployment.
 
-- Follow the [AnyWear kanban workflow](https://github.com/git-malu/AnyWear/blob/main/.agents/skills/kanban-workflow/SKILL.md)
-  and its [GitHub operations reference](https://github.com/git-malu/AnyWear/blob/main/.agents/skills/kanban-workflow/references/github-operations.md).
 - Read the accepted ownership ADR and deployment contracts before modifying
   infrastructure. Keep proposed targets separate from observed implementation.
 - Preserve existing stack names, construct/logical IDs, physical resources,
@@ -53,12 +51,12 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   `runtime.yml` is fixed task-mutating qualified observation for E2E compatibility;
   `beta-observe.yml` is read-only state with restricted STS credentials and works
   with activation disabled; lifecycle, deployment/recovery, schema and admission
-  each reject cross-family operations before credentials. Only the manager may
-  dispatch lifecycle or change Beta switches; start/reactivation requires explicit
-  user consent. Preserve session restrictions for final qualification, actual
-  workflow record identity and the existing v2 E2E producer boundary. Existing
-  OIDC trust is repository/environment scoped, not workflow scoped; source/session
-  checks do not narrow inherited task-role or downstream CDK authority.
+  each reject cross-family operations before credentials. Start/reactivation
+  requires explicit user consent. Preserve session restrictions for final
+  qualification, actual workflow record identity and the existing v2 E2E producer
+  boundary. Existing OIDC trust is repository/environment scoped, not workflow
+  scoped; source/session checks do not narrow inherited task-role or downstream
+  CDK authority.
   Initial `appScope=foundation`
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
@@ -90,10 +88,8 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   even if an activation variable changes. A separately reviewed onboarding PR
   must establish the target account, runtime and verifier contract before removing
   that blocker. Do not add Production roles or broaden bootstrap in #54.
-- Keep one Git writer per physical repository and one deployment writer per
-  environment. Preserve other owners' work and verify cessation before handoff.
-- Delegate independent repository tasks with explicit paths/ownership; review
-  child results before integration. Do not clean shared worktrees.
+- Preserve other contributors' work. Keep one deployment writer per environment
+  and verify that prior mutations have ceased before handoff.
 - Review diffs, run `git diff --check`, and complete repository checks before
   publishing. PR merge alone does not establish deployed acceptance.
 - Never commit credentials, runtime secrets or unredacted cloud diagnostics.

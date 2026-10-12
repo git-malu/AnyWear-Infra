@@ -25,8 +25,8 @@ they do not claim the original signature verifies those synthetic Service inputs
 captured on 2026-10-08 with `gh 2.101.0 (2026-09-15)`, exit 0. The owner's
 retained forensic source is `native/release.json` in
 `anywear-issue54-current-publisher-repair-round-20261008T093000Z/sealed-failure-forensics`.
-All five separate `verify-asset --format json` outputs are byte-identical; the
-manager independently matched the result with gh 2.102.0.
+All five separate `verify-asset --format json` outputs are byte-identical; an
+independent check reproduced the result with gh 2.102.0.
 
 - Raw stdout: 5681 bytes, SHA-256
   `cf0bf9a5550ec9b475cb9b1fea68b793a39a2e640431deb69f075254d23ab0e2`.

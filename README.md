@@ -42,7 +42,7 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 | --- | --- |
 | [runtime.yml](.github/workflows/runtime.yml) | Fixed qualified `observe`; preserves the existing E2E trusted v2 producer interface; starts an ECS verification task |
 | [beta-observe.yml](.github/workflows/beta-observe.yml) | Fixed AWS read-only state/SSM status; usable with activation disabled; no tasks or schema qualification |
-| [beta-lifecycle.yml](.github/workflows/beta-lifecycle.yml) | Manager-owned `start` / `stop` with the existing coordinated sequence |
+| [beta-lifecycle.yml](.github/workflows/beta-lifecycle.yml) | `start` / `stop` with the existing coordinated sequence |
 | [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release` |
 | [beta-schema.yml](.github/workflows/beta-schema.yml) | Selected-image `migrate` / `verify` tasks |
 | [beta-admission.yml](.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `close-admission`; status still starts tasks |

@@ -12,7 +12,7 @@ choose a newer application.
 
 The separately protected [cleanup acceptance fixture](beta-cleanup-acceptance.md)
 records #86's source order, immutable bootstrap proof, narrowed task authority and
-manager-coordinated qualification/recovery boundary.
+qualification/recovery requirements.
 
 The accepted IAM boundary is limited to the named legacy Beta role: its trust is
 deny-only with zero inline or attached grants. The inherited Dev wildcard E2E
@@ -115,7 +115,7 @@ capability before App credentials, and verifies the complete immutable Service
 release/publisher before AWS credentials. All task/deployment entries require
 `ENABLE_BETA_DEPLOY=true`; the read-only observer remains available when false.
 The environment restricts branches to main; no required-reviewer rule is currently
-configured. Manager approval/writer allocation remains a separate operational gate.
+configured. Approval and writer allocation remain separate operational gates.
 
 | Workflow | Dispatch operation | Additional inputs / AWS boundary |
 | --- | --- | --- |
@@ -130,9 +130,10 @@ Every dispatch requires selection file/raw hash and stack-source file/raw hash.
 Non-CDK entries omit identity/retention inputs and fix `retired`/`true` source
 context, which does not change CFN or prove observed IAM/retention state. CDK
 entries accept explicit values without silently choosing a legacy/unprotected
-context. Only the Kanban manager dispatches start/stop or changes activation;
-starting/reactivating Beta requires explicit user consent. Source delivery alone
-does not grant an environment writer or establish runtime acceptance.
+context. Lifecycle dispatches and activation changes require explicit
+authorization; starting/reactivating Beta requires explicit user consent. Source
+delivery alone does not grant an environment writer or establish runtime
+acceptance.
 
 Every STS assumption includes an inline session restriction of at most 2048
 characters. Task register/run/PassRole are limited to the operation's exact
@@ -185,12 +186,12 @@ because no sealed Service release is needed to create the artifact publisher rol
 Issue #95 adds retained Workload parameters without changing lifecycle authority.
 `BetaApiSizingProfile` defaults to `s1` (API CPU 512 / memory 1024 MiB); `s2-api`
 selects CPU 256 / memory 512 MiB together. The S2 profile remains an unqualified
-candidate until the manager records same-image acceptance and recovery evidence.
+candidate until same-image acceptance and recovery evidence are recorded.
 Worker remains CPU 1024 / memory 2048 MiB, and API desired/minimum counts stay 1/1.
 `BetaSizingTelemetry` defaults to `false` and supplies `BETA_SIZING_TELEMETRY`
 to both API and Worker. The selected Service artifact must implement the telemetry
-contract before the manager considers enabling it; Infra source checks alone do
-not establish that application behavior.
+contract, and its behavior must be accepted before enabling it; Infra source checks
+alone do not establish that application behavior.
 
 Only `beta-deploy.yml` exposes `beta_api_sizing_profile=preserve|s1|s2-api` and
 `beta_sizing_telemetry=preserve|enable|disable`, both defaulting to `preserve`.
@@ -202,7 +203,7 @@ with the selected Service SHA/digest exactly matching the observed image. Other
 operations reject overrides before credentials. Fixed `runtime.yml` has no sizing
 or telemetry input. Neither input starts Beta or grants an environment writer.
 
-For a manager-authorized measurement, dispatch the reviewed `beta-deploy.yml`
+For an explicitly authorized measurement, dispatch the reviewed `beta-deploy.yml`
 with `operation=deploy-workload`, the unchanged immutable selection/stack-source
 inputs and explicit profile/telemetry values. Preserve exact parameter readback
 in the `workload-parameter-readback` event. The final authenticated observer also
@@ -218,9 +219,9 @@ restoring S1, or `preserve` when retaining an accepted profile. Verify
 `BetaSizingTelemetry=false`, both actual containers reporting telemetry `false`,
 stable service rollout and the final observer/health result. An ordinary `preserve`
 input or a stop/start cycle does not disable telemetry. If Beta is stopped or its
-state is unknown, preserve that state and request the manager's environment
-decision; never reactivate Beta to restore telemetry. This source delivery has no
-deployment, runtime acceptance or telemetry-off restoration claim.
+state is unknown, preserve that state; never reactivate Beta to restore telemetry.
+This source delivery does not claim deployment, runtime acceptance or telemetry-off
+restoration.
 
 ## Tester and cleanup ownership
 
@@ -290,7 +291,7 @@ truncated proof rejects the cleanup result. E2E receives only the additional
 fixed task-definition/cluster task reads and the two fixed log prefixes; it
 cannot register or run cleanup tasks, pass their roles or change data directly.
 Publishing this capability is source delivery only. A new selected Service
-release containing the wrapper, manager-coordinated active-Beta deployment,
+release containing the wrapper, separately authorized active-Beta deployment,
 authenticated deployed version and E2E qualification remain separate gates.
 
 The named machine, immutable versions and fixed task revisions have CloudFormation
@@ -298,14 +299,15 @@ The named machine, immutable versions and fixed task revisions have CloudFormati
 it does not authorize invocation of a previous capability. Invocation and the
 machine role's task-launch policy grant only the current exact version/revisions.
 Before updating the cleanup capability, its roles/tasks or selected Service,
-the manager must inventory matching executions, execution history and cluster
-tasks, then reconcile every running, unknown or unresolved result. No such
+inventory matching executions, execution history and cluster tasks, then
+reconcile every running, unknown or unresolved result before updating the cleanup
+capability, its roles/tasks or selected Service. No such
 operation may span a capability update: updating the shared machine role can
 revoke the preceding version's exact task grants. If recovery must invoke an
 older retained version after an update, first review an explicit bounded list of
 its exact version/task ARNs and their compatibility; no wildcard, latest-family
 fallback or retention-only claim supplies that authority. Retained resources
-remain in the manager's environment inventory for separately authorized cleanup.
+remain inventoried for separately authorized cleanup.
 
 Immediately before every Platform or Workload CDK call, including start/stop and recovery,
 the runtime checks the exact synthesized cleanup output name and performs two
@@ -317,11 +319,11 @@ admits the exact cleanup machine/execution read ARNs only
 for Platform/Workload deployment, recovery and lifecycle operation sessions.
 Read-only state and final qualification sessions receive no Step Functions
 permissions; neither can replace the cleanup capability or invoke cleanup.
-Historical terminal failures are recorded for the manager's separate mandatory result reconciliation
+Historical terminal failures require separate result reconciliation
 instead of permanently blocking every future deployment. A terminal failure is
 not proof of transaction rollback or successful cleanup recovery. First install
 requires stable Workload output and Original template absence plus cleanup-family
-task cessation; the manager also checks retained orphan machines outside the stack.
+task cessation and inspection of retained orphan machines outside the stack.
 
 ## Admission closure and coherent release recovery
 
@@ -400,7 +402,7 @@ admission and stopped-state readbacks plus Actions logs for interruption/recover
 review; a recovery status alone does not establish those observations. A
 successful recovery does not turn the failed operation into success. Failures
 before record creation can leave no artifact; preserve Actions logs and the
-manager record rather than manufacture a successful operation record.
+operation record rather than manufacture a successful operation record.
 
 For active Beta, the fixed `runtime.yml` observation writes the unchanged
 `anywear_infra_deployment` v2 from actual Original
@@ -417,10 +419,10 @@ Other task families retain the same strict final snapshot but emit
 consumer expansion needs a separately reviewed pin/contract. Run fixed qualified
 observation after coordinated family changes to produce that compatible input.
 Offline source checks do not establish new runtime-interface acceptance. After
-integration, the manager must coordinate gate-disabled read-only observation,
-fixed qualified observation with restricted sessions against the retained tuple,
-and E2E acceptance of the exact resulting legacy record. No AWS resource/template
-deployment is implied by this source split.
+integration, run gate-disabled read-only observation and fixed qualified observation
+with restricted sessions against the retained tuple, then obtain E2E acceptance of
+the exact resulting legacy record. This source split does not imply AWS resource or
+template deployment.
 The read-only observer emits `anywear_infra_state` inside its operation artifact,
 records final activity/status plus sanitized admission counts/hashes, and labels
 qualification Not Applicable. Failed reads retain known partial state and mark

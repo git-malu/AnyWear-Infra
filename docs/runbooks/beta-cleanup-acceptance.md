@@ -3,8 +3,7 @@
 This bounded operator fixture implements [AnyWear #86](https://github.com/git-malu/AnyWear/issues/86).
 Source delivery, immutable Service publication, deployed capability acceptance
 and E2E qualification are separate gates. A merged PR or reviewed map grants no
-environment window. The Kanban manager owns Beta lifecycle controls and the
-environment decision. The fixture refuses anything except stable active
+environment window. The fixture refuses anything except stable active
 Platform/Workload, closed intake and suspended admission.
 
 ## Source and release order
@@ -19,8 +18,8 @@ cloud credentials. Infra consumes immutable artifacts without rebuilding Service
 
 Relative to observed source `ada13617da0280ca9a7da0798577db286e714edc`, the core
 cleanup capability adds nine Platform `PublishOutput` interfaces and log-write
-grants to the existing one-shot execution role. Deploy Platform first in a
-manager-assigned active Beta window after reviewing actual component/template
+grants to the existing one-shot execution role. Deploy Platform first in an
+explicitly authorized active Beta window after reviewing actual component/template
 diffs. `stack-sources/beta-cleanup-86-platform.json` binds only touched Platform
 to `@executor`; other stacks retain their historical producers. After actual
 Platform acceptance, publish a separate reviewed map recording that producer
@@ -44,9 +43,9 @@ acceptance. Fixture source checks do not satisfy that independent prerequisite.
 `.github/workflows/beta-cleanup-acceptance.yml` is separate from the six ordinary
 workflow families. It uses the non-cancelling `anywear-infra-runtime` queue, the
 `beta` environment, protected main source/owner checks and default-closed
-`ENABLE_BETA_CLEANUP_ACCEPTANCE`. The manager opens that dedicated fixture gate
-only for its recorded window and closes it afterwards. It is independent of
-`ENABLE_BETA_DEPLOY` and cannot start or restore Beta.
+`ENABLE_BETA_CLEANUP_ACCEPTANCE`. Keep that dedicated fixture gate closed except
+for an explicitly authorized recorded window, then close it afterwards. This gate
+is independent of `ENABLE_BETA_DEPLOY` and cannot start or restore Beta.
 
 Only `prepare`, `inspect`, `release-task` and `cleanup` are accepted. Inputs name
 the full deployed task ARN, exact Workload source, committed selection/hash,
@@ -85,17 +84,17 @@ timing, and the frozen Service/capability/fixture/selection/stack-map tuple.
 
 1. Bootstrap captures both fresh identities and exact request strings, retaining
    both until teardown.
-2. Manager fixture `prepare`/`inspect` precede an active-task-only refusal run.
-   Manager then authenticates a fresh `inspect` proving both identities unchanged.
+2. Fixture `prepare`/`inspect` precede an active-task-only refusal run. Then
+   authenticate a fresh `inspect` proving both identities unchanged.
    A second `refusals` run performs only the mismatch case, importing the exact
-   active-refusal origin and that fresh inspection. A second manager inspection
+   active-refusal origin and that fresh inspection. A second authenticated inspection
    again proves both unchanged. Both runs retain the same bootstrap and tuple.
 3. That second `inspect` and `release-task` precede qualification. E2E publishes immutable
    operation intent and started/pending evidence, then deliberately ends tracking.
 4. Fresh recovery imports exact preceding evidence and resumes the same execution
    and request, proving committed primary cleanup and repeat safety. No new
    account may be created; the sentinel remains intact.
-5. Manager `inspect` verifies recovery before E2E teardown removes the sentinel
+5. An `inspect` verifies recovery before E2E teardown removes the sentinel
    and closes both leases. Preserve every run/attempt/artifact origin.
 
 ## Result and recovery
@@ -106,17 +105,17 @@ Service emits it only after commit and DB closure. Original/final stack versions
 Workload template, task definition, Platform outputs and admission must match.
 The executor uploads `cleanup-acceptance-operation.json` as
 `beta-cleanup-acceptance-<run>-<attempt>`; E2E authenticates the same protected
-Infra artifact before accepting a manager fixture result.
+Infra artifact before accepting a fixture result.
 
 Uncertain launches or unresolved tasks remain failure evidence. Do not retry
-RunTask or stop a task automatically. The manager accounts for tasks, executions,
-Actions and CFN before a new writer window. The replacement fence includes this
+RunTask or stop a task automatically. Account for tasks, executions, Actions and
+CFN before opening a new writer window. The replacement fence includes this
 fixture family.
 
 Recovery preserves the coherent newly published wrapper/fixture image and
 current capability while source is repaired. Release `407218593` predates both;
 that image under new capability source is incoherent. A historical release/map
 alone proves no rollback. Existing protected E2E account recovery can provide
-manual cleanup only after its authority and result are verified in the manager's
-window. Retire old normal-cleanup grants only after capability, fixture and manual
-fallback acceptance. This source introduces no ordinary cleanup workflow.
+manual cleanup only after its authority and result are verified for an explicitly
+authorized window. Retire old normal-cleanup grants only after capability, fixture
+and manual fallback acceptance. This source introduces no ordinary cleanup workflow.
