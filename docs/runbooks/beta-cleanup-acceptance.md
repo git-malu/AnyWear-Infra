@@ -8,11 +8,11 @@ Platform/Workload, closed intake and suspended admission.
 
 ## Source and release order
 
-`selections/beta-cleanup-86.json` selects Service
-`7b2b75dda984896e473d899493871d29606b2d28`, release `408647894` and image
-`sha256:94ddce8681566c290ea618865d1f69efd5c51f6d013326edd4f17f57edd7abbe`.
+The committed `selections/beta-cleanup-86.json` snapshot selects Service
+`2c9e6582a04e587ad627e2e96191b68069dab876`, release `409515424` and image
+`sha256:f27797f979d6981c03d2818166b9e2a1db0d84539a9a7978f72a9cf5894f0574`.
 The canonical selection SHA-256 is
-`8d9ee463fc32ac3359a536f998b685a02dbce85c654d3ec79d49d2d9d25644eb`.
+`8c93ee1d4618fe3b0e46313fb933b45099773767d0ab9a63c1788f46ef3b4bb6`.
 Native release/asset verification and successful-publisher provenance precede
 cloud credentials. Infra consumes immutable artifacts without rebuilding Service.
 
