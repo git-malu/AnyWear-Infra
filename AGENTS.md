@@ -35,7 +35,7 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   independently reviewed exact source/inputs and operational coordination
   with one writer; these are distinct from repository branch protection.
 - Use `gh` for GitHub and `aws` for AWS. Verify account, profile and region before
-  cloud commands. Run package/build commands here, never in the shell root.
+  cloud commands. Run package/build commands only within this repository.
 - Before AWS mutations, verify protected main/workflow, explicit operation,
   account/region, committed selection/hash, identity phase, retention protection,
   reviewed stack source/hash and rollback inputs. Use one Infra runtime queue.
@@ -96,7 +96,7 @@ evidence only and must not be relabeled as an Infra-produced deployment.
 
 ## Required source checks
 
-Use Node.js 24 and npm here; never run package commands in the AnyWear shell root.
+Use Node.js 24 and npm within this repository for package commands.
 
 ```sh
 npm ci

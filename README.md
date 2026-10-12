@@ -12,7 +12,6 @@ establish AWS deployment or runtime acceptance.
 The accepted [ownership ADR](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/ADR/0021-shared-infrastructure-repository.md)
 assigns shared infrastructure to Infra, immutable application artifacts to Service,
 independent web publishing to Client, and authenticated system qualification to E2E.
-The root AnyWear shell records local submodule pins and does not deploy.
 
 ## Source checks
 
