@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 // Full reviewed fixture resources include exact roles, environment, conditions,
 // retention and image bindings; an action-name match cannot authorize drift.
 const cleanupAcceptanceFixture = JSON.parse(readFileSync(new URL('../test/fixtures/cleanup-acceptance-resources.json', import.meta.url), 'utf8'));
+const cleanupMachineAuthSecretArn = 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cleanup_machine_auth';
+const cleanupMachineAuthPolicyArn = `${cleanupMachineAuthSecretArn}-??????`;
 
 export function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -150,6 +152,35 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
     const betaProfileScope = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta';
     const profileDeclaration = same(after.Parameters?.BetaApiSizingProfile, profileParameter)
       && same(after.Conditions?.BetaApiS2, profileCondition);
+    const betaMachineAuthScope = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta';
+    const policyRoleName = resource?.Properties?.Roles?.length === 1
+      ? before.Resources?.[resource.Properties.Roles[0]?.Ref]?.Properties?.RoleName : undefined;
+    const betaMachineAuthPolicy = betaMachineAuthScope
+      && ['beta-anywear-api-task', 'beta-anywear-api-execution'].includes(policyRoleName)
+      && difference.path === `/Resources/${id}/Properties/PolicyDocument/Statement`
+      && Array.isArray(difference.before) && Array.isArray(difference.after)
+      && difference.before.length === difference.after.length
+      && !JSON.stringify(difference.before).includes(cleanupMachineAuthPolicyArn)
+      && JSON.stringify(difference.after).split(cleanupMachineAuthPolicyArn).length - 1 === 1
+      && (() => {
+        const secretIndex = difference.before.findIndex((statement) => (
+          statement?.Effect === 'Allow'
+          && JSON.stringify(statement?.Action) === JSON.stringify(['secretsmanager:DescribeSecret', 'secretsmanager:GetSecretValue'])
+          && !Array.isArray(statement.Resource)
+        ));
+        if (secretIndex < 0) return false;
+        const afterStatement = difference.after[secretIndex];
+        if (!Array.isArray(afterStatement?.Resource)
+          || afterStatement.Resource.filter((value) => value === cleanupMachineAuthPolicyArn).length !== 1) return false;
+        const stripped = structuredClone(afterStatement);
+        stripped.Resource = stripped.Resource.filter((value) => value !== cleanupMachineAuthPolicyArn);
+        if (stripped.Resource.length === 1) stripped.Resource = stripped.Resource[0];
+        if (!same(stripped, difference.before[secretIndex])) return false;
+        return same(
+          difference.before.filter((_, index) => index !== secretIndex),
+          difference.after.filter((_, index) => index !== secretIndex),
+        );
+      })();
     const apiTasks = Object.entries(after.Resources ?? {}).filter(([candidateId, candidate]) =>
       candidate?.Type === 'AWS::ECS::TaskDefinition' && (candidate.Properties?.Family === 'beta-anywear-api'
         || /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(candidateId)));
@@ -188,6 +219,35 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         containers[0].Environment = entries.filter(entry => entry.Name !== 'BETA_SIZING_TELEMETRY');
         return same(containers, difference.before);
       })();
+    const betaMachineAuthContainer = betaMachineAuthScope
+      && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
+      && resource?.Type === 'AWS::ECS::TaskDefinition'
+      && candidateResource?.Type === 'AWS::ECS::TaskDefinition'
+      && resource.Properties?.Family === 'beta-anywear-api'
+      && candidateResource.Properties?.Family === 'beta-anywear-api'
+      && difference.path === `/Resources/${id}/Properties/ContainerDefinitions`
+      && Array.isArray(difference.before) && difference.before.length === 1
+      && Array.isArray(difference.after) && difference.after.length === 1
+      && (() => {
+        const containers = structuredClone(difference.after);
+        const api = containers[0];
+        const machineSecrets = api?.Secrets?.filter((secret) => (
+          secret?.Name === 'CLEANUP_MACHINE_AUTH_SECRET'
+          && secret?.ValueFrom === cleanupMachineAuthSecretArn
+        )) ?? [];
+        if (machineSecrets.length !== 1) return false;
+        api.Secrets = api.Secrets.filter((secret) => !(
+          secret?.Name === 'CLEANUP_MACHINE_AUTH_SECRET'
+          && secret?.ValueFrom === cleanupMachineAuthSecretArn
+        ));
+        const telemetry = api.Environment?.filter((entry) => entry?.Name === 'BETA_SIZING_TELEMETRY') ?? [];
+        if (telemetry.length > 0) {
+          if (telemetry.length !== 1 || !telemetryDeclaration
+            || !same(telemetry[0], { Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } })) return false;
+          api.Environment = api.Environment.filter((entry) => entry?.Name !== 'BETA_SIZING_TELEMETRY');
+        }
+        return same(containers, difference.before);
+      })();
     const betaS2ApiSize = betaProfileScope && profileDeclaration
       && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
       && resource?.Type === 'AWS::ECS::TaskDefinition'
@@ -212,6 +272,7 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
       || betaS1ReplicaReduction || betaS2ApiSize || betaSizingDeclaration
       || betaTelemetryDeclaration || betaTelemetryEnvironment
+      || betaMachineAuthPolicy || betaMachineAuthContainer
       || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
@@ -219,6 +280,7 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
           : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
             : betaS2ApiSize || betaSizingDeclaration ? 'Issue #95 retained Beta API size profile (S2 runtime unqualified)'
               : betaTelemetryDeclaration || betaTelemetryEnvironment ? 'Issue #95 retained Beta sizing telemetry (disabled by default)'
+              : betaMachineAuthPolicy || betaMachineAuthContainer ? 'Issue #86 Beta API cleanup machine-auth secret binding'
               : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
               ? 'Issue #86 fixed Beta cleanup operation binding' : 'CDK diagnostic analytics' });
     } else rejected.push(difference);

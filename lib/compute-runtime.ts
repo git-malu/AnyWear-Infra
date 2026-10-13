@@ -200,6 +200,13 @@ export class ComputeRuntime extends Construct {
     const apiExecutionRole = this.createTaskRole('ApiExecutionRole', `${props.stage}-anywear-api-execution`);
     const workerTaskRole = this.createTaskRole('WorkerTaskRole', `${props.stage}-anywear-worker-task`);
     const workerExecutionRole = this.createTaskRole('WorkerExecutionRole', `${props.stage}-anywear-worker-execution`);
+    const cleanupMachineAuthSecret = props.stage === 'beta'
+      ? secretsmanager.Secret.fromSecretNameV2(
+        this,
+        'CleanupMachineAuthSecret',
+        '/anywear/beta/cleanup_machine_auth',
+      )
+      : undefined;
 
     for (const role of [apiExecutionRole, workerExecutionRole]) {
       props.repository.grantPull(role);
@@ -207,6 +214,7 @@ export class ComputeRuntime extends Construct {
     }
     props.database.secret?.grantRead(apiTaskRole);
     props.database.secret?.grantRead(workerTaskRole);
+    cleanupMachineAuthSecret?.grantRead(apiTaskRole);
     props.wardrobeBucket.grantReadWrite(apiTaskRole);
     props.wardrobeBucket.grantReadWrite(workerTaskRole);
     props.vtoQueue.grantSendMessages(workerTaskRole);
@@ -257,6 +265,9 @@ export class ComputeRuntime extends Construct {
       },
       secrets: {
         QWEATHER_API_KEY: ecs.Secret.fromSecretsManager(props.qWeatherApiKeySecret),
+        ...(cleanupMachineAuthSecret ? {
+          CLEANUP_MACHINE_AUTH_SECRET: ecs.Secret.fromSecretsManager(cleanupMachineAuthSecret),
+        } : {}),
       },
       logging: ecs.LogDrivers.awsLogs({ logGroup: apiLogGroup, streamPrefix: 'api' }),
       portMappings: [{ containerPort: 3000, name: 'http', appProtocol: ecs.AppProtocol.http }],

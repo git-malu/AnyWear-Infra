@@ -234,3 +234,59 @@ test('telemetry comparator permits only the exact default-off parameter and API/
     }
   }
 });
+
+const machineAuthArn = 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cleanup_machine_auth';
+const machineAuthPolicyArn = `${machineAuthArn}-??????`;
+const machineAuthWorkload = (roleName, purpose = 'api') => {
+  const roleId = `${purpose === 'api' ? 'Api' : 'Worker'}TaskRoleABCDEF12`;
+  const policyId = `${purpose === 'api' ? 'Api' : 'Worker'}TaskRoleDefaultPolicyABCDEF12`;
+  const taskId = `ComputeRuntime${purpose === 'api' ? 'Api' : 'Worker'}TaskDefinitionABCDEF12`;
+  const role = { Type: 'AWS::IAM::Role', Properties: { RoleName: roleName } };
+  const policyStatement = purpose === 'api'
+    ? { Effect: 'Allow', Action: ['secretsmanager:DescribeSecret', 'secretsmanager:GetSecretValue'], Resource: 'existing-secret' }
+    : { Effect: 'Allow', Action: ['s3:GetObject'], Resource: 'existing-bucket' };
+  const policy = { Type: 'AWS::IAM::Policy', Properties: {
+    Roles: [{ Ref: roleId }], PolicyDocument: { Version: '2012-10-17', Statement: [policyStatement] },
+  } };
+  const container = { Name: purpose === 'api' ? 'ApiContainer' : 'WorkerContainer', Secrets: [{ Name: 'EXISTING', ValueFrom: 'existing-secret' }] };
+  return { Resources: {
+    [roleId]: role, [policyId]: policy,
+    [taskId]: { Type: 'AWS::ECS::TaskDefinition', Properties: { Family: `beta-anywear-${purpose}`, ContainerDefinitions: [container] } },
+  }, Parameters: {}, Outputs: {} };
+};
+
+test('allows only the exact Beta API cleanup machine-auth secret binding', () => {
+  const before = machineAuthWorkload('beta-anywear-api-task');
+  before.Resources.ApiTaskRoleDefaultPolicyABCDEF12.Properties.PolicyDocument.Statement[0].Resource = 'database-secret';
+  const after = structuredClone(before);
+  after.Resources.ApiTaskRoleDefaultPolicyABCDEF12.Properties.PolicyDocument.Statement[0].Resource = [machineAuthPolicyArn, 'database-secret'];
+  after.Resources.ComputeRuntimeApiTaskDefinitionABCDEF12.Properties.ContainerDefinitions[0].Secrets.push({
+    Name: 'CLEANUP_MACHINE_AUTH_SECRET', ValueFrom: machineAuthArn,
+  });
+  const result = compareTemplates(before, after, { ...betaWorkload, phase: 'legacy' });
+  assert.equal(result.accepted, true);
+  assert.deepEqual(result.rejected, []);
+  assert.equal(result.allowed.length, 2);
+});
+
+test('machine-auth binding rejects Worker, Production, wrong secret, and extra changes', () => {
+  const before = machineAuthWorkload('beta-anywear-worker-task', 'worker');
+  const workerAfter = structuredClone(before);
+  workerAfter.Resources.ComputeRuntimeWorkerTaskDefinitionABCDEF12.Properties.ContainerDefinitions[0].Secrets.push({
+    Name: 'CLEANUP_MACHINE_AUTH_SECRET', ValueFrom: machineAuthArn,
+  });
+  assert.equal(compareTemplates(before, workerAfter, { ...betaWorkload, phase: 'legacy' }).accepted, false);
+
+  const apiBefore = machineAuthWorkload('beta-anywear-api-task');
+  const apiAfter = structuredClone(apiBefore);
+  apiAfter.Resources.ComputeRuntimeApiTaskDefinitionABCDEF12.Properties.ContainerDefinitions[0].Secrets.push({
+    Name: 'CLEANUP_MACHINE_AUTH_SECRET', ValueFrom: `${machineAuthArn}-other`,
+  });
+  assert.equal(compareTemplates(apiBefore, apiAfter, { stage: 'prod', stackName: 'AnyWearWorkloadStack-prod' }).accepted, false);
+
+  const policyBefore = machineAuthWorkload('beta-anywear-api-task');
+  const policyAfter = structuredClone(policyBefore);
+  policyAfter.Resources.ApiTaskRoleDefaultPolicyABCDEF12.Properties.PolicyDocument.Statement[0].Resource = [machineAuthPolicyArn, 'database-secret'];
+  policyAfter.Resources.ApiTaskRoleDefaultPolicyABCDEF12.Properties.PolicyDocument.Statement.push({ Effect: 'Allow', Action: '*', Resource: '*' });
+  assert.equal(compareTemplates(policyBefore, policyAfter, { ...betaWorkload, phase: 'legacy' }).accepted, false);
+});
