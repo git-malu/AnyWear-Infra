@@ -465,6 +465,39 @@ describe('Platform and workload safety controls', () => {
     const qweatherSecret = apiContainer.Secrets.find((secret: any) => secret.Name === 'QWEATHER_API_KEY');
     expect(JSON.stringify(qweatherSecret.ValueFrom))
       .toContain('/anywear/beta/qweather_api_key');
+    const cleanupMachineAuthSecret = apiContainer.Secrets.find(
+      (secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET',
+    );
+    expect(JSON.stringify(cleanupMachineAuthSecret?.ValueFrom))
+      .toContain('/anywear/beta/cleanup_machine_auth');
+    const workerContainer = taskDefinitions
+      .flatMap((task: any) => task.Properties.ContainerDefinitions)
+      .find((container: any) => container.Name === 'WorkerContainer');
+    expect(workerContainer.Secrets.some((secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET')).toBe(false);
+    const apiTaskRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties?.RoleName === 'beta-anywear-api-task'
+    ))?.[0];
+    const apiTaskPolicy = Object.values(template.Resources).find((resource: any) => (
+      resource.Type === 'AWS::IAM::Policy'
+      && resource.Properties?.Roles?.some((role: any) => role.Ref === apiTaskRoleId)
+    )) as any;
+    expect(JSON.stringify(apiTaskPolicy.Properties.PolicyDocument.Statement))
+      .toContain('/anywear/beta/cleanup_machine_auth-??????');
+    const workerTaskRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties?.RoleName === 'beta-anywear-worker-task'
+    ))?.[0];
+    const workerTaskPolicy = Object.values(template.Resources).find((resource: any) => (
+      resource.Type === 'AWS::IAM::Policy'
+      && resource.Properties?.Roles?.some((role: any) => role.Ref === workerTaskRoleId)
+    )) as any;
+    expect(JSON.stringify(workerTaskPolicy.Properties.PolicyDocument.Statement))
+      .not.toContain('/anywear/beta/cleanup_machine_auth');
+    const productionContainers = (Object.values(synthesizeWorkload('prod').Resources) as any[])
+      .filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition')
+      .flatMap((task: any) => task.Properties.ContainerDefinitions);
+    expect(productionContainers.some((container: any) => (
+      container.Secrets?.some((secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET')
+    ))).toBe(false);
     const qweatherHost = apiContainer.Environment.find((entry: any) => entry.Name === 'QWEATHER_API_HOST');
     expect(qweatherHost).toBeDefined();
     expect(qweatherHost.Value.Ref).toMatch(/^SsmParameterValue/);
