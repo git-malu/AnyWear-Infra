@@ -1,5 +1,6 @@
 import { canonicalJson, contentHash, exact, matches, integer, SHA, HASH, DIGEST } from './json-contract.mjs';
 import { validateSelection } from './artifact-consumer.mjs';
+import { validateStackManifest } from './operation-stacks.mjs';
 
 export const INFRA_REPOSITORY = 'git-malu/AnyWear-Infra';
 export const SERVICE_REPOSITORY = 'git-malu/AnyWear-Service';
@@ -50,12 +51,12 @@ export function validateSchemaEvidence(schema, { infraWorkflows = ['.github/work
 }
 export function validateSnapshot(snapshot, options) {
   exact(snapshot, ['stacks', 'observed', 'schema'], 'observation');
-  if (!Array.isArray(snapshot.stacks) || snapshot.stacks.length !== 4) throw new Error('Four deployed stacks required');
+  if (!Array.isArray(snapshot.stacks)) throw new Error('Deployed stack inventory required');
+  validateStackManifest(snapshot.stacks, 'deployed stacks');
   const names = new Set();
   for (const stack of snapshot.stacks) {
     exact(stack, ['stack_name', 'region', 'source_repository', 'source_sha', 'template_sha256'], 'stack');
-    if (!['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta', 'AnyWearBillingStack-beta'].includes(stack.stack_name)
-      || names.has(stack.stack_name) || stack.region !== (stack.stack_name.includes('Billing') ? 'us-east-1' : region)
+    if (names.has(stack.stack_name)
       || ![INFRA_REPOSITORY, SERVICE_REPOSITORY].includes(stack.source_repository)) throw new Error('Invalid stack identity');
     names.add(stack.stack_name); matches(stack.source_sha, SHA, 'stack source'); matches(stack.template_sha256, HASH, 'Original template hash');
   }

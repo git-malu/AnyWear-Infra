@@ -8,7 +8,9 @@ import os from 'node:os';
 import { createRuntimeIo } from './runtime-operation.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
 import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
-import { changedStackNames } from './operation-stacks.mjs';
+import { changedStackNames, configuredStacks, configuredStackNames, validateStackManifest } from './operation-stacks.mjs';
+import { createOperationRecord, readOperationRecord } from './operation-record.mjs';
+import { stackManifestFixture } from './create-test-inputs.mjs';
 import { workflowOperations } from './operation-boundaries.mjs';
 
 test('source provenance binds every stack mutated by deployment and lifecycle operations', () => {
@@ -20,6 +22,40 @@ test('source provenance binds every stack mutated by deployment and lifecycle op
   assert.deepEqual(changedStackNames('observe'), []);
   assert.deepEqual(changedStackNames('close-admission'), []);
   assert.deepEqual(changedStackNames('restore-release'), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
+});
+
+test('validated all-stack manifest is defined by the configured set, not the changed subset', () => {
+  const manifest = stackManifestFixture();
+  assert.deepEqual(manifest.map(row => row.stack_name), configuredStackNames());
+  assert.equal(manifest.length, configuredStacks.length);
+  // Every configured stack is present for an operation that changes only one.
+  validateStackManifest(manifest, 'fixture');
+  assert.equal(changedStackNames('deploy-platform').length, 1);
+  for (const mutate of [rows => rows.slice(1), rows => [...rows, rows[0]], rows => rows.map(row => ({ ...row, region: 'us-east-1' }))
+    , rows => rows.map((row, index) => index === 0 ? { ...rows[1] } : row), rows => rows.map(row => ({ ...row, stack_name: 'AnyWearUnknownStack' }))]) {
+    assert.throws(() => validateStackManifest(structuredClone(mutate(manifest)), 'fixture'));
+  }
+});
+
+test('operation records are schema v3 with a complete manifest, and v2 stays readable', () => {
+  const env = { GITHUB_SHA: 'a'.repeat(40), GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_RUN_ID: '7', GITHUB_RUN_ATTEMPT: '1',
+    GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-deploy.yml@refs/heads/main',
+    INFRA_OPERATION: 'deploy-platform',
+    AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
+    SELECTION_FILE: 'selections/beta.json' };
+  const selector = { release: {}, image: {}, lambdas: {}, runtime_policy: {}, schema: {} };
+  const record = createOperationRecord({ env, selector, stackManifest: stackManifestFixture() });
+  assert.equal(record.schema_version, 3);
+  assert.equal(record.reviewed_stack_sources, undefined);
+  assert.deepEqual(record.changed_stack_names, ['AnyWearPlatformStack-beta']);
+  assert.equal(record.stack_manifest.length, configuredStacks.length);
+  assert.equal(readOperationRecord(record), record);
+  // Historical v2 records with hand-authored producer sources remain interpretable.
+  const historical = { ...record, schema_version: 2, reviewed_stack_sources: stackManifestFixture() };
+  delete historical.stack_manifest; delete historical.changed_stack_names;
+  assert.equal(readOperationRecord(historical), historical);
+  assert.throws(() => readOperationRecord({ ...record, schema_version: 4 }));
+  assert.throws(() => readOperationRecord({ ...record, stack_manifest: record.stack_manifest.slice(1) }));
 });
 
 async function runtimeDeployFixture() {
@@ -347,8 +383,8 @@ test('restart map resolves touched executor rows and preserves historical produc
     [rows => rows[1].source_sha = '7'.repeat(40), /Changed stack must bind/],
     [rows => { rows[1].source_repository = 'git-malu/AnyWear-Service'; rows[1].source_sha = '7'.repeat(40); }, /Changed stack must bind/],
     [rows => rows[2].source_repository = 'git-malu/AnyWear-Service', /Invalid stack producer source/],
-    [rows => rows[3].region = 'ap-east-1', /Unexpected stack provenance/],
-    [rows => rows[3].stack_name = rows[0].stack_name, /Four unique stack sources/],
+    [rows => rows[3].region = 'ap-east-1', /Invalid stack identity/],
+    [rows => rows[3].stack_name = rows[0].stack_name, /Invalid stack identity/],
     [rows => rows[3].source_repository = 'git-malu/Other', /Unexpected stack provenance/],
     [rows => rows[0].extra = true, /fields/],
   ]) {

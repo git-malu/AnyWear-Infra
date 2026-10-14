@@ -10,6 +10,7 @@ import { runRuntimeVerification, assertVerificationExecutor } from './verify-run
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration, account, region, INFRA_REPOSITORY } from './deployment-contract.mjs';
 import { qualifiedWorkflowPaths } from './operation-boundaries.mjs';
 import { observeBetaSizing } from './observe-beta-sizing.mjs';
+import { validateStackManifest } from './operation-stacks.mjs';
 export { validateDeploymentRecord, assertObservedMatchesDeployment } from './deployment-contract.mjs';
 const execute = promisify(execFile);
 const outputMap = stack => Object.fromEntries((stack.Outputs ?? []).map(item => [item.OutputKey, item.OutputValue]));
@@ -42,7 +43,7 @@ export async function observeDeployment({ binding, stackSources, infraSha, io = 
   matches(infraSha, SHA, 'Observed Infra input');
   assertVerificationExecutor(infraSha, env);
   if (binding?.expectedInfraSha !== infraSha) throw new Error('Observation must bind the explicit reviewed Infra pin');
-  if (!Array.isArray(stackSources) || stackSources.length !== 4) throw new Error('Four reviewed stack source bindings required');
+  validateStackManifest(stackSources, 'reviewed stack source bindings');
   const selected = await verifySelection(binding, await mkdtemp(path.join(os.tmpdir(), 'anywear-infra-observe-')), artifactIo);
   const selector = selected.selector;
   if (env.AWS_REGION !== region || env.AWS_ACCOUNT_ID !== account || (await io.aws(['sts', 'get-caller-identity'])).Account !== account) throw new Error('Unexpected authenticated observer account/region');

@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { sha256, contentHash, canonicalJson } from './json-contract.mjs';
 import { SOURCE_BUILD_OPTIONS } from './vendor/service-artifact-contract.mjs';
+import { configuredStacks } from './operation-stacks.mjs';
 
 export async function createTestInputs(directory) {
   await mkdir(directory, { recursive: true });
@@ -28,5 +29,11 @@ export async function createTestInputs(directory) {
   for (const [file, bytes] of Object.entries({ 'pre-sign-up.zip': zip, 'post-confirmation.zip': zip, 'runtime-policy.json': policyBytes,
     'service-schema.json': schemaBytes, 'service-artifacts.json': manifestBytes, 'selection.json': canonicalJson(selector) })) await writeFile(path.join(directory, file), bytes);
   return { selector, manifest, schema };
+}
+// Complete all-stack manifest fixture independent of any changed-stack subset.
+export function stackManifestFixture(sources = {}) {
+  return configuredStacks.map(stack => ({ ...stack,
+    source_repository: sources[stack.stack_name]?.source_repository ?? 'git-malu/AnyWear-Service',
+    source_sha: sources[stack.stack_name]?.source_sha ?? '1'.repeat(40) }));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await createTestInputs(path.resolve(process.argv[2] ?? '.service-artifacts/test'));
