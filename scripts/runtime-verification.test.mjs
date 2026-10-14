@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runtimeCommandBytes, runRuntimeVerification } from './verify-runtime-task.mjs';
-import { createTestInputs } from './create-test-inputs.mjs';
+import { createTestInputs, stackManifestFixture } from './create-test-inputs.mjs';
 import { canonicalJson, contentHash, parseJson } from './json-contract.mjs';
 import { createRuntimeIo } from './runtime-operation.mjs';
 import { createOperationRecord } from './operation-record.mjs';
@@ -102,7 +102,7 @@ test('final qualification appends authenticated task events to the actual parsed
     OneShotExecutionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution' };
   const file = path.join(root, 'deployment-evidence/operation-record.json');
   for (const mode of [undefined, 'exit']) {
-    const original = createOperationRecord({ env: runtimeEnv, selector, reviewedStackSources: Array(4).fill({}) });
+    const original = createOperationRecord({ env: runtimeEnv, selector, stackManifest: stackManifestFixture() });
     original.result = 'succeeded';
     original.events.push({ type: 'final-beta-activity', platform_active: 'true', workload_active: 'true' });
     await writeFile(file, canonicalJson(original));

@@ -8,7 +8,7 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { workflowOperations, operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
 import { validateOperationInputs, credentialEnvironment, createRuntimeIo } from './runtime-operation.mjs';
-import { createTestInputs } from './create-test-inputs.mjs';
+import { createTestInputs, stackManifestFixture } from './create-test-inputs.mjs';
 import { canonicalJson, sha256 } from './json-contract.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { finalizeOperationRecord } from './finalize-operation.mjs';
@@ -226,7 +226,7 @@ test('state executor observes stopped or active Beta with no tasks, deploys, sch
   await mkdir(path.join(root, 'selections')); await writeFile(path.join(root, 'selections/beta.json'), canonicalJson(selector));
   await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
   const env = { ...stateEnv(), GITHUB_SHA: await git(['rev-parse', 'HEAD']), SELECTION_SHA256: sha256(canonicalJson(selector)) };
-  const record = createOperationRecord({ env, selector, reviewedStackSources: Array(4).fill({}) });
+  const record = createOperationRecord({ env, selector, stackManifest: stackManifestFixture() });
   let calls = 0; let assumptions = 0; let active = 'false';
   const io = await createRuntimeIo(selector, '/verified', env, record, { trustedInfraRoot: root,
     async assume(kind, passed, purpose) { assumptions++; assert.equal(kind, 'runtime'); assert.equal(purpose, 'operation'); return passed; },

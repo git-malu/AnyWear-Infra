@@ -8,6 +8,7 @@ import { parseJson, exact, canonicalJson, sha256, SHA, HASH } from './json-contr
 import { loadCommittedSelection, verifySelection, commandEnvironment } from './artifact-consumer.mjs';
 import { readAdmissionState, assertClosedAdmission } from './admission-operation.mjs';
 import { parseBootstrapOrigin, verifyBootstrapOrigin } from './cleanup-acceptance-origin.mjs';
+import { configuredStackNames, validateStackManifest } from './operation-stacks.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -73,12 +74,11 @@ export async function fixturePreflight(env = process.env, trustedRoot = root) {
   const bytes = await readFile(file);
   if (!bytes.equals(await git(['cat-file', 'blob', `${env.GITHUB_SHA}:${env.STACK_SOURCES_FILE}`])) || sha256(bytes) !== env.STACK_SOURCES_SHA256) throw new Error('Stack source bytes differ from reviewed input');
   const sources = parseJson(bytes);
-  const names = [...stackNames, 'AnyWearFoundationStack', 'AnyWearBillingStack-beta'];
-  if (!Array.isArray(sources) || sources.length !== 4 || new Set(sources.map(row => row.stack_name)).size !== 4) throw new Error('Four unique explicit stack producers required');
+  const names = configuredStackNames();
+  validateStackManifest(sources, 'fixture stack producers');
   for (const row of sources) {
     exact(row, ['stack_name', 'region', 'source_repository', 'source_sha'], 'fixture stack producer');
-    if (!names.includes(row.stack_name) || row.region !== (row.stack_name.includes('Billing') ? 'us-east-1' : 'ap-east-1')
-      || !['git-malu/AnyWear-Infra', 'git-malu/AnyWear-Service'].includes(row.source_repository) || !SHA.test(row.source_sha ?? '')) throw new Error('Explicit unchanged stack producer required; no executor placeholder');
+    if (!names.includes(row.stack_name) || !['git-malu/AnyWear-Infra', 'git-malu/AnyWear-Service'].includes(row.source_repository) || !SHA.test(row.source_sha ?? '')) throw new Error('Explicit unchanged stack producer required; no executor placeholder');
   }
   const workload = sources.find(row => row.stack_name === stackNames[1]);
   if (workload.source_repository !== 'git-malu/AnyWear-Infra' || workload.source_sha !== env.FIXTURE_SOURCE_SHA) throw new Error('Fixture must bind the reviewed actual Workload producer');
@@ -388,7 +388,7 @@ export async function runFixture(env = process.env) {
   try {
     const { selector, binding, sources } = await fixturePreflight(env);
     record.selection = { file: env.SELECTION_FILE, sha256: env.SELECTION_SHA256, service_sha: selector.image.service_sha, image_digest: selector.image.digest };
-    record.reviewed_stack_sources = sources;
+    record.stack_manifest = sources;
     // Immutable producer publication/provenance is verified before any OIDC request.
     await verifySelection(binding, path.join(root, '.service-artifacts/cleanup-acceptance'));
     const bootstrap = await verifyBootstrapOrigin(env, selector, request);

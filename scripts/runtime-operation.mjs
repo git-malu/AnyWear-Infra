@@ -10,6 +10,7 @@ import { runRuntimeVerification } from './verify-runtime-task.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
 import { createOperationRecord, recordRecovery } from './operation-record.mjs';
+import { changedStackNames } from './operation-stacks.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runCloseAdmission } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
@@ -259,12 +260,12 @@ export async function runOperation(env = process.env) {
   validateOperationInputs(env);
   const binding = selectionBinding(env); const selector = await loadCommittedSelection(binding);
   const directory = path.join(root, '.service-artifacts/selected');
-  const record = createOperationRecord({ env, selector, reviewedStackSources: parseJson(await readFile('deployment-evidence/stack-sources.json')) });
+  const record = createOperationRecord({ env, selector, stackManifest: parseJson(await readFile('deployment-evidence/stack-sources.json')) });
   try {
   const verified = await verifySelection(binding, directory);
   const io = await createRuntimeIo(selector, directory, env, record);
   if ((await io.aws(['sts', 'get-caller-identity'])).Account !== '650880818323') throw new Error('Wrong runtime account');
-  for (const row of record.reviewed_stack_sources) {
+  for (const row of record.stack_manifest) {
     const template = (await io.aws(['cloudformation', 'get-template', '--stack-name', row.stack_name, '--template-stage', 'Original', '--region', row.region])).TemplateBody;
     record.original_stack_templates.push({ stack_name: row.stack_name, region: row.region, template_sha256: sha256(canonicalJson(typeof template === 'string' ? parseJson(template) : template)) });
   }
@@ -308,8 +309,7 @@ export async function runOperation(env = process.env) {
       const selectedRevision = { ...revision, digest: selector.image.digest, commit: selector.image.service_sha };
       await io.oneShot(operation, selectedRevision);
     } else {
-      const names = { 'deploy-foundation': 'AnyWearFoundationStack', 'deploy-billing': 'AnyWearBillingStack-beta',
-        'deploy-platform': 'AnyWearPlatformStack-beta', 'deploy-workload': 'AnyWearWorkloadStack-beta' };
+      const [deployStack] = changedStackNames(operation);
       const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
       const active = betaDeploymentActivity(platform, workload);
       record.events.push({ type: 'observed-beta-activity', platform_active: active, workload_active: active });
@@ -325,7 +325,7 @@ export async function runOperation(env = process.env) {
         // This operation never invokes migrate and never down-migrates the DB.
         revision.parameters.ServiceImageDigest = selector.image.digest; revision.parameters.ServiceCommitSha = selector.image.service_sha;
       } else if (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha) throw new Error('Platform/identity changes must retain the observed running image');
-      await io.deploy(names[operation], active, revision);
+      await io.deploy(deployStack, active, revision);
       if (operation === 'deploy-workload' && active) {
         await io.aws(['ecs', 'wait', 'services-stable', '--cluster', 'beta-anywear', '--services', 'beta-anywear-api', 'beta-anywear-worker']);
         const after = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks[0];

@@ -5,6 +5,7 @@ import { observeDeployment } from './observe-deployment.mjs';
 import { validateDeploymentRecord, validateSnapshot } from './deployment-contract.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
 import { canonicalJson, parseJson } from './json-contract.mjs';
+import { readOperationRecord } from './operation-record.mjs';
 
 validateOperationInputs();
 const env = process.env;
@@ -12,11 +13,11 @@ const boundary = operationBoundary(env);
 if (boundary.readOnly) throw new Error('State observation cannot emit qualification');
 const binding = selectionBinding();
 const selector = await loadCommittedSelection(binding);
-const operation = parseJson(await readFile('deployment-evidence/operation-record.json'));
+const operation = readOperationRecord(parseJson(await readFile('deployment-evidence/operation-record.json')));
 const io = await createRuntimeIo(selector, '.service-artifacts/selected', env, operation, { purpose: 'qualification' });
 try {
   // observeDeployment repeats complete native release verification before lazy STS.
-  const snapshot = await observeDeployment({ binding, stackSources: operation.reviewed_stack_sources, infraSha: env.GITHUB_SHA, io, env });
+  const snapshot = await observeDeployment({ binding, stackSources: operation.stack_manifest ?? operation.reviewed_stack_sources, infraSha: env.GITHUB_SHA, io, env });
   const { image, lambdas, runtime_policy, schema, release } = selector;
   const record = { schema_version: 2,
     record_type: boundary.family === 'runtime' ? 'anywear_infra_deployment' : 'anywear_infra_family_observation',

@@ -387,12 +387,13 @@ recovery may proceed from the observed partial state.
 ## Evidence and stopped-state recovery
 
 Preserve `deployment-evidence/operation-record.json` under the always-attempted
-`infra-operation-<run-id>-<attempt>` artifact even on failure. Its version-2
+`infra-operation-<run-id>-<attempt>` artifact even on failure. Its version-3
 `anywear_infra_operation` record keeps the original
 committed selection file/hash binding and independent selected Service component sources
 separate from the current Infra executor SHA/run/attempt. It records actual
 Original template hashes and the original Workload image/source readbacks,
-reviewed per-stack source declarations, completed one-shot task/deployment events,
+the validated all-stack `stack_manifest` plus the operation's `changed_stack_names`,
+completed one-shot task/deployment events,
 recovery status and the operation result. Failed stop records actual Platform/Workload
 outputs and stack statuses plus admission readback, and marks recovery as
 `requires-explicit-start`; it never deploys active stacks or reopens intake. A
@@ -403,6 +404,16 @@ review; a recovery status alone does not establish those observations. A
 successful recovery does not turn the failed operation into success. Failures
 before record creation can leave no artifact; preserve Actions logs and the
 operation record rather than manufacture a successful operation record.
+
+### Operation-record provenance versions
+
+Version-3 records define template evidence independently of the changed-stack set:
+`stack_manifest` always carries every configured stack with its `Original` template
+hash, while `changed_stack_names` records only what the operation mutated and still
+drives deploy authorization, cleanup fencing and retention gates. Historical
+version-2 records carried hand-authored per-stack `reviewed_stack_sources` and remain
+readable during the dual run so both provenance paths can be compared before the
+breaking removal. Unknown versions are rejected; there is no permissive fallback.
 
 For active Beta, the fixed `runtime.yml` observation writes the unchanged
 `anywear_infra_deployment` v2 from actual Original
