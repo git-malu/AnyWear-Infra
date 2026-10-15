@@ -157,6 +157,15 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   oneShots(e2e, ['artifact-verify'], [
     p.verificationTaskRole.roleArn, p.oneShotExecutionRole.roleArn,
   ]);
+  // The opt-in sizing pre-flight captures each service's autoscaling minimum
+  // before any paid workload starts. Application Auto Scaling exposes no
+  // resource or tag scope below the account's scalable-target collection, so
+  // the Beta region bound is the only narrowing available. Read-only: no
+  // scalable-target or scaling-policy mutation is granted here.
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['application-autoscaling:DescribeScalableTargets'],
+    resources: [arn('application-autoscaling', 'scalable-target', '*')], conditions: regional,
+  }));
   const ownedFunctionNames = ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync', 'AnyWearPlatformStack-beta-*'];
   runtime.addToPrincipalPolicy(new iam.PolicyStatement({ actions: ['logs:DescribeLogGroups'], resources: ['*'], conditions: regional }));
   runtime.addToPrincipalPolicy(new iam.PolicyStatement({ actions: ['lambda:GetFunction'],

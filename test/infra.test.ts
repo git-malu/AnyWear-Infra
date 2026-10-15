@@ -1076,6 +1076,45 @@ describe('Explicit infrastructure identity cutover', () => {
     const e2eRegistration = grantsFor(template, 'e2e-qualification')
       .find((grant) => [grant.Action].flat().includes('ecs:RegisterTaskDefinition'));
     expect(JSON.stringify(e2eRegistration.Resource)).not.toContain('beta-anywear-lifecycle:');
+
+    // Issue #95 sizing pre-flight read. The qualification principal had no
+    // Application Auto Scaling grant, so its opt-in sizing stage failed before
+    // any paid workload started. The grant stays on the E2E principal, stays
+    // read-only, and stays bound to the Beta region.
+    const scalableTargetId = 'application-autoscaling:DescribeScalableTargets';
+    const scalableTargetGrants = grantsFor(template, 'e2e-qualification')
+      .filter((grant) => [grant.Action].flat().includes(scalableTargetId));
+    expect(scalableTargetGrants).toHaveLength(1);
+    expect([scalableTargetGrants[0].Action].flat()).toEqual([scalableTargetId]);
+    expect(scalableTargetGrants[0].Effect).toBe('Allow');
+    expect(scalableTargetGrants[0].Condition).toEqual({ StringEquals: { 'aws:RequestedRegion': { Ref: 'AWS::Region' } } });
+    // Resolve the region/account/partition tokens so this pins the exact ARN.
+    const scalableResource = (values: any): string => values['Fn::Join'][1]
+      .map((part: any) => (part.Ref === 'AWS::Partition' ? 'aws' : part.Ref === 'AWS::Region' ? 'ap-east-1'
+        : part.Ref === 'AWS::AccountId' ? '650880818323' : part)).join(values['Fn::Join'][0]);
+    expect(scalableResource(scalableTargetGrants[0].Resource))
+      .toBe('arn:aws:application-autoscaling:ap-east-1:650880818323:scalable-target/*');
+    expect(policiesFor(template, 'e2e-qualification')
+      .filter((policy) => JSON.stringify(policy.Properties.PolicyDocument).includes(scalableTargetId)))
+      .toHaveLength(1);
+    // Widening either the shared helper or a neighbor's grants would fail here.
+    for (const name of names) {
+      expect(actionsFor(template, name).filter((action) => action.startsWith('application-autoscaling:')))
+        .toEqual(name === 'e2e-qualification' ? [scalableTargetId] : []);
+    }
+    expect(actionsFor(synthesizePlatform('beta'), 'infra-deploy')).not.toContain(scalableTargetId);
+    const pipelineBetaActions = (Object.values(synthesizePlatform('beta').Resources) as any[])
+      .filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && JSON.stringify(resource.Properties.Roles).includes('beta-github-actions-pipeline-role'))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement)
+      .flatMap((statement: any) => [statement.Action].flat());
+    for (const forbidden of ['application-autoscaling:RegisterScalableTarget', 'application-autoscaling:PutScalingPolicy',
+      'application-autoscaling:DeleteScalingPolicy', 'application-autoscaling:DeregisterScalableTarget',
+      'application-autoscaling:TagResource']) {
+      expect(actionsFor(template, 'e2e-qualification')).not.toContain(forbidden);
+      expect(actionsFor(template, 'infra-runtime')).not.toContain(forbidden);
+      expect(pipelineBetaActions).not.toContain(forbidden);
+    }
   });
 
   it('constrains CDK assumption to the reviewed bootstrap roles and regions', () => {
