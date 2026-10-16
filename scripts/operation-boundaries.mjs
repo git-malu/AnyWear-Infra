@@ -37,19 +37,56 @@ const cleanupMachineArn = 'arn:aws:states:ap-east-1:650880818323:stateMachine:be
 const cleanupExecutionArn = 'arn:aws:states:ap-east-1:650880818323:execution:beta-anywear-tester-cleanup:';
 const cleanupFenceRequired = (env, purpose) => purpose === 'operation'
   && changedStackNames(env.INFRA_OPERATION).some(stack => ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'].includes(stack));
-const taskRoles = operation => ({
-  start: ['migrate', 'verify', 'lifecycle'], stop: ['lifecycle'],
-  'deploy-workload': ['verify'], 'restore-release': ['verify'],
-  migrate: ['migrate'], verify: ['verify'],
-  'tester-status': ['verify', 'lifecycle'], 'tester-add': ['verify', 'lifecycle'], 'tester-replace': ['verify', 'lifecycle'],
-  'close-admission': ['lifecycle'],
-}[operation] ?? []);
+// One frozen evidence record per operation. `roles` is exactly what
+// `families(env, 'operation')` materializes for the operation's own session;
+// `qualified_by` names the run that qualifies the operation's mutation for E2E
+// ('self' when the operation's own artifact is accepted, 'not-applicable' when it
+// claims no qualifying mutation), and `evidence` states what evidences it. Every
+// operation in `workflowOperations` appears here, so an operation without a
+// verification dependency is a recorded decision instead of a missing lookup.
+const evidenceEntry = (roles, qualified_by, evidence) => Object.freeze({ roles: Object.freeze(roles), qualified_by, evidence });
+export const operationEvidence = Object.freeze({
+  observe: evidenceEntry([], 'self',
+    'This run emits the accepted anywear_infra_deployment v2 record for the observed active Beta.'),
+  state: evidenceEntry([], 'not-applicable',
+    'Read-only: the operation record carries anywear_infra_state and claims no mutation.'),
+  start: evidenceEntry(['migrate', 'verify', 'lifecycle'], '.github/workflows/runtime.yml',
+    'Starting leaves both stacks active, so the following fixed observation records the started tuple.'),
+  stop: evidenceEntry(['lifecycle'], 'not-applicable',
+    'Stopped activity cannot be observed by an active-runtime record; the operation record final activity and admission readback evidence the stop, and the next start plus qualified observation supplies active evidence.'),
+  'deploy-foundation': evidenceEntry([], '.github/workflows/runtime.yml',
+    'The accepted record carries the configured stack Original template hash; this does not qualify IAM semantics.'),
+  'deploy-billing': evidenceEntry([], '.github/workflows/runtime.yml',
+    'The accepted record carries the billing stack Original template hash observed in us-east-1.'),
+  'deploy-platform': evidenceEntry([], '.github/workflows/runtime.yml',
+    'A Platform change has no accepted evidence step of its own; only the following fixed observation records the reconciled stack.'),
+  'deploy-workload': evidenceEntry(['verify', 'artifact-verify'], '.github/workflows/runtime.yml',
+    'The accepted record observes the selected running image, ECS task identities and applied schema.'),
+  'restore-release': evidenceEntry(['verify', 'artifact-verify'], '.github/workflows/runtime.yml',
+    'Restoring both stacks active leaves the recovered tuple observable by the following fixed observation.'),
+  migrate: evidenceEntry(['migrate'], '.github/workflows/runtime.yml',
+    'The accepted record observes the applied schema through its own artifact-verification task.'),
+  verify: evidenceEntry(['verify'], 'not-applicable',
+    'Verification, not mutation: it asserts the observed runtime and writes nothing.'),
+  'tester-status': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+    'Status only: it reads admission state and mutates nothing.'),
+  'tester-add': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+    'The accepted record does not observe admission state; the operation record admission readback evidences it.'),
+  'tester-replace': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+    'The accepted record does not observe admission state; the operation record admission readback evidences it.'),
+  'close-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
+    'The accepted record does not observe admission state; the operation record lifecycle status and admission readback evidence it.'),
+});
+// `artifact-verify` is the verification task family registered by
+// `runRuntimeVerification`, never a one-shot helper role, so the one-shot guard
+// keeps its current allow-set.
+const oneShotRoles = operation => operationEvidence[operation].roles.filter(role => role !== 'artifact-verify');
 const lifecycleActions = operation => ({ start: ['close'], stop: ['close', 'drain'],
   'tester-status': ['status'], 'tester-add': ['configure-testers'], 'tester-replace': ['configure-testers'],
   'close-admission': ['close', 'status'] }[operation] ?? []);
 export function assertOneShotAllowed(env, role, action = '', payload) {
   operationBoundary(env);
-  if (!taskRoles(env.INFRA_OPERATION).includes(role)
+  if (!oneShotRoles(env.INFRA_OPERATION).includes(role)
     || role === 'lifecycle' && !lifecycleActions(env.INFRA_OPERATION).includes(action)
     || role !== 'lifecycle' && payload !== undefined
     || role === 'lifecycle' && action !== 'configure-testers' && payload !== undefined) throw new Error('One-shot role/action is forbidden for this operation');
@@ -63,15 +100,14 @@ export function assertDeployAllowed(env, stack) {
   operationBoundary(env);
   if (!changedStackNames(env.INFRA_OPERATION).includes(stack)) throw new Error('Stack deployment is forbidden for this operation');
 }
-function families(env, purpose) {
+export function families(env, purpose) {
   const boundary = operationBoundary(env);
   if (purpose === 'qualification') {
     if (boundary.readOnly) throw new Error('Read-only observation cannot qualify with tasks');
     return ['artifact-verify'];
   }
   if (purpose !== 'operation') throw new Error('Unknown credential purpose');
-  const verifier = ['deploy-workload', 'restore-release', 'close-admission'].includes(env.INFRA_OPERATION) ? ['artifact-verify'] : [];
-  return boundary.readOnly ? [] : [...new Set([...taskRoles(env.INFRA_OPERATION), ...verifier])];
+  return boundary.readOnly ? [] : [...operationEvidence[env.INFRA_OPERATION].roles];
 }
 export function assertAwsAllowed(env, args, purpose = 'operation') {
   const boundary = operationBoundary(env);

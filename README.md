@@ -42,7 +42,7 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 | [runtime.yml](.github/workflows/runtime.yml) | Fixed qualified `observe`; preserves the existing E2E trusted v2 producer interface; starts an ECS verification task |
 | [beta-observe.yml](.github/workflows/beta-observe.yml) | Fixed AWS read-only state/SSM status; usable with activation disabled; no tasks or schema qualification |
 | [beta-lifecycle.yml](.github/workflows/beta-lifecycle.yml) | `start` / `stop` with the existing coordinated sequence |
-| [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release` |
+| [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release`; a `deploy-platform` run is qualified only by a following fixed `runtime.yml` `observe` |
 | [beta-schema.yml](.github/workflows/beta-schema.yml) | Selected-image `migrate` / `verify` tasks |
 | [beta-admission.yml](.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `close-admission`; status still starts tasks |
 | [bin/infra.ts](bin/infra.ts), `appScope=foundation` | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
@@ -73,12 +73,25 @@ Production activation variables cannot bypass its source blocker; keep both
 deployment/readiness gates disabled through #54.
 
 All six manual entries share `anywear-infra-runtime` without cancellation.
-Only `runtime.yml` produces the legacy `anywear_infra_deployment` v2 accepted by
-E2E. Other task families emit `anywear_infra_family_observation` with their actual
-workflow path; this is not an accepted E2E deployment input. Read-only observation
-emits sanitized `anywear_infra_state` inside its operation record and makes no
-DB/policy/schema claim. See the [Beta runbook](docs/runbooks/beta-infrastructure.md)
-for dispatch schemas, permissions, lifecycle authority and recovery.
+`runtime.yml` is the only workflow family whose run produces the legacy
+`anywear_infra_deployment` v2 accepted by E2E; the standalone
+[observe-deployment.mjs](scripts/observe-deployment.mjs) CLI can also emit an
+accepted-shaped record from ambient environment variables without a workflow run.
+Other task families emit `anywear_infra_family_observation` with their actual
+workflow path; this is not an accepted E2E deployment input. A `deploy-platform`
+run is therefore qualified only by a following fixed `runtime.yml` `observe` run at
+reviewed main, which uploads `infra-deployment-<run-id>-<attempt>` containing
+`deployment-record.json`. A deploy run cannot produce that record: the
+`deploy-platform` operation session carries no task family of its own, and the
+observation step of the same run stamps the run's own
+`.github/workflows/beta-deploy.yml` path and record type
+`anywear_infra_family_observation`, while the accepted record pins both
+`anywear_infra_deployment` and the `runtime.yml` workflow path, which the E2E
+consumer pins too. The deploy run still requires and uploads its own family
+observation. Read-only observation emits sanitized `anywear_infra_state` inside
+its operation record and makes no DB/policy/schema claim. See the [Beta
+runbook](docs/runbooks/beta-infrastructure.md) for dispatch schemas, permissions,
+lifecycle authority and recovery.
 
 The accepted #54 IAM boundary is deliberately scoped: the named legacy Beta role
 retains deny-only trust and zero inline or attached grants, while the inherited

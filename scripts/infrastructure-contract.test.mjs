@@ -8,7 +8,8 @@ import { createTestInputs } from './create-test-inputs.mjs';
 import { validateSelection, verifySelection } from './artifact-consumer.mjs';
 import { assertNativeReleaseAttestation } from './vendor/service-release-attestation.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration } from './deployment-contract.mjs';
-import { qualifiedWorkflowPaths } from './operation-boundaries.mjs';
+import { qualifiedWorkflowPaths, workflowOperations, operationBoundary, families } from './operation-boundaries.mjs';
+import { isDeploymentFamily, observationRecordType, deploymentRecordType, familyObservationRecordType } from './observation-record.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { validateOperationInputs, betaDeploymentActivity } from './runtime-operation.mjs';
@@ -354,6 +355,47 @@ test('valid family observations retain actual provenance and cannot satisfy the 
     record.infra = structuredClone(legacy.infra);
     assert.throws(() => validateDeploymentRecord(record), /Untrusted verification executor/);
     assert.throws(() => assertObservedMatchesDeployment(legacy, snapshot), /Untrusted verification executor/);
+  }
+});
+
+test('only the runtime family derives the accepted deployment record and no family artifact can pass as another', () => {
+  const boundaryFor = file => operationBoundary({ ...env,
+    GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/${file}@refs/heads/main`, INFRA_OPERATION: workflowOperations[file][0] });
+  // The mapping is total over catalog families and derived from production code,
+  // not repeated in the test; only qualified families can emit such a record.
+  for (const file of Object.keys(workflowOperations)) {
+    const boundary = boundaryFor(file);
+    assert.equal(boundary.workflow, file);
+    assert.equal(isDeploymentFamily(boundary.family), file.endsWith('/runtime.yml'));
+    assert.equal(observationRecordType(boundary.family), file.endsWith('/runtime.yml') ? deploymentRecordType : familyObservationRecordType);
+  }
+  // The read-only state family is not a qualified producer: it is outside the
+  // qualified set, builds no qualification session, and emits no observation
+  // record at all, so it must not be read as producing a family observation.
+  const state = { ...env, GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-observe.yml@refs/heads/main', INFRA_OPERATION: 'state' };
+  assert.deepEqual(workflowOperations['.github/workflows/beta-observe.yml'], ['state']);
+  assert.equal(qualifiedWorkflowPaths.includes('.github/workflows/beta-observe.yml'), false);
+  assert.deepEqual(families(state, 'operation'), []);
+  assert.throws(() => families(state, 'qualification'), /Read-only observation cannot qualify with tasks/);
+  const legacy = recordWithIds();
+  validateDeploymentRecord(legacy);
+  const legacySnapshot = { stacks: legacy.stacks, observed: legacy.observed, schema: legacy.schema };
+  validateSnapshot(legacySnapshot, { infraWorkflows: ['.github/workflows/runtime.yml'] });
+  for (const file of qualifiedWorkflowPaths.filter(file => !file.endsWith('/runtime.yml'))) {
+    const record = recordWithIds();
+    record.record_type = observationRecordType(boundaryFor(file).family);
+    record.infra.workflow_path = file;
+    record.infra.workflow_ref = `git-malu/AnyWear-Infra/${file}@refs/heads/main`;
+    record.schema.verification.executor.workflow_path = file;
+    const snapshot = { stacks: record.stacks, observed: record.observed, schema: record.schema };
+    validateSnapshot(snapshot, { infraWorkflows: [file] });
+    // A family observation cannot satisfy the accepted deployment contract ...
+    assert.throws(() => validateDeploymentRecord(record), /Unknown deployment schema/, file);
+    // ... not even with its record type forced to the accepted one ...
+    record.record_type = deploymentRecordType;
+    assert.throws(() => validateDeploymentRecord(record), /Unexpected deployment workflow/, file);
+    // ... and the accepted runtime record cannot pass as this family's observation.
+    assert.throws(() => validateSnapshot(legacySnapshot, { infraWorkflows: [file] }), /Untrusted verification executor/, file);
   }
 });
 
