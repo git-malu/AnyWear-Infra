@@ -6,7 +6,8 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
-import { workflowOperations, operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
+import { workflowOperations, operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed,
+  operationEvidence, families, qualifiedWorkflowPaths } from './operation-boundaries.mjs';
 import { validateOperationInputs, credentialEnvironment, createRuntimeIo } from './runtime-operation.mjs';
 import { createTestInputs, stackManifestFixture } from './create-test-inputs.mjs';
 import { canonicalJson, sha256 } from './json-contract.mjs';
@@ -213,6 +214,38 @@ test('operation guards block cross-family tasks, arbitrary writes and lifecycle 
   assertAwsAllowed(qualified, artifact(['node', '-e', runtimeCommandBytes().toString('utf8')]), 'qualification');
   assert.throws(() => assertAwsAllowed(qualified, artifact(['node', '-e', 'process.exit(0)']), 'qualification'));
   assert.throws(() => assertAwsAllowed(qualified, artifact(['node', '-e', runtimeCommandBytes().toString('utf8')]), 'operation'));
+});
+
+test('every operation records its credential families and how its mutation is qualified', () => {
+  assert.deepEqual(Object.keys(operationEvidence).sort(), [...Object.values(workflowOperations).flat()].sort());
+  for (const [file, fileOperations] of Object.entries(workflowOperations)) for (const operation of fileOperations) {
+    const entry = operationEvidence[operation]; const env = envFor(file, operation);
+    // One table drives both the session families and the evidence statement.
+    assert.deepEqual(families(env, 'operation'), [...entry.roles], operation);
+    assert.ok(['self', 'not-applicable', ...qualifiedWorkflowPaths].includes(entry.qualified_by), `${operation} ${entry.qualified_by}`);
+    assert.equal(typeof entry.evidence, 'string', operation);
+    assert.ok(entry.evidence.trim().length > 0, operation);
+    const registration = ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify({
+      family: 'beta-anywear-artifact-verify', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-verification-task',
+      executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
+      containerDefinitions: [{ name: 'OneShot', command: ['node', '-e', runtimeCommandBytes().toString('utf8')] }] })];
+    // The artifact-verification family is registrable in an operation session only
+    // where the table declares it, and is never a one-shot helper role.
+    if (entry.roles.includes('artifact-verify')) assertAwsAllowed(env, registration, 'operation');
+    else assert.throws(() => assertAwsAllowed(env, registration, 'operation'), /forbidden/, operation);
+    assert.throws(() => assertOneShotAllowed(env, 'artifact-verify'), /forbidden/, operation);
+  }
+  const verifying = Object.entries(operationEvidence).filter(([, entry]) => entry.roles.includes('artifact-verify')).map(([operation]) => operation);
+  assert.deepEqual(verifying, ['deploy-workload', 'restore-release', 'close-admission']);
+  assert.deepEqual(operationEvidence['deploy-platform'].roles, []);
+  assert.equal(operationEvidence['deploy-platform'].qualified_by, '.github/workflows/runtime.yml');
+  assert.deepEqual(operationEvidence.observe.roles, []);
+  assert.equal(operationEvidence.observe.qualified_by, 'self');
+  assert.equal(operationEvidence.state.qualified_by, 'not-applicable');
+  assert.equal(operationEvidence.start.qualified_by, '.github/workflows/runtime.yml');
+  assert.equal(operationEvidence.stop.qualified_by, 'not-applicable');
+  assert.equal(operationEvidence.migrate.qualified_by, '.github/workflows/runtime.yml');
+  assert.equal(operationEvidence.verify.qualified_by, 'not-applicable');
 });
 
 test('state executor observes stopped or active Beta with no tasks, deploys, schema assertions or raw tester emails', async () => {

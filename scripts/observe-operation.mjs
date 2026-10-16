@@ -4,6 +4,7 @@ import { loadCommittedSelection } from './artifact-consumer.mjs';
 import { observeDeployment } from './observe-deployment.mjs';
 import { validateDeploymentRecord, validateSnapshot } from './deployment-contract.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
+import { deploymentRecordType, observationRecordType } from './observation-record.mjs';
 import { canonicalJson, parseJson } from './json-contract.mjs';
 import { readOperationRecord } from './operation-record.mjs';
 
@@ -20,11 +21,11 @@ try {
   const snapshot = await observeDeployment({ binding, stackSources: operation.stack_manifest ?? operation.reviewed_stack_sources, infraSha: env.GITHUB_SHA, io, env });
   const { image, lambdas, runtime_policy, schema, release } = selector;
   const record = { schema_version: 2,
-    record_type: boundary.family === 'runtime' ? 'anywear_infra_deployment' : 'anywear_infra_family_observation',
+    record_type: observationRecordType(boundary.family),
     infra: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: boundary.workflow,
       workflow_ref: env.GITHUB_WORKFLOW_REF, run_id: Number(env.GITHUB_RUN_ID), run_attempt: Number(env.GITHUB_RUN_ATTEMPT) },
     selection: { file: binding.selectionFile, sha256: binding.selectionSha256, release, components: { image, lambdas, runtime_policy, schema } }, ...snapshot };
-  if (boundary.family === 'runtime') validateDeploymentRecord(record);
+  if (record.record_type === deploymentRecordType) validateDeploymentRecord(record);
   else validateSnapshot(snapshot, { infraWorkflows: [boundary.workflow] });
   await writeFile('deployment-evidence/deployment-record.json', canonicalJson(record));
 } finally {
