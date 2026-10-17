@@ -152,6 +152,19 @@ export class FoundationStack extends cdk.Stack {
     // stack ARN, which is limited to the Workload stack.
     const changeSetArn = slashArn('cloudformation', 'changeSet', '*');
     const platformStack = stackArn('AnyWearPlatformStack-beta');
+    // Issue #158 round 3: the Service owner's synthesizer makes the CDK CLI use
+    // the deploy job's own credentials. The CLI has no `--no-role` option (it
+    // rejects `--role`), and `--role-arn beta-service-deploy-cfn-role` stays the
+    // CloudFormation execution role. The CLI path therefore reads the bootstrap
+    // version itself and publishes the synthesized template asset, `<hash>.json`
+    // at the root of the dedicated CDK assets bucket. The pinned aws-cdk CLI's
+    // file-asset publish path checks bucket ownership with `GetBucketLocation`
+    // before uploading and fails the publish on AccessDenied, so that bucket-level
+    // read is part of the same narrow path (see test/infra.test.ts).
+    const bootstrapVersion = slashArn('ssm', 'parameter', 'cdk-bootstrap/hnb659fds/version');
+    const cdkAssetsBucket = this.formatArn({
+      service: 's3', region: '', account: '', resource: `cdk-hnb659fds-assets-${this.account}-${this.region}`,
+    });
     serviceDeploy.addToPolicy(new iam.PolicyStatement({
       actions: ['cloudformation:*'], resources: [cloudformationStack],
     }));
@@ -173,6 +186,19 @@ export class FoundationStack extends cdk.Stack {
     serviceDeploy.addToPolicy(new iam.PolicyStatement({
       actions: ['ecr:DescribeImages'],
       resources: [slashArn('ecr', 'repository', 'beta-anywear-service')],
+    }));
+    // The CLI's own-credentials path: only the bootstrap version parameter and
+    // the dedicated assets bucket, and only the object read/write the template
+    // publish needs. No bootstrap role assumption, no ListBucket, no bucket
+    // configuration and no other bucket.
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'], resources: [bootstrapVersion],
+    }));
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:PutObject', 's3:GetObject'], resources: [`${cdkAssetsBucket}/*`],
+    }));
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:GetBucketLocation'], resources: [cdkAssetsBucket],
     }));
 
     const taskDefinitions = ['api', 'worker'].map((service) => (
@@ -209,7 +235,6 @@ export class FoundationStack extends cdk.Stack {
       },
     };
     const betaParameters = slashArn('ssm', 'parameter', 'anywear/beta/*');
-    const bootstrapVersion = slashArn('ssm', 'parameter', 'cdk-bootstrap/hnb659fds/version');
 
     serviceCfn.addToPolicy(new iam.PolicyStatement({
       actions: ['ecs:RegisterTaskDefinition', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition'],

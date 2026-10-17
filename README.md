@@ -68,13 +68,19 @@ diff. Any other stage must pass explicit values and fails closed without them.
 Foundation owns the two Service release-slice deployment identities:
 `beta-service-deploy-role` (GitHub OIDC `environment:beta`; CloudFormation change
 sets for `AnyWearWorkloadStack-beta`, `ssm:GetParameter*` under
-`/anywear/beta/`, `ecr:DescribeImages` on `beta-anywear-service`) and
-`beta-service-deploy-cfn-role` (trusted by `cloudformation.amazonaws.com`; the
+`/anywear/beta/`, `ecr:DescribeImages` on `beta-anywear-service`, plus the CDK
+CLI's own-credentials path: `ssm:GetParameter` on
+`cdk-bootstrap/hnb659fds/version`, `s3:PutObject`/`s3:GetObject` on
+`cdk-hnb659fds-assets-650880818323-ap-east-1/*` and that bucket's
+`s3:GetBucketLocation`) and `beta-service-deploy-cfn-role` (trusted by
+`cloudformation.amazonaws.com`; the
 Workload stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
-load-balancer-ingress and four task-role families). Neither role carries a
-managed policy or account-wide grants; the policy-inventory test pins both the
-allowed inventory and the absent VPC, Aurora, Cognito, wardrobe/client bucket,
-SQS configuration, ECR configuration and Foundation grants. The Workload stack's
+load-balancer-ingress and four task-role families). Neither role assumes a
+`cdk-hnb659fds-*` role, carries a managed
+policy or holds account-wide grants; the policy-inventory tests pin both the
+allowed inventory and the absent VPC, Aurora, Cognito, wardrobe/client bucket
+configuration, SQS configuration, ECR configuration, Foundation and other-stack
+grants. The Workload stack's
 CDK source and deploy chain now live in AnyWear-Service (#158 step B); after step
 C nothing in this repository synthesizes, deploys or recovers it.
 
@@ -87,7 +93,7 @@ chain per deployable unit. `production.yml` stays in the tree but is
 
 | Entry | Trigger | Purpose |
 | --- | --- | --- |
-| [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, native-CLI regression, live-Foundation comparison and both source matrices; no dispatch surface |
+| [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
 | [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (10 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |

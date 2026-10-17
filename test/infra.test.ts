@@ -944,12 +944,28 @@ describe('Explicit infrastructure identity cutover', () => {
       Resource: 'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
     });
 
+    // Positive: the CLI's own-credentials path from #158 round 3 is limited to
+    // the bootstrap version read and the dedicated CDK assets bucket object.
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'ssm:GetParameter', Effect: 'Allow',
+      Resource: 'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: ['s3:GetObject', 's3:PutObject'], Effect: 'Allow',
+      Resource: 'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: 's3:GetBucketLocation', Effect: 'Allow',
+      Resource: 'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
+    });
+
     // Negative: no wildcard, managed or administrative authority, and no
     // resource outside the reviewed Workload-stack surface.
     expect(actions(deploy)).toEqual([
       'cloudformation:*', 'cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet',
       'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks', 'ecr:DescribeImages', 'iam:PassRole',
-      'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
+      's3:GetBucketLocation', 's3:GetObject', 's3:PutObject', 'ssm:GetParameter', 'ssm:GetParameter',
+      'ssm:GetParameters', 'ssm:GetParametersByPath',
     ]);
     expect(deploy.every((statement) => statement.Effect === 'Allow')).toBe(true);
     expect(resourcesOf(deploy)).toEqual(new Set([
@@ -957,6 +973,9 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
       'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
       'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
       JSON.stringify({ 'Fn::GetAtt': ['BetaServiceDeployCfnRoleB6333451', 'Arn'] }),
     ]));
@@ -1048,8 +1067,9 @@ describe('Explicit infrastructure identity cutover', () => {
       const allActions = actions(statements);
       const serialized = JSON.stringify(statements);
       expect(allActions).not.toContain('*');
-      for (const forbidden of ['rds:', 'cognito-idp:', 'sqs:', 'secretsmanager:', 'kms:', 's3:PutObject',
-        's3:DeleteObject', 'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
+      for (const forbidden of ['rds:', 'cognito-idp:', 'sqs:', 'secretsmanager:', 'kms:',
+        's3:DeleteObject', 's3:ListBucket', 's3:PutBucketAcl', 's3:PutObjectAcl',
+        'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
         'ecr:CreateRepository', 'ec2:CreateVpc', 'ec2:DeleteVpc', 'ec2:ModifyVpcAttribute',
         'ec2:CreateSubnet', 'ec2:DeleteSubnet', 'ec2:CreateSecurityGroup', 'ec2:DeleteSecurityGroup',
         'ec2:AuthorizeSecurityGroupEgress', 'cloudformation:CreateStack', 'cloudformation:UpdateStack',
@@ -1071,6 +1091,23 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
         && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
     }
+    // The only object write either role holds is the template asset in the
+    // dedicated CDK assets bucket; no other bucket, bucket configuration or
+    // listing grant returns with it.
+    const cdkAssetsBucketArns = new Set([
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
+    ]);
+    const deployS3Resources = [...resourcesOf(deploy)].filter((resource) => resource.startsWith('arn:aws:s3:::'));
+    expect(new Set(deployS3Resources)).toEqual(cdkAssetsBucketArns);
+    expect(actions(deploy).filter((action) => action.startsWith('s3:')))
+      .toEqual(['s3:GetBucketLocation', 's3:GetObject', 's3:PutObject']);
+    for (const forbidden of ['s3:CreateBucket', 's3:DeleteBucket', 's3:PutBucketPolicy', 's3:DeleteBucketPolicy',
+      's3:PutBucketPublicAccessBlock', 's3:DeleteBucketPublicAccessBlock', 's3:ListBucket', 's3:DeleteObject']) {
+      expect(actions(deploy)).not.toContain(forbidden);
+    }
+    expect(resourcesOf(cfn).has('arn:aws:s3:::anywearworkloadstack-beta-*')).toBe(true);
+    expect([...resourcesOf(cfn)].some((resource) => resource.includes('cdk-hnb659fds-assets'))).toBe(false);
     // The CloudFormation role can read the producer stack for
     // `Fn::GetStackOutput`, but it cannot drive CloudFormation itself; only the
     // OIDC role owns the Workload stack's stack-level authority.
@@ -1078,6 +1115,75 @@ describe('Explicit infrastructure identity cutover', () => {
       .toEqual(['cloudformation:DescribeStacks']);
     expect(resourceOf(cfn.filter((statement) => [statement.Action].flat().includes('cloudformation:DescribeStacks'))[0]
       .Resource)).toBe('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*');
+  });
+
+  it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const flatten = (values: any[]) => values.flatMap((value) => [value].flat());
+    const actions = flatten(statements.map((statement) => statement.Action)) as string[];
+    const resolve = (value: any): string | string[] => {
+      if (Array.isArray(value)) return value.map((entry) => resolve(entry) as string);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    // Round 3 puts the asset publish on the deploy job's own credentials. That is
+    // not authority to reassume the bootstrap deploy/file-publishing/lookup
+    // roles: the role keeps no sts:AssumeRole at all.
+    expect(actions).not.toContain('sts:AssumeRole');
+    const serializedResources = JSON.stringify(statements.map((statement) => statement.Resource));
+    for (const purpose of ['deploy', 'file-publishing', 'lookup']) {
+      expect(serializedResources).not.toContain(`cdk-hnb659fds-${purpose}-role`);
+    }
+    expect(serializedResources).not.toMatch(/role\/cdk-/);
+    // Every CloudFormation action is bound to the Workload stack, its change
+    // sets, or the exact producer-stack read; nothing else can be deployed.
+    const cloudformationResources = new Set<string>();
+    for (const statement of statements.filter((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('cloudformation:')))) {
+      const statementActions = [statement.Action].flat() as string[];
+      for (const resource of flatten([statement.Resource]).map(resolve) as string[]) {
+        cloudformationResources.add(resource);
+        if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*') {
+          for (const action of statementActions) expect(['cloudformation:CreateChangeSet',
+            'cloudformation:DeleteChangeSet', 'cloudformation:DescribeChangeSet']).toContain(action);
+        } else if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*') {
+          expect(statementActions.every((action) => action === 'cloudformation:*')).toBe(true);
+        } else if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*') {
+          expect(statementActions).toEqual(['cloudformation:DescribeStacks']);
+        } else {
+          throw new Error(`Unreviewed CloudFormation resource ${resource}`);
+        }
+      }
+    }
+    expect(cloudformationResources).toEqual(new Set([
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+    ]));
+    // `cloudformation:*` appears once, on the Workload stack, so no other stack
+    // can be created, updated or deleted.
+    const wildcardStatements = statements.filter((statement) => [statement.Action].flat()
+      .includes('cloudformation:*'));
+    expect(wildcardStatements).toHaveLength(1);
+    expect(flatten([wildcardStatements[0].Resource]).map(resolve))
+      .toEqual(['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*']);
+    for (const action of ['cloudformation:CreateStack', 'cloudformation:UpdateStack', 'cloudformation:DeleteStack']) {
+      expect(actions).not.toContain(action);
+    }
   });
 
   it.each([true, false])('adds policies while retaining every legacy Beta resource and output (active=%s)', (active) => {

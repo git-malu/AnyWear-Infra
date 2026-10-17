@@ -90,11 +90,16 @@ and must not be relabeled as an Infra-produced deployment.
   the constants only in a reviewed diff; the slice's own stack parameters are
   Service's to assert. Service
   deploys through `beta-service-deploy-role` (CloudFormation change sets for
-  `AnyWearWorkloadStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`)
+  `AnyWearWorkloadStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`;
+  the CDK CLI's own-credentials path: the `cdk-bootstrap/hnb659fds/version`
+  parameter and object/bucket-location access to the dedicated
+  `cdk-hnb659fds-assets-<account>-<region>` bucket)
   and `beta-service-deploy-cfn-role` (CloudFormation trust only, the Workload
-  stack's resource families and its four task roles). Neither carries a managed
-  policy or account-wide grants; the policy-inventory test keeps the absent
-  VPC/Aurora/Cognito/bucket/SQS/ECR/Foundation grants absent. The roles, not this
+  stack's resource families and its four task roles). Neither assumes a
+  `cdk-hnb659fds-*` role, carries a managed policy or holds account-wide grants;
+  the policy-inventory tests keep the absent
+  VPC/Aurora/Cognito/bucket-configuration/SQS/ECR-configuration/Foundation/
+  other-stack grants absent. The roles, not this
   repository, are now the Workload stack's deployment authority.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
