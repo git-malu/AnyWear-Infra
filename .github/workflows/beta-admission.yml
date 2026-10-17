@@ -5,7 +5,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [tester-status, tester-add, tester-replace, close-admission, open-admission]
+        options: [admission-status, add-testers, set-testers, suspend-admission, resume-admission]
         required: true
       selection_file:
         description: Committed canonical selection in this Infra revision
@@ -25,11 +25,11 @@ on:
         type: string
         required: true
       tester_emails:
-        description: Explicit email JSON array for tester-add or tester-replace; otherwise []
+        description: Explicit email JSON array for add-testers or set-testers; otherwise []
         type: string
         default: '[]'
       window_minutes:
-        description: Admission window bound in minutes, 15-240; required for open-admission and ignored otherwise
+        description: Admission window bound in minutes, 15-240; required for resume-admission and ignored otherwise
         type: number
         default: 60
 permissions:

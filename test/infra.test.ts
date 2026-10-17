@@ -117,9 +117,11 @@ function policyValueUpperBound(value: any, template: Record<string, any>): any {
 describe('Platform and workload safety controls', () => {
   it.each([
     ['dev', true, 'c45a8484eff8aabe92a894d5db6df813457ec863678a55eba153605d00098161'],
-    // Includes the Beta-only scoped AdminInitiateAuth grant.
-    ['beta', true, '13b5999f9b8da7f006f931679dab38272a1b48d96216915d57ac8456cdb2d4a5'],
-    ['beta', false, '13b5999f9b8da7f006f931679dab38272a1b48d96216915d57ac8456cdb2d4a5'],
+    // Includes the Beta-only scoped AdminInitiateAuth grant. The Beta hash moves
+    // with the admission parameter set: one mode record and the tester allowlist
+    // replace the two boolean parameters, so exactly two SSM ARNs remain.
+    ['beta', true, 'c86fc2f59b97a97b932565443c53a5d96311a73d012950a39079885108ef60d4'],
+    ['beta', false, 'c86fc2f59b97a97b932565443c53a5d96311a73d012950a39079885108ef60d4'],
     ['prod', true, '12feb7f5939fc6e88051f7b16871a679f6d47f6e5eb73c8fb54b44307d0d528b'],
   ] as const)('preserves pre-quota-repair effective pipeline grants for %s (active=%s)', (stage, environmentRunning, baselineHash) => {
     const app = new cdk.App({ context: cdkConfig.context });
@@ -288,7 +290,7 @@ describe('Platform and workload safety controls', () => {
     expect(forAction('ssm:PutParameter')).toHaveLength(0);
     expect(forAction('application-autoscaling:RegisterScalableTarget')).toHaveLength(0);
     expect(forAction('sqs:GetQueueAttributes')[0].Resource).toHaveLength(4);
-    expect(forAction('ssm:GetParameter')[0].Resource).toHaveLength(3);
+    expect(forAction('ssm:GetParameter')[0].Resource).toHaveLength(2);
   });
 
   it('preserves only exact cost families with a separate required request tag and Beta region bound', () => {
@@ -817,15 +819,14 @@ describe('Platform and workload safety controls', () => {
     const beta = synthesizePlatform('beta');
     const betaParameters = Object.values(beta.Resources).filter(
       (resource: any) => resource.Type === 'AWS::SSM::Parameter'
-        && ['/anywear/beta/intake_open', '/anywear/beta/tester_allowlist', '/anywear/beta/admission_suspended']
+        && ['/anywear/beta/admission_mode', '/anywear/beta/tester_allowlist']
           .includes(resource.Properties.Name),
     ) as any[];
     expect(betaParameters.map((parameter) => parameter.Properties)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ Name: '/anywear/beta/intake_open', Type: 'String', Value: 'false' }),
+      expect.objectContaining({ Name: '/anywear/beta/admission_mode', Type: 'String', Value: '{"mode":"closed"}' }),
       expect.objectContaining({ Name: '/anywear/beta/tester_allowlist', Type: 'String', Value: '[]' }),
-      expect.objectContaining({ Name: '/anywear/beta/admission_suspended', Type: 'String', Value: 'true' }),
     ]));
-    expect(betaParameters).toHaveLength(3);
+    expect(betaParameters).toHaveLength(2);
     const betaPolicies = Object.values(beta.Resources).filter((resource: any) => resource.Type === 'AWS::IAM::Policy');
     const verificationGrant = betaPolicies.flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
       .find((statement: any) => JSON.stringify(statement.Action).includes('cognito-idp:AdminUpdateUserAttributes'));
@@ -844,17 +845,17 @@ describe('Platform and workload safety controls', () => {
     for (const stage of ['dev', 'prod']) {
       const template = synthesizePlatform(stage);
       expect(Object.values(template.Resources).some((resource: any) => resource.Type === 'AWS::SSM::Parameter'
-        && /\/(intake_open|tester_allowlist|admission_suspended)$/.test(resource.Properties.Name))).toBe(false);
+        && /\/(admission_mode|tester_allowlist)$/.test(resource.Properties.Name))).toBe(false);
       expect(JSON.stringify(template)).not.toContain('cognito-idp:AdminUpdateUserAttributes');
       expect(JSON.stringify(template)).not.toContain('cognito-idp:AdminGetUser');
       expect(JSON.stringify(template)).not.toContain('cognito-idp:AdminInitiateAuth');
     }
   });
 
-  it('limits both Beta Cognito triggers and lifecycle to the three admission parameters', () => {
+  it('limits both Beta Cognito triggers and lifecycle to the two admission parameters', () => {
     const template = synthesizePlatform('beta');
     const resources = Object.values(template.Resources) as any[];
-    const expectedNames = ['intake_open', 'tester_allowlist', 'admission_suspended'];
+    const expectedNames = ['admission_mode', 'tester_allowlist'];
     const expectedParameterIds = expectedNames.map((name) => Object.entries(template.Resources).find(
       ([, resource]: [string, any]) => resource.Type === 'AWS::SSM::Parameter'
         && resource.Properties.Name === `/anywear/beta/${name}`,
@@ -862,7 +863,10 @@ describe('Platform and workload safety controls', () => {
     for (const functionName of ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync']) {
       const trigger = resources.find((resource) => resource.Type === 'AWS::Lambda::Function'
         && resource.Properties.FunctionName === functionName);
-      expect(trigger.Properties.Environment.Variables.BETA_ACTIVE).toBe('true');
+      // The trigger-level activity variable is gone: the admission decision gates
+      // the same paths, and the stopped state is carried by the stack outputs.
+      expect(trigger.Properties.Environment?.Variables?.BETA_ACTIVE).toBeUndefined();
+      expect(JSON.stringify(trigger.Properties.Environment ?? {})).not.toContain('BETA_ACTIVE');
       const roleId = trigger.Properties.Role['Fn::GetAtt'][0];
       const policies = resources.filter((resource) => resource.Type === 'AWS::IAM::Policy'
         && resource.Properties.Roles.some((role: any) => role.Ref === roleId));
@@ -870,7 +874,7 @@ describe('Platform and workload safety controls', () => {
         .filter((statement: any) => JSON.stringify(statement.Action).includes('ssm:'));
       expect(statements).toHaveLength(1);
       expect(statements[0].Action).toEqual(['ssm:GetParameter', 'ssm:GetParameters']);
-      expect(statements[0].Resource).toHaveLength(3);
+      expect(statements[0].Resource).toHaveLength(2);
       expect(statements[0].Resource.map((resource: any) => resource['Fn::Join'][1].at(-1).Ref))
         .toEqual(expectedParameterIds);
       expect(JSON.stringify(statements[0].Resource)).not.toContain('*');
@@ -884,7 +888,7 @@ describe('Platform and workload safety controls', () => {
       .filter((statement: any) => JSON.stringify(statement.Action).includes('ssm:'));
     expect(lifecycleStatements).toHaveLength(1);
     expect(lifecycleStatements[0].Action).toEqual(['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter']);
-    expect(lifecycleStatements[0].Resource).toHaveLength(3);
+    expect(lifecycleStatements[0].Resource).toHaveLength(2);
     expect(lifecycleStatements[0].Resource.map((resource: any) => resource['Fn::Join'][1].at(-1).Ref))
       .toEqual(expectedParameterIds);
     expect(JSON.stringify(lifecycleStatements[0].Resource)).not.toContain('*');

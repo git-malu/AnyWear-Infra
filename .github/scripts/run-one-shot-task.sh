@@ -39,13 +39,13 @@ elif [[ "$role" == "tester-cleanup" ]]; then
     || { echo "Tester cleanup requires a bounded run scope and exact user JSON payload" >&2; exit 2; }
 elif [[ "$role" == "lifecycle" ]]; then
   [[ "$stage" == "beta" ]] || { echo "Lifecycle only supports beta" >&2; exit 2; }
-  [[ "$verify_api_url" =~ ^(close|drain|open|status|configure-testers)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
-  if [[ "$verify_api_url" == "configure-testers" ]]; then
+  [[ "$verify_api_url" =~ ^(suspend|drain|resume|status|set-testers)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
+  if [[ "$verify_api_url" == "set-testers" ]]; then
     jq -e --arg payload "$lifecycle_payload" \
       '($payload | utf8bytelength) <= 4096 and type == "array" and length <= 50 and all(.[]; type == "string")' \
       <<<"$lifecycle_payload" >/dev/null 2>&1 \
       || { echo "Tester list must be a JSON array of at most 50 email strings within 4096 bytes" >&2; exit 2; }
-  elif [[ "$verify_api_url" == "open" ]]; then
+  elif [[ "$verify_api_url" == "resume" ]]; then
     # The only lifecycle payload besides the tester list: exactly one integer
     # window bound, so the registered command cannot widen the reviewed range.
     jq -e --arg payload "$lifecycle_payload" \
@@ -55,7 +55,7 @@ elif [[ "$role" == "lifecycle" ]]; then
       <<<"$lifecycle_payload" >/dev/null 2>&1 \
       || { echo "Admission window must be a JSON object with only an integer window_minutes within 15-240 and 4096 bytes" >&2; exit 2; }
   elif [[ -n "$lifecycle_payload" ]]; then
-    echo "Only configure-testers and open accept a lifecycle payload" >&2
+    echo "Only set-testers and resume accept a lifecycle payload" >&2
     exit 2
   fi
 elif [[ -n "$lifecycle_payload" ]]; then
@@ -210,7 +210,7 @@ task_definition="$(jq -n \
       image:$image,
       essential:true,
       command:(["node",$command] + (if $role == "lifecycle" or $role == "lifecycle-fixture" then [$action] else [] end)
-        + (if ($role == "lifecycle" and ($action == "configure-testers" or $action == "open")) or $role == "tester-cleanup" or $role == "lifecycle-fixture" or $role == "task-audit" then [$payload] else [] end)),
+        + (if ($role == "lifecycle" and ($action == "set-testers" or $action == "resume")) or $role == "tester-cleanup" or $role == "lifecycle-fixture" or $role == "task-audit" then [$payload] else [] end)),
       environment:$environment,
       logConfiguration:{
         logDriver:"awslogs",
