@@ -325,8 +325,15 @@ export class PlatformStack extends cdk.Stack {
           subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED,
         },
         defaultDatabaseName: 'anywear',
+        backup: {
+          retention: cdk.Duration.days(isProd ? 35 : 7),
+          preferredWindow: '16:00-16:30',
+        },
         removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-        deletionProtection: isProd,
+        // Aurora has no instance-level deletion protection; the cluster carries
+        // it, and the production writer instance's DeletionPolicy follows the
+        // cluster removal policy.
+        deletionProtection: true,
       });
       cdk.Validations.of(this.database).acknowledge({
         id: 'CloudFormation-Validate::W9008',

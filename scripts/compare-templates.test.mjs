@@ -290,3 +290,93 @@ test('machine-auth binding rejects Worker, Production, wrong secret, and extra c
   policyAfter.Resources.ApiTaskRoleDefaultPolicyABCDEF12.Properties.PolicyDocument.Statement.push({ Effect: 'Allow', Action: '*', Resource: '*' });
   assert.equal(compareTemplates(policyBefore, policyAfter, { ...betaWorkload, phase: 'legacy' }).accepted, false);
 });
+
+const databaseClusterId = 'AnyWearDatabase2CD487D8';
+const databaseWriterId = 'AnyWearDatabasewriter936467CD';
+function platformDatabase(stage, { protection, retention, window }) {
+  const properties = { Engine: 'aurora-postgresql', DeletionProtection: protection };
+  if (retention !== undefined) properties.BackupRetentionPeriod = retention;
+  if (window !== undefined) properties.PreferredBackupWindow = window;
+  const policy = stage === 'prod' ? 'Retain' : 'Delete';
+  return { Resources: {
+    [databaseClusterId]: { Type: 'AWS::RDS::DBCluster', DeletionPolicy: policy, Properties: properties },
+    [databaseWriterId]: { Type: 'AWS::RDS::DBInstance', DeletionPolicy: policy,
+      Properties: { DBClusterIdentifier: { Ref: databaseClusterId } } },
+  }, Outputs: {} };
+}
+const recoveryPaths = (...properties) => properties.map((property) => `/Resources/${databaseClusterId}/Properties/${property}`).sort();
+
+test('allows exactly the Beta database recovery delta from the baseline cluster', () => {
+  const before = platformDatabase('beta', { protection: false });
+  const after = platformDatabase('beta', { protection: true, retention: 7, window: '16:00-16:30' });
+  for (const phase of ['legacy', 'roles-added', 'retired']) {
+    const result = compareTemplates(before, after, { phase, stage: 'beta', stackName: 'AnyWearPlatformStack-beta' });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(result.rejected, []);
+    assert.deepEqual(result.allowed.map(({ path }) => path).sort(),
+      recoveryPaths('BackupRetentionPeriod', 'PreferredBackupWindow', 'DeletionProtection'));
+    assert.ok(result.allowed.every(({ reason }) => reason === 'Issue #161 explicit database recovery targets'));
+  }
+});
+
+test('allows exactly the Production database recovery delta from the baseline cluster', () => {
+  const before = platformDatabase('prod', { protection: true });
+  const after = platformDatabase('prod', { protection: true, retention: 35, window: '16:00-16:30' });
+  for (const phase of ['legacy', 'roles-added', 'retired']) {
+    const result = compareTemplates(before, after, { phase, stage: 'prod', stackName: 'AnyWearPlatformStack-prod' });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(result.rejected, []);
+    assert.deepEqual(result.allowed.map(({ path }) => path).sort(),
+      recoveryPaths('BackupRetentionPeriod', 'PreferredBackupWindow'));
+    assert.ok(result.allowed.every(({ reason }) => reason === 'Issue #161 explicit database recovery targets'));
+  }
+});
+
+test('rejects recovery values that differ from the stage targets', () => {
+  const cases = [
+    ['beta', 'AnyWearPlatformStack-beta', { protection: false },
+      { protection: true, retention: 30, window: '16:00-16:30' }],
+    ['beta', 'AnyWearPlatformStack-beta', { protection: false },
+      { protection: true, retention: 7, window: '17:00-18:00' }],
+    ['prod', 'AnyWearPlatformStack-prod', { protection: true },
+      { protection: true, retention: 30, window: '16:00-16:30' }],
+    ['prod', 'AnyWearPlatformStack-prod', { protection: true },
+      { protection: false, retention: 35, window: '16:00-16:30' }],
+  ];
+  for (const [stage, stackName, baseline, candidate] of cases) {
+    const result = compareTemplates(platformDatabase(stage, baseline), platformDatabase(stage, candidate),
+      { phase: 'legacy', stage, stackName });
+    assert.equal(result.accepted, false);
+    assert.ok(result.rejected.length > 0);
+  }
+});
+
+test('recovery allowance cannot cover a rewrite of an existing cluster property', () => {
+  const rewrite = compareTemplates(platformDatabase('prod', { protection: true, retention: 1 }),
+    platformDatabase('prod', { protection: true, retention: 35, window: '16:00-16:30' }),
+    { phase: 'legacy', stage: 'prod', stackName: 'AnyWearPlatformStack-prod' });
+  assert.equal(rewrite.accepted, false);
+  assert.ok(rewrite.rejected.some(({ path }) => path === `/Resources/${databaseClusterId}/Properties/BackupRetentionPeriod`));
+
+  const newProtection = compareTemplates(platformDatabase('beta', {}),
+    platformDatabase('beta', { protection: true, retention: 7, window: '16:00-16:30' }),
+    { phase: 'legacy', stage: 'beta', stackName: 'AnyWearPlatformStack-beta' });
+  assert.equal(newProtection.accepted, false);
+  assert.ok(newProtection.rejected.some(({ path }) => path === `/Resources/${databaseClusterId}/Properties/DeletionProtection`));
+});
+
+test('recovery allowance is scoped to the stage Platform stack and the exact properties', () => {
+  const before = platformDatabase('beta', { protection: false });
+  const after = platformDatabase('beta', { protection: true, retention: 7, window: '16:00-16:30' });
+  for (const options of [
+    { phase: 'legacy', stage: 'beta', stackName: 'AnyWearWorkloadStack-beta' },
+    { phase: 'legacy', stage: 'prod', stackName: 'AnyWearPlatformStack-beta' },
+    { phase: 'legacy', stage: 'dev', stackName: 'AnyWearPlatformStack-dev' },
+  ]) {
+    assert.equal(compareTemplates(before, after, options).accepted, false);
+  }
+  const unrelated = structuredClone(after);
+  unrelated.Resources[databaseClusterId].Properties.StorageEncrypted = false;
+  assert.equal(compareTemplates(before, unrelated,
+    { phase: 'legacy', stage: 'beta', stackName: 'AnyWearPlatformStack-beta' }).accepted, false);
+});

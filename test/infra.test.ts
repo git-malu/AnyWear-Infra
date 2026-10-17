@@ -399,6 +399,7 @@ describe('Platform and workload safety controls', () => {
   it('keeps dev compute local while provisioning managed dependencies', () => {
     const resources = Object.values(synthesizePlatform('dev').Resources) as any[];
 
+    expect(resources.filter((resource) => resource.Type === 'AWS::RDS::DBCluster')).toHaveLength(0);
     expect(resources.filter((resource) => resource.Type === 'AWS::SQS::Queue')).toHaveLength(4);
     expect(resources.filter((resource) => resource.Type === 'AWS::ECR::Repository')).toHaveLength(1);
     expect(resources.filter((resource) => resource.Type === 'AWS::ECS::Cluster')).toHaveLength(0);
@@ -644,6 +645,11 @@ describe('Platform and workload safety controls', () => {
     });
     expect(instances).toHaveLength(1);
     expect(instances[0].Properties.DBInstanceClass).toBe('db.serverless');
+    expect(database.Properties.DeletionProtection).toBe(true);
+    expect(database.Properties.BackupRetentionPeriod).toBe(7);
+    expect(database.Properties.PreferredBackupWindow).toBe('16:00-16:30');
+    expect(database.Properties.PreferredBackupWindow).toMatch(/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/);
+    expect(database.DeletionPolicy).toBe('Delete');
   });
 
   it('removes Beta NAT gateways in stopped state while keeping subnets and database', () => {
@@ -916,17 +922,23 @@ describe('Platform and workload safety controls', () => {
 
   it('retains production storage and protects the database', () => {
     const template = synthesizePlatform('prod');
-    const bucket = Object.values(template.Resources).find(
-      (resource: any) => resource.Type === 'AWS::S3::Bucket',
+    const resources = Object.entries(template.Resources) as [string, any][];
+    const bucket = resources.map(([, resource]) => resource).find(
+      (resource) => resource.Type === 'AWS::S3::Bucket',
     ) as any;
-    const database = Object.values(template.Resources).find(
-      (resource: any) => resource.Type === 'AWS::RDS::DBCluster',
-    ) as any;
+    const [databaseId, database] = resources.find(
+      ([, resource]) => resource.Type === 'AWS::RDS::DBCluster',
+    )!;
+    const writer = resources.find(([, resource]) => resource.Type === 'AWS::RDS::DBInstance'
+      && resource.Properties.DBClusterIdentifier?.Ref === databaseId)?.[1];
 
     expect(bucket.DeletionPolicy).toBe('Retain');
     expect(database.DeletionPolicy).toBe('Retain');
     expect(database.Properties.DeletionProtection).toBe(true);
+    expect(database.Properties.BackupRetentionPeriod).toBe(35);
+    expect(database.Properties.PreferredBackupWindow).toBe('16:00-16:30');
     expect(database.Properties.StorageEncrypted).toBe(true);
+    expect(writer.DeletionPolicy).toBe('Retain');
     expect(database.Properties.ServerlessV2ScalingConfiguration).toEqual({
       MinCapacity: 0.5,
       MaxCapacity: 2,
