@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { workflowOperations, operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed,
   operationEvidence, lifecycleActions, families, qualifiedWorkflowPaths, operationFamilies } from './operation-boundaries.mjs';
@@ -62,6 +63,25 @@ test('only two dispatch entries and one automatic entry exist, and each entry ma
     assert.equal(files.includes(`${retired}.yml`), false, retired);
   }
   assert.deepEqual(Object.keys(workflowOperations).sort(), [mutateEntry, runtimeEntry].sort());
+});
+
+test('no tracked code or workflow reads a retired stage switch name', async () => {
+  // This class regressed once: the workflows were renamed to the single stage
+  // switch while a script default still read the retired deploy name, so a guard
+  // failed after CloudFormation had already been updated. The names are composed
+  // here so this guard does not match itself.
+  const retired = [['ENABLE', 'BETA', 'DEPLOY'].join('_'), ['ENABLE', 'BETA', 'CLEANUP', 'ACCEPTANCE'].join('_')];
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const execute = promisify(execFile);
+  const tracked = (await execute('git', ['-C', root, 'ls-files', '.github', 'scripts'])).stdout
+    .split(/\r?\n/).filter(Boolean).filter(file => /\.(mjs|ts|yml)$/.test(file));
+  assert.ok(tracked.length > 20, `tracked source set too small: ${tracked.length}`);
+  const offenders = [];
+  for (const file of tracked) {
+    const text = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    for (const name of retired) if (text.includes(name)) offenders.push(`${file}: ${name}`);
+  }
+  assert.deepEqual(offenders, [], 'tracked code and workflows may only use ENABLE_BETA_MUTATION');
 });
 
 test('the mutate chain keeps build separation: preflight, verify, deploy and record are distinct jobs', async () => {
