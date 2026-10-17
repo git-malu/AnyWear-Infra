@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { configuredStacks } from './operation-stacks.mjs';
-import { STAGE_CONTRACT_PARAMETERS, readStageInputs } from './stage-contract-parameters.mjs';
+import { STAGE_CONTRACT_PARAMETERS, STAGE_CONTRACT_CONDITIONAL_PARAMETERS, STAGE_CONTRACT_READ_PARAMETERS,
+  STAGE_CONTRACT_READ_BATCHES, readStageInputs } from './stage-contract-parameters.mjs';
 import {
   DEPLOYMENT_RECORD_SCHEMA, INFRA_REPOSITORY, assertObservedMatchesDeployment, stageContractSchemaHash,
   stableLambdaConfiguration, validateDeploymentRecord, validateInfraDeploymentRecord, validateStageInputs,
@@ -25,30 +26,52 @@ const record = () => ({ schema_version: 3, record_type: 'anywear_infra_deploymen
   observed: observed(),
   schema: { content_sha256: stageContractSchemaHash(stageInputs) } });
 
-test('the stage-contract name list is the 25 published Beta parameters, sorted', () => {
-  assert.equal(STAGE_CONTRACT_PARAMETERS.length, 25);
+test('the stage-contract name list is the 34 unconditional Beta parameters plus one phase-dependent name', () => {
+  assert.equal(STAGE_CONTRACT_PARAMETERS.length, 34);
   assert.deepEqual([...STAGE_CONTRACT_PARAMETERS], [...STAGE_CONTRACT_PARAMETERS].sort());
+  assert.deepEqual([...STAGE_CONTRACT_CONDITIONAL_PARAMETERS], ['/anywear/beta/cleanup_task_role_arn']);
+  assert.equal(STAGE_CONTRACT_READ_PARAMETERS.length, 35);
+  assert.deepEqual([...STAGE_CONTRACT_READ_PARAMETERS], [...STAGE_CONTRACT_READ_PARAMETERS].sort());
   assert.ok(STAGE_CONTRACT_PARAMETERS.every(name => /^\/anywear\/beta\/[a-z0-9_]+$/.test(name)));
+  assert.ok(STAGE_CONTRACT_PARAMETERS.every(name => !STAGE_CONTRACT_CONDITIONAL_PARAMETERS.includes(name)));
   assert.deepEqual(validateStageInputs(stageInputs), stageInputs);
   assert.equal(stageContractSchemaHash([]), stageContractSchemaHash([]));
   assert.deepEqual(validateStageInputs([]), []);
   assert.throws(() => validateStageInputs([...stageInputs].reverse()), /sorted and unique/);
 });
 
-test('readStageInputs records versions and value hashes for every published parameter', async () => {
-  const io = { async aws(args, region) {
+test('readStageInputs records every unconditional parameter and admits only the phase-dependent absence', async () => {
+  const calls = [];
+  const io = ({ invalid = [], omit = [], replacements = {} } = {}) => ({ async aws(args, region) {
     assert.deepEqual(args.slice(0, 2), ['ssm', 'get-parameters']);
     assert.equal(region, 'ap-east-1');
     const names = args.slice(3);
-    assert.deepEqual(names, [...STAGE_CONTRACT_PARAMETERS]);
-    return { Parameters: names.map((name, index) => ({ Name: name, Type: 'String', Value: `value-${index}`, Version: index + 1 })) };
-  } };
-  const rows = await readStageInputs(io);
-  assert.equal(rows.length, 25);
-  assert.deepEqual(rows.map(row => row.parameter), [...STAGE_CONTRACT_PARAMETERS]);
-  assert.deepEqual(rows.map(row => row.version), STAGE_CONTRACT_PARAMETERS.map((_, index) => String(index + 1)));
+    assert.ok(names.length <= 10, 'ssm get-parameters accepts at most ten names per call');
+    calls.push(names);
+    const returned = names.filter(name => !invalid.includes(name) && !omit.includes(name))
+      .map(name => replacements[name] ?? name);
+    return { Parameters: returned.map(name => ({ Name: name, Type: 'String',
+        Value: `value-${STAGE_CONTRACT_READ_PARAMETERS.indexOf(name)}`, Version: STAGE_CONTRACT_READ_PARAMETERS.indexOf(name) + 1 })),
+      InvalidParameters: invalid.filter(name => names.includes(name)) };
+  } });
+  const rows = await readStageInputs(io());
+  assert.deepEqual(calls, [...STAGE_CONTRACT_READ_BATCHES]);
+  assert.equal(rows.length, 35);
+  assert.deepEqual(rows.map(row => row.parameter), [...STAGE_CONTRACT_READ_PARAMETERS]);
+  assert.deepEqual(rows.map(row => row.version), STAGE_CONTRACT_READ_PARAMETERS.map((_, index) => String(index + 1)));
+  // A legacy deploy publishes no cleanup role, so its parameter is legitimately invalid.
+  calls.length = 0;
+  const legacyRows = await readStageInputs(io({ invalid: [...STAGE_CONTRACT_CONDITIONAL_PARAMETERS] }));
+  assert.deepEqual(calls, [...STAGE_CONTRACT_READ_BATCHES]);
+  assert.equal(legacyRows.length, 34);
+  assert.deepEqual(legacyRows.map(row => row.parameter), [...STAGE_CONTRACT_PARAMETERS]);
+  // Any unconditional absence, an unexpected name or a duplicate still fails.
+  await assert.rejects(readStageInputs(io({ invalid: [STAGE_CONTRACT_PARAMETERS[0]] })), /unavailable/);
+  await assert.rejects(readStageInputs(io({ omit: [STAGE_CONTRACT_PARAMETERS[0]] })), /unavailable/);
   await assert.rejects(readStageInputs({ async aws() { return { Parameters: [], InvalidParameters: [] }; } }), /unavailable/);
-  await assert.rejects(readStageInputs({ async aws() { return { Parameters: [{ Name: STAGE_CONTRACT_PARAMETERS[0], Type: 'String', Value: 'x', Version: 1 }], InvalidParameters: STAGE_CONTRACT_PARAMETERS.slice(1) }; } }), /unavailable/);
+  await assert.rejects(readStageInputs(io({ replacements: {
+    [STAGE_CONTRACT_PARAMETERS[0]]: '/anywear/beta/not_in_contract' } })), /unexpected/);
+  await assert.rejects(readStageInputs(io({ invalid: STAGE_CONTRACT_READ_PARAMETERS.slice(1) })), /unavailable/);
 });
 
 test('an Infra v3 record validates and equals its own authenticated observation', () => {

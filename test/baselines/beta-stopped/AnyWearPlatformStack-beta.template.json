@@ -2306,13 +2306,14 @@
   "AnyWearDatabase2CD487D8": {
    "Type": "AWS::RDS::DBCluster",
    "Properties": {
+    "BackupRetentionPeriod": 7,
     "CopyTagsToSnapshot": true,
     "DBClusterParameterGroupName": "default.aurora-postgresql17",
     "DBSubnetGroupName": {
      "Ref": "AnyWearDatabaseSubnetsE76350ED"
     },
     "DatabaseName": "anywear",
-    "DeletionProtection": false,
+    "DeletionProtection": true,
     "Engine": "aurora-postgresql",
     "EngineVersion": "17.7",
     "MasterUserPassword": {
@@ -2340,6 +2341,7 @@
      ]
     },
     "Port": 5432,
+    "PreferredBackupWindow": "16:00-16:30",
     "ServerlessV2ScalingConfiguration": {
      "MaxCapacity": 2,
      "MinCapacity": 0,
@@ -3395,6 +3397,136 @@
     "Type": "String",
     "Value": "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ"
    }
+  },
+  "StageContractVerificationTaskRoleArnParamF19E7348": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot verification task role ARN",
+    "Name": "/anywear/beta/verification_task_role_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "VerificationTaskRoleF6CF2A5D",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractOneShotExecutionRoleArnParam6982F17C": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task execution role ARN",
+    "Name": "/anywear/beta/one_shot_execution_role_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "OneShotExecutionRoleE1BB48E7",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractOneShotLogGroupNameParam97AA5BE2": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task log group name",
+    "Name": "/anywear/beta/one_shot_log_group_name",
+    "Type": "String",
+    "Value": {
+     "Ref": "OneShotLogGroup31A8D153"
+    }
+   }
+  },
+  "StageContractOneShotLogGroupArnParam79E3A88B": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task log group ARN",
+    "Name": "/anywear/beta/one_shot_log_group_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "OneShotLogGroup31A8D153",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractOneShotSecurityGroupIdParam41BD78D4": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task security group id",
+    "Name": "/anywear/beta/one_shot_security_group_id",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "OneShotSecurityGroup6BBA5E34",
+      "GroupId"
+     ]
+    }
+   }
+  },
+  "StageContractEcsClusterArnParamD8A2358B": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: shared Beta ECS cluster ARN for workload services and one-shot tasks",
+    "Name": "/anywear/beta/ecs_cluster_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "ClusterEB0386A7",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractVtoDlqUrlParam665B1A03": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: VTO dead-letter queue URL for the workload cleanup task",
+    "Name": "/anywear/beta/vto_dlq_url",
+    "Type": "String",
+    "Value": {
+     "Ref": "AsyncRuntimeVtoDeadLetterQueueE526C0CE"
+    }
+   }
+  },
+  "StageContractAutoTaggingDlqUrlParam877BDABC": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: auto-tagging dead-letter queue URL for the workload cleanup task",
+    "Name": "/anywear/beta/auto_tagging_dlq_url",
+    "Type": "String",
+    "Value": {
+     "Ref": "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868"
+    }
+   }
+  },
+  "StageContractIsolatedSubnetIdsParamC46D2120": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: shared Beta isolated subnet ids for workload tasks with no egress",
+    "Name": "/anywear/beta/isolated_subnet_ids",
+    "Type": "StringList",
+    "Value": {
+     "Fn::Join": [
+      ",",
+      [
+       {
+        "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
+       },
+       {
+        "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
+       },
+       {
+        "Ref": "AnyWearVpcIsolatedSubnet1Subnet0EFF445C"
+       },
+       {
+        "Ref": "AnyWearVpcIsolatedSubnet2Subnet3B6C3C54"
+       }
+      ]
+     ]
+    }
+   }
   }
  },
  "Outputs": {
@@ -3640,19 +3772,6 @@
       }
      ]
     ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeServiceRepository6535F885",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputRefAsyncRuntimeServiceRepository6535F885E981090C": {
-   "Value": {
-    "Ref": "AsyncRuntimeServiceRepository6535F885"
    }
   }
  },

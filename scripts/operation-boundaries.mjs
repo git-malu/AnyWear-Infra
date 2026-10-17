@@ -45,12 +45,19 @@ export const qualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.
 // metadata, so it runs before any AWS call.
 export function assertProtectedExecutor(infraSha, env = process.env) {
   if (typeof infraSha !== 'string' || !/^[a-f0-9]{40}$/.test(infraSha)) throw new Error('Reviewed Infra source required');
-  if (env.GITHUB_SHA !== infraSha || env.GITHUB_REF !== 'refs/heads/main'
+  if (typeof env.GITHUB_SHA !== 'string' || !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA) || env.GITHUB_REF !== 'refs/heads/main'
     || env.AWS_ACCOUNT_ID !== account || env.AWS_REGION !== region) throw new Error('Protected executor/account/region/source required');
   const paths = env.GITHUB_REPOSITORY === INFRA_REPOSITORY ? qualifiedWorkflowPaths
-    : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E' ? ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml'] : [];
+    : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E'
+      ? ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml'] : [];
   if (!paths.some(file => env.GITHUB_WORKFLOW_REF === `${env.GITHUB_REPOSITORY}/${file}@refs/heads/main`)) {
     throw new Error('Protected executor workflow required');
+  }
+  // An Infra executor must execute the reviewed revision. AnyWear-E2E executes
+  // from its own pinned checkout and states the observed Infra helper revision
+  // explicitly, so its run SHA is the executor identity rather than the Infra SHA.
+  if (env.GITHUB_REPOSITORY === INFRA_REPOSITORY && env.GITHUB_SHA !== infraSha) {
+    throw new Error('Protected executor source required');
   }
   if (!Number.isSafeInteger(Number(env.GITHUB_RUN_ID)) || !Number.isSafeInteger(Number(env.GITHUB_RUN_ATTEMPT))) throw new Error('Executor run identity required');
   return { repository: env.GITHUB_REPOSITORY, sha: infraSha, workflow_path: env.GITHUB_WORKFLOW_REF.split('/').slice(2).join('/').split('@')[0],

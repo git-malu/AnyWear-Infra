@@ -39,15 +39,25 @@ and uploads `cdk.matrix/comparison.json` and
 ## Stage contract
 
 `AnyWearPlatformStack-beta` publishes the Beta stage base as plain SSM
-parameters under `/anywear/beta/`: 25 names covering the VPC and subnets, ECS
-cluster, Aurora endpoint and secret, the three workload security groups, the ECR
-repository identity, both task queues and dead-letter queue names, the wardrobe
-bucket ARN, the operations topic, the CloudFront origin-facing prefix list id
-and the VLM config secret ARN. They join the four existing published names
+parameters under `/anywear/beta/`. **34 names exist in every identity phase and
+environment variant**: the VPC and subnet tiers (public, private and isolated),
+ECS cluster name and ARN, Aurora endpoint and secret, the three workload security
+groups plus the one-shot task security group, the ECR repository identity, both
+task queues, both queue and dead-letter-queue names and URLs, the wardrobe bucket
+ARN, the operations topic, the CloudFront origin-facing prefix list id, the VLM
+config secret ARN, and the one-shot verification/execution role ARNs and log
+group name/ARN. One further name, `cleanup_task_role_arn`, is published only
+while the identity phase creates the cleanup task role
+(`identityPhase !== 'legacy'`). They join the four existing published names
 (`cognito_user_pool_id`, `cognito_client_id`, `s3_bucket_name`,
 `qweather_api_host`); the runtime-owned `admission_mode`, `tester_allowlist` and
 `aws_region` parameters are not duplicated. Values come from the existing
-Platform resources; nothing reads another stack at deploy time.
+Platform resources; nothing reads another stack at deploy time. The ten values
+added by the issue #158 extension replace the remaining weak
+`Fn::GetStackOutput` reads, so once AnyWear-Service's step D converts them the
+Platform/Workload deploy order no longer matters. `isolated_subnet_ids` is
+always published because Beta keeps a dedicated isolated subnet tier in both
+states; it is never an empty `StringList`.
 
 Two values have no Platform resource: `vlm_config_arn` and
 `cloudfront_prefix_list_id` are reviewed constants read from the live

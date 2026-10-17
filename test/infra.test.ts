@@ -668,32 +668,40 @@ describe('Platform safety controls', () => {
     expect(JSON.stringify(lifecycleStatements[0].Resource)).not.toContain('*');
   });
 
-  it('publishes exactly the 25 reviewed Beta stage-contract parameters without duplicates', () => {
+  it('publishes exactly the 34 unconditional Beta stage-contract parameters without duplicates', () => {
     const resources = Object.values(synthesizePlatform('beta').Resources) as any[];
     const parameters = resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter');
     const names = parameters.map((parameter) => parameter.Properties.Name);
     expect(new Set(names).size).toBe(names.length);
-    expect(parameters).toHaveLength(32);
+    expect(parameters).toHaveLength(41);
     const stageContract = parameters.filter((parameter) => (
       parameter.Properties.Description?.startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: ')));
-    expect(stageContract).toHaveLength(25);
+    expect(stageContract).toHaveLength(34);
     expect(stageContract.map((parameter) => parameter.Properties.Name).sort()).toEqual([
-      'auto_tagging_dlq_name', 'auto_tagging_queue_arn', 'auto_tagging_queue_name', 'auto_tagging_queue_url',
-      'api_security_group_id', 'cloudfront_prefix_list_id', 'database_host', 'database_port',
-      'database_secret_arn', 'ecs_cluster_name', 'load_balancer_security_group_id', 'operations_topic_arn',
-      'private_subnet_ids', 'public_subnet_ids', 's3_bucket_arn', 'service_repository_arn',
-      'service_repository_name', 'service_repository_uri', 'vlm_config_arn', 'vpc_id', 'vto_dlq_name',
-      'vto_queue_arn', 'vto_queue_name', 'vto_queue_url', 'worker_security_group_id',
+      'api_security_group_id', 'auto_tagging_dlq_name', 'auto_tagging_dlq_url', 'auto_tagging_queue_arn',
+      'auto_tagging_queue_name', 'auto_tagging_queue_url', 'cloudfront_prefix_list_id', 'database_host',
+      'database_port', 'database_secret_arn', 'ecs_cluster_arn', 'ecs_cluster_name', 'isolated_subnet_ids',
+      'load_balancer_security_group_id', 'one_shot_execution_role_arn', 'one_shot_log_group_arn',
+      'one_shot_log_group_name', 'one_shot_security_group_id', 'operations_topic_arn', 'private_subnet_ids',
+      'public_subnet_ids', 's3_bucket_arn', 'service_repository_arn', 'service_repository_name',
+      'service_repository_uri', 'verification_task_role_arn', 'vlm_config_arn', 'vpc_id', 'vto_dlq_name',
+      'vto_dlq_url', 'vto_queue_arn', 'vto_queue_name', 'vto_queue_url', 'worker_security_group_id',
     ].map((name) => `/anywear/beta/${name}`).sort());
     expect(stageContract.filter((parameter) => parameter.Properties.Type === 'StringList')
       .map((parameter) => parameter.Properties.Name).sort())
-      .toEqual(['/anywear/beta/private_subnet_ids', '/anywear/beta/public_subnet_ids']);
+      .toEqual(['/anywear/beta/isolated_subnet_ids', '/anywear/beta/private_subnet_ids', '/anywear/beta/public_subnet_ids']);
     expect(stageContract.every((parameter) => ['String', 'StringList'].includes(parameter.Properties.Type))).toBe(true);
     expect(stageContract.every((parameter) => parameter.Properties.Name.startsWith('/anywear/beta/'))).toBe(true);
+    expect(stageContract.every((parameter) => parameter.Properties.Description.length > 60)).toBe(true);
     expect(stageContract.find((parameter) => parameter.Properties.Name === '/anywear/beta/vlm_config_arn')!.Properties.Value)
       .toBe('arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ');
     expect(stageContract.find((parameter) => parameter.Properties.Name === '/anywear/beta/cloudfront_prefix_list_id')!
       .Properties.Value).toBe('pl-14b2577d');
+    // The cleanup role exists only outside the legacy phase, so neither the role
+    // nor its ARN parameter is in the legacy synth.
+    expect(resources.some((resource) => resource.Type === 'AWS::IAM::Role'
+      && resource.Properties.RoleName === 'beta-anywear-tester-cleanup-task')).toBe(false);
+    expect(stageContract.some((parameter) => parameter.Properties.Name === '/anywear/beta/cleanup_task_role_arn')).toBe(false);
     // The four reused published names and the three runtime-owned parameters
     // keep their existing single resource.
     for (const name of ['cognito_user_pool_id', 'cognito_client_id', 's3_bucket_name', 'qweather_api_host',
@@ -712,6 +720,25 @@ describe('Platform safety controls', () => {
     });
     expect(() => stageContractInputs('prod')).toThrow(/requires explicit vlmConfigArn and cloudFrontPrefixListId/);
     expect(() => stageContractInputs('dev')).toThrow(/requires explicit vlmConfigArn and cloudFrontPrefixListId/);
+  });
+
+  it('publishes the phase-dependent cleanup role ARN only while the identity phase creates the role', () => {
+    for (const environmentRunning of [true, false]) {
+      const legacy = Object.values(synthesizePlatform('beta', environmentRunning).Resources) as any[];
+      const added = Object.values(synthesizePlatform('beta', environmentRunning, 'roles-added').Resources) as any[];
+      const retired = Object.values(synthesizePlatform('beta', environmentRunning, 'retired').Resources) as any[];
+      const contract = (resources: any[]) => resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter'
+        && resource.Properties.Description?.startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: '));
+      expect(contract(legacy)).toHaveLength(34);
+      expect(contract(added)).toHaveLength(35);
+      expect(contract(retired)).toHaveLength(35);
+      for (const resources of [added, retired]) {
+        const cleanup = contract(resources).filter((resource) => resource.Properties.Name === '/anywear/beta/cleanup_task_role_arn');
+        expect(cleanup).toHaveLength(1);
+        expect(cleanup[0].Properties.Type).toBe('String');
+        expect(cleanup[0].Properties.Value).toEqual({ 'Fn::GetAtt': [expect.stringMatching(/^CleanupTaskRole[A-F0-9]{8}$/), 'Arn'] });
+      }
+    }
   });
 
   it('limits synthetic lifecycle message cleanup to the two Beta dead-letter queues', () => {
@@ -1060,10 +1087,15 @@ describe('Explicit infrastructure identity cutover', () => {
     for (const [key, value] of Object.entries(legacy.Outputs)) expect(added.Outputs[key]).toEqual(value);
     expect(Object.keys(added.Outputs).filter(key => !legacy.Outputs[key])).toEqual(['CleanupTaskRoleArn']);
     const newResources = Object.entries(added.Resources).filter(([id]) => !legacy.Resources[id]);
-    expect(newResources).toHaveLength(7);
+    expect(newResources).toHaveLength(8);
     expect(newResources.filter(([, resource]: [string, any]) => resource.Type === 'AWS::IAM::Policy')).toHaveLength(6);
     const cleanup = newResources.find(([, resource]: [string, any]) => resource.Type === 'AWS::IAM::Role')![1] as any;
     expect(cleanup.Properties.RoleName).toBe('beta-anywear-tester-cleanup-task');
+    const cleanupParameter = newResources
+      .filter(([, resource]: [string, any]) => resource.Type === 'AWS::SSM::Parameter') as [string, any][];
+    expect(cleanupParameter).toHaveLength(1);
+    expect(cleanupParameter[0][1].Properties.Name).toBe('/anywear/beta/cleanup_task_role_arn');
+    expect(cleanupParameter[0][1].Properties.Description).toContain('stage contract: dedicated cleanup task role ARN');
   });
 
   it('keeps the old Beta role identity but removes its trust and template-owned grants only at retirement', () => {

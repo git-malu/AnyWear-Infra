@@ -1,10 +1,19 @@
 import { execFile } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { parseJson, contentHash, exact, matches, SHA } from './json-contract.mjs';
-import { validateSnapshot, stableLambdaConfiguration, account, region, INFRA_REPOSITORY, stageContractSchemaHash } from './deployment-contract.mjs';
+import { parseJson, contentHash, matches, SHA } from './json-contract.mjs';
+import { validateSnapshot, stableLambdaConfiguration, account, region, INFRA_REPOSITORY, stageContractSchemaHash,
+  validateDeploymentRecord, assertObservedMatchesDeployment } from './deployment-contract.mjs';
 import { readStageInputs } from './stage-contract-parameters.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
+
+// The v3 CLI and AnyWear-E2E import these validators. They stay one contract
+// implementation: the observer validates the expected record through the same
+// module every other producer/consumer uses.
+export { validateDeploymentRecord, assertObservedMatchesDeployment } from './deployment-contract.mjs';
 
 const execute = promisify(execFile);
 const outputMap = stack => Object.fromEntries((stack.Outputs ?? []).map(item => [item.OutputKey, item.OutputValue]));
@@ -91,4 +100,71 @@ export async function observeDeployment({ infraSha, io = liveObservationIo(), en
     }
   }
   return body;
+}
+
+// The v3 observer CLI for AnyWear-E2E. It takes no release selection: the
+// expected record is the Infra deployment record that must equal the
+// authenticated observation, and the explicit Infra SHA is the record producer
+// it must agree with. `--trusted-infra-root` binds the helper that executed to
+// that revision when E2E checked the source out separately.
+const OBSERVER_OPTIONS = Object.freeze({ '--expected': true, '--output': true, '--infra-sha': true,
+  '--trusted-infra-root': false });
+const OBSERVER_USAGE = `Usage: node scripts/observe-deployment.mjs --expected <platform-record.json> --output <file> --infra-sha <sha> [--trusted-infra-root <path>]
+
+Reads the live Beta stage base and writes the authenticated v3
+anywear_infra_deployment body. The expected record is validated with
+deployment-contract.mjs and must equal the new observation exactly.
+`;
+
+export function observerArguments(argv) {
+  const options = {};
+  if (argv.includes('--help')) return { help: true };
+  for (let index = 0; index < argv.length; index += 2) {
+    const name = argv[index];
+    if (!Object.hasOwn(OBSERVER_OPTIONS, name)) throw new Error(`Unknown observer argument ${name}`);
+    const value = argv[index + 1];
+    if (typeof value !== 'string' || !value) throw new Error(`Observer argument ${name} requires a value`);
+    if (Object.hasOwn(options, name.slice(2))) throw new Error(`Duplicate observer argument ${name}`);
+    options[name.slice(2)] = value;
+  }
+  for (const [name, required] of Object.entries(OBSERVER_OPTIONS)) {
+    if (required && !Object.hasOwn(options, name.slice(2))) throw new Error(`Observer argument ${name} is required`);
+  }
+  return options;
+}
+
+async function assertTrustedInfraRoot(root, infraSha) {
+  const directory = path.resolve(root);
+  const head = (await execute('git', ['-C', directory, 'rev-parse', 'HEAD'], { timeout: 60_000 })).stdout.trim();
+  if (head !== infraSha) throw new Error('Trusted Infra root is not the reviewed Infra revision');
+  const relative = path.relative(directory, fileURLToPath(import.meta.url));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Observer does not execute from the trusted Infra root');
+  }
+  return directory;
+}
+
+export async function observeDeploymentCli({ argv = process.argv.slice(2), io = liveObservationIo(), env = process.env } = {}) {
+  const options = observerArguments(argv);
+  if (options.help) {
+    process.stdout.write(OBSERVER_USAGE);
+    return { help: true };
+  }
+  const expected = validateDeploymentRecord(parseJson(await readFile(options.expected)));
+  if (expected.record_type !== 'anywear_infra_deployment') {
+    throw new Error('Expected record is not an Infra deployment record');
+  }
+  matches(options['infra-sha'], SHA, 'explicit Infra SHA');
+  if (expected.producer.sha !== options['infra-sha']) {
+    throw new Error('Expected deployment was produced by a different Infra revision');
+  }
+  if (options['trusted-infra-root']) await assertTrustedInfraRoot(options['trusted-infra-root'], options['infra-sha']);
+  const body = await observeDeployment({ infraSha: options['infra-sha'], io, env });
+  assertObservedMatchesDeployment(expected, body);
+  await writeFile(options.output, `${JSON.stringify(body, null, 2)}\n`);
+  return body;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await observeDeploymentCli({ argv: process.argv.slice(2) });
 }

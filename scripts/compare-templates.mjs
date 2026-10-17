@@ -130,23 +130,30 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
     // CDK analytics is diagnostic metadata rather than a cloud resource update.
     const telemetry = resource?.Type === 'AWS::CDK::Metadata'
       && difference.path === `/Resources/${id}/Properties/Analytics`;
-    // The release slice left this repository in #158 step C. `PublishOutput*` is
-    // not a declared output: CDK's weak cross-stack reference feature emits it in
-    // the consumer's source stack, so it exists only while the slice is
-    // synthesized in the same app. Without that consumer the stage base emits no
-    // such output, and the recorded baseline (produced with the slice) keeps them.
-    // The removal is the slice's coupling leaving, not a stage-base change; the
-    // remaining sizing, telemetry, cleanup-operation and machine-auth allowances
-    // for the slice were deleted with it.
-    const releaseSlicePublishedOutput = difference.path.startsWith('/Outputs/PublishOutput')
-      && difference.after === undefined;
+    // The stage-contract extension publishes `cleanup_task_role_arn` only while
+    // the identity phase creates the cleanup task role. The reviewed baseline is
+    // the legacy synth, which has neither the role nor the parameter; both are
+    // allowed together and only there. This is the single parameter allowance:
+    // the other 34 stage-contract parameters are unconditional and exact.
+    const cleanupContractParameter = phase !== 'legacy' && stackName === 'AnyWearPlatformStack-beta'
+      && /^StageContractCleanupTaskRoleArnParam[A-F0-9]{8}$/.test(id)
+      && difference.path === `/Resources/${id}` && difference.before === undefined
+      && JSON.stringify(Object.keys(difference.after ?? {}).sort()) === JSON.stringify(['Properties', 'Type'])
+      && difference.after.Type === 'AWS::SSM::Parameter'
+      && JSON.stringify(Object.keys(difference.after.Properties ?? {}).sort())
+        === JSON.stringify(['Description', 'Name', 'Type', 'Value'])
+      && difference.after.Properties.Name === '/anywear/beta/cleanup_task_role_arn'
+      && difference.after.Properties.Type === 'String'
+      && typeof difference.after.Properties.Description === 'string'
+      && difference.after.Properties.Description
+        .startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: ');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
-      || recoveryDelta || releaseSlicePublishedOutput) {
+      || recoveryDelta || cleanupContractParameter) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
           : recoveryDelta ? 'Issue #161 explicit database recovery targets'
-            : 'Release-slice-only weak cross-stack output removed with the slice' });
+            : 'Phase-dependent stage-contract cleanup task role parameter' });
     } else rejected.push(difference);
   }
   return { phase, stage, stackName, accepted: rejected.length === 0, allowed, rejected };

@@ -74,10 +74,12 @@ export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
 // `inputs[]` is the stage-contract surface this record's run read from SSM, with
 // each parameter's version and value hash. It may be empty: a producer that reads
 // no stage-contract parameter records `[]` and the schema hash is the content hash
-// of the empty list. Infra reads the 25 published stage-contract parameters during
-// its authenticated observation (the stage base is their producer, and the read is
-// what evidences the surface the release slice consumes); the Service record lists
-// the same contract plus the four reused stage values it consumes at deploy time.
+// of the empty list. Infra reads the 34 stage-contract parameters every Beta
+// phase publishes, plus the phase-dependent `cleanup_task_role_arn` when the
+// deployed identity phase creates that role; the stage base is their producer,
+// and the read is what evidences the surface the release slice consumes. The
+// Service record lists the same contract plus the four reused stage values it
+// consumes at deploy time.
 export function validateStageInputs(rows) {
   if (!Array.isArray(rows) || rows.length > 64) throw new Error('Invalid stage contract inputs');
   let previous;

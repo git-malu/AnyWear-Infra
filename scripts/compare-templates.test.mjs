@@ -31,14 +31,13 @@ test('an unchanged template is accepted in every phase', () => {
   }
 });
 
-test('the release-slice weak cross-stack outputs may disappear in every phase and stage', () => {
+test('a removed weak cross-stack output is rejected: the baselines are re-recorded exact', () => {
   const after = base(); delete after.Outputs.PublishOutputRefAnyWearVpcA8B15590;
   for (const phase of ['legacy', 'roles-added', 'retired']) {
     for (const stage of ['beta', 'prod']) {
-      const report = compareTemplates(base(), after, options({ phase, stage, stackName: 'AnyWearPlatformStack-beta' }));
-      assert.equal(report.accepted, true, `${stage} ${phase}`);
-      assert.equal(report.allowed.length, 1);
-      assert.match(report.allowed[0].reason, /Release-slice-only weak cross-stack output/);
+      const report = compareTemplates(base(), after, options({ phase, stage, stackName: `AnyWearPlatformStack-${stage}` }));
+      assert.equal(report.accepted, false, `${stage} ${phase}`);
+      assert.deepEqual(report.rejected.map(entry => entry.path), ['/Outputs/PublishOutputRefAnyWearVpcA8B15590']);
     }
   }
   // A real output change is not a removal and still fails.
@@ -76,6 +75,43 @@ test('dedicated identity resources are allowed only outside the legacy phase', (
   const report = compareTemplates(without, added, foundation);
   assert.equal(report.allowed[0].reason, 'Dedicated Beta identity resource');
   assert.equal(compareTemplates(without, added, { ...foundation, phase: 'legacy' }).accepted, false);
+});
+
+test('only the phase-dependent cleanup stage-contract parameter may be added outside legacy', () => {
+  const parameter = {
+    Type: 'AWS::SSM::Parameter',
+    Properties: {
+      Name: '/anywear/beta/cleanup_task_role_arn', Type: 'String',
+      Value: { 'Fn::GetAtt': ['CleanupTaskRoleABCD1234', 'Arn'] },
+      Description: 'AnyWear-Service AnyWearWorkloadStack-beta stage contract: dedicated cleanup task role ARN',
+    },
+  };
+  const added = base();
+  added.Resources.StageContractCleanupTaskRoleArnParamABCD1234 = parameter;
+  for (const phase of ['roles-added', 'retired']) {
+    const report = compareTemplates(base(), added, options({ phase }));
+    assert.equal(report.accepted, true, phase);
+    assert.equal(report.allowed.length, 1);
+    assert.equal(report.allowed[0].reason, 'Phase-dependent stage-contract cleanup task role parameter');
+  }
+  // Legacy publishes no cleanup role, so it must not add the parameter.
+  assert.equal(compareTemplates(base(), added, options()).accepted, false);
+  // Any other name, description, shape or stack is not the reviewed addition.
+  const wrongName = structuredClone(added);
+  wrongName.Resources.StageContractCleanupTaskRoleArnParamABCD1234.Properties.Name = '/anywear/beta/not_cleanup';
+  assert.equal(compareTemplates(base(), wrongName, options({ phase: 'roles-added' })).accepted, false);
+  const wrongDescription = structuredClone(added);
+  wrongDescription.Resources.StageContractCleanupTaskRoleArnParamABCD1234.Properties.Description = 'stage contract: cleanup';
+  assert.equal(compareTemplates(base(), wrongDescription, options({ phase: 'roles-added' })).accepted, false);
+  const wrongShape = structuredClone(added);
+  wrongShape.Resources.StageContractCleanupTaskRoleArnParamABCD1234.Properties.Overwrite = true;
+  assert.equal(compareTemplates(base(), wrongShape, options({ phase: 'roles-added' })).accepted, false);
+  const wrongId = structuredClone(added);
+  wrongId.Resources.StageContractOtherParamABCD1234 = wrongId.Resources.StageContractCleanupTaskRoleArnParamABCD1234;
+  delete wrongId.Resources.StageContractCleanupTaskRoleArnParamABCD1234;
+  assert.equal(compareTemplates(base(), wrongId, options({ phase: 'roles-added' })).accepted, false);
+  assert.equal(compareTemplates(base(), added, options({ phase: 'roles-added',
+    stackName: 'AnyWearPlatformStack-prod' })).accepted, false);
 });
 
 test('any other resource or output change is rejected with its exact path', () => {

@@ -58,10 +58,17 @@ export class StageContract extends Construct {
     if (!CLOUDFRONT_PREFIX_LIST_ID.test(inputs.cloudFrontPrefixListId)) {
       throw new Error('Stage contract requires an explicit CloudFront origin-facing prefix list id');
     }
-    const { vpc, database, cluster, apiSecurityGroup, workerSecurityGroup, loadBalancerSecurityGroup, operationsTopic } = platform;
+    // The eight unconditional additions are created by `platform-stack.ts` in
+    // every Beta identity phase. `cleanupTaskRole` is the one phase-dependent
+    // value: the role exists only while `identityPhase !== 'legacy'`, so its
+    // parameter is published with it instead of publishing an ARN that names a
+    // role the same template does not create.
+    const { vpc, database, cluster, apiSecurityGroup, workerSecurityGroup, loadBalancerSecurityGroup, operationsTopic,
+      oneShotSecurityGroup, verificationTaskRole, oneShotExecutionRole, oneShotLogGroup, cleanupTaskRole } = platform;
     if (!vpc || !database?.secret || !cluster || !apiSecurityGroup || !workerSecurityGroup
-      || !loadBalancerSecurityGroup || !operationsTopic) {
-      throw new Error('The Beta stage contract requires the existing Platform VPC, database, cluster, security groups and topic');
+      || !loadBalancerSecurityGroup || !operationsTopic || !oneShotSecurityGroup
+      || !verificationTaskRole || !oneShotExecutionRole || !oneShotLogGroup) {
+      throw new Error('The Beta stage contract requires the existing Platform VPC, database, cluster, security groups, topic and one-shot task resources');
     }
     const path = `/anywear/${stage}/`;
     const describe = (detail: string) => `${STAGE_CONTRACT_CONSUMER} stage contract: ${detail}`;
@@ -113,6 +120,42 @@ export class StageContract extends Construct {
     string('cloudfront_prefix_list_id', inputs.cloudFrontPrefixListId,
       'AWS-managed CloudFront origin-facing prefix list id for the shared load-balancer ingress');
     string('vlm_config_arn', inputs.vlmConfigArn, 'Secrets Manager ARN holding DOUBAO_VLM_API_KEY');
-    if (this.parameters.length !== 25) throw new Error(`Stage contract must publish 25 new parameters, got ${this.parameters.length}`);
+    // Issue #158 approved extension: the remaining stage-base values the Workload
+    // cleanup fixture and one-shot tasks read. They replace weak
+    // `Fn::GetStackOutput` reads, so after Service's conversion the Platform and
+    // Workload deploy order no longer matters.
+    string('verification_task_role_arn', verificationTaskRole.roleArn,
+      'one-shot verification task role ARN');
+    string('one_shot_execution_role_arn', oneShotExecutionRole.roleArn,
+      'one-shot task execution role ARN');
+    string('one_shot_log_group_name', oneShotLogGroup.logGroupName,
+      'one-shot task log group name');
+    string('one_shot_log_group_arn', oneShotLogGroup.logGroupArn,
+      'one-shot task log group ARN');
+    string('one_shot_security_group_id', oneShotSecurityGroup.securityGroupId,
+      'one-shot task security group id');
+    string('ecs_cluster_arn', cluster.clusterArn,
+      'shared Beta ECS cluster ARN for workload services and one-shot tasks');
+    string('vto_dlq_url', platform.vtoDeadLetterQueue.queueUrl,
+      'VTO dead-letter queue URL for the workload cleanup task');
+    string('auto_tagging_dlq_url', platform.autoTaggingDeadLetterQueue.queueUrl,
+      'auto-tagging dead-letter queue URL for the workload cleanup task');
+    // Beta keeps a dedicated isolated tier in both states (`platform-stack.ts`
+    // builds `Isolated` unconditionally and never routes it), so this list is
+    // never empty: while Beta runs it is the dedicated isolated tier, and while
+    // the environment is stopped it is that tier plus the former private tier,
+    // which is exactly the list `private_subnet_ids` carries in that state. The
+    // parameter is therefore published in every variant instead of being
+    // conditionally absent; an empty StringList is never synthesized.
+    stringList('isolated_subnet_ids', vpc.isolatedSubnets.map((subnet) => subnet.subnetId),
+      'shared Beta isolated subnet ids for workload tasks with no egress');
+    if (cleanupTaskRole) {
+      string('cleanup_task_role_arn', cleanupTaskRole.roleArn,
+        'dedicated cleanup task role ARN, published only while the identity phase creates it');
+    }
+    const expectedParameters = cleanupTaskRole ? 35 : 34;
+    if (this.parameters.length !== expectedParameters) {
+      throw new Error(`Stage contract must publish ${expectedParameters} new parameters, got ${this.parameters.length}`);
+    }
   }
 }

@@ -2348,13 +2348,14 @@
   "AnyWearDatabase2CD487D8": {
    "Type": "AWS::RDS::DBCluster",
    "Properties": {
+    "BackupRetentionPeriod": 7,
     "CopyTagsToSnapshot": true,
     "DBClusterParameterGroupName": "default.aurora-postgresql17",
     "DBSubnetGroupName": {
      "Ref": "AnyWearDatabaseSubnetsE76350ED"
     },
     "DatabaseName": "anywear",
-    "DeletionProtection": false,
+    "DeletionProtection": true,
     "Engine": "aurora-postgresql",
     "EngineVersion": "17.7",
     "MasterUserPassword": {
@@ -2382,6 +2383,7 @@
      ]
     },
     "Port": 5432,
+    "PreferredBackupWindow": "16:00-16:30",
     "ServerlessV2ScalingConfiguration": {
      "MaxCapacity": 2,
      "MinCapacity": 0,
@@ -3431,6 +3433,130 @@
     "Type": "String",
     "Value": "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ"
    }
+  },
+  "StageContractVerificationTaskRoleArnParamF19E7348": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot verification task role ARN",
+    "Name": "/anywear/beta/verification_task_role_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "VerificationTaskRoleF6CF2A5D",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractOneShotExecutionRoleArnParam6982F17C": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task execution role ARN",
+    "Name": "/anywear/beta/one_shot_execution_role_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "OneShotExecutionRoleE1BB48E7",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractOneShotLogGroupNameParam97AA5BE2": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task log group name",
+    "Name": "/anywear/beta/one_shot_log_group_name",
+    "Type": "String",
+    "Value": {
+     "Ref": "OneShotLogGroup31A8D153"
+    }
+   }
+  },
+  "StageContractOneShotLogGroupArnParam79E3A88B": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task log group ARN",
+    "Name": "/anywear/beta/one_shot_log_group_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "OneShotLogGroup31A8D153",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractOneShotSecurityGroupIdParam41BD78D4": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: one-shot task security group id",
+    "Name": "/anywear/beta/one_shot_security_group_id",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "OneShotSecurityGroup6BBA5E34",
+      "GroupId"
+     ]
+    }
+   }
+  },
+  "StageContractEcsClusterArnParamD8A2358B": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: shared Beta ECS cluster ARN for workload services and one-shot tasks",
+    "Name": "/anywear/beta/ecs_cluster_arn",
+    "Type": "String",
+    "Value": {
+     "Fn::GetAtt": [
+      "ClusterEB0386A7",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "StageContractVtoDlqUrlParam665B1A03": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: VTO dead-letter queue URL for the workload cleanup task",
+    "Name": "/anywear/beta/vto_dlq_url",
+    "Type": "String",
+    "Value": {
+     "Ref": "AsyncRuntimeVtoDeadLetterQueueE526C0CE"
+    }
+   }
+  },
+  "StageContractAutoTaggingDlqUrlParam877BDABC": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: auto-tagging dead-letter queue URL for the workload cleanup task",
+    "Name": "/anywear/beta/auto_tagging_dlq_url",
+    "Type": "String",
+    "Value": {
+     "Ref": "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868"
+    }
+   }
+  },
+  "StageContractIsolatedSubnetIdsParamC46D2120": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "AnyWear-Service AnyWearWorkloadStack-beta stage contract: shared Beta isolated subnet ids for workload tasks with no egress",
+    "Name": "/anywear/beta/isolated_subnet_ids",
+    "Type": "StringList",
+    "Value": {
+     "Fn::Join": [
+      ",",
+      [
+       {
+        "Ref": "AnyWearVpcIsolatedSubnet1Subnet0EFF445C"
+       },
+       {
+        "Ref": "AnyWearVpcIsolatedSubnet2Subnet3B6C3C54"
+       }
+      ]
+     ]
+    }
+   }
   }
  },
  "Outputs": {
@@ -3669,180 +3795,6 @@
        "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
       }
      ]
-    ]
-   }
-  },
-  "PublishOutputFnGetAttLoadBalancerSecurityGroup3036A0FCGroupId273B4B7E": {
-   "Value": {
-    "Fn::GetAtt": [
-     "LoadBalancerSecurityGroup3036A0FC",
-     "GroupId"
-    ]
-   }
-  },
-  "PublishOutputRefAnyWearVpcPublicSubnet1Subnet5CC36A8305BC9630": {
-   "Value": {
-    "Ref": "AnyWearVpcPublicSubnet1Subnet5CC36A83"
-   }
-  },
-  "PublishOutputRefAnyWearVpcPublicSubnet2Subnet78E1776F16455447": {
-   "Value": {
-    "Ref": "AnyWearVpcPublicSubnet2Subnet78E1776F"
-   }
-  },
-  "PublishOutputRefAnyWearVpcA8B15590AB9CA509": {
-   "Value": {
-    "Ref": "AnyWearVpcA8B15590"
-   }
-  },
-  "PublishOutputRefAnyWearDatabaseSecretAttachment4886B38144EA741B": {
-   "Value": {
-    "Ref": "AnyWearDatabaseSecretAttachment4886B381"
-   }
-  },
-  "PublishOutputFnGetAttAnyWearWardrobeBucket61DCC096Arn724558D0": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AnyWearWardrobeBucket61DCC096",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeServiceRepository6535F885",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeVtoQueue7826D09DArnE4D35296": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeVtoQueue7826D09D",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingQueueEC10AA50ArnF3081676": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeAutoTaggingQueueEC10AA50",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputRefAsyncRuntimeServiceRepository6535F885E981090C": {
-   "Value": {
-    "Ref": "AsyncRuntimeServiceRepository6535F885"
-   }
-  },
-  "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointAddress8F10C00D": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AnyWearDatabase2CD487D8",
-     "Endpoint.Address"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointPort898B970A": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AnyWearDatabase2CD487D8",
-     "Endpoint.Port"
-    ]
-   }
-  },
-  "PublishOutputRefAnyWearWardrobeBucket61DCC096146CB5ED": {
-   "Value": {
-    "Ref": "AnyWearWardrobeBucket61DCC096"
-   }
-  },
-  "PublishOutputRefAsyncRuntimeVtoQueue7826D09D30543F7E": {
-   "Value": {
-    "Ref": "AsyncRuntimeVtoQueue7826D09D"
-   }
-  },
-  "PublishOutputRefAsyncRuntimeAutoTaggingQueueEC10AA508CE2FD1E": {
-   "Value": {
-    "Ref": "AsyncRuntimeAutoTaggingQueueEC10AA50"
-   }
-  },
-  "PublishOutputRefAnyWearUserPoolAFAAA9816AD1F62D": {
-   "Value": {
-    "Ref": "AnyWearUserPoolAFAAA981"
-   }
-  },
-  "PublishOutputRefAnyWearUserPoolClient15EC205A2F344351": {
-   "Value": {
-    "Ref": "AnyWearUserPoolClient15EC205A"
-   }
-  },
-  "PublishOutputRefClusterEB0386A7D87642F6": {
-   "Value": {
-    "Ref": "ClusterEB0386A7"
-   }
-  },
-  "PublishOutputRefAnyWearVpcPrivateSubnet1Subnet2CB21A9B8EE63669": {
-   "Value": {
-    "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
-   }
-  },
-  "PublishOutputRefAnyWearVpcPrivateSubnet2Subnet360A1C5092550D4E": {
-   "Value": {
-    "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
-   }
-  },
-  "PublishOutputFnGetAttApiSecurityGroup4E5BB726GroupIdF3427EAD": {
-   "Value": {
-    "Fn::GetAtt": [
-     "ApiSecurityGroup4E5BB726",
-     "GroupId"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttWorkerSecurityGroup5529CF0BGroupId1D09B9A4": {
-   "Value": {
-    "Fn::GetAtt": [
-     "WorkerSecurityGroup5529CF0B",
-     "GroupId"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeVtoQueue7826D09DQueueNameE55C65DE": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeVtoQueue7826D09D",
-     "QueueName"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingQueueEC10AA50QueueName4DC945B2": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeAutoTaggingQueueEC10AA50",
-     "QueueName"
-    ]
-   }
-  },
-  "PublishOutputRefOperationsTopicC9C1CC12DC655C30": {
-   "Value": {
-    "Ref": "OperationsTopicC9C1CC12"
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeVtoDeadLetterQueueE526C0CEQueueNameB688750E": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeVtoDeadLetterQueueE526C0CE",
-     "QueueName"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingDeadLetterQueueD5D55868QueueName504A8E35": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868",
-     "QueueName"
     ]
    }
   }

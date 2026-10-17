@@ -93,8 +93,22 @@ test('session policies carry only the operation\'s own families', () => {
 
 test('the protected executor gate binds repository, workflow, source, account and region', () => {
   assert.equal(assertProtectedExecutor(infraSha, env('observe')).sha, infraSha);
-  for (const overrides of [{ GITHUB_SHA: '6'.repeat(40) }, { GITHUB_REF: 'refs/heads/other' }, { AWS_ACCOUNT_ID: '1' },
-    { AWS_REGION: 'us-east-1' }, { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Client/.github/workflows/x.yml@refs/heads/main' }]) {
+  for (const overrides of [{ GITHUB_SHA: '6'.repeat(40) }, { GITHUB_SHA: 'short' }, { GITHUB_REF: 'refs/heads/other' },
+    { AWS_ACCOUNT_ID: '1' }, { AWS_REGION: 'us-east-1' },
+    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Client/.github/workflows/x.yml@refs/heads/main' }]) {
     assert.throws(() => assertProtectedExecutor(infraSha, env('observe', overrides)));
   }
+  // AnyWear-E2E executes from its own pinned checkout and states the observed
+  // Infra revision explicitly. Its run SHA is the executor identity, so it must
+  // not be forced to equal the Infra helper SHA.
+  const e2e = (overrides = {}) => env('observe', { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_SHA: '6'.repeat(40),
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main', ...overrides });
+  const executor = assertProtectedExecutor(infraSha, e2e());
+  assert.equal(executor.repository, 'git-malu/AnyWear-E2E');
+  assert.equal(executor.sha, infraSha);
+  assert.equal(executor.workflow_path, '.github/workflows/beta-qualification.yml');
+  assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_WORKFLOW_REF:
+    'git-malu/AnyWear-E2E/.github/workflows/other.yml@refs/heads/main' })), /workflow required/);
+  assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_REF: 'refs/heads/feature' })), /Protected executor/);
+  assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_SHA: '7'.repeat(39) })), /Protected executor/);
 });

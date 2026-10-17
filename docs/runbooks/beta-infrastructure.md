@@ -35,9 +35,16 @@ credential. Deployment records are v3 and contain no `selection`.
 **Do not deploy the post-C Platform template while Service's slice still reads
 `PublishOutput*` outputs.** CDK's weak cross-stack reference feature emits those
 outputs into the stage base only while the slice is synthesized in the same app;
-after C a Platform deploy no longer emits them. Service's step D converts the
-remaining reads to SSM parameters; schedule the Platform deploy after (or with)
-that change. The source matrix records the removal as one explicit allowance.
+after C a Platform deploy no longer emits them. The issue #158 extension
+publishes the ten additional SSM parameters (`cleanup_task_role_arn` only outside
+`legacy`, plus verification/one-shot role ARNs, one-shot log-group name/ARN,
+one-shot security-group id, cluster ARN, both DLQ URLs and `isolated_subnet_ids`)
+that Service's step D converts the remaining reads to, so once C and D are both
+deployed the Platform/Workload deploy order no longer matters. Until D lands,
+schedule the Platform deploy after (or with) that change. Both matrices record
+the final Platform template exactly: the Platform baselines were re-recorded
+without the `PublishOutput*` outputs and with the new parameters, so the
+comparison has no removal allowance.
 
 The practical pinned recovery was [stop 37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)
 followed by [start 37887802281](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281),
