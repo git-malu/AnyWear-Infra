@@ -8,7 +8,7 @@ export interface AsyncRuntimeProps {
   stage: string;
   production: boolean;
   runtimePolicy: RuntimePolicy;
-  retentionProtection?: boolean;
+  ecrImageRetention?: boolean;
 }
 
 export class AsyncRuntime extends Construct {
@@ -32,7 +32,7 @@ export class AsyncRuntime extends Construct {
       // Explicitly activated only after reviewing the retention diff and
       // tagging every current/rollback digest. The operational guard caps
       // protected digests at 256, leaving at least 744 images of headroom.
-      lifecycleRules: props.retentionProtection ? [
+      lifecycleRules: props.ecrImageRetention ? [
         { rulePriority: 1, tagStatus: ecr.TagStatus.TAGGED,
           tagPrefixList: ['protected-service-'], maxImageCount: 1000 },
         { rulePriority: 2, maxImageCount: props.production ? 100 : 30 },

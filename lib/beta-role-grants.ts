@@ -144,9 +144,8 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     actions: ['ecr:PutImage', 'ecr:GetLifecyclePolicy', 'ecr:StartLifecyclePolicyPreview', 'ecr:GetLifecyclePolicyPreview'],
     resources: [p.repository.repositoryArn],
   }));
-  runtime.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['ssm:PutParameter'], resources: parameters(['infra_selection', 'infra_deployment']),
-  }));
+  // The selection/deployment records are emitted as artifacts; nothing writes
+  // them as SSM parameters, so the runtime principal keeps only the read grant.
   oneShots(runtime, ['migrate', 'verify', 'lifecycle', 'artifact-verify'], [
     p.migrationTaskRole.roleArn, p.verificationTaskRole.roleArn, p.lifecycleTaskRole.roleArn, p.oneShotExecutionRole.roleArn,
   ]);

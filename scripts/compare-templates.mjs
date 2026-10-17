@@ -46,7 +46,7 @@ function dedicatedResource(id, resource) {
 
 // These are the complete extraction exceptions. Role additions/retirement are
 // independently inspected; all application resources/outputs remain exact.
-export function compareTemplates(before, after, { phase = 'legacy', stage, stackName, retentionProtection = false } = {}) {
+export function compareTemplates(before, after, { phase = 'legacy', stage, stackName, ecrImageRetention = false } = {}) {
   assert.ok(['legacy', 'roles-added', 'retired'].includes(phase), 'Unknown identity phase');
   const allowed = [];
   const rejected = [];
@@ -114,7 +114,7 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         || (resource.Type === 'AWS::IAM::Policy' && /^betaGitHubActionsRoleDefaultPolicy[A-F0-9]{8}$/.test(id)
           && difference.path === `/Resources/${id}` && difference.after === undefined));
     let protectedRetention = false;
-    if (retentionProtection && resource?.Type === 'AWS::ECR::Repository'
+    if (ecrImageRetention && resource?.Type === 'AWS::ECR::Repository'
       && resource.Properties.RepositoryName === `${stage}-anywear-service`
       && difference.path === `/Resources/${id}/Properties/LifecyclePolicy/LifecyclePolicyText`) {
       const original = JSON.parse(difference.before);

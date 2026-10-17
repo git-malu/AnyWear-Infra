@@ -6,23 +6,29 @@ import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack'
 import { WorkloadStack } from '../lib/workload-stack';
 import { loadArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
-import { readLegacyRoleOwnership } from '../lib/legacy-role-ownership';
+import { readLegacyRoleSource } from '../lib/legacy-role-source';
 
 const app = new cdk.App();
-const appScope = app.node.tryGetContext('appScope') || 'application';
-if (!['application', 'foundation', 'billing'].includes(appScope)) throw new Error('Invalid appScope');
+// A stale old key must fail for every scope instead of taking today's default:
+// appScope, betaActive and retentionProtection would otherwise synthesize a
+// silently different shape (application, running, or unprotected retention).
+if (app.node.tryGetContext('appScope') !== undefined) throw new Error('appScope was renamed to deployScope');
+if (app.node.tryGetContext('betaActive') !== undefined) throw new Error('betaActive was renamed to environmentRunning');
+if (app.node.tryGetContext('retentionProtection') !== undefined) throw new Error('retentionProtection was renamed to ecrImageRetention');
+const deployScope = app.node.tryGetContext('deployScope') || 'application';
+if (!['application', 'foundation', 'billing'].includes(deployScope)) throw new Error('Invalid deployScope');
 const identityPhase = readIdentityPhase(app.node.tryGetContext('identityPhase'));
 // Required even for Billing-only entry; source/simulation mode is never an
 // implicit live fallback. Foundation validates the bound external account.
-const legacyRoleOwnership = readLegacyRoleOwnership(app.node.tryGetContext('legacyRoleOwnership'));
-if (legacyRoleOwnership === 'external' && process.env.CDK_DEFAULT_ACCOUNT !== '650880818323') {
+const legacyRoleSource = readLegacyRoleSource(app.node.tryGetContext('legacyRoleSource'));
+if (legacyRoleSource === 'external' && process.env.CDK_DEFAULT_ACCOUNT !== '650880818323') {
   throw new Error('External legacy roles require the reviewed account 650880818323');
 }
-const retentionProtectionContext = app.node.tryGetContext('retentionProtection');
-if (retentionProtectionContext !== undefined && !['true', 'false', true, false].includes(retentionProtectionContext)) {
-  throw new Error('retentionProtection must be true or false');
+const ecrImageRetentionContext = app.node.tryGetContext('ecrImageRetention');
+if (ecrImageRetentionContext !== undefined && !['true', 'false', true, false].includes(ecrImageRetentionContext)) {
+  throw new Error('ecrImageRetention must be true or false');
 }
-const retentionProtection = retentionProtectionContext === true || retentionProtectionContext === 'true';
+const ecrImageRetention = ecrImageRetentionContext === true || ecrImageRetentionContext === 'true';
 
 // The FoundationStack creates account-wide resources like the GitHub OIDC Provider.
 // It should be deployed ONCE per AWS account, before any environment stacks.
@@ -33,23 +39,23 @@ const billingEnv = process.env.CDK_DEFAULT_ACCOUNT
   ? { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.BILLING_REGION || 'us-east-1' }
   : { region: process.env.BILLING_REGION || 'us-east-1' };
 
-if (appScope !== 'billing') new FoundationStack(app, 'AnyWearFoundationStack', { env, identityPhase, legacyRoleOwnership });
-if (appScope === 'billing') new BillingStack(app, 'AnyWearBillingStack-beta', { stage: 'beta', env: billingEnv });
+if (deployScope !== 'billing') new FoundationStack(app, 'AnyWearFoundationStack', { env, identityPhase, legacyRoleSource });
+if (deployScope === 'billing') new BillingStack(app, 'AnyWearBillingStack-beta', { stage: 'beta', env: billingEnv });
 
-if (appScope === 'application') {
+if (deployScope === 'application') {
 const artifactDirectory = app.node.tryGetContext('artifactDirectory') || process.env.ANYWEAR_ARTIFACT_DIRECTORY;
 if (typeof artifactDirectory !== 'string' || !artifactDirectory) throw new Error('artifactDirectory must identify locally verified immutable Service artifacts');
 const artifactInputs = loadArtifactInputs(artifactDirectory);
 
 const stage = app.node.tryGetContext('stage') || app.node.tryGetContext('env') || 'dev';
-const betaActiveContext = app.node.tryGetContext('betaActive');
-if (betaActiveContext !== undefined && !['true', 'false', true, false].includes(betaActiveContext)) {
-  throw new Error('betaActive must be true or false');
+const environmentRunningContext = app.node.tryGetContext('environmentRunning');
+if (environmentRunningContext !== undefined && !['true', 'false', true, false].includes(environmentRunningContext)) {
+  throw new Error('environmentRunning must be true or false');
 }
-if (stage !== 'beta' && (betaActiveContext === 'false' || betaActiveContext === false)) {
+if (stage !== 'beta' && (environmentRunningContext === 'false' || environmentRunningContext === false)) {
   throw new Error('Only beta supports a stopped state');
 }
-const betaActive = betaActiveContext !== 'false' && betaActiveContext !== false;
+const environmentRunning = environmentRunningContext !== 'false' && environmentRunningContext !== false;
 const qWeatherApiHost = app.node.tryGetContext('qweatherApiHost')
   || process.env.QWEATHER_API_HOST
   || DEFAULT_QWEATHER_API_HOST;
@@ -57,8 +63,8 @@ const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
   stage,
   artifactInputs,
   identityPhase,
-  retentionProtection,
-  betaActive,
+  ecrImageRetention,
+  environmentRunning,
   qWeatherApiHost,
   env,
 });
@@ -71,7 +77,7 @@ if (stage === 'beta' || stage === 'prod') {
   new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, {
     stage,
     platform,
-    betaActive,
+    environmentRunning,
     env,
   });
 }

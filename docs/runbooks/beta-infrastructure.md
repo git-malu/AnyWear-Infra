@@ -145,9 +145,9 @@ or CDK resource is added. Existing OIDC trust binds Infra/environment, not workf
 these reviewed source/session checks do not enforce workflow identity in IAM or
 restrict the existing task roles' application privileges. Downstream CDK authority
 remains unchanged. Unsupported reads still fail against existing role grants.
-Every runtime CDK call explicitly selects `legacyRoleOwnership=external` for
+Every runtime CDK call explicitly selects `legacyRoleSource=external` for
 this account. Foundation never constructs or adopts the external legacy roles.
-The `managed` source/simulation mode is used only by the independently labeled
+The `cdk` source/simulation mode is used only by the independently labeled
 Service baseline matrices and cannot substitute for the live Original comparison.
 
 | Operation | Behavior |

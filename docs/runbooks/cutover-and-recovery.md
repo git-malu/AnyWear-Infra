@@ -19,14 +19,14 @@ The initial artifact publisher role must exist before Service can produce sealed
 inputs for application CDK. In a separately assigned Foundation/account-IAM
 operator allocation, check out the reviewed full Infra source, verify AWS account and
 `ap-east-1`, and compare the existing Foundation Original template, physical map,
-effective OIDC/role policies and proposed synth. `appScope=foundation` omits
+effective OIDC/role policies and proposed synth. `deployScope=foundation` omits
 application/Billing construction and skips the Service artifact loader:
 
 ```sh
 npm ci
 npm run build
-npx cdk synth AnyWearFoundationStack -c appScope=foundation -c identityPhase=roles-added \
-  -c legacyRoleOwnership=external
+npx cdk synth AnyWearFoundationStack -c deployScope=foundation -c identityPhase=roles-added \
+  -c legacyRoleSource=external
 ```
 
 After review of that exact source/diff and recording the operator/writer window,
@@ -34,12 +34,12 @@ the existing authorized operator can reconcile only Foundation:
 
 ```sh
 npx cdk deploy AnyWearFoundationStack --exclusively \
-  -c appScope=foundation -c identityPhase=roles-added -c legacyRoleOwnership=external \
+  -c deployScope=foundation -c identityPhase=roles-added -c legacyRoleSource=external \
   --require-approval never
 ```
 
-All CLI entry points require explicit `legacyRoleOwnership=managed|external`.
-`managed` is the separately identified Service source/simulation baseline; it is
+All CLI entry points require explicit `legacyRoleSource=cdk|external`.
+`cdk` is the separately identified Service source/simulation baseline; it is
 not the deployed-account ownership mode. The live Foundation Original contains
 only the provider/helpers/metadata. Dev belongs to `AnyWearInfraStack-dev`, Beta
 is outside Foundation, and no Prod pipeline role exists. `external` is limited to
@@ -53,7 +53,7 @@ Read back roles, immutable OIDC subjects and effective policies before configuri
 consumers. Keep the old executor usable until its jobs and rollback obligations
 have ended. Ordinary `beta-deploy.yml` deployment later requires a sealed selection;
 that requirement does not apply to this explicit Foundation-only operator path.
-`appScope=billing` similarly synthesizes only Billing and requires its separately
+`deployScope=billing` similarly synthesizes only Billing and requires its separately
 assigned `us-east-1` window.
 
 Use existing authorized operator credentials for bootstrap. Do not run `cdk
@@ -198,7 +198,7 @@ that the effective repository policy has the same hash.
 6. Publish/import the sealed Service baseline with the verified policy hash and
    protected current/rollback list, then commit the reviewed v2 selection
    and verify it through the ordinary workflow described above. Reconcile Platform later with
-   the same live artifacts and explicit `retentionProtection=true`, so CDK owns
+   the same live artifacts and explicit `ecrImageRetention=true`, so CDK owns
    the identical policy. Never deploy the default `false` context over the staged
    protection.
 
@@ -281,7 +281,7 @@ separately from Beta runtime and billing. In the actual `external` ownership mod
 dedicated consumers; Foundation never owned the old Beta role, so this phase
 cannot retire its trust or unmanaged `AnyWearBetaPipelineBaseline`. Those require
 the separately reviewed IAM writer/diff/readback after old sessions cease. Dev
-remains with its original stack, and Production remains absent. The `managed`
+remains with its original stack, and Production remains absent. The `cdk`
 source/simulation fixture's retired role is not a live retirement result.
 
 Inventory and explicitly reconcile `AnyWearBetaPipelineBaseline`, all other
