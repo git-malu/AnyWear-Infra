@@ -668,6 +668,32 @@ Service image:
    schema intact. That is why the documented `suspend-admission` predecessor is not
    a formality: it is what makes the migration apply, and a failed attempt is a
    fail-closed refusal rather than a half-migrated schema.
+
+   **This dispatch is mandatory, not a formality.** Beta is deployed at Service
+   `5d16543` with applied schema **19**, and the new image requires **20**.
+   `deploy-workload` refuses an image the applied schema cannot support, so
+   skipping this step does not partially roll Beta: it produces an `incompatible
+   applied schema` refusal at step 3. The migration is a separate dispatch an
+   operator must run, and step 3 is possible only after it applies.
+
+   **A failed conclusion is not the evidence.** Issue
+   [#157](https://github.com/git-malu/AnyWear/issues/157) records that `migrate`
+   applies its mutation and then fails its own post-condition *because the workload
+   has not been deployed yet*, so a migration that applied cleanly is recorded as a
+   failed run. Read the migrate one-shot's own log stream, not the run conclusion:
+   `AnyWear-Service/src/migrate.ts` ends with
+   `logger.info({ schemaVersion: CURRENT_SCHEMA_VERSION }, 'Database migrations completed')`,
+   so a completed migration emits one JSON line with
+   `"msg":"Database migrations completed"` and `schemaVersion` — **20** for this
+   change, which also proves which revision ran it.
+   - **Applied but reported failed:** that log line is present with
+     `schemaVersion: 20`, and the applied journal contains `0021`–`0023`. Treat the
+     migration as applied and continue to step 3; do not re-run it to "fix" the
+     failed conclusion.
+   - **Did not apply:** no such log line; the run failed before migration
+     completion. Do not proceed to the workload deploy.
+   This reading is a **dependency on #157** and must be removed when that issue
+   lands, so the workaround does not become folklore.
 3. **`deploy-workload`**: roll out the new API/worker image, which reads and writes
    the mode record and queries the renamed admission table.
 4. **`admission-status`**: read the new surface back and compare it with step 0's
