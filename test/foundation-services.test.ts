@@ -87,11 +87,13 @@ const policiesFor = (template: any, role: any): any[] => {
 };
 
 describe('Foundation reviewed service set (CDK context)', () => {
-  it('keeps the default context byte-identical to the pre-change Foundation template', () => {
+  it('keeps the default context equal to the reviewed live Foundation plus reviewed additions', () => {
     const { directory, template } = synthesizeDefaultWithCli();
     // The committed live-Foundation provenance and the round-3 comparison pin the
     // default candidate: four original resources plus exactly the twelve reviewed
-    // additions, and the normalized content hash recorded before this change.
+    // additions. Issue #162 extends the Service deploy role's reviewed additions
+    // with the read-only bake-gate grants, so the normalized hash moves with that
+    // deliberate, fixture-recorded delta.
     // Run the same comparison script CI runs rather than a second implementation.
     const reportPath = path.join(outputDirectory('infra-foundation-report-'), 'comparison.json');
     execFileSync(process.execPath, [path.join(root, 'scripts', 'compare-live-foundation.mjs'),
@@ -102,10 +104,11 @@ describe('Foundation reviewed service set (CDK context)', () => {
     expect(comparison.original_resource_count).toBe(4);
     expect(comparison.candidate_resource_count).toBe(16);
     expect(comparison.added).toHaveLength(12);
-    // sha256 of the normalized pre-change candidate (round 3, 53f1b54); the
-    // comparison normalizes only the declared CDK diagnostic metadata.
+    // sha256 of the normalized candidate including the #162 reviewed extension to
+    // the Service deploy role. The comparison normalizes only the declared CDK
+    // diagnostic metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('593538634996ac07b8662dd26743769437ddf3ec192a404fba61b7dd59d92815');
+      .toBe('b3497cd8e7dbff8387d9180288a49a33d1c2905e3f38e679bd22cce09d174fb1');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();

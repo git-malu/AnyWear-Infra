@@ -76,7 +76,14 @@ CLI's own-credentials path: `ssm:GetParameter` on
 `beta-service-deploy-cfn-role` (trusted by
 `cloudformation.amazonaws.com`; the
 Workload stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
-load-balancer-ingress and four task-role families). Neither role assumes a
+load-balancer-ingress and four task-role families). Issue #162 adds the deploy
+role's read-only bake grants: `cloudwatch:GetMetricStatistics`,
+`cloudwatch:DescribeAlarms` on `beta-anywear-*`, `ecs:DescribeServices` on the
+two workload services, `sqs:GetQueueAttributes` on the four Beta stage queues
+and `logs:FilterLogEvents` on `/anywear/beta/worker`. They are read-only; the
+controlled-fault drill's one-off DLQ write is an operator credential, never a
+standing grant, and the CloudFormation execution role is unchanged. Neither role
+assumes a
 `cdk-hnb659fds-*` role, carries a managed
 policy or holds account-wide grants; the policy-inventory tests pin both the
 allowed inventory and the absent VPC, Aurora, Cognito, wardrobe/client bucket
@@ -101,15 +108,26 @@ roles and policies, scoped to its own workload stack and resource families.
 
 [`packages/stage-contracts/`](packages/stage-contracts/README.md) is the
 dependency-free, versioned source of the stage-contract names/kinds, the stack
-identities, the v3 `anywear_service_deployment` validators and the Foundation
-service-role naming. It is `@git-malu/stage-contracts` `0.1.0`, tagged
-`stage-contracts-v0.1.0`, and packed with `npm pack`; AnyWear-Service pins the
+identities, the v4 `anywear_service_deployment` validators (the v3 core plus the
+required 600-second bake gate), the gate's one stage-free threshold table and the
+Foundation service-role naming. It is `@git-malu/stage-contracts` `0.2.0`; the
+`stage-contracts-v0.2.0` tag is a post-merge publication step (`0.1.0` is the
+last tagged release), and the package is packed with `npm pack`. AnyWear-Service
+pins the
 tarball (for example under `infra/vendor/`) instead of a mutable branch or a
-registry credential in its deploy job. Publishing is the separate tag-triggered
+registry credential in its deploy job; a tarball packed from an unmerged branch
+records its source commit in the vendor provenance. Publishing is the separate
+tag-triggered
 [publish workflow](.github/workflows/publish-stage-contracts.yml)
 (`packages: write`, `GITHUB_TOKEN`). `lib/stage-contract.ts` and the runtime
 record scripts consume or re-export the package, and `npm run check` runs its
 tests.
+
+Infra's own `anywear_infra_deployment` record stays schema v3 and keeps the
+seven-member core (`DEPLOYMENT_RECORD_MEMBERS`); it is never forced to produce a
+`gate`. The pre-gate v3 Service shape was never produced (the Service deployment
+pin is deferred), and historical v2 records remain readable for the audit path
+only.
 
 ## Operations
 

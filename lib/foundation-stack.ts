@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import {
+  deploymentQueueNames,
   serviceDeployCfnRoleName,
   serviceDeployRoleName,
   serviceTrustSubject,
@@ -368,6 +369,33 @@ export class FoundationStack extends cdk.Stack {
         },
       };
       const betaParameters = slashArn('ssm', 'parameter', 'anywear/beta/*');
+
+      // Issue #162: the deploy job's own bake reads the six named signals live
+      // after the stack is stable and before it writes the deployment record.
+      // The bake runs in the deploy job's OIDC session, so these read-only
+      // grants belong to the Service deploy role, not the CloudFormation
+      // execution role: the CloudWatch metric reads, the nine deployed bake and
+      // SQS alarm entities, this service's two ECS services, the four
+      // stage-base queues and the worker log group. No SQS send/receive grant is
+      // added: the controlled-fault drill uses a one-off operator credential.
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['cloudwatch:GetMetricStatistics'],
+        resources: ['*'], conditions: { StringEquals: { 'aws:RequestedRegion': this.region } },
+      }));
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['cloudwatch:DescribeAlarms'], resources: [alarms],
+      }));
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['ecs:DescribeServices'], resources: workloadServices,
+      }));
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['sqs:GetQueueAttributes'],
+        resources: Object.values(deploymentQueueNames('beta'))
+          .map((queueName) => this.formatArn({ service: 'sqs', resource: queueName })),
+      }));
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['logs:FilterLogEvents'], resources: [logGroup('/anywear/beta/worker:*')],
+      }));
 
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['ecs:RegisterTaskDefinition', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition'],

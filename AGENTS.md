@@ -28,13 +28,14 @@ and must not be relabeled as an Infra-produced deployment.
   read (name, version, value hash), the authenticated observation and a content
   hash of the stage-contract schema surface. There is no `selection` member and
   no pin to another repository's release. Service produces
-  `anywear_service_deployment` from the same generic contract.
+  `anywear_service_deployment` v4 from the same core plus a required 600-second
+  six-signal bake `gate`; an Infra record never carries one.
 - The versioned `@git-malu/stage-contracts` package
   (`packages/stage-contracts/`) is the single source of the stage-contract
-  names/kinds, stack identities, v3 Service record validators and Foundation
-  service-role naming. `npm run check` runs its tests. Change it only with a
-  version bump and the matching `stage-contracts-v<version>` tag; Service pins the
-  packed tarball, never a mutable branch.
+  names/kinds, stack identities, v4 Service record and bake-gate validators and
+  Foundation service-role naming. `npm run check` runs its tests. Change it only
+  with a version bump and the matching `stage-contracts-v<version>` tag; Service
+  pins the packed tarball, never a mutable branch.
 - Do not claim repository branch protection when the private plan cannot enforce
   it. The configured Beta environment restricts the branch to main. Apply the
   independently reviewed exact source/inputs and operational coordination
@@ -116,7 +117,9 @@ and must not be relabeled as an Infra-produced deployment.
   changed default descriptor fails synthesis before any resource is created. A
   second service is that context value plus a Foundation deploy carrying it, never
   an Infra source edit; the default context keeps the synthesized Foundation
-  template byte-identical (`test/foundation-services.test.ts`).
+  template equal to the authenticated live Foundation plus the recorded
+  `test/fixtures/foundation-dedicated-additions.json` delta, whose #162 extension
+  is recorded in the fixture provenance (`test/foundation-services.test.ts`).
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`

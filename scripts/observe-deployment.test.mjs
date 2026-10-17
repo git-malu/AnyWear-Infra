@@ -147,7 +147,8 @@ test('the observer CLI writes the authenticated v3 body that equals the expected
     // A service record is not an Infra deployment record.
     await writeFile(expectedFile, JSON.stringify({ ...record, record_type: 'anywear_service_deployment' }));
     await assert.rejects(observeDeploymentCli({ argv: ['--expected', expectedFile, '--output', outputFile,
-      '--infra-sha', infraSha], io: fixtureIo(), env: executorEnvironment() }), /exactly its producer's stacks/);
+      '--infra-sha', infraSha], io: fixtureIo(), env: executorEnvironment() }),
+    /Invalid deployment record fields|exactly its producer's stacks/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

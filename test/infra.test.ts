@@ -944,6 +944,41 @@ describe('Explicit infrastructure identity cutover', () => {
       Resource: 'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
     });
 
+    // Positive: the deploy job's own 600-second bake (#162) reads the six named
+    // signals live as this OIDC principal, so the read-only grants are here and
+    // not on the CloudFormation execution role.
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudwatch:GetMetricStatistics', Effect: 'Allow', Resource: '*',
+      Condition: { StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } },
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudwatch:DescribeAlarms', Effect: 'Allow',
+      Resource: 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+    });
+    expect(normalized(deploy)).toContainEqual(expect.objectContaining({
+      Action: 'ecs:DescribeServices', Effect: 'Allow',
+    }));
+    const ecsRead = deploy.filter((statement) => statement.Action === 'ecs:DescribeServices');
+    expect(ecsRead).toHaveLength(1);
+    expect(new Set(([ecsRead[0].Resource].flat()).map(resourceOf))).toEqual(new Set([
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+    ]));
+    const sqsRead = deploy.filter((statement) => statement.Action === 'sqs:GetQueueAttributes');
+    expect(sqsRead).toHaveLength(1);
+    expect(new Set(([sqsRead[0].Resource].flat()).map(resourceOf))).toEqual(new Set([
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq',
+    ]));
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'logs:FilterLogEvents', Effect: 'Allow',
+      Resource: 'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
+    });
+    // The drill's one-off DLQ write is never a standing grant.
+    expect(actions(deploy)).not.toEqual(expect.arrayContaining(['sqs:SendMessage']));
+
     // Positive: the CLI's own-credentials path from #158 round 3 is limited to
     // the bootstrap version read and the dedicated CDK assets bucket object.
     expect(normalized(deploy)).toContainEqual({
@@ -960,12 +995,14 @@ describe('Explicit infrastructure identity cutover', () => {
     });
 
     // Negative: no wildcard, managed or administrative authority, and no
-    // resource outside the reviewed Workload-stack surface.
+    // resource outside the reviewed Workload-stack and bake-read surface.
     expect(actions(deploy)).toEqual([
       'cloudformation:*', 'cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet',
-      'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks', 'ecr:DescribeImages', 'iam:PassRole',
-      's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject', 'ssm:GetParameter',
-      'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
+      'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks',
+      'cloudwatch:DescribeAlarms', 'cloudwatch:GetMetricStatistics',
+      'ecr:DescribeImages', 'ecs:DescribeServices', 'iam:PassRole', 'logs:FilterLogEvents',
+      's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject', 'sqs:GetQueueAttributes',
+      'ssm:GetParameter', 'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
     ]);
     expect(deploy.every((statement) => statement.Effect === 'Allow')).toBe(true);
     expect(resourcesOf(deploy)).toEqual(new Set([
@@ -977,7 +1014,18 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
       'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq',
       JSON.stringify({ 'Fn::GetAtt': ['BetaServiceDeployCfnRoleB6333451', 'Arn'] }),
+      // The region-bound cloudwatch:GetMetricStatistics read has no narrower
+      // resource scope; every other bake grant names a deployed resource.
+      '*',
     ]));
 
     // Positive: the CloudFormation execution role covers exactly the Workload
@@ -1060,14 +1108,15 @@ describe('Explicit infrastructure identity cutover', () => {
     ]));
 
     // The acceptance criterion: neither role can modify the VPC, Aurora,
-    // Cognito, the wardrobe/client buckets, SQS or ECR configuration, or the
-    // Foundation stack and its existing roles.
+    // Cognito, the wardrobe/client buckets, SQS configuration or ECR
+    // configuration, or the Foundation stack and its existing roles. The only
+    // SQS grant is the deploy job's read-only bake read of the four stage queues.
     for (const [roleName, statements] of [['beta-service-deploy-role', deploy],
       ['beta-service-deploy-cfn-role', cfn]] as const) {
       const allActions = actions(statements);
       const serialized = JSON.stringify(statements);
       expect(allActions).not.toContain('*');
-      for (const forbidden of ['rds:', 'cognito-idp:', 'sqs:', 'secretsmanager:', 'kms:',
+      for (const forbidden of ['rds:', 'cognito-idp:', 'secretsmanager:', 'kms:',
         's3:DeleteObject', 's3:PutBucketAcl', 's3:PutObjectAcl',
         'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
         'ecr:CreateRepository', 'ec2:CreateVpc', 'ec2:DeleteVpc', 'ec2:ModifyVpcAttribute',
@@ -1077,6 +1126,8 @@ describe('Explicit infrastructure identity cutover', () => {
         'iam:AttachUserPolicy', 'iam:CreateUser', 'iam:UpdateAssumeRolePolicy']) {
         expect(allActions.some((action) => action.startsWith(forbidden))).toBe(false);
       }
+      expect(allActions.filter((action) => action.startsWith('sqs:')))
+        .toEqual(roleName === 'beta-service-deploy-role' ? ['sqs:GetQueueAttributes'] : []);
       expect(serialized).not.toContain('AdministratorAccess');
       expect(serialized).not.toContain('AnyWearFoundationStack');
       expect(serialized).not.toContain('AnyWearWardrobeBucket');
