@@ -3,7 +3,6 @@ import { Construct } from 'constructs';
 import { ComputeRuntime } from './compute-runtime';
 import type { PlatformStack } from './platform-stack';
 import { CleanupOperation } from './cleanup-operation';
-import { CleanupAcceptance } from './cleanup-acceptance';
 
 export interface WorkloadStackProps extends cdk.StackProps {
   stage: 'beta' | 'prod';
@@ -14,7 +13,6 @@ export interface WorkloadStackProps extends cdk.StackProps {
 export class WorkloadStack extends cdk.Stack {
   readonly compute: ComputeRuntime;
   readonly cleanupOperation?: CleanupOperation;
-  readonly cleanupAcceptance?: CleanupAcceptance;
 
   constructor(scope: Construct, id: string, props: WorkloadStackProps) {
     super(scope, id, props);
@@ -93,7 +91,6 @@ export class WorkloadStack extends cdk.Stack {
         taggingDlqUrl: platform.autoTaggingDeadLetterQueue.queueUrl,
       };
       this.cleanupOperation = new CleanupOperation(this, 'CleanupOperation', cleanupProps);
-      this.cleanupAcceptance = new CleanupAcceptance(this, 'CleanupAcceptance', cleanupProps);
     }
   }
 }

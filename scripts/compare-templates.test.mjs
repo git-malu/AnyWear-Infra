@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { compareTemplates } from './compare-templates.mjs';
 
 const workload = (desired = 2, min = 2, service = 'beta-anywear-api') => ({
@@ -182,24 +181,42 @@ test('scopes cleanup template allowances to nonlegacy Beta phases and exact reso
   assert.equal(production.accepted, false);
 });
 
-test('fixture allowances require complete reviewed resources and reject broadened IAM or task configuration', () => {
-  const fixture = JSON.parse(readFileSync(new URL('../test/fixtures/cleanup-acceptance-resources.json', import.meta.url), 'utf8'));
+test('live cleanup task identity and output allowances stay exact and scoped to nonlegacy Beta Platform', () => {
+  const roleId = 'CleanupTaskRoleABCDEF12';
+  const policyId = 'CleanupTaskRoleDefaultPolicyABCDEF12';
+  const cleanup = () => ({
+    Resources: {
+      [roleId]: { Type: 'AWS::IAM::Role', Properties: { RoleName: 'beta-anywear-tester-cleanup-task',
+        AssumeRolePolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { Service: 'ecs-tasks.amazonaws.com' },
+          Action: 'sts:AssumeRole' }] } } },
+      [policyId]: { Type: 'AWS::IAM::Policy', Properties: { Roles: [{ Ref: roleId }],
+        PolicyDocument: { Statement: [{ Effect: 'Allow', Action: 'states:StartExecution',
+          Resource: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup' }] } } },
+    },
+    Outputs: { CleanupTaskRoleArn: { Value: { 'Fn::GetAtt': [roleId, 'Arn'] } } },
+  });
   const before = { Resources: {}, Outputs: {} };
-  const options = { phase: 'retired', stage: 'beta', stackName: 'AnyWearWorkloadStack-beta' };
-  assert.equal(compareTemplates(before, fixture, options).accepted, true);
-  const [taskId, policyId] = Object.keys(fixture.Resources);
-  for (const mutate of [f => f.Resources[policyId].Properties.PolicyDocument.Statement[0].Resource = '*',
-    f => delete f.Resources[policyId].Properties.PolicyDocument.Statement[0].Condition,
-    f => f.Resources[policyId].Properties.PolicyDocument.Statement[1].Resource = ['*'],
-    f => f.Resources[policyId].Properties.PolicyDocument.Statement[2].Effect = 'Deny',
-    f => f.Resources[policyId].Properties.PolicyDocument.Statement.push({ Effect: 'Allow', Action: '*', Resource: '*' }),
-    f => f.Resources[taskId].Properties.ContainerDefinitions[0].Environment.push({ Name: 'OTHER', Value: 'override' }),
-    f => f.Resources[taskId].Properties.TaskRoleArn = 'other-role', f => f.Resources[taskId].DeletionPolicy = 'Delete',
-    f => f.Outputs.CleanupAcceptanceTaskDefinitionArn.Value.Ref = 'other-task']) {
-    const bad = structuredClone(fixture); mutate(bad);
+  const options = { phase: 'retired', stage: 'beta', stackName: 'AnyWearPlatformStack-beta' };
+  const result = compareTemplates(before, cleanup(), options);
+  assert.equal(result.accepted, true);
+  assert.deepEqual(result.allowed.map(({ path }) => path).sort(),
+    ['/Outputs/CleanupTaskRoleArn', `/Resources/${policyId}`, `/Resources/${roleId}`]);
+  // The allowance is a reviewed identity, not a wildcard: a different role name,
+  // policy reference, output binding or logical ID is ordinary drift.
+  for (const mutate of [f => f.Resources[roleId].Properties.RoleName = 'other-role',
+    f => f.Resources[policyId].Properties.Roles = [{ Ref: 'UnrelatedRoleABCDEF12' }],
+    f => f.Outputs.CleanupTaskRoleArn.Value = { 'Fn::GetAtt': ['UnrelatedRoleABCDEF12', 'Arn'] },
+    f => f.Outputs.CleanupTaskRoleArn.Value = { Ref: roleId },
+    f => { f.Resources.PlatformCleanupTaskRoleABCDEF12 = f.Resources[roleId]; delete f.Resources[roleId]; }]) {
+    const bad = cleanup(); mutate(bad);
     assert.equal(compareTemplates(before, bad, options).accepted, false);
   }
-  assert.equal(compareTemplates(before, fixture, { ...options, phase: 'legacy' }).accepted, false);
+  // Baseline cleanup resources are not new allowances, and the identity is only
+  // introduced by a nonlegacy Beta Platform template.
+  assert.equal(compareTemplates(cleanup(), cleanup(), options).accepted, true);
+  assert.equal(compareTemplates(before, cleanup(), { ...options, phase: 'legacy' }).accepted, false);
+  assert.equal(compareTemplates(before, cleanup(), { ...options, stage: 'prod', stackName: 'AnyWearPlatformStack-prod' }).accepted, false);
+  assert.equal(compareTemplates(before, cleanup(), { ...options, stackName: 'AnyWearWorkloadStack-beta' }).accepted, false);
 });
 
 const telemetryTask = (enabled = false, purpose = 'api') => {

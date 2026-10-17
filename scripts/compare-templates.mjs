@@ -3,9 +3,6 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Full reviewed fixture resources include exact roles, environment, conditions,
-// retention and image bindings; an action-name match cannot authorize drift.
-const cleanupAcceptanceFixture = JSON.parse(readFileSync(new URL('../test/fixtures/cleanup-acceptance-resources.json', import.meta.url), 'utf8'));
 const cleanupMachineAuthSecretArn = 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cleanup_machine_auth';
 const cleanupMachineAuthPolicyArn = `${cleanupMachineAuthSecretArn}-??????`;
 
@@ -53,13 +50,6 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
   const baseline = structuredClone(before);
   const candidate = structuredClone(after);
   for (const [id, resource] of Object.entries(candidate.Resources ?? {})) {
-    const fixtureResource = cleanupAcceptanceFixture.Resources[id];
-    if (stage === 'beta' && phase !== 'legacy' && stackName === 'AnyWearWorkloadStack-beta'
-      && !baseline.Resources?.[id] && fixtureResource
-      && JSON.stringify(canonical(resource)) === JSON.stringify(canonical(fixtureResource))) {
-      allowed.push({ path: `/Resources/${id}`, reason: 'Issue #86 separate protected cleanup acceptance fixture', after: resource });
-      delete candidate.Resources[id]; continue;
-    }
     const cleanup = stackName === 'AnyWearPlatformStack-beta' && phase !== 'legacy' && !baseline.Resources?.[id]
       && ((/^CleanupTaskRole[A-F0-9]{8}$/.test(id) && resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-anywear-tester-cleanup-task')
         || (/^CleanupTaskRoleDefaultPolicy[A-F0-9]{8}$/.test(id) && resource.Type === 'AWS::IAM::Policy'
@@ -71,13 +61,6 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       allowed.push({ path: `/Resources/${id}`, reason: 'Dedicated Beta identity resource', after: resource });
       delete candidate.Resources[id];
     }
-  }
-  if (stage === 'beta' && phase !== 'legacy' && stackName === 'AnyWearWorkloadStack-beta'
-    && !baseline.Outputs?.CleanupAcceptanceTaskDefinitionArn
-    && JSON.stringify(canonical(candidate.Outputs?.CleanupAcceptanceTaskDefinitionArn))
-      === JSON.stringify(canonical(cleanupAcceptanceFixture.Outputs.CleanupAcceptanceTaskDefinitionArn))) {
-    allowed.push({ path: '/Outputs/CleanupAcceptanceTaskDefinitionArn', reason: 'Issue #86 exact fixture task interface', after: candidate.Outputs.CleanupAcceptanceTaskDefinitionArn });
-    delete candidate.Outputs.CleanupAcceptanceTaskDefinitionArn;
   }
   if (phase !== 'legacy' && stackName === 'AnyWearPlatformStack-beta' && !baseline.Outputs?.CleanupTaskRoleArn
     && /^CleanupTaskRole[A-F0-9]{8}$/.test(candidate.Outputs?.CleanupTaskRoleArn?.Value?.['Fn::GetAtt']?.[0] ?? '')
