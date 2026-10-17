@@ -61,7 +61,7 @@ export function compareLiveFoundation(original, candidate, additions) {
   const actual = normalized(candidate);
   assert.deepEqual(Object.keys(candidate.Resources).sort(), Object.keys(expected.Resources).sort(), 'Only the reviewed eight additive resources are allowed');
   assert.deepEqual(actual, expected, 'Live provider/helper/output or dedicated role/policy drift');
-  return { accepted: true, comparison_kind: 'live-foundation-original-source-check', legacy_role_ownership: 'external',
+  return { accepted: true, comparison_kind: 'live-foundation-original-source-check', legacy_role_source: 'external',
     added: Object.keys(additions).sort(), original_resource_count: Object.keys(original.Resources).length,
     candidate_resource_count: Object.keys(candidate.Resources).length, original_canonical_sha256: sha256(canonicalJson(original)),
     candidate_canonical_sha256: sha256(canonicalJson(candidate)), normalized_canonical_sha256: sha256(canonicalJson(actual)),
@@ -90,7 +90,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }).trim();
   const report = { ...compareLiveFoundation(original, candidate, additions), fixture_provenance: provenance,
     candidate_raw_sha256: sha256(candidateBytes), source_sha: sourceSha, source_dirty: dirty.length > 0,
-    context: { appScope: 'foundation', identityPhase: 'roles-added', legacyRoleOwnership: 'external', account: '650880818323', region: 'ap-east-1' } };
+    context: { deployScope: 'foundation', identityPhase: 'roles-added', legacyRoleSource: 'external', account: '650880818323', region: 'ap-east-1' } };
   await writeFile(option('--output'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify({ accepted: true, added: report.added.length, candidate_sha256: report.candidate_canonical_sha256 })}\n`);
 }

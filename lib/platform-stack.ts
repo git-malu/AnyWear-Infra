@@ -28,8 +28,8 @@ export interface PlatformStackProps extends cdk.StackProps {
   stage: string;
   artifactInputs: ArtifactInputs;
   identityPhase?: IdentityPhase;
-  retentionProtection?: boolean;
-  betaActive?: boolean;
+  ecrImageRetention?: boolean;
+  environmentRunning?: boolean;
   qWeatherApiHost?: string;
 }
 
@@ -69,11 +69,11 @@ export class PlatformStack extends cdk.Stack {
     const isDev = stage === 'dev';
     const isNonProd = stage === 'dev' || stage === 'beta';
     const isProd = stage === 'prod';
-    const betaActive = stage !== 'beta' || props.betaActive !== false;
+    const environmentRunning = stage !== 'beta' || props.environmentRunning !== false;
     const identityPhase = readIdentityPhase(props.identityPhase);
     const asyncRuntime = new AsyncRuntime(this, 'AsyncRuntime', {
       stage, production: isProd, runtimePolicy: props.artifactInputs.runtimePolicy,
-      retentionProtection: props.retentionProtection,
+      ecrImageRetention: props.ecrImageRetention,
     });
     this.repository = asyncRuntime.repository;
     this.vtoQueue = asyncRuntime.vtoQueue;
@@ -93,13 +93,13 @@ export class PlatformStack extends cdk.Stack {
 
     this.vpc = isDev ? undefined : new ec2.Vpc(this, 'AnyWearVpc', {
       maxAzs: 2,
-      natGateways: betaActive ? 1 : 0,
+      natGateways: environmentRunning ? 1 : 0,
       ...(stage === 'beta' ? {
         subnetConfiguration: [
           { name: 'Public', subnetType: ec2.SubnetType.PUBLIC },
           {
             name: 'Private',
-            subnetType: betaActive ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED,
+            subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED,
           },
           // Keep a dedicated isolated tier in both active and stopped states so
           // the VPC topology remains stable while paid compute is scaled down.
@@ -128,7 +128,7 @@ export class PlatformStack extends cdk.Stack {
       handler: 'index.handler',
       vpc: this.vpc,
       vpcSubnets: this.vpc
-        ? { subnetType: betaActive ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED }
+        ? { subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED }
         : undefined,
       environment: { STAGE: stage },
       timeout: cdk.Duration.seconds(30),
@@ -155,7 +155,7 @@ export class PlatformStack extends cdk.Stack {
           actions: ['ssm:GetParameter', 'ssm:GetParameters'],
           resources: betaAdmissionParameters.map((parameter) => parameter.parameterArn),
         }));
-        trigger.addEnvironment('BETA_ACTIVE', String(betaActive));
+        trigger.addEnvironment('BETA_ACTIVE', String(environmentRunning));
       }
     }
 
@@ -307,7 +307,7 @@ export class PlatformStack extends cdk.Stack {
       if (stage === 'beta') {
         this.vpc.addGatewayEndpoint('S3GatewayEndpoint', {
           service: ec2.GatewayVpcEndpointAwsService.S3,
-          subnets: [{ subnetType: betaActive ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED }],
+          subnets: [{ subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED }],
         });
       }
       this.database = new rds.DatabaseCluster(this, 'AnyWearDatabase', {
@@ -321,7 +321,7 @@ export class PlatformStack extends cdk.Stack {
         storageEncrypted: true,
         vpc: this.vpc,
         vpcSubnets: {
-          subnetType: betaActive ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED,
+          subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED,
         },
         defaultDatabaseName: 'anywear',
         removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
@@ -470,7 +470,7 @@ export class PlatformStack extends cdk.Stack {
           conditions: regionCondition,
         }));
         new cdk.CfnOutput(this, 'LifecycleTaskRoleArn', { value: this.lifecycleTaskRole.roleArn });
-        new cdk.CfnOutput(this, 'BetaActive', { value: String(betaActive) });
+        new cdk.CfnOutput(this, 'BetaActive', { value: String(environmentRunning) });
       }
       this.oneShotLogGroup = new logs.LogGroup(this, 'OneShotLogGroup', {
         logGroupName: `/anywear/${stage}/one-shot`,
@@ -635,7 +635,7 @@ export class PlatformStack extends cdk.Stack {
       new cdk.CfnOutput(this, 'OneShotLogGroupName', { value: this.oneShotLogGroup.logGroupName });
       new cdk.CfnOutput(this, 'PrivateSubnetIds', {
         value: cdk.Fn.join(',', [
-          ...(betaActive ? this.vpc!.privateSubnets : this.vpc!.isolatedSubnets),
+          ...(environmentRunning ? this.vpc!.privateSubnets : this.vpc!.isolatedSubnets),
         ].map((subnet) => subnet.subnetId)),
       });
     }

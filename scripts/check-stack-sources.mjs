@@ -16,7 +16,7 @@ for (const row of rows) {
   exact(row, ['stack_name', 'region', 'source_repository', 'source_sha'], 'stack producer');
   // Resolve only this reviewed executor placeholder, avoiding a commit's
   // impossible self-reference. Immutable final records always contain full SHA.
-  if (row.source_sha === '@executor' && ['close-admission', 'restore-release'].includes(process.env.INFRA_OPERATION)
+  if (row.source_sha === '@executor' && ['close-admission', 'open-admission', 'restore-release'].includes(process.env.INFRA_OPERATION)
     && !touched.includes(row.stack_name)) throw new Error('Unchanged runtime/recovery stack must retain its explicit producer source');
   if (row.source_sha === '@executor' && row.source_repository === 'git-malu/AnyWear-Infra') row.source_sha = process.env.GITHUB_SHA;
   matches(row.source_sha, SHA, 'stack producer source');

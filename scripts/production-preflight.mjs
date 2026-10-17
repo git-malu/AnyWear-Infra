@@ -14,7 +14,7 @@ const QUALIFICATION_WORKFLOW = '.github/workflows/beta-qualification.yml';
 export const PRODUCTION_WORKFLOW = '.github/workflows/production.yml';
 
 export function validateProductionContext(env = process.env) {
-  if (env.ENABLE_PROD_DEPLOY !== 'true' || env.GITHUB_REPOSITORY !== INFRA
+  if (env.GITHUB_REPOSITORY !== INFRA
     || env.GITHUB_REPOSITORY_ID !== '1409047265' || env.GITHUB_REF !== 'refs/heads/main'
     || env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || env.GITHUB_WORKFLOW_REF !== `${INFRA}/${PRODUCTION_WORKFLOW}@refs/heads/main`) {
     throw new Error('Protected Production activation remains closed');

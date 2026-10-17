@@ -21,6 +21,8 @@ test('source provenance binds every stack mutated by deployment and lifecycle op
   for (const operation of ['start', 'stop']) assert.deepEqual(changedStackNames(operation), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
   assert.deepEqual(changedStackNames('observe'), []);
   assert.deepEqual(changedStackNames('close-admission'), []);
+  // An admission window changes admission state only; it mutates no stack.
+  assert.deepEqual(changedStackNames('open-admission'), []);
   assert.deepEqual(changedStackNames('restore-release'), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
 });
 
@@ -339,7 +341,7 @@ test('restart map resolves touched executor rows and preserves historical produc
       GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/${Object.keys(workflowOperations).find(file => workflowOperations[file].includes(operation))}@refs/heads/main`,
       AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: operation,
       INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector),
-      TESTER_EMAILS: '[]',
+      TESTER_EMAILS: '[]', WINDOW_MINUTES: '60',
       STACK_SOURCES_FILE: 'stack-sources/beta-restart.json', STACK_SOURCES_SHA256: hash },
   });
   for (const operation of ['start', 'stop', 'observe']) {
@@ -353,7 +355,9 @@ test('restart map resolves touched executor rows and preserves historical produc
     assert.equal(rows[3].source_sha, '58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759');
   }
   await runGuard('restore-release');
-  await assert.rejects(runGuard('close-admission'), /Unchanged runtime\/recovery stack must retain/);
+  for (const unchanged of ['close-admission', 'open-admission']) {
+    await assert.rejects(runGuard(unchanged), /Unchanged runtime\/recovery stack must retain/);
+  }
   const runtimeOnly = await readFile(new URL('../stack-sources/beta-runtime-only.json', import.meta.url));
   const producerRows = JSON.parse(runtimeOnly);
   // #95 S1 restore-release 37970047230/1, deployment artifact 11635817118.
@@ -371,7 +375,7 @@ test('restart map resolves touched executor rows and preserves historical produc
   await writeFile(mapFile, runtimeOnly); await git(['add', 'stack-sources/beta-restart.json']);
   await git(['commit', '--quiet', '-m', 'Reviewed runtime-only producer map']);
   assert.notEqual(await git(['rev-parse', 'HEAD']), deployedProducers[1].source_sha);
-  for (const operation of ['observe', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission']) {
+  for (const operation of ['observe', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission', 'open-admission']) {
     await runGuard(operation, sha256(runtimeOnly));
     assert.deepEqual(JSON.parse(await readFile(path.join(root, 'deployment-evidence/stack-sources.json'), 'utf8')), deployedProducers);
   }
@@ -424,8 +428,8 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
   for (const name of ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']) {
     await assert.rejects(io.deploy(name, false, revision), error => error === boundary);
     const args = commands.at(-1);
-    assert.ok(args.includes('--no-rollback')); assert.ok(args.includes('betaActive=false'));
-    assert.ok(args.includes('legacyRoleOwnership=external')); assert.ok(args.includes('artifactDirectory=/verified/assets'));
+    assert.ok(args.includes('--no-rollback')); assert.ok(args.includes('environmentRunning=false'));
+    assert.ok(args.includes('legacyRoleSource=external')); assert.ok(args.includes('artifactDirectory=/verified/assets'));
     if (name.includes('Workload')) {
       const parameterArgs = args.flatMap((value, index) => value === '--parameters' ? [args[index + 1]] : []);
       assert.deepEqual(parameterArgs, [
@@ -440,7 +444,7 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
     } else assert.equal(args.includes('--parameters'), false);
   }
   await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, revision), error => error === boundary);
-  assert.equal(commands.at(-1).includes('--no-rollback'), false); assert.ok(commands.at(-1).includes('betaActive=true'));
+  assert.equal(commands.at(-1).includes('--no-rollback'), false); assert.ok(commands.at(-1).includes('environmentRunning=true'));
   assert.equal(credentials, 2);
   // Use the pinned bundled CLI, whose internal unbundled parser is not a public API.
   const help = await execute(process.execPath, ['node_modules/aws-cdk/bin/cdk', ...commands[0].slice(1), '--help'], { timeout: 15_000 });
