@@ -2,19 +2,19 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
-import { readLegacyRoleOwnership, type LegacyRoleOwnership } from './legacy-role-ownership';
+import { readLegacyRoleSource, type LegacyRoleSource } from './legacy-role-source';
 
 export interface FoundationStackProps extends cdk.StackProps {
   identityPhase?: IdentityPhase;
-  legacyRoleOwnership: LegacyRoleOwnership;
+  legacyRoleSource: LegacyRoleSource;
 }
 
 export class FoundationStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: FoundationStackProps) {
     super(scope, id, props);
     const identityPhase = readIdentityPhase(props?.identityPhase);
-    const legacyRoleOwnership = readLegacyRoleOwnership(props.legacyRoleOwnership);
-    if (legacyRoleOwnership === 'external' && (this.account !== '650880818323' || this.region !== 'ap-east-1')) {
+    const legacyRoleSource = readLegacyRoleSource(props.legacyRoleSource);
+    if (legacyRoleSource === 'external' && (this.account !== '650880818323' || this.region !== 'ap-east-1')) {
       throw new Error('External legacy roles require the reviewed account 650880818323 in ap-east-1');
     }
 
@@ -40,7 +40,7 @@ export class FoundationStack extends cdk.Stack {
 
     // The deployed Foundation owns only its OIDC provider/helpers. Existing
     // Dev/Beta pipeline identities stay outside it; no adoption or Prod creation.
-    if (legacyRoleOwnership === 'managed') for (const stage of ['dev', 'beta', 'prod'] as const) {
+    if (legacyRoleSource === 'cdk') for (const stage of ['dev', 'beta', 'prod'] as const) {
       const subjects = stage === 'beta' && identityPhase === 'retired' ? [
         // Preserve the role identity with an unmatchable retired subject. No
         // repository is trusted, including the new Infra repository.

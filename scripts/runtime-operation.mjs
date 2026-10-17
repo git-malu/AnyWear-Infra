@@ -47,6 +47,12 @@ export function validateOperationInputs(env = process.env) {
     if (env.INFRA_OPERATION === 'tester-status' && payload !== '[]') throw new Error('Tester status accepts no mutation payload');
   }
   if (!boundary.workflow.endsWith('beta-admission.yml') && env.TESTER_EMAILS !== undefined && env.TESTER_EMAILS !== '[]') throw new Error('Tester payload belongs only to admission');
+  // Cross-repository boundary, not a local preference: these names remain live
+  // outside Infra. Service's own .github/scripts/run-one-shot-task.sh:19,29,34 and
+  // .github/scripts/runtime-checkpoint.test.mjs:97-98,148,161 read the evidence and
+  // checkpoint scopes, and AnyWear-E2E sets them through
+  // scripts/runtime-one-shot-runner.mjs:95,100, scripts/beta-runtime-adapter.mjs:16,98
+  // and scripts/fixtures/runtime-checkpoint-helper.sh:3-4. Keep rejecting them here.
   for (const key of ['RUNTIME_DRILL_RUN_SCOPE', 'RUNTIME_DRILL_CHECKPOINT_PROTOCOL', 'LIFECYCLE_EVIDENCE_RUN_SCOPE', 'LIFECYCLE_EVIDENCE_ASYNC']) {
     if (env[key]) throw new Error('Experimental task scopes are not ordinary Beta workflow inputs');
   }
@@ -71,9 +77,9 @@ export function cdkDeploymentArguments(stack, active, revision, directory, env) 
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
     // Native rollback must not reactivate stopped/partially stopped resources.
     // An unsuccessful inactive deployment remains for explicit reviewed recovery.
-    ...(!active ? ['--no-rollback'] : []), '-c', 'stage=beta', '-c', `betaActive=${active}`,
-    '-c', 'legacyRoleOwnership=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
-    '-c', `retentionProtection=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
+    ...(!active ? ['--no-rollback'] : []), '-c', 'stage=beta', '-c', `environmentRunning=${active}`,
+    '-c', 'legacyRoleSource=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
+    '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
 }
 const workloadParameterKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId',
   'BetaApiSizingProfile', 'BetaSizingTelemetry'];

@@ -45,8 +45,8 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 | [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release`; a `deploy-platform` run is qualified only by a following fixed `runtime.yml` `observe` |
 | [beta-schema.yml](.github/workflows/beta-schema.yml) | Selected-image `migrate` / `verify` tasks |
 | [beta-admission.yml](.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `open-admission`, `close-admission`; `open-admission` opens a bounded 15–240 minute window (default 60) that ends at its own expiry, and runs the recovery-only close a failed window needs; status still starts tasks |
-| [bin/infra.ts](bin/infra.ts), `appScope=foundation` | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
-| [bin/infra.ts](bin/infra.ts), `appScope=billing` | Separate account billing scope in `us-east-1`; application resources are not synthesized |
+| [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
+| [bin/infra.ts](bin/infra.ts), `deployScope=billing` | Separate account billing scope in `us-east-1`; application resources are not synthesized |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
 | [observe-deployment.mjs](scripts/observe-deployment.mjs) | Authenticate deployed templates, artifacts, configuration, schema and application identities |
 | [production.yml](.github/workflows/production.yml) | Future Production scaffold with a pre-AWS blocker until a separately reviewed onboarding PR completes its contract |

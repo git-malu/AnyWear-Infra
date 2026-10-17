@@ -428,8 +428,8 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
   for (const name of ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']) {
     await assert.rejects(io.deploy(name, false, revision), error => error === boundary);
     const args = commands.at(-1);
-    assert.ok(args.includes('--no-rollback')); assert.ok(args.includes('betaActive=false'));
-    assert.ok(args.includes('legacyRoleOwnership=external')); assert.ok(args.includes('artifactDirectory=/verified/assets'));
+    assert.ok(args.includes('--no-rollback')); assert.ok(args.includes('environmentRunning=false'));
+    assert.ok(args.includes('legacyRoleSource=external')); assert.ok(args.includes('artifactDirectory=/verified/assets'));
     if (name.includes('Workload')) {
       const parameterArgs = args.flatMap((value, index) => value === '--parameters' ? [args[index + 1]] : []);
       assert.deepEqual(parameterArgs, [
@@ -444,7 +444,7 @@ test('actual runtime deploy sends CDK-supported no-rollback for stopped stacks a
     } else assert.equal(args.includes('--parameters'), false);
   }
   await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, revision), error => error === boundary);
-  assert.equal(commands.at(-1).includes('--no-rollback'), false); assert.ok(commands.at(-1).includes('betaActive=true'));
+  assert.equal(commands.at(-1).includes('--no-rollback'), false); assert.ok(commands.at(-1).includes('environmentRunning=true'));
   assert.equal(credentials, 2);
   // Use the pinned bundled CLI, whose internal unbundled parser is not a public API.
   const help = await execute(process.execPath, ['node_modules/aws-cdk/bin/cdk', ...commands[0].slice(1), '--help'], { timeout: 15_000 });

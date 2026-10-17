@@ -57,12 +57,12 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   boundary. Existing OIDC trust is repository/environment scoped, not workflow
   scoped; source/session checks do not narrow inherited task-role or downstream
   CDK authority.
-  Initial `appScope=foundation`
+  Initial `deployScope=foundation`
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
-- Every CLI scope requires explicit `legacyRoleOwnership=managed|external`.
-  `managed` reproduces the Service source fixture; never use it as the live
+- Every CLI scope requires explicit `legacyRoleSource=cdk|external`.
+  `cdk` reproduces the Service source fixture; never use it as the live
   account plan. Foundation in account `650880818323`/`ap-east-1` owns only its
   existing provider/helpers. Live `external` leaves Dev/Beta legacy roles outside
   Foundation and Production absent, without import/adoption. Runtime always uses
@@ -79,7 +79,7 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   assume-role chain and CloudFormation execution role with `AdministratorAccess`
   and no permissions boundary remain unchanged and outside this scope. Do not
   claim account-wide IAM exclusivity or Beta resource isolation.
-- `identityPhase=legacy` and `retentionProtection=false` preserve the source
+- `identityPhase=legacy` and `ecrImageRetention=false` preserve the source
   baseline by default. Role additions, retention activation and old-role
   retirement require separate reviewed diffs/operations. Initial cutover keeps the
   live image, Client, Lambda bytes, runtime policy, endpoints and schema behavior.
@@ -108,8 +108,8 @@ node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --bas
 git diff --check
 ```
 
-Also synthesize the live Foundation with `appScope=foundation`,
-`identityPhase=roles-added`, `legacyRoleOwnership=external`, account `650880818323`
+Also synthesize the live Foundation with `deployScope=foundation`,
+`identityPhase=roles-added`, `legacyRoleSource=external`, account `650880818323`
 and application region `ap-east-1`, then run `scripts/compare-live-foundation.mjs`
 against that output. CI preserves the actual CLI template and comparison. The
 authenticated Original fixture permits exactly six dedicated roles/two policies;

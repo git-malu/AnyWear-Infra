@@ -3,12 +3,6 @@ set -euo pipefail
 
 node scripts/check-operation.mjs
 
-if [[ "${1:-}" == "--runtime-checkpoint-protocol" ]]; then
-  [[ "$#" -eq 1 ]] || { echo "Invalid runtime checkpoint probe" >&2; exit 2; }
-  printf 'v1\n'
-  exit 0
-fi
-
 stage="${1:?stage is required}"
 role="${2:?role is required (migrate, verify, lifecycle, lifecycle-fixture, tester-cleanup, or task-audit)}"
 image_digest="${3:?image digest is required}"
@@ -70,7 +64,10 @@ elif [[ -n "$lifecycle_payload" ]]; then
 fi
 [[ "$image_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Invalid image digest" >&2; exit 2; }
 [[ "$service_commit" =~ ^[a-f0-9]{40}$ ]] || { echo "Invalid service commit" >&2; exit 2; }
-cost_run_scope="${LIFECYCLE_EVIDENCE_RUN_SCOPE:-}"
+# scripts/runtime-operation.mjs rejects the experimental RUNTIME_DRILL_* and
+# LIFECYCLE_EVIDENCE_* scopes before spawning this script, so the only run-scope
+# sources are the lifecycle-fixture and task-audit payloads below.
+cost_run_scope=""
 if [[ "$role" == "lifecycle-fixture" ]]; then
   [[ -z "$cost_run_scope" || "$cost_run_scope" == "$lifecycle_payload" ]] \
     || { echo "Lifecycle fixture scope does not match its payload" >&2; exit 2; }
@@ -81,53 +78,23 @@ if [[ -n "$cost_run_scope" ]]; then
     && "$cost_run_scope" =~ ^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}$ ]] \
     || { echo "Invalid lifecycle evidence run scope" >&2; exit 2; }
 fi
-if [[ "${LIFECYCLE_EVIDENCE_ASYNC:-}" == "true" ]]; then
-  [[ "$stage" == "beta" && "$role" == "lifecycle" && "$verify_api_url" == "drain"
-    && -n "${LIFECYCLE_EVIDENCE_RUN_SCOPE:-}" ]] \
-    || { echo "Only an exact scoped Beta drain supports asynchronous launch" >&2; exit 2; }
-fi
 
 runtime_run_scope=""
 if [[ "$stage" == "beta" && ( "$role" == "task-audit" || "$role" == "lifecycle" || "$role" == "tester-cleanup" ) ]]; then
-  runtime_run_scope="${RUNTIME_DRILL_RUN_SCOPE:-}"
+  runtime_run_scope=""
   if [[ "$role" == "task-audit" ]]; then
     payload_scope="$(jq -er '.runScope' <<<"$lifecycle_payload")"
     [[ -z "$runtime_run_scope" || "$runtime_run_scope" == "$payload_scope" ]] || { echo "Audit run scope does not match its payload" >&2; exit 2; }
     runtime_run_scope="$payload_scope"
-  elif [[ "$role" == "tester-cleanup" && -n "$runtime_run_scope" ]]; then
-    [[ "$(jq -er '.runScope' <<<"$lifecycle_payload")" == "$runtime_run_scope" ]] || { echo "Cleanup run scope does not match its payload" >&2; exit 2; }
   fi
   [[ -z "$runtime_run_scope" || "$runtime_run_scope" =~ ^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$ ]] \
     || { echo "Invalid runtime one-shot run scope" >&2; exit 2; }
 fi
 
-if [[ -n "$cost_run_scope" && ( -n "$runtime_run_scope" || -n "${RUNTIME_DRILL_RUN_SCOPE:-}" ) ]]; then
+if [[ -n "$cost_run_scope" && -n "$runtime_run_scope" ]]; then
   echo "Lifecycle evidence and runtime scopes cannot be combined" >&2
   exit 2
 fi
-
-checkpoint_protocol="${RUNTIME_DRILL_CHECKPOINT_PROTOCOL:-}"
-if [[ -n "$checkpoint_protocol" ]]; then
-  [[ "$checkpoint_protocol" == "v1" ]] \
-    || { echo "Invalid runtime checkpoint protocol" >&2; exit 2; }
-  [[ "$stage" == "beta" && "$role" =~ ^(task-audit|lifecycle|tester-cleanup)$ \
-    && -n "$runtime_run_scope" \
-    && -z "$cost_run_scope" \
-    && "${LIFECYCLE_EVIDENCE_ASYNC:-}" != "true" ]] \
-    || { echo "Runtime checkpoints require a scoped Beta task-audit, lifecycle, or tester-cleanup invocation" >&2; exit 2; }
-fi
-
-checkpoint_ack() {
-  local phase="$1"
-  local task_arn="$2"
-  local expected="runtime-checkpoint-v1:${runtime_run_scope}:${phase}:${task_arn}"
-  local received=""
-  printf 'Runtime checkpoint: %s\n' "$expected"
-  if ! IFS= read -r -t 120 received || [[ "$received" != "$expected" ]]; then
-    echo "Runtime checkpoint acknowledgement failed" >&2
-    exit 1
-  fi
-}
 
 platform_stack="AnyWearPlatformStack-${stage}"
 stack_outputs="$(aws cloudformation describe-stacks \
@@ -200,7 +167,6 @@ environment="$(jq -n \
   --arg digest "$image_digest" \
   --arg api "$verify_api_url" \
   --arg role "$role" \
-  --arg scope "${LIFECYCLE_EVIDENCE_RUN_SCOPE:-}" \
   '[
     {name:"STAGE",value:$stage},
     {name:"NODE_ENV",value:"production"},
@@ -216,13 +182,9 @@ environment="$(jq -n \
     {name:"SERVICE_COMMIT_SHA",value:$commit},
     {name:"IMAGE_DIGEST",value:$digest}
   ] + (if $role == "verify" and $api != "" then [{name:"VERIFY_API_URL",value:$api}] else [] end)
-    + (if $scope != "" then [{name:"BETA_LIFECYCLE_RUN_SCOPE",value:$scope}] else [] end)
     + (if $role == "lifecycle" or $role == "tester-cleanup" then [{name:"SQS_VTO_DLQ_URL",value:$vtoDlq},{name:"SQS_AUTO_TAGGING_DLQ_URL",value:$taggingDlq}] else [] end)')"
 
 family="${stage}-anywear-${role}"
-if [[ -n "${LIFECYCLE_EVIDENCE_RUN_SCOPE:-}" ]]; then
-  family="${family}-evidence-${LIFECYCLE_EVIDENCE_RUN_SCOPE}"
-fi
 task_definition="$(jq -n \
   --arg family "$family" \
   --arg taskRoleArn "$task_role_arn" \
@@ -273,14 +235,8 @@ task_definition_arn="$(aws ecs register-task-definition \
   --query 'taskDefinition.taskDefinitionArn' \
   --output text)"
 echo "Task definition: $task_definition_arn"
-if [[ -n "$checkpoint_protocol" ]]; then
-  checkpoint_ack definition "$task_definition_arn"
-fi
 
 started_by="github-${GITHUB_RUN_ID:-manual}"
-if [[ -n "${LIFECYCLE_EVIDENCE_RUN_SCOPE:-}" ]]; then
-  started_by="evidence-${LIFECYCLE_EVIDENCE_RUN_SCOPE}"
-fi
 task_arn="$(aws ecs run-task \
   --cluster "$cluster_name" \
   --launch-type FARGATE \
@@ -295,12 +251,6 @@ echo "Task ARN: $task_arn"
 if [[ -n "$runtime_run_scope" ]]; then
   echo "Task log group: $log_group"
   echo "Task log stream: ${family}/OneShot/${task_arn##*/}"
-fi
-if [[ -n "$checkpoint_protocol" ]]; then
-  checkpoint_ack task "$task_arn"
-fi
-if [[ "${LIFECYCLE_EVIDENCE_ASYNC:-}" == "true" ]]; then
-  exit 0
 fi
 if [[ "$role" == "lifecycle" && "$verify_api_url" == "drain" ]]; then
   # The drain owns its 60-minute abort/reopen contract. ECS's default waiter
