@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareTemplates } from './compare-templates.mjs';
+import { platformStackName, recoveryFailureMessage, recoveryViolations, synthStage } from './recovery-contract.mjs';
 
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, args) => {
   if (index % 2 === 0) { assert.ok(value.startsWith('--') && args[index + 1], 'Options require --name value pairs');
@@ -66,20 +67,11 @@ if (baselineRepository && !baselineSnapshot) {
 }
 mkdirSync(output, { recursive: true });
 function synth(cwd, directory, variant, phase, immutableInputs) {
-  mkdirSync(directory, { recursive: true });
-  const config = JSON.parse(readFileSync(path.join(cwd, 'cdk.json'), 'utf8'));
-  const context = { ...config.context, stage: variant.stage, environmentRunning: variant.active,
-    ...(immutableInputs ? { identityPhase: phase, ecrImageRetention, legacyRoleSource: 'cdk',
-      artifactDirectory: path.resolve(options['artifact-directory']) } : {}) };
-  // Execute the existing app directly with its locked local ts-node. CDK App
-  // auto-synths because CDK_OUTDIR is set; no AWS context lookup is performed.
-  execFileSync(process.execPath, ['--require', path.join(cwd, 'node_modules/ts-node/register'),
-    path.join(cwd, 'bin/infra.ts')], { cwd, stdio: 'pipe', env: { ...process.env,
-    CDK_CONTEXT_JSON: JSON.stringify(context), CDK_OUTDIR: directory,
-    CDK_DEFAULT_ACCOUNT: '650880818323', CDK_DEFAULT_REGION: 'ap-east-1', BILLING_REGION: 'us-east-1' } });
-  const files = readdirSync(directory).filter((file) => file.endsWith('.template.json'));
-  assert.ok(files.includes('AnyWearFoundationStack.template.json'), `Synth failed for ${directory}`);
-  return files;
+  // The shared synthesis is what the pre-credential deployment check runs, so
+  // the matrix and the deployment gate cannot drift into different shapes.
+  return synthStage({ repository: cwd, directory, stage: variant.stage, environmentRunning: variant.active,
+    inputs: immutableInputs ? { identityPhase: phase, ecrImageRetention, legacyRoleSource: 'cdk',
+      artifactDirectory: path.resolve(options['artifact-directory']) } : undefined });
 }
 const reports = [];
 for (const variant of variants) {
@@ -89,6 +81,12 @@ for (const variant of variants) {
   for (const phase of phases) {
     const target = path.join(output, phase, name);
     const files = synth(repository, target, variant, phase, true);
+    const platformTemplate = `${platformStackName(variant.stage)}.template.json`;
+    assert.ok(files.includes(platformTemplate), `Missing ${platformTemplate} for ${name}/${phase}`);
+    const violations = recoveryViolations(JSON.parse(readFileSync(path.join(target, platformTemplate), 'utf8')),
+      { stage: variant.stage });
+    if (violations.length) throw new Error(recoveryFailureMessage(violations,
+      { stage: variant.stage, stackName: platformStackName(variant.stage) }));
     if (baselineRepository || baselineTemplates) {
       assert.deepEqual(files.sort(), readdirSync(baseline).filter((file) => file.endsWith('.template.json')).sort(), 'Stack set drift');
       for (const file of files) {
