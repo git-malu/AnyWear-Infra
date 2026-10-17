@@ -1,5 +1,5 @@
-name: Reviewed Beta operation
-description: Verify reviewed source and immutable Service inputs before family-restricted AWS sessions
+name: Verify reviewed Beta operation inputs
+description: Verify committed source, stack provenance and immutable Service inputs before any job obtains AWS credentials
 inputs:
   app_private_key:
     required: true
@@ -44,43 +44,21 @@ runs:
         permission-contents: read
         permission-actions: read
         permission-attestations: read
-    - name: Execute selected operation with restricted OIDC sessions
-      id: operation
+    - name: Verify the immutable Service release and every committed input
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app.outputs.token }}
         INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
         INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
-      run: node scripts/runtime-operation.mjs
-    - name: Observe final authenticated deployment with a restricted verification session
-      id: observation
-      if: steps.operation.outputs.requires_qualification == 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ steps.app.outputs.token }}
-        INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
-        INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
-      run: node scripts/observe-operation.mjs
-    - name: Preserve exact final observation record
-      if: steps.operation.outputs.requires_qualification == 'true'
+      run: node scripts/verify-operation-inputs.mjs
+    - name: Preserve the verified inputs and the verified artifact directory
       uses: actions/upload-artifact@v4
       with:
-        name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-        path: deployment-evidence/deployment-record.json
+        name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          deployment-evidence/verified-inputs.json
+          deployment-evidence/github-cli-version.txt
+          deployment-evidence/stack-sources.json
+          .service-artifacts/selected
         retention-days: 90
         if-no-files-found: error
-    - name: Record final observation outcome
-      if: always()
-      shell: bash
-      env:
-        OPERATION_OUTCOME: ${{ steps.operation.outcome }}
-        OBSERVATION_OUTCOME: ${{ steps.observation.outcome }}
-      run: node scripts/finalize-operation.mjs
-    - name: Preserve operation and recovery evidence
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
-        path: deployment-evidence/operation-record.json
-        retention-days: 90
-        if-no-files-found: warn

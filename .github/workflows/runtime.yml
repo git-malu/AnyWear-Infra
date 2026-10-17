@@ -1,8 +1,12 @@
-name: Qualified Beta observation
-run-name: Beta observe at ${{ github.sha }}
+name: Beta state and qualified observation
+run-name: Beta ${{ inputs.operation }} at ${{ github.sha }}
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        type: choice
+        options: [state, observe]
+        required: true
       selection_file:
         description: Committed canonical selection in this Infra revision
         default: selections/beta-baseline.json
@@ -25,38 +29,133 @@ permissions:
 concurrency:
   group: anywear-infra-runtime
   cancel-in-progress: false
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+  CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+  BILLING_REGION: us-east-1
+  ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
+  INFRA_OPERATION: ${{ inputs.operation }}
+  TESTER_EMAILS: '[]'
+  INFRA_IDENTITY_PHASE: retired
+  INFRA_RETENTION_PROTECTION: 'true'
+  INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
+  SELECTION_FILE: ${{ inputs.selection_file }}
+  SELECTION_SHA256: ${{ inputs.selection_sha256 }}
+  STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
+  STACK_SOURCES_SHA256: ${{ inputs.stack_sources_sha256 }}
+  GH_TELEMETRY: disabled
 jobs:
-  operation:
-    if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_DEPLOY == 'true'
+  # No credentials: reject a forbidden operation or stale committed source before
+  # either observation job can request an environment or an OIDC identity.
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Validate operation family, committed source and stack provenance
+        run: |
+          mkdir -p deployment-evidence
+          node scripts/check-operation.mjs
+          node scripts/check-stack-sources.mjs
+      - name: Check native release verification CLI capability
+        run: |
+          gh release verify --format json --help > /dev/null
+          gh release verify-asset --format json --help > /dev/null
+  # Read-only state works with the stage switch closed: it runs no task, changes
+  # nothing and emits no deployment record.
+  state:
+    needs: preflight
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'state'
+    environment: beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/deploy-operation
+        with:
+          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          verify_artifact: 'false'
+  # The accepted `anywear_infra_deployment` v2 producer. It runs the restricted
+  # artifact-verification task, so it stays behind the stage switch.
+  observe:
+    needs: preflight
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true' && inputs.operation == 'observe'
     environment: beta
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
       id-token: write
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
-      CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
-      BILLING_REGION: us-east-1
-      ENABLE_BETA_DEPLOY: ${{ vars.ENABLE_BETA_DEPLOY }}
-      INFRA_OPERATION: observe
-      TESTER_EMAILS: '[]'
-      INFRA_IDENTITY_PHASE: retired
-      INFRA_RETENTION_PROTECTION: 'true'
-      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
-      SELECTION_FILE: ${{ inputs.selection_file }}
-      SELECTION_SHA256: ${{ inputs.selection_sha256 }}
-      STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
-      STACK_SOURCES_SHA256: ${{ inputs.stack_sources_sha256 }}
-      GH_TELEMETRY: disabled
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: ./.github/actions/beta-operation
+      - uses: ./.github/actions/verify-operation
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: ./.github/actions/deploy-operation
+        with:
+          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
+  # No environment, no OIDC: validate and checksum exactly what the credential
+  # job produced.
+  record:
+    needs: [state, observe]
+    if: always() && (needs.state.result == 'success' || needs.observe.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUIRE_DEPLOYMENT_RECORD: ${{ inputs.operation != 'state' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Download the operation evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-evidence
+      - name: Download the deployment record when the operation produced one
+        uses: actions/download-artifact@v4
+        with:
+          name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-evidence
+        continue-on-error: true
+      - name: Validate, checksum and preserve the operation and deployment records
+        run: node scripts/record-deployment.mjs
+      - name: Preserve the validated records and their checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: infra-record-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            deployment-evidence/deployment-record.json
+            deployment-evidence/deployment-record.json.sha256
+            deployment-evidence/operation-record.json
+            deployment-evidence/operation-record.json.sha256
+          retention-days: 90
+          if-no-files-found: error

@@ -58,7 +58,7 @@ async function exactGroup(io, name, expectedRetention) {
 }
 
 export async function enforceBetaPlatformLogRetention(io, {
-  ref = process.env.GITHUB_REF, enabled = process.env.ENABLE_BETA_DEPLOY,
+  ref = process.env.GITHUB_REF, enabled = process.env.ENABLE_BETA_MUTATION,
 } = {}) {
   if (ref !== 'refs/heads/main' || enabled !== 'true' || io.region !== region) {
     throw new Error('Log retention requires main and the protected Beta regional gate');

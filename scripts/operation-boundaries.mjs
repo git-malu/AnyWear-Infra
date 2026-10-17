@@ -4,18 +4,45 @@ import { changedStackNames } from './operation-stacks.mjs';
 import { runtimeCommandBytes } from './runtime-command.mjs';
 import { normalizeTesterEmails } from './tester-allowlist.mjs';
 
+// One dispatch surface per deployable unit. `runtime.yml` keeps its path because
+// the accepted `anywear_infra_deployment` v2 record and its E2E consumer pin it as
+// the deployment-record producer; the remaining operations share `mutate.yml`.
 export const workflowOperations = Object.freeze({
-  '.github/workflows/runtime.yml': ['observe'],
-  '.github/workflows/beta-observe.yml': ['state'],
-  '.github/workflows/beta-deploy.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'],
-  '.github/workflows/beta-schema.yml': ['migrate', 'verify'],
-  '.github/workflows/beta-admission.yml': ['admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission'],
+  '.github/workflows/runtime.yml': ['state', 'observe'],
+  '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload',
+    'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission'],
 });
-export const qualifiedWorkflowPaths = Object.keys(workflowOperations).filter(file => !file.endsWith('beta-observe.yml'));
+
+// A record's family is derived from the operation, not from the file that now
+// hosts several operations. Workflow paths were the family identity while each
+// operation had its own dispatch file; keeping the operation -> family mapping
+// preserves cross-repository record families, keeps `observe` as the accepted
+// deployment-record producer, and keeps `state` from ever being stamped as one.
+export const operationFamilies = Object.freeze({
+  state: 'beta-observe',
+  observe: 'runtime',
+  'deploy-foundation': 'beta-deploy',
+  'deploy-billing': 'beta-deploy',
+  'deploy-platform': 'beta-deploy',
+  'deploy-workload': 'beta-deploy',
+  'restore-release': 'beta-deploy',
+  migrate: 'beta-schema',
+  'admission-status': 'beta-admission',
+  'add-testers': 'beta-admission',
+  'set-testers': 'beta-admission',
+  'suspend-admission': 'beta-admission',
+  'resume-admission': 'beta-admission',
+});
+
+// Live entries that execute verification. Every other path is a dispatch surface
+// only: `check.yml` is automatic and `production.yml` is `workflow_call`-only.
+export const qualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.yml', '.github/workflows/mutate.yml']);
+
 export function operationBoundary(env) {
+  const operation = env.INFRA_OPERATION;
   const workflow = Object.keys(workflowOperations).find(file => env.GITHUB_WORKFLOW_REF === `git-malu/AnyWear-Infra/${file}@refs/heads/main`);
-  if (!workflow || !workflowOperations[workflow].includes(env.INFRA_OPERATION)) throw new Error('Operation is forbidden for this workflow family');
-  return { workflow, family: workflow.split('/').at(-1).replace('.yml', ''), readOnly: env.INFRA_OPERATION === 'state' };
+  if (!workflow || !workflowOperations[workflow].includes(operation)) throw new Error('Operation is forbidden for this workflow family');
+  return { workflow, family: operationFamilies[operation], readOnly: operation === 'state' };
 }
 
 const reads = {
@@ -62,8 +89,6 @@ export const operationEvidence = Object.freeze({
     'Restoring both stacks active leaves the recovered tuple observable by the following fixed observation.'),
   migrate: evidenceEntry(['migrate'], '.github/workflows/runtime.yml',
     'The accepted record observes the applied schema through its own artifact-verification task.'),
-  verify: evidenceEntry(['verify'], 'not-applicable',
-    'Verification, not mutation: it asserts the observed runtime and writes nothing.'),
   'admission-status': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
     'Status only: it reads the admission mode, its bound and the tester list, and mutates nothing.'),
   'add-testers': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',

@@ -1,6 +1,9 @@
 name: Future qualified Production promotion
 on:
-  workflow_dispatch:
+  # Not an entry: this file stays source-disabled and is callable only. Its
+  # tested pre-AWS blocker and tests remain; a future reviewed onboarding adds the
+  # dispatch surface together with the Production role and verifier contract.
+  workflow_call:
 permissions:
   contents: read
 concurrency:

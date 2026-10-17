@@ -8,7 +8,7 @@ import { createTestInputs } from './create-test-inputs.mjs';
 import { validateSelection, verifySelection } from './artifact-consumer.mjs';
 import { assertNativeReleaseAttestation } from './vendor/service-release-attestation.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration } from './deployment-contract.mjs';
-import { qualifiedWorkflowPaths, workflowOperations, operationBoundary, families } from './operation-boundaries.mjs';
+import { qualifiedWorkflowPaths, workflowOperations, operationFamilies, operationBoundary, families } from './operation-boundaries.mjs';
 import { isDeploymentFamily, observationRecordType, deploymentRecordType, familyObservationRecordType } from './observation-record.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -38,9 +38,9 @@ await mkdir(path.join(sourceRoot, 'selections')); await writeFile(path.join(sour
 await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
 const binding = { trustedInfraRoot: sourceRoot, expectedInfraSha: await git(['rev-parse', 'HEAD']), selectionFile: 'selections/beta.json', selectionSha256: contentHash(selector) };
 const env = { AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', GITHUB_SHA: sha, GITHUB_REF: 'refs/heads/main',
-  GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', ENABLE_BETA_DEPLOY: 'true',
+  GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', ENABLE_BETA_MUTATION: 'true',
   GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main',
-  INFRA_OPERATION: 'observe', INFRA_IDENTITY_PHASE: 'legacy', INFRA_RETENTION_PROTECTION: 'false',
+  INFRA_OPERATION: 'observe', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
   SELECTION_FILE: binding.selectionFile, SELECTION_SHA256: binding.selectionSha256 };
 const fixtureRecord = () => {
   const migrations = [{ id: '2'.repeat(64), created_at: 1000 }];
@@ -304,19 +304,25 @@ for (const predicateType of ['https://in-toto.io/attestation/release/v0.1', 'htt
 test('operation main workflow/account/region/selection/identity/retention bind before credentials', () => {
   validateOperationInputs(env);
   for (const patch of [{ GITHUB_SHA: 'short' }, { GITHUB_REF: 'refs/heads/branch' }, { INFRA_OPERATION: 'unknown' },
-    { GITHUB_EVENT_NAME: 'push' }, { GITHUB_WORKFLOW_REF: 'other' }, { ENABLE_BETA_DEPLOY: 'false' }, { AWS_REGION: 'us-east-1' },
+    { GITHUB_EVENT_NAME: 'push' }, { GITHUB_WORKFLOW_REF: 'other' }, { ENABLE_BETA_MUTATION: 'false' }, { AWS_REGION: 'us-east-1' },
     { INFRA_IDENTITY_PHASE: undefined }, { INFRA_RETENTION_PROTECTION: undefined }, { SELECTION_FILE: '../beta.json' }, { SELECTION_SHA256: 'short' }]) assert.throws(() => validateOperationInputs({ ...env, ...patch }));
 });
 
-test('admission operations and coherent restore require retired protected context and no tester mutation payload', () => {
+test('admission operations keep the retired protected context and no recovery accepts a tester payload', () => {
   for (const operation of ['suspend-admission', 'resume-admission', 'restore-release']) {
-    const workflow = operation === 'restore-release' ? 'beta-deploy' : 'beta-admission';
-    const input = { ...env, GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/.github/workflows/${workflow}.yml@refs/heads/main`,
+    const input = { ...env, GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
       INFRA_OPERATION: operation, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]',
       WINDOW_MINUTES: '60' };
     validateOperationInputs(input);
-    for (const change of [{ INFRA_IDENTITY_PHASE: 'roles-added' }, { INFRA_RETENTION_PROTECTION: 'false' },
-      { TESTER_EMAILS: '["someone@example.com"]' }, { TESTER_EMAILS: undefined }]) assert.throws(() => validateOperationInputs({ ...input, ...change }));
+    for (const change of [{ TESTER_EMAILS: '["someone@example.com"]' }, { TESTER_EMAILS: undefined }]) {
+      assert.throws(() => validateOperationInputs({ ...input, ...change }), operation);
+    }
+    // Only deployments and a release recovery may vary the workflow-level context
+    // inputs; admission operations may not.
+    for (const change of [{ INFRA_IDENTITY_PHASE: 'roles-added' }, { INFRA_RETENTION_PROTECTION: 'false' }]) {
+      if (operation === 'restore-release') validateOperationInputs({ ...input, ...change });
+      else assert.throws(() => validateOperationInputs({ ...input, ...change }), /vary identity phase and retention protection/);
+    }
     if (operation === 'resume-admission') {
       // The bound is a required dispatch input, so a window always carries one.
       for (const minutes of ['14', '241', '60.5', 'sixty', '', undefined]) {
@@ -367,43 +373,54 @@ test('valid family observations retain actual provenance and cannot satisfy the 
 });
 
 test('only the runtime family derives the accepted deployment record and no family artifact can pass as another', () => {
-  const boundaryFor = file => operationBoundary({ ...env,
-    GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/${file}@refs/heads/main`, INFRA_OPERATION: workflowOperations[file][0] });
-  // The mapping is total over catalog families and derived from production code,
-  // not repeated in the test; only qualified families can emit such a record.
-  for (const file of Object.keys(workflowOperations)) {
-    const boundary = boundaryFor(file);
+  const boundaryFor = (file, operation) => operationBoundary({ ...env,
+    GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/${file}@refs/heads/main`, INFRA_OPERATION: operation });
+  // The family is derived from the operation, not the hosting file: `runtime.yml`
+  // hosts both the read-only `state` and the deployment-record `observe`.
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    const boundary = boundaryFor(file, operation);
     assert.equal(boundary.workflow, file);
-    assert.equal(isDeploymentFamily(boundary.family), file.endsWith('/runtime.yml'));
-    assert.equal(observationRecordType(boundary.family), file.endsWith('/runtime.yml') ? deploymentRecordType : familyObservationRecordType);
+    assert.equal(boundary.family, operationFamilies[operation]);
+    assert.equal(isDeploymentFamily(boundary.family), operation === 'observe');
+    assert.equal(observationRecordType(boundary.family), operation === 'observe' ? deploymentRecordType : familyObservationRecordType);
+    assert.equal(boundary.readOnly, operation === 'state');
   }
   // The read-only state family is not a qualified producer: it is outside the
   // qualified set, builds no qualification session, and emits no observation
   // record at all, so it must not be read as producing a family observation.
-  const state = { ...env, GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-observe.yml@refs/heads/main', INFRA_OPERATION: 'state' };
-  assert.deepEqual(workflowOperations['.github/workflows/beta-observe.yml'], ['state']);
-  assert.equal(qualifiedWorkflowPaths.includes('.github/workflows/beta-observe.yml'), false);
+  const state = { ...env, GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main', INFRA_OPERATION: 'state' };
+  assert.equal(operationFamilies.state, 'beta-observe');
   assert.deepEqual(families(state, 'operation'), []);
   assert.throws(() => families(state, 'qualification'), /Read-only observation cannot qualify with tasks/);
   const legacy = recordWithIds();
   validateDeploymentRecord(legacy);
   const legacySnapshot = { stacks: legacy.stacks, observed: legacy.observed, schema: legacy.schema };
   validateSnapshot(legacySnapshot, { infraWorkflows: ['.github/workflows/runtime.yml'] });
-  for (const file of qualifiedWorkflowPaths.filter(file => !file.endsWith('/runtime.yml'))) {
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    if (operation === 'observe') continue;
     const record = recordWithIds();
-    record.record_type = observationRecordType(boundaryFor(file).family);
+    record.record_type = observationRecordType(operationFamilies[operation]);
     record.infra.workflow_path = file;
     record.infra.workflow_ref = `git-malu/AnyWear-Infra/${file}@refs/heads/main`;
     record.schema.verification.executor.workflow_path = file;
     const snapshot = { stacks: record.stacks, observed: record.observed, schema: record.schema };
     validateSnapshot(snapshot, { infraWorkflows: [file] });
     // A family observation cannot satisfy the accepted deployment contract ...
-    assert.throws(() => validateDeploymentRecord(record), /Unknown deployment schema/, file);
+    assert.throws(() => validateDeploymentRecord(record), /Unknown deployment schema/, `${file} ${operation}`);
+    if (operation === 'state') {
+      // `state` shares the cross-repository-pinned `runtime.yml` path, so the v2
+      // record contract alone cannot tell a synthetic state record apart. The
+      // producer boundary is what stops it: the read-only operation refuses the
+      // qualification step, so no such record can ever be written.
+      assert.throws(() => families({ ...env, GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/${file}@refs/heads/main`,
+        INFRA_OPERATION: operation }, 'qualification'), /Read-only observation cannot qualify with tasks/);
+      continue;
+    }
     // ... not even with its record type forced to the accepted one ...
     record.record_type = deploymentRecordType;
-    assert.throws(() => validateDeploymentRecord(record), /Unexpected deployment workflow/, file);
+    assert.throws(() => validateDeploymentRecord(record), /Unexpected deployment workflow/, `${file} ${operation}`);
     // ... and the accepted runtime record cannot pass as this family's observation.
-    assert.throws(() => validateSnapshot(legacySnapshot, { infraWorkflows: [file] }), /Untrusted verification executor/, file);
+    assert.throws(() => validateSnapshot(legacySnapshot, { infraWorkflows: [file] }), /Untrusted verification executor/, `${file} ${operation}`);
   }
 });
 

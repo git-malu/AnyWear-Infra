@@ -5,7 +5,7 @@ import { validateBetaSizingInput, selectBetaSizingProfile, validateBetaTelemetry
 import { cdkDeploymentArguments } from './runtime-operation.mjs';
 
 const operations = ['observe', 'state', 'deploy-platform', 'deploy-foundation', 'deploy-billing',
-  'restore-release', 'migrate', 'verify', 'admission-status', 'add-testers', 'set-testers',
+  'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers',
   'suspend-admission', 'resume-admission'];
 
 test('defaults to preserve and permits an explicit sizing change only for deploy-workload', () => {

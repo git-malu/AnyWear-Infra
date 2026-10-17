@@ -80,6 +80,31 @@ test('requires the protected Beta dispatch gate before any AWS mutation', async 
   }
 });
 
+test('the default gate reads ENABLE_BETA_MUTATION and still refuses an absent or false stage switch', async () => {
+  // The production caller passes no options, so this exercises the exact path the
+  // workflows use. An absent or non-`true` switch must fail before any AWS read,
+  // and the renamed variable must be the one that opens the gate.
+  const saved = { ref: process.env.GITHUB_REF, enabled: process.env.ENABLE_BETA_MUTATION };
+  try {
+    process.env.GITHUB_REF = 'refs/heads/main';
+    for (const value of [undefined, 'false', '']) {
+      if (value === undefined) delete process.env.ENABLE_BETA_MUTATION;
+      else process.env.ENABLE_BETA_MUTATION = value;
+      const io = fakeIo();
+      await assert.rejects(enforceBetaPlatformLogRetention(io), /main|gate/, `switch ${String(value)}`);
+      assert.equal(io.calls.length, 0, `no AWS call with switch ${String(value)}`);
+    }
+    process.env.ENABLE_BETA_MUTATION = 'true';
+    const gate = fakeIo({ drift: 'one-day' });
+    const result = await enforceBetaPlatformLogRetention(gate);
+    assert.equal(result.retention_in_days, 14);
+    assert.equal(gate.calls.filter((args) => args[0] === 'logs' && args[1] === 'put-retention-policy').length, 5);
+  } finally {
+    if (saved.ref === undefined) delete process.env.GITHUB_REF; else process.env.GITHUB_REF = saved.ref;
+    if (saved.enabled === undefined) delete process.env.ENABLE_BETA_MUTATION; else process.env.ENABLE_BETA_MUTATION = saved.enabled;
+  }
+});
+
 test('fails closed for foreign Lambda identity, wrong account or region, and missing groups', async () => {
   for (const options of [
     { actualDrift: 'foreign-arn' },
@@ -111,6 +136,6 @@ test('fails closed for post-write retention mismatch, pagination loops, and stac
 test('standalone legacy log-retention adapter fails before cloud access even with an enabled gate', async () => {
   const execute = promisify(execFile);
   await assert.rejects(execute(process.execPath, ['.github/scripts/beta-platform-log-retention.mjs'], {
-    env: { ...process.env, GITHUB_REF: 'refs/heads/main', ENABLE_BETA_DEPLOY: 'true', AWS_REGION: 'ap-east-1' }, timeout: 10_000,
+    env: { ...process.env, GITHUB_REF: 'refs/heads/main', ENABLE_BETA_MUTATION: 'true', AWS_REGION: 'ap-east-1' }, timeout: 10_000,
   }), error => error.code === 1 && /Use scripts\/runtime-operation.mjs with the committed selection/.test(error.stderr));
 });

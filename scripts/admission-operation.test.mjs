@@ -16,7 +16,7 @@ import { canonicalJson, contentHash } from './json-contract.mjs';
 const { selector, manifest, schema } = await createTestInputs(await mkdtemp(path.join(os.tmpdir(), 'infra-admission-')));
 const infraSha = '5'.repeat(40);
 const env = { GITHUB_SHA: infraSha, GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
-  GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main',
+  GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', WINDOW_MINUTES: '60', TESTER_EMAILS: '[]' };
 // A fixed clock keeps the recorded expiry arithmetic deterministic.
 const NOW = Date.parse('2026-01-01T00:00:00.000Z');
@@ -40,7 +40,7 @@ const outputEntries = outputs => Object.entries(outputs).map(([OutputKey, Output
 // The dispatch envelope the real one-shot guard reads: the admission entry
 // point, the operation under test, the bounded window and no tester payload.
 const guardEnv = (operation, windowMinutes) => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
-  GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main',
+  GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
   INFRA_OPERATION: operation, WINDOW_MINUTES: String(windowMinutes), TESTER_EMAILS: '[]' });
 
 // The one-shot mock is operation-scoped: a suspend may run `status` and `suspend`,
