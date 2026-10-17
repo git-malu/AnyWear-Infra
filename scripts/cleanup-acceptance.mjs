@@ -21,7 +21,7 @@ const definitionPattern = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/
 const stackNames = ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'];
 const stackStates = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
 const stackArn = name => `arn:aws:cloudformation:ap-east-1:650880818323:stack/${name}/*`;
-const admissionArns = ['intake_open', 'tester_allowlist', 'admission_suspended']
+const admissionArns = ['admission_mode', 'tester_allowlist']
   .map(name => `arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/${name}`);
 const logArn = 'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-cleanup-acceptance/OneShot/*';
 

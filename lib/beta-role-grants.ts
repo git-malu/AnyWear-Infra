@@ -29,7 +29,7 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   const stackArns = ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']
     .map((name) => arn('cloudformation', 'stack', `${name}/*`));
   const platformAndWorkload = stackArns.slice(1);
-  const admissionNames = ['intake_open', 'tester_allowlist', 'admission_suspended'];
+  const admissionNames = ['admission_mode', 'tester_allowlist'];
   const parameters = (names: string[]) => names.map((name) => arn('ssm', 'parameter', `anywear/beta/${name}`));
   const publicParameters = ['cognito_user_pool_id', 'cognito_client_id', 'aws_region', 's3_bucket_name', 'qweather_api_host'];
   const describeStacks = (principal: iam.IRole, resources = platformAndWorkload) => principal.addToPrincipalPolicy(

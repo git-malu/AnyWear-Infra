@@ -139,11 +139,13 @@ export class PlatformStack extends cdk.Stack {
     const betaAdmissionParameters: ssm.StringParameter[] = [];
     if (stage === 'beta') {
       // CloudFormation creates fail-closed defaults. Lifecycle operations own
-      // runtime values, so deploys never include the current tester list.
+      // runtime values, so deploys never include the current tester list. The
+      // admission decision is one JSON record that carries its own bound, so a
+      // reader enforces the expiry instead of remembering it, and an abandoned
+      // window closes itself on this surface with no writer and no deployment.
       for (const [id, name, value] of [
-        ['IntakeOpen', 'intake_open', 'false'],
+        ['AdmissionMode', 'admission_mode', '{"mode":"closed"}'],
         ['TesterAllowlist', 'tester_allowlist', '[]'],
-        ['AdmissionSuspended', 'admission_suspended', 'true'],
       ] as const) {
         betaAdmissionParameters.push(new ssm.StringParameter(this, id, {
           parameterName: `/anywear/beta/${name}`,
@@ -155,7 +157,6 @@ export class PlatformStack extends cdk.Stack {
           actions: ['ssm:GetParameter', 'ssm:GetParameters'],
           resources: betaAdmissionParameters.map((parameter) => parameter.parameterArn),
         }));
-        trigger.addEnvironment('BETA_ACTIVE', String(environmentRunning));
       }
     }
 

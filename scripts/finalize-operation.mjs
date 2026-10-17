@@ -12,7 +12,7 @@ export function finalizeOperationRecord(record, operationOutcome, observationOut
   record.final_observation = record.operation === 'state' ? 'not-applicable' : observationOutcome;
   const finalActivity = record.events?.findLast(event => event.type === 'final-beta-activity');
   const requiresObservation = record.operation !== 'state' && (finalActivity?.platform_active === 'true' || finalActivity?.workload_active === 'true'
-    || ['restore-release', 'close-admission', 'open-admission'].includes(record.operation));
+    || ['restore-release', 'suspend-admission', 'resume-admission'].includes(record.operation));
   if (operationOutcome !== 'success' || ['failure', 'cancelled'].includes(observationOutcome)
     || (requiresObservation && observationOutcome !== 'success')) {
     record.result = 'failed';

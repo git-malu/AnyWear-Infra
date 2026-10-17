@@ -64,7 +64,7 @@ function fixture(overrides = {}) {
     if (overrides[args[1]]) return overrides[args[1]](args, calls, stacks);
     switch (args[1]) {
       case 'describe-stacks': return { Stacks: [stacks.find(stack => stack.StackName === args[3])] };
-      case 'get-parameters': return { Parameters: [{ Name: args[3], Value: args[3].endsWith('tester_allowlist') ? '[]' : args[3].endsWith('admission_suspended') ? 'true' : 'false' }] };
+      case 'get-parameters': return { Parameters: [{ Name: args[3], Value: args[3].endsWith('tester_allowlist') ? '[]' : '{"mode":"closed"}' }] };
       case 'describe-task-definition': return { taskDefinition: definition };
       case 'get-template': return { TemplateBody: { Resources: { FixtureTask: { Type: 'AWS::ECS::TaskDefinition', Properties: { Family: fixtureFamily } } }, Outputs: { CleanupAcceptanceTaskDefinitionArn: { Value: { Ref: 'FixtureTask' } } } } };
       case 'list-tasks': return { taskArns: [] };
@@ -280,9 +280,10 @@ test('real admission parser adapter issues only the exact SSM action and identit
     return aws(args);
   };
   const state = await readFixtureState(f.io, selector, env, stateMachineVersionArn);
-  assert.deepEqual(state.admission, { admission_suspended: true, intake_open: false, tester_emails: [] });
+  assert.deepEqual(state.admission, { admission_mode: 'closed', admission_window_expires_at: null, admission_mode_source: 'record',
+    admission_mode_reason: null, admission_recorded_mode: 'closed', admission_recorded_expires_at: null, tester_emails: [] });
   assert.deepEqual(f.calls.filter(args => args[0] === 'ssm').map(args => args[3]).sort(),
-    ['/anywear/beta/admission_suspended', '/anywear/beta/intake_open', '/anywear/beta/tester_allowlist']);
+    ['/anywear/beta/admission_mode', '/anywear/beta/tester_allowlist']);
 });
 
 test('inactive, mixed, drifted, paginated or active fixture states reject before launching', async () => {
