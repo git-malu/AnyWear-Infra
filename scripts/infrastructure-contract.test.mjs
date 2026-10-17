@@ -308,14 +308,21 @@ test('operation main workflow/account/region/selection/identity/retention bind b
     { INFRA_IDENTITY_PHASE: undefined }, { INFRA_RETENTION_PROTECTION: undefined }, { SELECTION_FILE: '../beta.json' }, { SELECTION_SHA256: 'short' }]) assert.throws(() => validateOperationInputs({ ...env, ...patch }));
 });
 
-test('admission close and coherent restore require retired protected context and no tester mutation payload', () => {
-  for (const operation of ['close-admission', 'restore-release']) {
-    const workflow = operation === 'close-admission' ? 'beta-admission' : 'beta-deploy';
+test('admission operations and coherent restore require retired protected context and no tester mutation payload', () => {
+  for (const operation of ['close-admission', 'open-admission', 'restore-release']) {
+    const workflow = operation === 'restore-release' ? 'beta-deploy' : 'beta-admission';
     const input = { ...env, GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/.github/workflows/${workflow}.yml@refs/heads/main`,
-      INFRA_OPERATION: operation, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]' };
+      INFRA_OPERATION: operation, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]',
+      WINDOW_MINUTES: '60' };
     validateOperationInputs(input);
     for (const change of [{ INFRA_IDENTITY_PHASE: 'roles-added' }, { INFRA_RETENTION_PROTECTION: 'false' },
       { TESTER_EMAILS: '["someone@example.com"]' }, { TESTER_EMAILS: undefined }]) assert.throws(() => validateOperationInputs({ ...input, ...change }));
+    if (operation === 'open-admission') {
+      // The bound is a required dispatch input, so a window always carries one.
+      for (const minutes of ['14', '241', '60.5', 'sixty', '', undefined]) {
+        assert.throws(() => validateOperationInputs({ ...input, WINDOW_MINUTES: minutes }), /Admission window minutes/);
+      }
+    } else validateOperationInputs({ ...input, WINDOW_MINUTES: '1' });
   }
 });
 test('maintenance deployment preserves both stopped stacks and rejects either mixed or unknown state', () => {

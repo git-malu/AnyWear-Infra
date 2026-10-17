@@ -44,7 +44,7 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 | [beta-lifecycle.yml](.github/workflows/beta-lifecycle.yml) | `start` / `stop` with the existing coordinated sequence |
 | [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release`; a `deploy-platform` run is qualified only by a following fixed `runtime.yml` `observe` |
 | [beta-schema.yml](.github/workflows/beta-schema.yml) | Selected-image `migrate` / `verify` tasks |
-| [beta-admission.yml](.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `close-admission`; status still starts tasks |
+| [beta-admission.yml](.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `open-admission`, `close-admission`; `open-admission` opens a bounded 15–240 minute window (default 60) that ends at its own expiry, and runs the recovery-only close a failed window needs; status still starts tasks |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | Separate account billing scope in `us-east-1`; application resources are not synthesized |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
@@ -71,6 +71,33 @@ deployment chain has account-wide effective authority; the dedicated role names
 do not establish Beta resource isolation.
 Production activation variables cannot bypass its source blocker; keep both
 deployment/readiness gates disabled through #54.
+
+`open-admission` is the only operation that lifts suspension, and the only one
+whose one-shot authority lists the lifecycle `open` action. It requests a window
+through the existing `beta-admission.yml` entry point with an explicit
+`window_minutes` bound of 15–240 minutes (default 60). That requestable bound is
+what the dispatch input, the one-shot payload guard and the writer all carry, so a
+window can be neither longer nor opened by another route; the Service reader then
+allows a named one-minute clock-skew tolerance on top, because the writing one-shot
+container and the reading task are separate clocks, so a window written at exactly
+240 minutes does not read closed. The window is the tester lane: suspension is
+lifted, public intake stays closed and the tester list is unchanged. **It ends at
+that bound without anyone acting**, because the Service gate admits only while the
+recorded expiry is present, valid, strictly in the future and within the ceiling
+plus that tolerance. `close-admission` restores the recorded tuple early and
+records whether it ended a live window (`ordinary`) or one the bound had already
+ended (`recovery`). After an unattended expiry the SSM mirror of suspension is not
+rewritten — it can still read `false` while the database row is authoritative and
+closed — so `close-admission` also restores the mirror, and a later window requires
+it. A window that fails after the open attempt issues the same pinned `close`,
+re-asserts the recorded tuple and records `close_kind=failed-window` rather than
+leaving suspension lifted. `close` is the only extra lifecycle action
+`open-admission` may run, and it is recovery-only: reachable from that failed-window
+path alone, with no operator input that can request it. A tester write
+(`tester-add`/`tester-replace` through `configure-testers`) resumes admission only
+for that same bounded 60-minute default and ends at it by itself, with no reminder
+and no second operation; `open-admission` is the reviewed way to request a chosen
+15–240 minute bound.
 
 All six manual entries share `anywear-infra-runtime` without cancellation.
 `runtime.yml` is the only workflow family whose run produces the legacy

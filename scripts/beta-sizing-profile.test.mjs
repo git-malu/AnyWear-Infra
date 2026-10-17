@@ -6,7 +6,7 @@ import { cdkDeploymentArguments } from './runtime-operation.mjs';
 
 test('defaults to preserve and permits an explicit sizing change only for deploy-workload', () => {
   for (const operation of ['start', 'stop', 'observe', 'state', 'deploy-platform', 'deploy-foundation', 'deploy-billing',
-    'restore-release', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission']) {
+    'restore-release', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission', 'open-admission']) {
     assert.equal(validateBetaSizingInput({ INFRA_OPERATION: operation }), 'preserve');
     for (const profile of ['s1', 's2-api', 'invalid', '', null]) {
       assert.throws(() => validateBetaSizingInput({ INFRA_OPERATION: operation, INFRA_BETA_API_SIZING_PROFILE: profile }));
@@ -19,7 +19,7 @@ test('defaults to preserve and permits an explicit sizing change only for deploy
 
 test('telemetry defaults to preserve and rejects explicit or malformed input outside deploy-workload', () => {
   for (const operation of ['start', 'stop', 'observe', 'state', 'deploy-platform', 'deploy-foundation', 'deploy-billing',
-    'restore-release', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission']) {
+    'restore-release', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission', 'open-admission']) {
     assert.equal(validateBetaTelemetryInput({ INFRA_OPERATION: operation }), 'preserve');
     for (const input of ['enable', 'disable', 'true', 'false', '', null]) {
       assert.throws(() => validateBetaTelemetryInput({ INFRA_OPERATION: operation, INFRA_BETA_SIZING_TELEMETRY: input }));

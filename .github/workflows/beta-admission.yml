@@ -5,7 +5,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [tester-status, tester-add, tester-replace, close-admission]
+        options: [tester-status, tester-add, tester-replace, close-admission, open-admission]
         required: true
       selection_file:
         description: Committed canonical selection in this Infra revision
@@ -28,6 +28,10 @@ on:
         description: Explicit email JSON array for tester-add or tester-replace; otherwise []
         type: string
         default: '[]'
+      window_minutes:
+        description: Admission window bound in minutes, 15-240; required for open-admission and ignored otherwise
+        type: number
+        default: 60
 permissions:
   contents: read
 concurrency:
@@ -52,6 +56,7 @@ jobs:
       ENABLE_BETA_DEPLOY: ${{ vars.ENABLE_BETA_DEPLOY }}
       INFRA_OPERATION: ${{ inputs.operation }}
       TESTER_EMAILS: ${{ inputs.tester_emails }}
+      WINDOW_MINUTES: ${{ inputs.window_minutes }}
       INFRA_IDENTITY_PHASE: retired
       INFRA_RETENTION_PROTECTION: 'true'
       INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
