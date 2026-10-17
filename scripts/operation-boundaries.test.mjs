@@ -57,7 +57,7 @@ test('six manual entry schemas select only their family and preserve the protect
       assert.equal(inputs.window_minutes.type, 'number');
       assert.equal(inputs.window_minutes.default, 60);
       assert.match(inputs.window_minutes.description, /15-240/);
-      assert.match(inputs.window_minutes.description, /open-admission/);
+      assert.match(inputs.window_minutes.description, /resume-admission/);
       assert.equal(workflow.jobs.operation.env.WINDOW_MINUTES, '${{ inputs.window_minutes }}');
     }
     const job = workflow.jobs.operation;
@@ -189,83 +189,127 @@ test('cleanup fence reads stay exact and belong only to Platform or Workload ope
   }
 });
 
-test('one-shot open is refused for every operation except the one bounded admission operation that owns it', () => {
-  // `open` is the one admission direction exactly one workflow/operation pair
+test('one-shot resume is refused for every operation except the one bounded admission operation that owns it', () => {
+  // `resume` is the one admission direction exactly one workflow/operation pair
   // owns. Every other pair still refuses it, with or without a payload, and the
   // owning pair accepts only the exact bytes its driver builds.
   const owners = [];
   for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
     const env = envFor(file, operation);
-    if (file === '.github/workflows/beta-admission.yml' && operation === 'open-admission') {
+    if (file === '.github/workflows/beta-admission.yml' && operation === 'resume-admission') {
       owners.push(`${file} ${operation}`);
-      assertOneShotAllowed(env, 'lifecycle', 'open', admissionWindowPayload(env));
+      assertOneShotAllowed(env, 'lifecycle', 'resume', admissionWindowPayload(env));
       // Without the payload, with any other payload, and with every shape that is
       // not exactly the canonical bounded object.
       for (const payload of [undefined, '', '{}', 'null', '[]', '{"window_minutes":14}', '{"window_minutes":241}',
         '{"window_minutes":"60"}', '{"window_minutes":60.5}', '{"window_minutes":60,"expires":null}',
         '{"window_minutes":60,"window_minutes":60}', admissionWindowPayload({ ...env, WINDOW_MINUTES: '59' })]) {
-        assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'open', payload), /forbidden|payload|window/i, `payload ${String(payload)}`);
+        assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'resume', payload), /forbidden|payload|window/i, `payload ${String(payload)}`);
       }
       // The dispatch input, not the payload, carries the bound: a missing or
       // out-of-range input refuses even the payload the driver would send.
       for (const minutes of ['14', '241', '60.5', 'sixty', '', undefined]) {
-        assert.throws(() => assertOneShotAllowed({ ...env, WINDOW_MINUTES: minutes }, 'lifecycle', 'open',
+        assert.throws(() => assertOneShotAllowed({ ...env, WINDOW_MINUTES: minutes }, 'lifecycle', 'resume',
           admissionWindowPayload(env)), /forbidden|payload|window/i, `window_minutes ${String(minutes)}`);
       }
       continue;
     }
-    assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'open'), /forbidden/, `${file} ${operation}`);
-    assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'open', admissionWindowPayload(env)), /forbidden/, `${file} ${operation}`);
+    assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'resume'), /forbidden/, `${file} ${operation}`);
+    assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'resume', admissionWindowPayload(env)), /forbidden/, `${file} ${operation}`);
   }
-  assert.deepEqual(owners, ['.github/workflows/beta-admission.yml open-admission']);
+  assert.deepEqual(owners, ['.github/workflows/beta-admission.yml resume-admission']);
 });
 
-test('the open-admission allow-list entry is explicit in all three tables that would otherwise forbid it', () => {
+test('the resume-admission allow-list entry is explicit in all three tables that would otherwise forbid it', () => {
   // Removing any one of these entries must fail this suite: a test that keeps
   // passing by forbidding the capability is the defect this issue removes.
   assert.deepEqual(workflowOperations['.github/workflows/beta-admission.yml'],
-    ['tester-status', 'tester-add', 'tester-replace', 'close-admission', 'open-admission']);
-  assert.deepEqual(lifecycleActions('open-admission'), ['open', 'status', 'close']);
-  assert.deepEqual(operationEvidence['open-admission'].roles, ['lifecycle', 'artifact-verify']);
-  assert.equal(operationEvidence['open-admission'].qualified_by, 'not-applicable');
-  assert.match(operationEvidence['open-admission'].evidence, /window bound/);
-  assert.match(operationEvidence['open-admission'].evidence, /expiry/);
-  assert.match(operationEvidence['open-admission'].evidence, /recovery-only close/);
-  assert.match(operationEvidence['open-admission'].evidence, /no operator path can request it/);
-  // No other operation gains the direction, and no operation gains an implicit open.
-  const openers = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('open'));
-  assert.deepEqual(openers, ['open-admission']);
-  for (const operation of ['start', 'stop', 'tester-status', 'tester-add', 'tester-replace', 'close-admission']) {
-    assert.equal(lifecycleActions(operation).includes('open'), false, operation);
+    ['admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission']);
+  assert.deepEqual(lifecycleActions('resume-admission'), ['resume', 'status', 'suspend']);
+  assert.deepEqual(operationEvidence['resume-admission'].roles, ['lifecycle', 'artifact-verify']);
+  assert.equal(operationEvidence['resume-admission'].qualified_by, 'not-applicable');
+  assert.match(operationEvidence['resume-admission'].evidence, /window bound/);
+  assert.match(operationEvidence['resume-admission'].evidence, /expiry/);
+  assert.match(operationEvidence['resume-admission'].evidence, /recovery-only suspend/);
+  assert.match(operationEvidence['resume-admission'].evidence, /no operator path can request it/);
+  // No other operation gains the direction, and no operation gains an implicit resume.
+  const resumers = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('resume'));
+  assert.deepEqual(resumers, ['resume-admission']);
+  for (const operation of ['start', 'stop', 'admission-status', 'add-testers', 'set-testers', 'suspend-admission']) {
+    assert.equal(lifecycleActions(operation).includes('resume'), false, operation);
   }
 });
 
-test('the recovery-only close is reachable for open-admission and nowhere it did not already belong', () => {
-  const admissionOpening = envFor('.github/workflows/beta-admission.yml', 'open-admission');
-  // `open-admission` may run the pinned close task, but only so a failed window
-  // can restore the tuple the failure would otherwise leave open.
-  assertOneShotAllowed(admissionOpening, 'lifecycle', 'close');
+test('the recovery-only suspend is reachable for resume-admission and nowhere it did not already belong', () => {
+  const admissionOpening = envFor('.github/workflows/beta-admission.yml', 'resume-admission');
+  // `resume-admission` may run the pinned suspend task, but only so a failed window
+  // can restore the decision the failure would otherwise leave open.
+  assertOneShotAllowed(admissionOpening, 'lifecycle', 'suspend');
   assertOneShotAllowed(admissionOpening, 'lifecycle', 'status');
-  assertOneShotAllowed(admissionOpening, 'lifecycle', 'open', admissionWindowPayload(admissionOpening));
-  // Adding `close` here opened it for exactly the operations that already had it.
-  const owners = ['start', 'stop', 'close-admission', 'open-admission'];
+  assertOneShotAllowed(admissionOpening, 'lifecycle', 'resume', admissionWindowPayload(admissionOpening));
+  // Adding `suspend` here opened it for exactly the operations that already had it.
+  const owners = ['start', 'stop', 'suspend-admission', 'resume-admission'];
   for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
-    assert.equal(lifecycleActions(operation).includes('close'), owners.includes(operation), `${file} ${operation}`);
+    assert.equal(lifecycleActions(operation).includes('suspend'), owners.includes(operation), `${file} ${operation}`);
   }
-  const closers = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('close'));
-  assert.deepEqual(closers.sort(), ['close-admission', 'open-admission', 'start', 'stop']);
-  // The tester operations never gain a close: their only mutation stays
-  // configure-testers, and the guard refuses a lifecycle close for each of them.
-  for (const operation of ['tester-status', 'tester-add', 'tester-replace']) {
+  const suspenders = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('suspend'));
+  assert.deepEqual(suspenders.sort(), ['resume-admission', 'start', 'stop', 'suspend-admission']);
+  // The tester operations never gain a suspend: their only mutation stays
+  // set-testers, and the guard refuses a lifecycle suspend for each of them.
+  for (const operation of ['admission-status', 'add-testers', 'set-testers']) {
     const env = envFor('.github/workflows/beta-admission.yml', operation);
-    assert.equal(lifecycleActions(operation).includes('close'), false, operation);
-    assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'close'), /forbidden/, operation);
+    assert.equal(lifecycleActions(operation).includes('suspend'), false, operation);
+    assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'suspend'), /forbidden/, operation);
   }
-  // A non-admission pair still refuses the close.
+  // A non-admission pair still refuses the suspend.
   for (const [file, operation] of [['.github/workflows/runtime.yml', 'observe'], ['.github/workflows/beta-deploy.yml', 'restore-release'],
     ['.github/workflows/beta-observe.yml', 'state'], ['.github/workflows/beta-schema.yml', 'migrate']]) {
-    assert.throws(() => assertOneShotAllowed(envFor(file, operation), 'lifecycle', 'close'), /forbidden/, `${file} ${operation}`);
+    assert.throws(() => assertOneShotAllowed(envFor(file, operation), 'lifecycle', 'suspend'), /forbidden/, `${file} ${operation}`);
   }
+});
+
+test('lifecycle actions that carry no payload refuse one for every operation that may run them', () => {
+  // `suspend`, `drain` and `status` are pinned by behaviour, not by shape: adding
+  // any of them to the payload table would otherwise leave the suite green.
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    const env = envFor(file, operation);
+    for (const action of ['suspend', 'drain', 'status']) {
+      if (!lifecycleActions(operation).includes(action)) continue;
+      for (const payload of ['{}', '[]', 'null', '', '{"window_minutes":60}', '["a@example.com"]']) {
+        assert.throws(() => assertOneShotAllowed(env, 'lifecycle', action, payload), /forbidden/,
+          `${file} ${operation} ${action} ${JSON.stringify(payload)}`);
+      }
+      // The payload-free form of the same action stays allowed.
+      assertOneShotAllowed(env, 'lifecycle', action);
+    }
+  }
+});
+
+test('a hand-made lifecycle task definition cannot smuggle resume or a payload past the registration guard', () => {
+  const registration = command => ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify({
+    family: 'beta-anywear-lifecycle', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
+    executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
+    containerDefinitions: [{ name: 'OneShot', command }] })];
+  const tester = envFor('.github/workflows/beta-admission.yml', 'add-testers');
+  tester.TESTER_EMAILS = '["a@example.com"]';
+  // `resume` is not in this operation's allow-list, with or without its exact bytes.
+  assert.throws(() => assertAwsAllowed(tester,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume'])), /forbidden/);
+  assert.throws(() => assertAwsAllowed(tester,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', admissionWindowPayload(tester)])), /forbidden/);
+  // A payload on a payload-free action is refused whatever the operation.
+  const suspending = envFor('.github/workflows/beta-admission.yml', 'suspend-admission');
+  for (const action of ['suspend', 'status']) {
+    assert.throws(() => assertAwsAllowed(suspending,
+      registration(['node', 'dist/ops/beta-lifecycle.js', action, '{}'])), /forbidden/, action);
+  }
+  // The owning pair accepts exactly its own bytes and refuses a different window.
+  const resuming = envFor('.github/workflows/beta-admission.yml', 'resume-admission');
+  assertAwsAllowed(resuming, registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', admissionWindowPayload(resuming)]));
+  assert.throws(() => assertAwsAllowed(resuming,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', '{"window_minutes":59}'])), /forbidden|payload/i);
+  assert.throws(() => assertAwsAllowed(resuming,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume'])), /forbidden|payload/i);
 });
 
 test('operation guards block cross-family tasks, arbitrary writes and lifecycle opening', () => {
@@ -279,22 +323,26 @@ test('operation guards block cross-family tasks, arbitrary writes and lifecycle 
       'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:1']));
     assert.throws(() => assertDeployAllowed(env, 'AnyWearPlatformStack-prod'));
   }
-  const admission = envFor('.github/workflows/beta-admission.yml', 'tester-add');
+  const admission = envFor('.github/workflows/beta-admission.yml', 'add-testers');
   admission.TESTER_EMAILS = '["a@example.com"]';
-  assertOneShotAllowed(admission, 'lifecycle', 'configure-testers', '["a@example.com"]');
+  assertOneShotAllowed(admission, 'lifecycle', 'set-testers', '["a@example.com"]');
+  assertOneShotAllowed(admission, 'lifecycle', 'status');
   assert.throws(() => assertOneShotAllowed(admission, 'migrate'));
   assert.throws(() => assertDeployAllowed(admission, 'AnyWearPlatformStack-beta'));
   const restore = envFor('.github/workflows/beta-deploy.yml', 'restore-release');
   assert.throws(() => assertOneShotAllowed(restore, 'migrate'));
-  assert.throws(() => assertOneShotAllowed(restore, 'lifecycle', 'close'));
+  assert.throws(() => assertOneShotAllowed(restore, 'lifecycle', 'suspend'));
   assertDeployAllowed(restore, 'AnyWearWorkloadStack-beta');
   const registration = command => ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify({
     family: 'beta-anywear-lifecycle', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
     containerDefinitions: [{ name: 'OneShot', command }] })];
-  for (const action of ['open', 'drain', 'close', 'status']) assert.throws(() => assertAwsAllowed(admission,
+  // The tester operation may not reach the admission directions, but its own
+  // set-testers action and its read-only status must stay registrable.
+  for (const action of ['resume', 'drain', 'suspend']) assert.throws(() => assertAwsAllowed(admission,
     registration(['node', 'dist/ops/beta-lifecycle.js', action])));
-  assertAwsAllowed(admission, registration(['node', 'dist/ops/beta-lifecycle.js', 'configure-testers', '["a@example.com"]']));
+  assertAwsAllowed(admission, registration(['node', 'dist/ops/beta-lifecycle.js', 'status']));
+  assertAwsAllowed(admission, registration(['node', 'dist/ops/beta-lifecycle.js', 'set-testers', '["a@example.com"]']));
   const qualified = envFor('.github/workflows/runtime.yml', 'observe');
   const artifact = command => ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify({
     family: 'beta-anywear-artifact-verify', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-verification-task',
@@ -325,7 +373,7 @@ test('every operation records its credential families and how its mutation is qu
     assert.throws(() => assertOneShotAllowed(env, 'artifact-verify'), /forbidden/, operation);
   }
   const verifying = Object.entries(operationEvidence).filter(([, entry]) => entry.roles.includes('artifact-verify')).map(([operation]) => operation);
-  assert.deepEqual(verifying, ['deploy-workload', 'restore-release', 'close-admission', 'open-admission']);
+  assert.deepEqual(verifying, ['deploy-workload', 'restore-release', 'suspend-admission', 'resume-admission']);
   assert.deepEqual(operationEvidence['deploy-platform'].roles, []);
   assert.equal(operationEvidence['deploy-platform'].qualified_by, '.github/workflows/runtime.yml');
   assert.deepEqual(operationEvidence.observe.roles, []);
@@ -335,7 +383,7 @@ test('every operation records its credential families and how its mutation is qu
   assert.equal(operationEvidence.stop.qualified_by, 'not-applicable');
   assert.equal(operationEvidence.migrate.qualified_by, '.github/workflows/runtime.yml');
   assert.equal(operationEvidence.verify.qualified_by, 'not-applicable');
-  assert.equal(operationEvidence['open-admission'].qualified_by, 'not-applicable');
+  assert.equal(operationEvidence['resume-admission'].qualified_by, 'not-applicable');
 });
 
 test('state executor observes stopped or active Beta with no tasks, deploys, schema assertions or raw tester emails', async () => {
@@ -360,7 +408,7 @@ test('state executor observes stopped or active Beta with no tasks, deploys, sch
       assert.equal(args[0], 'ssm'); assert.equal(args[1], 'get-parameter');
       const name = args[args.indexOf('--name') + 1];
       return { stdout: JSON.stringify({ Parameter: { Name: name, Value: name.endsWith('tester_allowlist') ? '["private@example.com"]'
-        : name.endsWith('admission_suspended') ? 'true' : 'false' } }) };
+        : '{"mode":"closed"}' } }) };
     },
   });
   for (active of ['false', 'true']) {
@@ -389,13 +437,13 @@ test('state failure preserves known stack/admission values with sanitized unavai
     if (args[0] === 'cloudformation') return { Stacks: [{ StackName: args[args.indexOf('--stack-name') + 1], StackStatus: 'UPDATE_FAILED',
       Outputs: [{ OutputKey: 'BetaActive', OutputValue: 'false' }] }] };
     const name = args[args.indexOf('--name') + 1];
-    return { Parameter: { Name: name, Value: name.endsWith('tester_allowlist') ? '["private@example.com"]'
-      : name.endsWith('admission_suspended') ? 'true' : 'malformed' } };
+    if (name.endsWith('tester_allowlist')) return { Parameter: { Name: name, Value: '["private@example.com"]' } };
+    throw new Error('SSM admission mode unavailable');
   } };
   await assert.rejects(observeBetaState(io), error => {
     assert.equal(error.observedState.stacks.length, 2);
-    assert.equal(error.observedState.admission.admission_suspended, true);
-    assert.equal(error.observedState.admission.intake_open, 'unavailable');
+    assert.equal(error.observedState.admission.admission_mode, 'unavailable');
+    assert.equal(error.observedState.admission.admission_window_expires_at, 'unavailable');
     assert.equal(error.observedState.admission.tester_count, 1);
     assert.equal(JSON.stringify(error.observedState).includes('private@example.com'), false);
     return true;

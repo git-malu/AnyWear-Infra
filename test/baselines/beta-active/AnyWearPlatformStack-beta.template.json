@@ -848,18 +848,7 @@
           [
            "arn:aws:ssm:ap-east-1:650880818323:parameter",
            {
-            "Ref": "AdmissionSuspended3F9F1767"
-           }
-          ]
-         ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "IntakeOpen9A43639F"
+            "Ref": "AdmissionModeD89A5929"
            }
           ]
          ]
@@ -893,12 +882,11 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
-     "S3Key": "dd22b734392647d49821cee5abdfd267205184a0f9a69f47c6dd49c8f3c68317.zip"
+     "S3Key": "57e507d5b07f837eb8989f0088ede5b4742c9163ffab48740ccfcc66540f234c.zip"
     },
     "Environment": {
      "Variables": {
-      "STAGE": "beta",
-      "BETA_ACTIVE": "true"
+      "STAGE": "beta"
      }
     },
     "FunctionName": "beta-anywear-pre-sign-up",
@@ -1002,18 +990,7 @@
           [
            "arn:aws:ssm:ap-east-1:650880818323:parameter",
            {
-            "Ref": "AdmissionSuspended3F9F1767"
-           }
-          ]
-         ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "IntakeOpen9A43639F"
+            "Ref": "AdmissionModeD89A5929"
            }
           ]
          ]
@@ -1085,12 +1062,11 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
-     "S3Key": "a01797605d9d4e1c1108721a950bcab293c54eeb9627c5059ce9661e94fd6dce.zip"
+     "S3Key": "57e507d5b07f837eb8989f0088ede5b4742c9163ffab48740ccfcc66540f234c.zip"
     },
     "Environment": {
      "Variables": {
       "STAGE": "beta",
-      "BETA_ACTIVE": "true",
       "DB_SECRET_ARN": {
        "Ref": "AnyWearDatabaseSecretAttachment4886B381"
       },
@@ -1172,12 +1148,12 @@
    "UpdateReplacePolicy": "Retain",
    "DeletionPolicy": "Retain"
   },
-  "IntakeOpen9A43639F": {
+  "AdmissionModeD89A5929": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Name": "/anywear/beta/intake_open",
+    "Name": "/anywear/beta/admission_mode",
     "Type": "String",
-    "Value": "false"
+    "Value": "{\"mode\":\"closed\"}"
    }
   },
   "TesterAllowlist62C82ADF": {
@@ -1186,14 +1162,6 @@
     "Name": "/anywear/beta/tester_allowlist",
     "Type": "String",
     "Value": "[]"
-   }
-  },
-  "AdmissionSuspended3F9F1767": {
-   "Type": "AWS::SSM::Parameter",
-   "Properties": {
-    "Name": "/anywear/beta/admission_suspended",
-    "Type": "String",
-    "Value": "true"
    }
   },
   "AnyWearUserPoolPreSignUpCognito7A1B18E7": {
@@ -2200,18 +2168,7 @@
           [
            "arn:aws:ssm:ap-east-1:650880818323:parameter",
            {
-            "Ref": "AdmissionSuspended3F9F1767"
-           }
-          ]
-         ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "IntakeOpen9A43639F"
+            "Ref": "AdmissionModeD89A5929"
            }
           ]
          ]
@@ -2884,18 +2841,7 @@
           [
            "arn:aws:ssm:ap-east-1:650880818323:parameter",
            {
-            "Ref": "AdmissionSuspended3F9F1767"
-           }
-          ]
-         ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "IntakeOpen9A43639F"
+            "Ref": "AdmissionModeD89A5929"
            }
           ]
          ]
