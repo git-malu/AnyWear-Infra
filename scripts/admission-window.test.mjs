@@ -35,7 +35,7 @@ test('the canonical payload is one byte string built from the dispatch input onl
   assert.equal(admissionWindowPayload({ WINDOW_MINUTES: '15' }), '{"window_minutes":15}');
   assert.equal(admissionWindowPayload({ WINDOW_MINUTES: 240 }), '{"window_minutes":240}');
   // Same input, same bytes: the driver and the guard cannot drift.
-  assert.equal(admissionWindowPayload({ WINDOW_MINUTES: '90', INFRA_OPERATION: 'resume-admission' }),
+  assert.equal(admissionWindowPayload({ WINDOW_MINUTES: '90', INFRA_OPERATION: 'open-admission' }),
     admissionWindowPayload({ WINDOW_MINUTES: '90' }));
   for (const env of [{}, { WINDOW_MINUTES: undefined }, { WINDOW_MINUTES: '14' }, { WINDOW_MINUTES: '241' },
     { WINDOW_MINUTES: '60.0' }, { WINDOW_MINUTES: 'sixty' }]) {

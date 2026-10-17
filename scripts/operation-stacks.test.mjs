@@ -20,9 +20,9 @@ test('source provenance binds every stack mutated by deployment and lifecycle op
   assert.deepEqual(changedStackNames('deploy-workload'), ['AnyWearWorkloadStack-beta']);
   for (const operation of ['start', 'stop']) assert.deepEqual(changedStackNames(operation), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
   assert.deepEqual(changedStackNames('observe'), []);
-  assert.deepEqual(changedStackNames('suspend-admission'), []);
+  assert.deepEqual(changedStackNames('close-admission'), []);
   // An admission window changes admission state only; it mutates no stack.
-  assert.deepEqual(changedStackNames('resume-admission'), []);
+  assert.deepEqual(changedStackNames('open-admission'), []);
   assert.deepEqual(changedStackNames('restore-release'), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
 });
 
@@ -264,12 +264,11 @@ test('telemetry overrides reject stopped/unknown state, malformed retained value
 
 test('runtime status ignores shell JSON and binds actual stopped task definition and CloudWatch status', async () => {
   const { root, selector, env, revision } = await runtimeDeployFixture();
-  Object.assign(env, { INFRA_OPERATION: 'suspend-admission', TESTER_EMAILS: '[]',
+  Object.assign(env, { INFRA_OPERATION: 'close-admission', TESTER_EMAILS: '[]',
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main' });
   const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'c'.repeat(32)}`;
   const taskDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:9';
-  const actualStatus = { admission_mode: 'closed', admission_record: 'closed', database_record_differs: false,
-    admission_window_expires_at: null, tester_count: 4, database_policy_matches_ssm: false };
+  const actualStatus = { intake_open: false, admission_suspended: true, tester_count: 4, database_policy_matches_ssm: false };
   const record = { events: [] };
   const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
     async assume(kind) { assert.equal(kind, 'runtime'); return { ...env }; },
@@ -296,7 +295,7 @@ test('runtime status ignores shell JSON and binds actual stopped task definition
 
 test('parallel admission reads share one dedicated credential request and failed tasks retain exact identities', async () => {
   const { root, selector, env, revision } = await runtimeDeployFixture();
-  Object.assign(env, { INFRA_OPERATION: 'suspend-admission', TESTER_EMAILS: '[]',
+  Object.assign(env, { INFRA_OPERATION: 'close-admission', TESTER_EMAILS: '[]',
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main' });
   const record = { events: [] }; let assumptions = 0; let awsCalls = 0;
   const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'d'.repeat(32)}`;
@@ -309,10 +308,10 @@ test('parallel admission reads share one dedicated credential request and failed
       const error = new Error('Task failed'); error.stdout = `Task ARN: ${taskArn}\nTask definition: ${taskDefinitionArn}\n`;
       throw error;
     } });
-  await Promise.all(['admission_mode', 'tester_allowlist'].map(name => io.aws(['ssm', 'get-parameter', '--name', `/anywear/beta/${name}`])));
-  assert.equal(assumptions, 1); assert.equal(awsCalls, 2);
-  await assert.rejects(io.oneShot('lifecycle', revision, 'suspend'), /One-shot execution failed/);
-  assert.deepEqual(record.events.at(-1), { type: 'one-shot-failed', role: 'lifecycle', action: 'suspend',
+  await Promise.all(['admission_suspended', 'intake_open', 'tester_allowlist'].map(name => io.aws(['ssm', 'get-parameter', '--name', `/anywear/beta/${name}`])));
+  assert.equal(assumptions, 1); assert.equal(awsCalls, 3);
+  await assert.rejects(io.oneShot('lifecycle', revision, 'close'), /One-shot execution failed/);
+  assert.deepEqual(record.events.at(-1), { type: 'one-shot-failed', role: 'lifecycle', action: 'close',
     task_arns: [taskArn], task_definition_arns: [taskDefinitionArn], result: 'failed' });
 });
 
@@ -356,7 +355,7 @@ test('restart map resolves touched executor rows and preserves historical produc
     assert.equal(rows[3].source_sha, '58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759');
   }
   await runGuard('restore-release');
-  for (const unchanged of ['suspend-admission', 'resume-admission']) {
+  for (const unchanged of ['close-admission', 'open-admission']) {
     await assert.rejects(runGuard(unchanged), /Unchanged runtime\/recovery stack must retain/);
   }
   const runtimeOnly = await readFile(new URL('../stack-sources/beta-runtime-only.json', import.meta.url));
@@ -376,7 +375,7 @@ test('restart map resolves touched executor rows and preserves historical produc
   await writeFile(mapFile, runtimeOnly); await git(['add', 'stack-sources/beta-restart.json']);
   await git(['commit', '--quiet', '-m', 'Reviewed runtime-only producer map']);
   assert.notEqual(await git(['rev-parse', 'HEAD']), deployedProducers[1].source_sha);
-  for (const operation of ['observe', 'migrate', 'verify', 'admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission']) {
+  for (const operation of ['observe', 'migrate', 'verify', 'tester-status', 'tester-add', 'tester-replace', 'close-admission', 'open-admission']) {
     await runGuard(operation, sha256(runtimeOnly));
     assert.deepEqual(JSON.parse(await readFile(path.join(root, 'deployment-evidence/stack-sources.json'), 'utf8')), deployedProducers);
   }
