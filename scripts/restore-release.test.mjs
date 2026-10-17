@@ -22,12 +22,7 @@ const stackOutputs = values => entries(values, 'OutputKey', 'OutputValue');
 
 function fixture(options = {}) {
   const calls = []; const actions = []; const stages = []; const states = []; const recovery = [];
-  const admission = { admission_mode: canonicalJson({ mode: 'closed' }),
-    tester_allowlist: canonicalJson(options.testers ?? fourTesters), ...options.admission };
-  // A live tester window, so a drift case can open admission the way a dispatched
-  // window would. The reader uses the real clock here, so the bound is relative.
-  admission.openWindow = () => { admission.admission_mode = canonicalJson({
-    mode: 'testers', expires_at: new Date(Date.now() + 3_600_000).toISOString() }); };
+  const admission = { admission_suspended: 'true', intake_open: 'false', tester_allowlist: canonicalJson(options.testers ?? fourTesters), ...options.admission };
   const preserved = { VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:retained-vlm', CloudFrontPrefixListId: 'pl-retained',
     ...(options.preParameters ? {} : { BetaApiSizingProfile: 's2-api', BetaSizingTelemetry: 'true' }) };
   const originalParameters = { ServiceImageDigest: `sha256:${'a'.repeat(64)}`, ServiceCommitSha: 'b'.repeat(40), ...preserved };
@@ -46,7 +41,6 @@ function fixture(options = {}) {
       if (args[0] === 'ssm' && args[1] === 'get-parameter') {
         const name = args[args.indexOf('--name') + 1];
         const key = name.split('/').at(-1); assert.ok(Object.hasOwn(admission, key));
-        if (key === 'admission_mode' && io.unreadableAdmission) throw new Error('SSM admission mode unavailable');
         return { Parameter: { Name: name, Value: admission[key] } };
       }
       if (args[0] === 'ecs' && args[1] === 'wait' && args[2] === 'services-stable') {
@@ -72,7 +66,7 @@ function fixture(options = {}) {
         if (options.workloadInterfaceDrift) workload.Outputs.find(row => row.OutputKey === 'ApiBaseUrl').OutputValue = 'https://changed.example.com';
       }
       if (name === platformName && options.platformInterfaceDrift) platform.Outputs.push({ OutputKey: 'Unexpected', OutputValue: 'drift' });
-      if (name === options.admissionDriftAfterDeploy) admission.openWindow();
+      if (name === options.admissionDriftAfterDeploy) admission.intake_open = 'true';
     },
     async verifyHealth(url, revision) {
       actions.push('health'); assert.equal(url, 'https://retained.example.com');
@@ -107,7 +101,7 @@ test('restore verifies a different candidate first, selects both stacks in order
   ]);
   assert.deepEqual(io.originalParameters, { ServiceImageDigest: `sha256:${'a'.repeat(64)}`, ServiceCommitSha: 'b'.repeat(40), ...io.preserved });
   assert.deepEqual(result.selected_revision.parameters, { ...io.originalParameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha });
-  assert.deepEqual(result.admission, { admission_mode: 'closed', admission_window_expires_at: null, admission_mode_source: 'record', tester_count: 4,
+  assert.deepEqual(result.admission, { admission_suspended: true, intake_open: false, tester_count: 4,
     tester_allowlist_sha256: sha256(canonicalJson(fourTesters)) });
   assert.deepEqual(io.states, []); assert.deepEqual(io.recovery, []);
   assert.equal(io.admission.tester_allowlist, canonicalJson(fourTesters));
@@ -156,10 +150,8 @@ test('inactive, mixed, unstable or open admission performs no candidate task or 
     io => { io.workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
     io => { io.platform.StackStatus = 'UPDATE_IN_PROGRESS'; },
     io => { io.workload.StackStatus = 'UPDATE_ROLLBACK_COMPLETE'; },
-    // An open tester window is not closed admission.
-    io => io.admission.openWindow(),
-    // A mirror that cannot prove closure is not closed admission either.
-    io => { io.admission.admission_mode = '{"mode":"closed","extra":1}'; },
+    io => { io.admission.admission_suspended = 'false'; },
+    io => { io.admission.intake_open = 'true'; },
     io => { io.admission.tester_allowlist = 'malformed'; },
   ];
   for (const mutate of cases) {
@@ -173,8 +165,8 @@ test('inactive, mixed, unstable or open admission performs no candidate task or 
 test('candidate verification failure prevents either CFN deploy and every admission/lifecycle mutation', async () => {
   const { io, input } = fixture({ failCandidate: true });
   await assert.rejects(runRestoreRelease(input), /failed at candidate-verification/);
-  assert.deepEqual(io.actions, ['candidate-verification']); assert.equal(io.states[0].admission_mode, 'closed');
-  assert.equal(io.states[0].admission_window_expires_at, null); assert.equal(io.states[0].tester_count, 4);
+  assert.deepEqual(io.actions, ['candidate-verification']); assert.equal(io.states[0].admission_suspended, true);
+  assert.equal(io.states[0].intake_open, false); assert.equal(io.states[0].tester_count, 4);
 });
 
 test('each deploy, stability, health and verification failure stops without automatic sibling deploy or revert', async () => {
@@ -217,10 +209,10 @@ test('parameter, activity, output and admission drift abort at the next boundary
 
 test('failed readback remains bounded and redacted even when one SSM value and evidence hooks fail', async () => {
   const { io, input } = fixture({ failCandidate: true });
-  input.verifyRuntime = async () => { io.unreadableAdmission = true; throw new Error('Precheck failed'); };
+  input.verifyRuntime = async () => { io.admission.admission_suspended = 'unavailable-secret-text'; throw new Error('Precheck failed'); };
   io.recordRestoreStage = value => { if (value.result === 'failed') throw new Error('Evidence hook failed'); };
   await assert.rejects(runRestoreRelease(input), /failed at candidate-verification/);
-  assert.equal(io.states[0].admission_mode, 'unavailable'); assert.equal(io.states[0].admission_window_expires_at, 'unavailable');
+  assert.equal(io.states[0].admission_suspended, 'unavailable'); assert.equal(io.states[0].intake_open, false);
   assert.equal(io.states[0].tester_count, 4); assert.ok(!JSON.stringify(io.states).includes('secret-text'));
   assert.deepEqual(io.recovery, ['requires-explicit-recovery']); assert.deepEqual(io.actions, []);
 });

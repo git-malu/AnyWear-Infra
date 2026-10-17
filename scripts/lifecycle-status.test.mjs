@@ -10,8 +10,7 @@ const definition = { taskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task
 const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
   clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
   taskDefinitionArn: definition.taskDefinitionArn, lastStatus: 'STOPPED' };
-const status = { admission_mode: 'closed', admission_record: 'closed', database_record_differs: false,
-  admission_window_expires_at: null, tester_count: 4, database_policy_matches_ssm: true };
+const status = { intake_open: false, admission_suspended: true, tester_count: 4, database_policy_matches_ssm: true };
 function logIo(messages) {
   const calls = [];
   return { calls, async aws(args) {
@@ -29,12 +28,7 @@ test('lifecycle status reads only the actual stopped task log stream, across com
 });
 
 test('missing, duplicate, malformed and incomplete status logs fail closed', async () => {
-  for (const messages of [[], [JSON.stringify(status), JSON.stringify(status)],
-    ['{"admission_mode":"closed","admission_window_expires_at":null'],
-    // The Service→Infra contract moved with the mode: the old field names are not
-    // status evidence any more, so a stale message must not be selected silently.
-    ['{"intake_open":false,"admission_suspended":true}'],
-    ['{"admission_mode":"closed"}']]) {
+  for (const messages of [[], [JSON.stringify(status), JSON.stringify(status)], ['{"intake_open":false,"admission_suspended":true']]) {
     await assert.rejects(readLifecycleStatus(logIo(messages), task, definition));
   }
   for (const response of [{}, { events: [], nextForwardToken: '' }, { events: [{ message: 3 }], nextForwardToken: 'end' }]) {

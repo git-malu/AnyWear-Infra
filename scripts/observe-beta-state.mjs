@@ -2,21 +2,6 @@ import { canonicalJson, sha256 } from './json-contract.mjs';
 import { readAdmissionState } from './admission-operation.mjs';
 import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-sizing-profile.mjs';
 
-const unavailable = value => (value === undefined ? 'unavailable' : value);
-
-// The admission mirror is self-describing: the mode, its bound and where the
-// decision came from are all observed fields, so a fail-closed read never looks
-// like an observed closure.
-function admissionEvidence(admission) {
-  const testers = admission?.tester_emails;
-  return { admission_mode: unavailable(admission?.admission_mode),
-    admission_window_expires_at: unavailable(admission?.admission_window_expires_at),
-    admission_mode_source: unavailable(admission?.admission_mode_source),
-    admission_mode_reason: unavailable(admission?.admission_mode_reason),
-    tester_count: Array.isArray(testers) ? testers.length : 'unavailable',
-    tester_emails_sha256: Array.isArray(testers) ? sha256(canonicalJson(testers)) : 'unavailable' };
-}
-
 // This records infrastructure/SSM state only; it cannot establish DB/schema equality.
 export async function observeBetaState(io) {
   const stacks = [];
@@ -33,12 +18,15 @@ export async function observeBetaState(io) {
         beta_sizing_telemetry: retainedBetaSizingTelemetry(parameters), runtime_verification: 'not-applicable' };
     }
   }
-  state.admission = admissionEvidence(await readAdmissionState(io));
+  const admission = await readAdmissionState(io);
+  state.admission = { admission_suspended: admission.admission_suspended, intake_open: admission.intake_open,
+    tester_count: admission.tester_emails.length, tester_emails_sha256: sha256(canonicalJson(admission.tester_emails)) };
   return state;
   } catch (cause) {
-    // The shared reader preserves each independently known field even when another
-    // SSM value is unreadable. Never retain raw tester addresses.
-    state.admission = admissionEvidence(cause.observedAdmissionState);
+    const admission = cause.observedAdmissionState;
+    if (admission) state.admission = { admission_suspended: admission.admission_suspended, intake_open: admission.intake_open,
+      tester_count: Array.isArray(admission.tester_emails) ? admission.tester_emails.length : 'unavailable',
+      tester_emails_sha256: Array.isArray(admission.tester_emails) ? sha256(canonicalJson(admission.tester_emails)) : 'unavailable' };
     const error = new Error('Complete Beta state observation unavailable', { cause });
     error.observedState = state;
     throw error;

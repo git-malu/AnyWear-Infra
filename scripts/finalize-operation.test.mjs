@@ -21,16 +21,16 @@ test('strict final observation failure preserves earlier phase evidence and requ
 });
 test('successful observation, close failure, and stopped operations keep accurate outcomes', () => {
   assert.equal(finalizeOperationRecord(fixture('restore-release'), 'success', 'success').result, 'succeeded');
-  const closed = finalizeOperationRecord(fixture('suspend-admission'), 'failure', 'skipped');
+  const closed = finalizeOperationRecord(fixture('close-admission'), 'failure', 'skipped');
   assert.equal(closed.result, 'failed'); assert.equal(closed.recovery, 'not-required');
   assert.equal(finalizeOperationRecord(fixture('stop'), 'success', 'skipped').result, 'succeeded');
   assert.equal(finalizeOperationRecord(fixture('restore-release'), 'success', 'skipped').result, 'failed');
-  assert.equal(finalizeOperationRecord(fixture('suspend-admission'), 'success', 'skipped').result, 'failed');
+  assert.equal(finalizeOperationRecord(fixture('close-admission'), 'success', 'skipped').result, 'failed');
   assert.throws(() => finalizeOperationRecord(fixture('restore-release'), 'unknown', 'success'));
 });
 
 test('any observed active final state requires final observation, while stopped maintenance permits skipping it', () => {
-  for (const operation of ['deploy-platform', 'deploy-workload', 'start', 'observe', 'set-testers']) {
+  for (const operation of ['deploy-platform', 'deploy-workload', 'start', 'observe', 'tester-replace']) {
     const active = fixture(operation);
     active.events.push({ type: 'final-beta-activity', platform_active: 'true', workload_active: 'true' });
     assert.equal(finalizeOperationRecord(active, 'success', 'skipped').result, 'failed');
@@ -56,7 +56,7 @@ test('finalizer CLI rewrites strictly parsed state and ordinary records with acc
     ['stop', 'failure', 'skipped', 'failed', 'not-required', false],
     ['restore-release', 'success', 'failure', 'failed', 'requires-explicit-recovery', true],
     ['restore-release', 'cancelled', 'skipped', 'failed', 'requires-explicit-recovery', true],
-    ['suspend-admission', 'failure', 'skipped', 'failed', 'not-required', true],
+    ['close-admission', 'failure', 'skipped', 'failed', 'not-required', true],
   ];
   for (const [operation, operationOutcome, observationOutcome, result, recovery, active] of cases) {
     const record = fixture(operation);
