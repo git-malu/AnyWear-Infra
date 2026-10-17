@@ -1,10 +1,11 @@
 import { readAdmissionState, assertClosedAdmission } from './admission-operation.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
+import { assertTerminalReleaseSlice, terminalStackStatuses, releaseSliceStackName } from './one-writer.mjs';
 import { canonicalJson, sha256, SHA } from './json-contract.mjs';
 
 const platformName = 'AnyWearPlatformStack-beta';
-const workloadName = 'AnyWearWorkloadStack-beta';
-const stableStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
+const workloadName = releaseSliceStackName;
+const stableStatuses = terminalStackStatuses;
 // The stage base is the only stack this operation deploys. A release recovery
 // restores the stage base and leaves the release slice to AnyWear-Service's own
 // release chain; the slice is read here only to prove it is terminal before and
@@ -39,7 +40,7 @@ function assertRestoreTarget(platform) {
 // deployment, so the slice is terminal before and after. This is a read-only
 // precondition, not a claim to deploy or observe the slice's resources.
 function assertReleaseSliceTerminal(workload) {
-  if (!stableStatuses.has(workload?.StackStatus)) throw new Error(`Restore requires a terminal ${workloadName}; observed ${workload?.StackStatus ?? 'unavailable'}`);
+  assertTerminalReleaseSlice(workload, 'Restore');
 }
 
 function assertResidentPlatform(platform) {

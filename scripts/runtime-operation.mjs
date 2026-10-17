@@ -14,6 +14,7 @@ import { validateReleaseInput } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runSuspendAdmission, runResumeAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
+import { assertTerminalReleaseSlice, releaseSliceStackName } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { account, region } from './deployment-contract.mjs';
@@ -86,6 +87,21 @@ export function assertResidentBeta(platform, workload) {
     if (!['true', 'false'].includes(active)) throw new Error(`Both Beta activity states must be observed: ${name}=${active ?? 'unavailable'}`);
     if (active !== 'true') throw new Error(`Resident Beta requires active ${name}; observed ${active}`);
   }
+}
+// The stage base and the release slice have different producers: Infra deploys the
+// Platform and AnyWear-Service deploys the Workload. A Platform mutation must read
+// the release slice terminal before CloudFormation is touched, so the two writers
+// never cross a deployment. `restore-release` runs its own staged checks; every
+// other operation that deploys reaches here after its credentials are obtained.
+export async function deployOperationStack(io, operation) {
+  const [stack] = changedStackNames(operation);
+  if (!stack) throw new Error(`Operation ${operation} has no stack to deploy`);
+  if (stack === 'AnyWearPlatformStack-beta') {
+    const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', releaseSliceStackName])).Stacks?.[0];
+    assertTerminalReleaseSlice(workload, operation);
+  }
+  await io.deploy(stack);
+  return stack;
 }
 // Every protected deploy reconciles the resident active environment. The CDK
 // default is the active path (environmentRunning=true), so no operation selects the
@@ -284,11 +300,11 @@ export async function runOperation(env = process.env) {
     record.observed_service_revision = { service_sha: revision.commit, image_digest: revision.digest };
     await io.oneShot('migrate', revision);
   } else if (operation !== 'observe') {
-    const [deployStack] = changedStackNames(operation);
     // The stage base and the account-wide stacks take no release input; only the
     // stage base consumes Service-built Lambda assets, and its deploy proves those
-    // bytes through the reviewed release identity before credentials.
-    await io.deploy(deployStack);
+    // bytes through the reviewed release identity before credentials. A Platform
+    // deploy additionally reads the Service-owned slice terminal first (one writer).
+    await deployOperationStack(io, operation);
   }
   const finalStacks = {};
   for (const [key, name] of [['platform', 'AnyWearPlatformStack-beta'], ['workload', 'AnyWearWorkloadStack-beta']]) {
