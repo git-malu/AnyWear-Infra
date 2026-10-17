@@ -23,7 +23,11 @@ After #158 step C, Infra owns Foundation, the Beta stage base and Billing only.
 `AnyWearWorkloadStack-beta`'s CDK source and deploy chain live in
 AnyWear-Service. The only path that can deploy that stack is Service's release
 chain, and that path needs the deferred Foundation deploy (the two Service deploy
-roles from step A) and Service's own `ENABLE_BETA_MUTATION=true`. Until that
+roles from step A, plus the round-3 CLI-path grants to `beta-service-deploy-role`:
+the `cdk-bootstrap/hnb659fds/version` parameter, the dedicated
+`cdk-hnb659fds-assets-650880818323-ap-east-1` template object, and that bucket's
+location read; no `cdk-hnb659fds-*` role assumption) and Service's own
+`ENABLE_BETA_MUTATION=true`. Until that
 round no workload deploy may be attempted from anywhere, and no Infra entry may
 re-add one. The committed `selection`/`stack_sources` contract, its double-write
 window, the cross-repository native-asset verification and the vendored Service
@@ -187,9 +191,9 @@ Service baseline matrices and cannot substitute for the live Original comparison
 
 | Operation | Behavior |
 | --- | --- |
-| `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; ordinary workflow still requires a sealed selection |
+| `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; takes no Service release identity and no committed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
-| `deploy-platform` | Reconcile the stage base using the sealed Service release's Lambda/policy assets; every deploy takes the resident active path and requires the release slice to be terminal; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
+| `deploy-platform` | Deploy the stage base from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job downloads that sealed release's Lambda bundles, runtime policy and manifest with a read-only token and proves every byte against the manifest before any credential. Every deploy takes the resident active path and requires the release slice to be terminal; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention and closed admission, with the release slice terminal before and after; never deploy, verify or recover the Workload slice |
 | ~~`deploy-workload`~~ | Removed in #158 step C. The Workload slice is deployed only by AnyWear-Service's release chain |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
@@ -243,16 +247,19 @@ changes are dispatched from AnyWear-Service's release chain. Neither input start
 or stops Beta or grants an environment writer. State-only observation records the
 retained values but cannot prove running telemetry.
 
-After measurement, explicitly dispatch the reviewed current-main workload operation
-with `beta_sizing_telemetry=disable`, the unchanged Service image and reviewed
-stack-source binding. Use `beta_api_sizing_profile=s1` in that operation when
-restoring S1, or `preserve` when retaining an accepted profile. Verify
-`BetaSizingTelemetry=false`, both actual containers reporting telemetry `false`,
-stable service rollout and the final observer/health result. An ordinary `preserve`
-input does not disable telemetry. Beta is resident, so there is no stopped state to
-preserve; never reactivate a stopped stack merely to restore telemetry.
-This source delivery does not claim deployment, runtime acceptance or telemetry-off
-restoration.
+After measurement, the rollout that disables telemetry is dispatched from
+AnyWear-Service's release chain with `beta_sizing_telemetry=disable`, the unchanged
+Service image and Service's own reviewed release inputs. Infra has no operation or
+input for it. (Historical: before #158 step C this was Infra's `deploy-workload`
+operation with `beta_api_sizing_profile=s1` to restore S1 or `preserve` to retain
+an accepted profile, the unchanged Service image and a committed stack-source
+binding. That operation and the stack-source map are deleted, so the command cannot
+run from here.) Verify `BetaSizingTelemetry=false`, both actual containers reporting
+telemetry `false`, stable service rollout and the final observer/health result. An
+ordinary `preserve` input does not disable telemetry. Beta is resident, so there is
+no stopped state to preserve; never reactivate a stopped stack merely to restore
+telemetry. This source delivery does not claim deployment, runtime acceptance or
+telemetry-off restoration.
 
 ## Tester and cleanup ownership
 
@@ -533,7 +540,9 @@ If actual producers change, review a new exact map before use. New admission/
 recovery operations (`suspend-admission`, `resume-admission`, `restore-release`) reject
 `@executor` on any untouched stack.
 
-`restore-release` has one activation precondition: admission already closed. A
+**Historical restore sequence (before #158 step C; the current single-stack
+behavior is in the [operation table](#entry-points)).** `restore-release` had one
+activation precondition: admission already closed. A
 stable stack status is required for the CloudFormation mutation itself, not as an
 activation requirement. It verifies the selected candidate image's raw
 runtime-policy identity, migration journal and compatibility with the applied DB
@@ -550,11 +559,12 @@ boundary, and its postcondition is both stacks `BetaActive=true` after each depl
 An old signed release alone does not establish a usable rollback image: a raw
 policy-byte mismatch fails the existing candidate check even if canonical policy
 and schema match. A reviewed current coherent release is also a recovery input.
-The single-stack `deploy-workload` operation remains strict; when an older
-selection has different Lambda bytes, its final fulltuple observer fails until
-Platform matches. Do not weaken these checks or call that mixed state a successful
-recovery. Any restore failure records its stage, observed CFN parameters/activity,
-admission and task evidence, with `requires-explicit-recovery`; those CFN parameter
+The (now-removed) single-stack `deploy-workload` operation remained strict; when an
+older selection had different Lambda bytes, its final fulltuple observer failed
+until Platform matched. Do not weaken these checks or call that mixed state a
+successful recovery. Any restore failure records its stage, observed CFN
+parameters/activity, admission and task evidence, with
+`requires-explicit-recovery`; those CFN parameter
 readbacks are not actual running ECS identity proof. It never automatically
 deploys the other stack, reverts or reopens admission. Final observation failure
 also marks the preserved operation artifact failed. Only a separately reviewed
@@ -563,10 +573,10 @@ recovery may proceed from the observed partial state.
 ## Evidence and operation recovery
 
 Preserve `deployment-evidence/operation-record.json` under the always-attempted
-`infra-operation-<run-id>-<attempt>` artifact even on failure. Its version-3
-`anywear_infra_operation` record keeps the original
-committed selection file/hash binding and independent selected Service component sources
-separate from the current Infra executor SHA/run/attempt. It records actual
+`infra-operation-<run-id>-<attempt>` artifact even on failure. Its current
+version-4 `anywear_infra_operation` record keeps the reviewed Service release
+identity (`service_release`, only for the operation that took one) separate from
+the current Infra executor SHA/run/attempt. It records actual
 Original template hashes and the original Workload image/source readbacks,
 the validated all-stack `stack_manifest` plus the operation's `changed_stack_names`,
 completed one-shot task/deployment events,
@@ -583,16 +593,18 @@ operation record rather than manufacture a successful operation record.
 
 ### Operation-record provenance versions
 
-Version-3 records define template evidence independently of the changed-stack set:
-`stack_manifest` always carries every configured stack with its `Original` template
-hash, while `changed_stack_names` records only what the operation mutated and still
-drives deploy authorization, cleanup fencing and retention gates. Historical
-version-2 records carried hand-authored per-stack `reviewed_stack_sources` and remain
-readable during the dual run so both provenance paths can be compared before the
-breaking removal. Unknown versions are rejected; there is no permissive fallback.
+Version-4 `anywear_infra_operation` records are the current shape: `stack_manifest`
+always carries every configured stack with its `Original` template hash, while
+`changed_stack_names` records only what the operation mutated and still drives
+deploy authorization, cleanup fencing and retention gates. The record carries the
+reviewed `service_release` when the operation took one, and no `selection` member.
+Historical version-3 records (template evidence separated from the changed-stack
+set) and version-2 records (hand-authored per-stack `reviewed_stack_sources`)
+remain readable as evidence; they are not operation inputs. Unknown versions are
+rejected; there is no permissive fallback.
 
-For active Beta, the fixed `runtime.yml` observation writes the unchanged
-`anywear_infra_deployment` v2 from actual Original
+For active Beta, the fixed `runtime.yml` observation writes the current
+`anywear_infra_deployment` v3 from actual Original
 CFN templates, Lambda CodeSha/stable configuration, running ECS definitions and
 digests, queue settings, Client metadata/endpoints and a bounded read-only schema
 task. It hashes template content, not AWS CLI response wrappers. The queue hash
@@ -655,12 +667,17 @@ its owner before cleanup; expiry or task-runner failure is not task cessation.
 Upload `deployment-evidence/deployment-record.json` as
 `infra-deployment-<run-id>-<attempt>` with 90-day requested retention.
 Record actual hashes and effective expiry; missing/expired
-artifacts cannot authorize qualification or rollback. SSM selection/deployment
+artifacts cannot authorize qualification or rollback. SSM stage-contract/deployment
 values alone are not observed release proof. Final E2E v2 qualification runs in a
 separate scheduled window and compares authenticated observations before/after
 against the exact deployment record.
 
-## Admission-mode migration and rollout
+## Admission-mode migration and rollout (historical, pre-#158 step C)
+
+The steps below are the recorded pre-C procedure. The `selection` inputs and the
+`deploy-workload` operation they dispatch were deleted in #158 step C and cannot be
+run from this revision; the Workload slice is now deployed only by
+AnyWear-Service's release chain. The sequence is retained as evidence.
 
 The rename from the two boolean parameters to one mode record is expand → prove →
 contract, and it spans three releases because the writable surface moves with the

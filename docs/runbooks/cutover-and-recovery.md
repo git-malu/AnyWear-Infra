@@ -230,7 +230,8 @@ only `AnyWearPlatformStack-beta` and leaves the release slice to AnyWear-Service
 own release chain. It does not run down migrations and it never verifies a
 candidate release. (The former `deploy-workload` path no longer exists in Infra.)
 `restore-release` checks the resident invariant before
-CFN and redeploys Workload then Platform active in the same queue; its only activation
+CFN, reads the release slice terminal before and after its own deploy, and
+redeploys only the stage base active; its only activation
 precondition is closed admission, with stable stack status required for the
 CloudFormation mutation itself. Failures preserve observed state and require an
 explicitly reviewed recovery; no automatic sibling deploy, revert or admission
