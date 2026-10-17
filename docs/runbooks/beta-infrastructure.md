@@ -450,7 +450,9 @@ qualifying run needs both stacks active for the same reason the stopped case bel
 records: a stopped Beta produces no active-runtime record, and with either stack
 stopped the observation step is skipped, leaving the run's own
 `infra-operation-<run-id>-<attempt>` record as its only artifact; a failure before
-record creation can leave none.
+record creation can leave none. That `deployment-record.json` is what advances the
+compatibility pin, which `AnyWear-E2E` owns; the routine is in that repository's
+[`docs/compatibility-pin.md`](https://github.com/git-malu/AnyWear-E2E/blob/main/docs/compatibility-pin.md).
 
 `runtime.yml` is the only workflow producer of the accepted record. This is a
 statement about workflow runs, not about all software: the standalone
