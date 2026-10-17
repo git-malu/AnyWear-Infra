@@ -72,7 +72,7 @@ permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 
 The [v2 committed selection](../contracts/release-selection.md) is the one input
 authority. A source PR reviews the exact release/component identities and hashes.
-All six [bounded Beta workflows](beta-infrastructure.md#entry-points), including
+All five [bounded Beta workflows](beta-infrastructure.md#entry-points), including
 the read-only observer, automatically
 checks actual Service inputs before AWS credentials; source checks themselves
 perform no private native read or deployment. E2E uses the same reviewed verifier
@@ -238,33 +238,32 @@ identities; source-matrix equality alone does not authorize a replacement.
 Verify stable independent Client publication through existing CFN/SSM outputs.
 Retain the original templates, selected assets and usable recovery writer.
 
-Exercise reviewed stop/start and compute rollback. `deploy-workload` can select a
-previous immutable release while retaining compatible applied schema; it does not
-run down migrations. `start` retains its explicit forward migration/verification
-sequence for the pinned image, so its schema boundary and rollback compatibility
-must already be reviewed. Failed stop never implicitly restores network, Workload or admission. Record
-actual outputs/statuses and admission state, preserve partial/stopped state, and
-select a separately reviewed start after resolving the failure. Native CFN
-rollback may leave active or mixed state; requested false flags are not evidence.
+Exercise reviewed `restore-release` as the compute rollback path. `deploy-workload` can
+select a previous immutable release while retaining compatible applied schema; it does
+not run down migrations. `restore-release` verifies the candidate policy/schema before
+CFN and redeploys Workload then Platform active in the same queue; its only activation
+precondition is closed admission, with stable stack status required for the
+CloudFormation mutation itself. Failures preserve observed state and require an
+explicitly reviewed recovery; no automatic sibling deploy, revert or admission
+reopening occurs.
 
-Current dispatches use `beta-lifecycle.yml` for start/stop and
-`beta-deploy.yml` for maintenance or `restore-release`. Restore never migrates,
-starts stopped stacks or reopens admission; stop failures preserve actual partial
-state and still require a separate explicit start decision. Inactive CDK deploys
-retain `--no-rollback`. A separately coordinated fixed `runtime.yml` observation
-produces the E2E-compatible v2 record after changes; family observations identify
-their actual workflow and are not accepted as legacy E2E inputs. Read-only
-`beta-observe.yml` remains available with activation false, including recovery
-diagnosis, and cannot start tasks or qualify database/schema state.
+Current dispatches use `beta-deploy.yml` for maintenance and `restore-release`. Beta is
+resident, so no operation stops or starts it and no inactive deployment path remains.
+A separately coordinated fixed `runtime.yml` observation produces the E2E-compatible
+v2 record after changes; family observations identify their actual workflow and are
+not accepted as legacy E2E inputs. Read-only `beta-observe.yml` remains available with
+activation false, including recovery diagnosis, and cannot start tasks or qualify
+database/schema state.
 
-For #54, the bounded practical recovery was executed as [stop
+At the time, the bounded #54 practical recovery was executed as [stop
 37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)
 then [start 37887802281](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281),
 both with historical Infra producer `bafc3072ea6aee2d5193009c014cb1cf04b43848`
-and coherent Service release `407218593`. This does not exercise active
-`restore-release` or automatic failure recovery. Historical release `406706155`
-remains preserved evidence but is byte-incoherent and cannot be selected for
-current rollback. Do not relabel the observed Client/Service tuple or historical
+and coherent Service release `407218593`. Both lifecycle entry points are retired and
+Beta is resident, so that sequence is preserved history, not current guidance. This
+does not exercise `restore-release` or automatic failure recovery. Historical release
+`406706155` remains preserved evidence but is byte-incoherent and cannot be selected
+for current rollback. Do not relabel the observed Client/Service tuple or historical
 Infra producer as a newer documentation or executor revision.
 
 For an ownership failure, suspend the new writer, enumerate its running tasks/CFN
@@ -321,8 +320,8 @@ exact E2E v2 qualification, digest-preserving promotion and scan policy. Artifac
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
 
-Inactive CDK deployments explicitly pass `--no-rollback` to prevent native
-CloudFormation rollback from restoring activity during stop or stopped-state
-maintenance. Failure leaves partial resource state for explicit reviewed recovery;
-resource replacements unsupported in this mode must fail rather than trigger a
-restart. Preserve actual stack outputs/statuses and admission readback.
+Inactive CDK deployments are not a supported operation. Every protected deploy takes
+the resident active path, and its postcondition is both stacks `BetaActive=true`;
+an out-of-band stopped stack fails closed in verification rather than authorizing an
+inactive rollout. Preserve actual stack outputs/statuses and admission readback on
+failure.

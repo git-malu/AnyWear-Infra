@@ -16,11 +16,12 @@ export function retainedBetaSizingProfile(parameters) {
   return observed;
 }
 
-export function selectBetaSizingProfile(parameters, env, active) {
+// Explicit sizing remains a deploy-workload-only input. It never depends on an
+// observed activity state: every protected deploy reconciles the resident Beta and
+// carries the retained values through unchanged.
+export function selectBetaSizingProfile(parameters, env) {
   const observed = retainedBetaSizingProfile(parameters);
   const requested = validateBetaSizingInput(env);
-  if (typeof active !== 'boolean') throw new Error('Explicit observed Beta activity required for sizing');
-  if (requested !== 'preserve' && !active) throw new Error('Explicit sizing requires already-active Beta');
   return requested === 'preserve' ? observed : requested;
 }
 
@@ -40,11 +41,9 @@ export function retainedBetaSizingTelemetry(parameters) {
   return observed;
 }
 
-export function selectBetaSizingTelemetry(parameters, env, active) {
+export function selectBetaSizingTelemetry(parameters, env) {
   const observed = retainedBetaSizingTelemetry(parameters);
   const requested = validateBetaTelemetryInput(env);
-  if (typeof active !== 'boolean') throw new Error('Explicit observed Beta activity required for telemetry');
-  if (requested !== 'preserve' && !active) throw new Error('Explicit telemetry requires already-active Beta');
   return requested === 'preserve' ? observed : requested === 'enable' ? 'true' : 'false';
 }
 
@@ -54,7 +53,7 @@ export function betaSizingChangeRequested(env) {
   return profile !== 'preserve' || telemetry !== 'preserve';
 }
 
-export function selectBetaSizingParameters(parameters, env, active) {
-  return { ...parameters, BetaApiSizingProfile: selectBetaSizingProfile(parameters, env, active),
-    BetaSizingTelemetry: selectBetaSizingTelemetry(parameters, env, active) };
+export function selectBetaSizingParameters(parameters, env) {
+  return { ...parameters, BetaApiSizingProfile: selectBetaSizingProfile(parameters, env),
+    BetaSizingTelemetry: selectBetaSizingTelemetry(parameters, env) };
 }

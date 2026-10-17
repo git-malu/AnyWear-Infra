@@ -39,7 +39,7 @@ elif [[ "$role" == "tester-cleanup" ]]; then
     || { echo "Tester cleanup requires a bounded run scope and exact user JSON payload" >&2; exit 2; }
 elif [[ "$role" == "lifecycle" ]]; then
   [[ "$stage" == "beta" ]] || { echo "Lifecycle only supports beta" >&2; exit 2; }
-  [[ "$verify_api_url" =~ ^(suspend|drain|resume|status|set-testers)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
+  [[ "$verify_api_url" =~ ^(suspend|resume|status|set-testers)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
   if [[ "$verify_api_url" == "set-testers" ]]; then
     jq -e --arg payload "$lifecycle_payload" \
       '($payload | utf8bytelength) <= 4096 and type == "array" and length <= 50 and all(.[]; type == "string")' \
@@ -107,7 +107,7 @@ output() {
 }
 
 if [[ "$stage" == "beta" && "$(jq -r '.[] | select(.OutputKey=="BetaActive") | .OutputValue' <<<"$stack_outputs")" == "false" ]]; then
-  echo "Beta network is stopped; restore it through Beta Lifecycle start before launching private tasks" >&2
+  echo "Resident Beta invariant violated: the Platform stack is not active, and Beta Lifecycle start no longer exists. Repair the out-of-band change through a reviewed deployment." >&2
   exit 1
 fi
 
@@ -252,18 +252,7 @@ if [[ -n "$runtime_run_scope" ]]; then
   echo "Task log group: $log_group"
   echo "Task log stream: ${family}/OneShot/${task_arn##*/}"
 fi
-if [[ "$role" == "lifecycle" && "$verify_api_url" == "drain" ]]; then
-  # The drain owns its 60-minute abort/reopen contract. ECS's default waiter
-  # expires after ten minutes, so allow startup and cleanup around that window.
-  deadline=$((SECONDS + 4200))
-  while [[ "$(aws ecs describe-tasks --cluster "$cluster_name" --tasks "$task_arn" \
-    --query 'tasks[0].lastStatus' --output text)" != "STOPPED" ]]; do
-    (( SECONDS < deadline )) || { echo "Lifecycle drain helper did not exit within 70 minutes" >&2; exit 1; }
-    sleep 10
-  done
-else
-  aws ecs wait tasks-stopped --cluster "$cluster_name" --tasks "$task_arn"
-fi
+aws ecs wait tasks-stopped --cluster "$cluster_name" --tasks "$task_arn"
 
 task_result="$(aws ecs describe-tasks --cluster "$cluster_name" --tasks "$task_arn" --output json)"
 exit_code="$(jq -r '.tasks[0].containers[] | select(.name == "OneShot") | .exitCode // -1' <<<"$task_result")"

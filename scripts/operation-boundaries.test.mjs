@@ -29,7 +29,7 @@ const envFor = (workflow, operation) => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-
   INFRA_DEPLOY_ROLE_ARN: 'arn:aws:iam::650880818323:role/beta-infra-deploy-role' });
 const stateEnv = () => ({ ...envFor('.github/workflows/beta-observe.yml', 'state'), ENABLE_BETA_DEPLOY: 'false' });
 
-test('six manual entry schemas select only their family and preserve the protected shared queue', async () => {
+test('five manual entry schemas select only their family and preserve the protected shared queue', async () => {
   for (const [file, operations] of Object.entries(workflowOperations)) {
     const workflow = yaml.load(await readFile(new URL(`../${file}`, import.meta.url), 'utf8'));
     assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch']);
@@ -37,7 +37,7 @@ test('six manual entry schemas select only their family and preserve the protect
     const inputs = workflow.on.workflow_dispatch.inputs;
     assert.deepEqual(inputs.operation?.options ?? [workflow.jobs.operation.env.INFRA_OPERATION], operations);
     for (const key of ['selection_file', 'selection_sha256', 'stack_sources_file', 'stack_sources_sha256']) assert.equal(inputs[key].required, true);
-    const cdk = file.includes('lifecycle') || file.includes('deploy');
+    const cdk = file.includes('deploy');
     assert.equal(Object.hasOwn(inputs, 'identity_phase'), cdk);
     assert.equal(Object.hasOwn(inputs, 'retention_protection'), cdk);
     assert.equal(Object.hasOwn(inputs, 'tester_emails'), file.includes('admission'));
@@ -135,7 +135,7 @@ test('all actual STS requests carry bounded session policies and cannot reuse in
       assert.deepEqual(final.Statement.find(row => Array.isArray(row.Action) && row.Action.includes('ecs:RunTask')).Resource,
         ['arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:*']);
     }
-    if (['start', 'stop', 'deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'].includes(operation)) {
+    if (['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'].includes(operation)) {
       assert.ok(sessionPolicy('deploy', env).length <= 2048);
     } else assert.throws(() => sessionPolicy('deploy', env), /forbidden/);
   }
@@ -169,7 +169,7 @@ test('cleanup fence reads stay exact and belong only to Platform or Workload ope
     ['stepfunctions', 'describe-execution', '--execution-arn', execution]];
   for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
     const env = envFor(file, operation);
-    const required = ['start', 'stop', 'deploy-platform', 'deploy-workload', 'restore-release'].includes(operation);
+    const required = ['deploy-platform', 'deploy-workload', 'restore-release'].includes(operation);
     const policy = JSON.parse(sessionPolicy('runtime', env));
     assert.deepEqual(policy.Statement.filter(row => [row.Action].flat().some(action => action.startsWith('states:'))), required ? [
       { Effect: 'Allow', Action: 'states:ListExecutions', Resource: machine },
@@ -235,7 +235,7 @@ test('the resume-admission allow-list entry is explicit in all three tables that
   // No other operation gains the direction, and no operation gains an implicit resume.
   const resumers = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('resume'));
   assert.deepEqual(resumers, ['resume-admission']);
-  for (const operation of ['start', 'stop', 'admission-status', 'add-testers', 'set-testers', 'suspend-admission']) {
+  for (const operation of ['admission-status', 'add-testers', 'set-testers', 'suspend-admission']) {
     assert.equal(lifecycleActions(operation).includes('resume'), false, operation);
   }
 });
@@ -248,12 +248,12 @@ test('the recovery-only suspend is reachable for resume-admission and nowhere it
   assertOneShotAllowed(admissionOpening, 'lifecycle', 'status');
   assertOneShotAllowed(admissionOpening, 'lifecycle', 'resume', admissionWindowPayload(admissionOpening));
   // Adding `suspend` here opened it for exactly the operations that already had it.
-  const owners = ['start', 'stop', 'suspend-admission', 'resume-admission'];
+  const owners = ['suspend-admission', 'resume-admission'];
   for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
     assert.equal(lifecycleActions(operation).includes('suspend'), owners.includes(operation), `${file} ${operation}`);
   }
   const suspenders = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('suspend'));
-  assert.deepEqual(suspenders.sort(), ['resume-admission', 'start', 'stop', 'suspend-admission']);
+  assert.deepEqual(suspenders.sort(), ['resume-admission', 'suspend-admission']);
   // The tester operations never gain a suspend: their only mutation stays
   // set-testers, and the guard refuses a lifecycle suspend for each of them.
   for (const operation of ['admission-status', 'add-testers', 'set-testers']) {
@@ -269,11 +269,13 @@ test('the recovery-only suspend is reachable for resume-admission and nowhere it
 });
 
 test('lifecycle actions that carry no payload refuse one for every operation that may run them', () => {
-  // `suspend`, `drain` and `status` are pinned by behaviour, not by shape: adding
-  // any of them to the payload table would otherwise leave the suite green.
+  // `suspend` and `status` are pinned by behaviour, not by shape: adding any of
+  // them to the payload table would otherwise leave the suite green. `drain` is
+  // no longer reachable from any Infra operation.
   for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
     const env = envFor(file, operation);
-    for (const action of ['suspend', 'drain', 'status']) {
+    assert.equal(lifecycleActions(operation).includes('drain'), false, `${file} ${operation}`);
+    for (const action of ['suspend', 'status']) {
       if (!lifecycleActions(operation).includes(action)) continue;
       for (const payload of ['{}', '[]', 'null', '', '{"window_minutes":60}', '["a@example.com"]']) {
         assert.throws(() => assertOneShotAllowed(env, 'lifecycle', action, payload), /forbidden/,
@@ -379,8 +381,6 @@ test('every operation records its credential families and how its mutation is qu
   assert.deepEqual(operationEvidence.observe.roles, []);
   assert.equal(operationEvidence.observe.qualified_by, 'self');
   assert.equal(operationEvidence.state.qualified_by, 'not-applicable');
-  assert.equal(operationEvidence.start.qualified_by, '.github/workflows/runtime.yml');
-  assert.equal(operationEvidence.stop.qualified_by, 'not-applicable');
   assert.equal(operationEvidence.migrate.qualified_by, '.github/workflows/runtime.yml');
   assert.equal(operationEvidence.verify.qualified_by, 'not-applicable');
   assert.equal(operationEvidence['resume-admission'].qualified_by, 'not-applicable');
@@ -422,7 +422,7 @@ test('state executor observes stopped or active Beta with no tasks, deploys, sch
     assert.equal(finalizeOperationRecord({ ...record, events, result: 'succeeded' }, 'success', 'skipped').result, 'succeeded');
   }
   const prior = calls;
-  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', true, {}), /forbidden/);
+  await assert.rejects(io.deploy('AnyWearWorkloadStack-beta', {}), /forbidden/);
   await assert.rejects(io.oneShot('verify', {}), /forbidden/);
   await assert.rejects(io.aws(['ecs', 'run-task']), /forbidden/);
   await assert.rejects(io.aws(['ssm', 'get-parameter', '--region', 'eu-west-1']), /Unexpected operation region/);

@@ -1,5 +1,5 @@
 import { parseJson, canonicalJson } from './json-contract.mjs';
-import { workloadRevision } from '../.github/scripts/beta-lifecycle.mjs';
+import { workloadRevision } from './workload-revision.mjs';
 import { normalizeTesterEmails, observeAdmissionState } from './admission-state.mjs';
 import { compareAdmissionDecision, parseLifecycleStatus } from './admission-operation.mjs';
 

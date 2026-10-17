@@ -76,6 +76,11 @@ test('verification binds actual stopped image/code/roles, schema and executor, a
   assert.equal(result.schema.verification.source_sha, sha);
   assert.equal(result.schema.verification.executor.run_id, 23);
   assert.ok(io.calls.some(call => call[1] === 'deregister-task-definition'));
+  // An out-of-band stopped stack still fails closed before any task is registered.
+  const inactive = mockIo();
+  await assert.rejects(runRuntimeVerification({ io: inactive, outputs: { ...outputs, BetaActive: 'false' },
+    selector, manifest, schema, infraSha: sha, env }), /Only active Beta supports runtime verification/);
+  assert.deepEqual(inactive.calls, []);
   for (const mode of ['image', 'exit', 'code', 'role', 'duplicate', 'running']) {
     const drift = mockIo(mode);
     await assert.rejects(runRuntimeVerification({ io: drift, outputs, selector, manifest, schema, infraSha: sha, env }));

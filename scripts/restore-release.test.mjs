@@ -57,12 +57,16 @@ function fixture(options = {}) {
       }
       assert.fail(`Unexpected AWS action: ${args.slice(0, 3).join(' ')}`);
     },
-    async deploy(name, active, revision) {
+    async deploy(name, revision) {
       actions.push(name === workloadName ? 'deploy-workload' : 'deploy-platform');
-      assert.ok([platformName, workloadName].includes(name)); assert.equal(active, true);
+      assert.ok([platformName, workloadName].includes(name));
       assert.equal(revision.digest, selector.image.digest); assert.equal(revision.commit, selector.image.service_sha);
       assert.deepEqual(revision.parameters, { ...originalParameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha });
       if (options.failDeploy === name) throw new Error('Deployment failed');
+      // A protected deploy always reconciles the active path; the postcondition
+      // below is what proves the resident invariant, not the operator's start state.
+      const deployed = name === platformName ? platform : workload;
+      deployed.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'true';
       if (name === workloadName) {
         workload.Parameters = entries(revision.parameters, 'ParameterKey', 'ParameterValue');
         if (options.materializeDefaults) workload.Parameters.push(
@@ -91,7 +95,9 @@ function fixture(options = {}) {
   };
   const verifyRuntime = async input => {
     actions.push('candidate-verification');
-    assert.deepEqual(input.outputs, outputs); assert.equal(input.selector, selector);
+    // Activity is a separate postcondition; the candidate verifier only consumes
+    // the runtime interface it needs.
+    assert.deepEqual({ ...input.outputs, BetaActive: 'true' }, outputs); assert.equal(input.selector, selector);
     assert.equal(input.manifest, manifest); assert.equal(input.schema, schema); assert.equal(input.infraSha, infraSha);
     if (options.failCandidate) throw new Error('Candidate policy/schema mismatch');
     return { schema: { compatibility_result: 'compatible' }, policy_content_sha256: manifest.components.runtime_policy.content_sha256 };
@@ -150,10 +156,8 @@ test('restore final readback rejects a valid but changed sizing profile or telem
   }
 });
 
-test('inactive, mixed, unstable or open admission performs no candidate task or deploy and preserves failure readback', async () => {
+test('unstable stacks or open/unprovable admission performs no candidate task or deploy and preserves failure readback', async () => {
   const cases = [
-    io => { for (const stack of [io.platform, io.workload]) stack.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
-    io => { io.workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
     io => { io.platform.StackStatus = 'UPDATE_IN_PROGRESS'; },
     io => { io.workload.StackStatus = 'UPDATE_ROLLBACK_COMPLETE'; },
     // An open tester window is not closed admission.
@@ -167,6 +171,26 @@ test('inactive, mixed, unstable or open admission performs no candidate task or 
     assert.deepEqual(io.actions, []); assert.equal(io.states[0].failure_stage, 'preconditions');
     assert.deepEqual(io.recovery, ['requires-explicit-recovery']); assert.equal(io.states[0].image_digest, io.originalParameters.ServiceImageDigest);
     assert.ok(!JSON.stringify(io.states).includes('first@example.com'));
+  }
+});
+
+test('inactive or mixed stable stacks are not a precondition; the resident postcondition still fails closed after deploy', async () => {
+  // Closed admission is the only activation precondition. The deploy takes the
+  // active path, and the readback after it must observe both stacks active.
+  const cases = [
+    io => { for (const stack of [io.platform, io.workload]) stack.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
+    io => { io.workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
+    io => { io.platform.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
+  ];
+  for (const mutate of cases) {
+    const { io, input } = fixture(); mutate(io);
+    // The fixture's deploy keeps the pre-deploy activity outputs, so the
+    // postcondition refuses after the workload deploy instead of at preconditions.
+    io.deploy = async name => { io.actions.push(name === workloadName ? 'deploy-workload' : 'deploy-platform'); };
+    await assert.rejects(runRestoreRelease(input), /explicit recovery required/);
+    assert.equal(io.states[0].failure_stage, 'workload-stable-readback', JSON.stringify(io.states[0]));
+    assert.deepEqual(io.actions, ['candidate-verification', 'deploy-workload', 'services-stable']);
+    assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
   }
 });
 

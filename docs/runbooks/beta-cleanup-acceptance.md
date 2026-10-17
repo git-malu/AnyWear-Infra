@@ -32,20 +32,20 @@ one policy on the existing Infra runtime role and
 `CleanupAcceptanceTaskDefinitionArn`; it adds no further Platform delta. Record
 the observed state-machine version, fixture task revision, Infra producers and
 coherent Service image. Fixture execution requires a final committed four-stack
-map with explicit SHAs and rejects every `@executor`. Foundation lifecycle,
-Billing and Client publication are outside this operation.
+map with explicit SHAs and rejects every `@executor`. Foundation/Billing
+reconciliation and Client publication are outside this operation.
 
 Deployment requires issue #104's reviewed finalizer repair and truthful gate-false
 acceptance. Fixture source checks do not satisfy that independent prerequisite.
 
 ## Fixed authority and inputs
 
-`.github/workflows/beta-cleanup-acceptance.yml` is separate from the six ordinary
+`.github/workflows/beta-cleanup-acceptance.yml` is separate from the five ordinary
 workflow families. It uses the non-cancelling `anywear-infra-runtime` queue, the
 `beta` environment, protected main source/owner checks and default-closed
 `ENABLE_BETA_CLEANUP_ACCEPTANCE`. Keep that dedicated fixture gate closed except
 for an explicitly authorized recorded window, then close it afterwards. This gate
-is independent of `ENABLE_BETA_DEPLOY` and cannot start or restore Beta.
+is independent of `ENABLE_BETA_DEPLOY` and cannot change Beta activity.
 
 Only `prepare`, `inspect`, `release-task` and `cleanup` are accepted. Inputs name
 the full deployed task ARN, exact Workload source, committed selection/hash,
@@ -58,7 +58,7 @@ strings/hashes during qualification.
 The task runs `node dist/ops/beta-cleanup-acceptance-fixture.js` with the selected
 Service image, existing cleanup role and `beta-anywear-one-shot-execution` role.
 Only the action/request are appended. Environment/role overrides, arbitrary
-commands, task registration/stop, lifecycle changes and E2E fixture mutation
+commands, task registration/stop and E2E fixture mutation
 authority are absent. Independent read and run sessions use the existing Infra
 runtime principal; each policy is measured against STS's 2048-byte bound. Reads
 cover only the two Beta stacks, exact admission parameters, fixed definition,

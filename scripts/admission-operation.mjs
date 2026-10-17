@@ -3,12 +3,12 @@ import { ADMISSION_WINDOW_CLOCK_SKEW_MS, admissionWindowPayload, parseWindowMinu
 import { canonicalTesterList, observeAdmissionState, readAdmissionState, assertProvableAdmissionClosure } from './admission-state.mjs';
 import { ADMISSION_MODE_CLOSED, ADMISSION_MODE_TESTERS, admissionClock, describeAdmissionMode,
   effectiveAdmissionBound, parseAdmissionInstant, sameAdmissionInstant } from './admission-mode.mjs';
-import { workloadRevision } from '../.github/scripts/beta-lifecycle.mjs';
+import { workloadRevision } from './workload-revision.mjs';
 import { assertVerificationExecutor, runRuntimeVerification } from './verify-runtime-task.mjs';
 
 export { readAdmissionState } from './admission-state.mjs';
-// The forward-migration fence is shared with `start`, which invokes the same
-// migrate one-shot from `.github/scripts/beta-lifecycle.mjs`.
+// The standalone `migrate` operation uses this fence from `admission-mode.mjs`;
+// it refuses unless the admission mirror proves closed admission.
 export { assertMigrationAdmissionClosed } from './admission-mode.mjs';
 
 const stableStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
