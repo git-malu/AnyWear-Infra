@@ -107,6 +107,16 @@ and must not be relabeled as an Infra-produced deployment.
   VPC/Aurora/Cognito/bucket-configuration/SQS/ECR-configuration/Foundation/
   other-stack grants absent. The roles, not this
   repository, are now the Workload stack's deployment authority.
+- Foundation's service set is reviewed CDK context, not source: `infraServices` is
+  an array of `{ service, repository, repositoryId, environment }` descriptors
+  defaulting to exactly the single `service` (`AnyWear-Service`, repository id
+  `1158460323`, environment `beta`). Both role names and the immutable OIDC
+  subject derive from the descriptor. The context is strict: an unknown key, a
+  malformed descriptor, a duplicate service, a missing default service or a
+  changed default descriptor fails synthesis before any resource is created. A
+  second service is that context value plus a Foundation deploy carrying it, never
+  an Infra source edit; the default context keeps the synthesized Foundation
+  template byte-identical (`test/foundation-services.test.ts`).
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`

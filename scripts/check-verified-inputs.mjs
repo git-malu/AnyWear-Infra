@@ -3,12 +3,13 @@ import path from 'node:path';
 import { parseJson, exact, matches, sha256, HASH, SHA, integer, DIGEST } from './json-contract.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
-import { validateReleaseInput, RELEASE_ASSETS, SERVICE_REPOSITORY } from './release-inputs.mjs';
+import { validateReleaseInput, RELEASE_ASSETS, SERVICE_REPOSITORY, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 
 // The deploy job downloads the verify job's artifact and proves it describes this
-// exact dispatch before it requests an OIDC token or an STS session.
+// exact dispatch before it requests an OIDC token or an STS session. Both
+// stage-base operations re-hash the travelled sealed release in the exact
+// directory the CDK deploy consumes.
 const env = process.env;
-const root = path.resolve(import.meta.dirname, '..');
 validateOperationInputs(env);
 const boundary = operationBoundary(env);
 const expectedRelease = validateReleaseInput(env);
@@ -37,7 +38,7 @@ if (!expectedRelease) {
   // The artifact directory travelled between jobs; re-hash it so a modified
   // upload cannot reach CDK under an accepted record.
   for (const name of RELEASE_ASSETS) {
-    const digest = sha256(await readFile(path.join(root, '.service-artifacts/selected', name)));
+    const digest = sha256(await readFile(path.join(SELECTED_RELEASE_DIRECTORY, name)));
     if (digest !== value.assets[name]) throw new Error(`Verified release asset ${name} differs from the downloaded bytes`);
   }
   process.stdout.write(`Verified inputs bind ${value.workflow} ${value.operation} to ${SERVICE_REPOSITORY} ${value.release.tag}@${value.release.source_sha}.\n`);

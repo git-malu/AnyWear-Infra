@@ -85,6 +85,18 @@ grants. The Workload stack's
 CDK source and deploy chain now live in AnyWear-Service (#158 step B); after step
 C nothing in this repository synthesizes, deploys or recovers it.
 
+The Foundation service set is reviewed CDK context, not source. `infraServices`
+is an array of `{ service, repository, repositoryId, environment }` descriptors
+and defaults to exactly the single `service` descriptor above. Both role names
+(`beta-<service>-deploy-role`, `beta-<service>-deploy-cfn-role`) and the OIDC
+subject derive from the descriptor, so a second service is that context value
+plus a Foundation deploy with it (the Foundation-only CLI entry below), never an
+edit to this repository. The context is strict: an unknown key, a malformed
+descriptor, a duplicate service, a missing default service or a changed default
+descriptor fails synthesis before any resource is created. The default context
+reproduces today's template byte for byte; a second service adds only its own two
+roles and policies, scoped to its own workload stack and resource families.
+
 ### Versioned `@git-malu/stage-contracts`
 
 [`packages/stage-contracts/`](packages/stage-contracts/README.md) is the

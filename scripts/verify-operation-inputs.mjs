@@ -6,9 +6,10 @@ import { runVerifyInputs } from './release-inputs.mjs';
 
 // The `verify` job completes every immutable-input check before any job acquires
 // AWS credentials, and publishes exactly what it proved. The `deploy` job binds
-// that artifact back to its own dispatch inputs. `deploy-platform` is the only
-// operation that downloads Service-built Lambda assets; every other operation
-// publishes the binding with no release and deploys no Service code.
+// that artifact back to its own dispatch inputs. `deploy-platform` and
+// `restore-release` both deploy the stage base, so both download and verify the
+// Service-built Lambda assets into `.service-artifacts/selected`; every other
+// operation publishes the binding with no release and deploys no Service code.
 const env = process.env;
 validateOperationInputs(env);
 const boundary = operationBoundary(env);

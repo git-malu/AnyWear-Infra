@@ -10,23 +10,32 @@ import { loadLocalArtifactInputs } from './local-artifact-inputs.mjs';
 // built its image and Lambda assets. Both are explicit dispatch inputs, so the
 // deployed Lambda bytes are reviewed before any credential is requested.
 const execute = promisify(execFile);
+const root = path.resolve(import.meta.dirname, '..');
 export const SERVICE_REPOSITORY = 'git-malu/AnyWear-Service';
 // The sealed release carries the Service-built Lambda bundles, the runtime policy
 // the stage base reads and the release manifest that binds their hashes.
 export const RELEASE_ASSETS = Object.freeze(['service-artifacts.json', 'pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json']);
+// The one directory the CDK stage-base deploy consumes. The verify job downloads
+// the sealed release into it and the deploy job re-hashes the travelled artifact
+// before any credential, so both sides name the same bytes.
+export const SELECTED_RELEASE_DIRECTORY = path.join(root, '.service-artifacts', 'selected');
+// Both operations deploy the stage base, which consumes the Service-built Lambda
+// bundles and runtime policy. A release identity supplied to any other operation
+// is rejected instead of silently ignored.
+export const RELEASE_IDENTITY_OPERATIONS = Object.freeze(['deploy-platform', 'restore-release']);
 const GH_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-// One reviewed input per deploy path. `deploy-platform` is the only Infra
-// operation that needs Service-built Lambda assets; a release identity supplied
-// to any other operation is rejected instead of silently ignored.
+// One reviewed input per stage-base deploy path. `deploy-platform` and
+// `restore-release` both take Service-built Lambda assets; every other operation
+// takes none and rejects a supplied release identity.
 export function validateReleaseInput(env = process.env, operation = env.INFRA_OPERATION) {
   const releaseTag = env.SERVICE_RELEASE_TAG ?? '';
   const serviceCommit = env.SERVICE_COMMIT ?? '';
-  if (operation !== 'deploy-platform') {
-    if (releaseTag || serviceCommit) throw new Error('Only deploy-platform takes a Service release identity');
+  if (!RELEASE_IDENTITY_OPERATIONS.includes(operation)) {
+    if (releaseTag || serviceCommit) throw new Error('Only deploy-platform and restore-release take a Service release identity');
     return null;
   }
-  if (!GH_TAG.test(releaseTag)) throw new Error('deploy-platform requires the explicit Service release tag');
+  if (!GH_TAG.test(releaseTag)) throw new Error(`${operation} requires the explicit Service release tag`);
   matches(serviceCommit, SHA, 'Service release source commit');
   return { releaseTag, serviceCommit };
 }
@@ -45,7 +54,7 @@ function assertComponent(entry, file, hashes) {
 // manifest. There is no selection schema, no native attestation and no vendored
 // Service parser on this path: the manifest is the Service release's own record of
 // what it built, and its `image.service_sha` binds it to the reviewed commit.
-export async function downloadReleaseInputs({ releaseTag, serviceCommit, directory = '.service-artifacts/selected',
+export async function downloadReleaseInputs({ releaseTag, serviceCommit, directory = SELECTED_RELEASE_DIRECTORY,
   token, run = execute }) {
   if (typeof token !== 'string' || !token) throw new Error('A read-only Service token is required to read the sealed release');
   await mkdir(directory, { recursive: true });
@@ -89,8 +98,9 @@ export async function downloadReleaseInputs({ releaseTag, serviceCommit, directo
   return record;
 }
 
-export async function runVerifyInputs({ env = process.env, run = execute, token = env.GH_TOKEN } = {}) {
+export async function runVerifyInputs({ env = process.env, run = execute, token = env.GH_TOKEN,
+  directory = SELECTED_RELEASE_DIRECTORY } = {}) {
   const release = validateReleaseInput(env);
   if (!release) return null;
-  return downloadReleaseInputs({ ...release, token, run });
+  return downloadReleaseInputs({ ...release, token, run, directory });
 }

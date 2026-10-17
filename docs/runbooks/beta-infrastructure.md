@@ -224,6 +224,23 @@ not change. Initial role bootstrap uses the
 [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
 because no sealed Service release is needed to create the artifact publisher role.
 
+### Foundation service set
+
+The Foundation deploy reconciles the reviewed `infraServices` CDK context set: an
+array of `{ service, repository, repositoryId, environment }` descriptors, each
+naming one workload service's deployment identities. The default is exactly the
+single `service` descriptor (repository `AnyWear-Service`, repository id
+`1158460323`, environment `beta`), so the default deploy is unchanged. Role names
+(`beta-<service>-deploy-role`, `beta-<service>-deploy-cfn-role`) and the immutable
+OIDC subject derive from the descriptor, so an additional service is a context
+value carried by a Foundation deploy — the Foundation-only CLI entry with
+`-c infraServices='[...]'`, or any reviewed dispatch that passes the same context —
+never an edit to Infra source. The context is strict: an unknown descriptor key, a
+malformed value, a duplicate service, a missing default service or a changed
+default descriptor fails synthesis before any resource is created. A second
+service adds only its own two roles and policies, scoped to its own workload stack
+and resource families; the existing service's resources are unchanged.
+
 ## Retained Beta sizing (release-slice parameter, Service-owned)
 
 Issue #95 adds retained Workload parameters without changing lifecycle authority.
@@ -434,14 +451,6 @@ not proof of transaction rollback or successful cleanup recovery. First install
 requires stable Workload output and Original template absence plus cleanup-family
 task cessation and inspection of retained orphan machines outside the stack.
 
-> **Historical evidence.** The sections from this point to the end record the
-> specific Beta rounds (cleanup, admission-mode migration, rollout) as they were
-> executed before #158 step C. They mention the `selection`/`stack_sources`
-> contract and `deploy-workload` because those existed at the time; both are now
-> deleted and the Workload slice is deployed only by AnyWear-Service. Do not
-> attempt any `selections/...`, `stack-sources/...` or `deploy-workload` command
-> from these records.
-
 ## Admission closure and coherent release recovery
 
 Both `suspend-admission`/`resume-admission` and `restore-release` require
@@ -539,6 +548,14 @@ Its current executor can be newer without relabeling unchanged stack producers.
 If actual producers change, review a new exact map before use. New admission/
 recovery operations (`suspend-admission`, `resume-admission`, `restore-release`) reject
 `@executor` on any untouched stack.
+
+> **Historical evidence.** The historical restore sequence below and the
+> [admission-mode migration and rollout](#admission-mode-migration-and-rollout-historical-pre-158-step-c)
+> section record the specific Beta rounds as they were executed before #158 step C.
+> They mention the `selection`/`stack_sources` contract and `deploy-workload`
+> because those existed at the time; both are now deleted and the Workload slice is
+> deployed only by AnyWear-Service. Do not attempt any `selections/...`,
+> `stack-sources/...` or `deploy-workload` command from these records.
 
 **Historical restore sequence (before #158 step C; the current single-stack
 behavior is in the [operation table](#entry-points)).** `restore-release` had one

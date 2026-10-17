@@ -10,7 +10,7 @@ import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mj
 import { parseWindowMinutes } from './admission-window.mjs';
 import { createOperationRecord, recordRecovery } from './operation-record.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
-import { validateReleaseInput } from './release-inputs.mjs';
+import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runSuspendAdmission, runResumeAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
@@ -150,7 +150,7 @@ export async function credentialEnvironment(kind, env = process.env, purpose = '
   return { ...cleanAwsEnvironment(env), AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
 }
-export async function createRuntimeIo(env = process.env, record, { run = execute, assume = credentialEnvironment, purpose = 'operation', directory = path.join(root, '.service-artifacts/selected') } = {}) {
+export async function createRuntimeIo(env = process.env, record, { run = execute, assume = credentialEnvironment, purpose = 'operation', directory = SELECTED_RELEASE_DIRECTORY } = {}) {
   const credentials = new Map();
   const roleEnv = async kind => {
     validateOperationInputs(env);
