@@ -2791,7 +2791,12 @@
         "logs:PutLogEvents"
        ],
        "Effect": "Allow",
-       "Resource": "arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot"
+       "Resource": {
+        "Fn::GetAtt": [
+         "OneShotLogGroup31A8D153",
+         "Arn"
+        ]
+       }
       }
      ],
      "Version": "2012-10-17"

@@ -760,6 +760,11 @@ describe('Platform safety controls', () => {
           && resource.Properties.Roles[0]?.Ref === roleId
       )) as any;
       expect(policy).toBeDefined();
+      const [logGroupId] = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
+        resource.Type === 'AWS::Logs::LogGroup'
+          && resource.Properties.LogGroupName === `/anywear/${stage}/one-shot`
+      ))!;
+      expect(logGroupId).toMatch(/^OneShotLogGroup[A-F0-9]{8}$/);
       const statements = policy.Properties.PolicyDocument.Statement;
       // The live role has exactly three statements; the third is the awslogs
       // stream grant that `AwsLogDriver.bind()` appended while the release slice
@@ -772,8 +777,13 @@ describe('Platform safety controls', () => {
       expect(statements[2]).toEqual({
         Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
         Effect: 'Allow',
-        Resource: `arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/${stage}/one-shot`,
+        // The live grant's ARN ends in `:*`. Reference the log group's
+        // CloudFormation `Arn` attribute (which includes that suffix) instead of
+        // a hand-written literal that can omit it.
+        Resource: { 'Fn::GetAtt': [logGroupId, 'Arn'] },
       });
+      expect(statements[2].Resource)
+        .not.toBe(`arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/${stage}/one-shot`);
     }
   });
 
