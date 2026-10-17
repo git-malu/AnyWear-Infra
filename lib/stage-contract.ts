@@ -1,0 +1,118 @@
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { Construct } from 'constructs';
+import type { PlatformStack } from './platform-stack';
+
+// The stage base is published as plain SSM parameters so a release slice can be
+// deployed from a checkout that holds no Infra source. Values come from the
+// existing Platform resources/attributes; nothing here reads SSM.
+export const STAGE_CONTRACT_CONSUMER = 'AnyWear-Service AnyWearWorkloadStack-beta';
+
+// Two stage-base values have no Platform attribute: they are today retained
+// `AnyWearWorkloadStack-beta` stack parameters. For Beta they are reviewed
+// constants read from the live stack on 2026-10-18 with
+// `aws cloudformation describe-stacks --stack-name AnyWearWorkloadStack-beta`
+// in account 650880818323 / region ap-east-1. Both are identifiers, not secret
+// values: the published ARN names the secret, it does not contain key material.
+// A deployment must still assert the live Workload parameters equal these
+// values before deploying Platform, so drift is caught instead of republished.
+const REVIEWED_BETA_STAGE_BASE = Object.freeze({
+  vlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ',
+  cloudFrontPrefixListId: 'pl-14b2577d',
+});
+
+export interface StageContractInputs {
+  vlmConfigArn: string;
+  cloudFrontPrefixListId: string;
+}
+
+export interface StageContractProps {
+  platform: PlatformStack;
+  inputs?: StageContractInputs;
+}
+
+const VLM_CONFIG_ARN = /^arn:aws:secretsmanager:[a-z0-9-]+:\d{12}:secret:.+$/;
+const CLOUDFRONT_PREFIX_LIST_ID = /^pl-[a-z0-9]+$/;
+
+// Only the reviewed Beta stage may fall back to the recorded constants. Any
+// other stage must pass explicit values so a beta identifier can never be
+// republished under another stage.
+export function stageContractInputs(stage: string, provided?: StageContractInputs): StageContractInputs {
+  if (!['dev', 'beta', 'prod'].includes(stage)) throw new Error(`Unknown stage contract stage: ${stage}`);
+  if (stage === 'beta') return provided ?? REVIEWED_BETA_STAGE_BASE;
+  if (!provided) throw new Error(`The ${stage} stage contract requires explicit vlmConfigArn and cloudFrontPrefixListId inputs`);
+  return provided;
+}
+
+export class StageContract extends Construct {
+  readonly parameters: ssm.IParameter[] = [];
+
+  constructor(scope: Construct, id: string, props: StageContractProps) {
+    super(scope, id);
+    const platform = props.platform;
+    const stage = platform.stageName;
+    if (stage !== 'beta') throw new Error('The stage contract is published for the Beta stage only in this change');
+    const inputs = stageContractInputs(stage, props.inputs);
+    if (!VLM_CONFIG_ARN.test(inputs.vlmConfigArn)) {
+      throw new Error('Stage contract requires an explicit Secrets Manager ARN for vlm_config_arn');
+    }
+    if (!CLOUDFRONT_PREFIX_LIST_ID.test(inputs.cloudFrontPrefixListId)) {
+      throw new Error('Stage contract requires an explicit CloudFront origin-facing prefix list id');
+    }
+    const { vpc, database, cluster, apiSecurityGroup, workerSecurityGroup, loadBalancerSecurityGroup, operationsTopic } = platform;
+    if (!vpc || !database?.secret || !cluster || !apiSecurityGroup || !workerSecurityGroup
+      || !loadBalancerSecurityGroup || !operationsTopic) {
+      throw new Error('The Beta stage contract requires the existing Platform VPC, database, cluster, security groups and topic');
+    }
+    const path = `/anywear/${stage}/`;
+    const describe = (detail: string) => `${STAGE_CONTRACT_CONSUMER} stage contract: ${detail}`;
+    const constructId = (parameterName: string) => `${parameterName.split('_')
+      .map((part) => part[0].toUpperCase() + part.slice(1)).join('')}Param`;
+    // PlatformStack does not expose `environmentRunning`, but its subnet types
+    // carry the same information: while Beta is stopped the task tier is
+    // PRIVATE_ISOLATED, so `privateSubnets` is empty and this fallback mirrors
+    // the existing `PrivateSubnetIds` output (`environmentRunning ? private
+    // : isolated`) instead of publishing an empty list.
+    const privateSubnets = vpc.privateSubnets.length ? vpc.privateSubnets : vpc.isolatedSubnets;
+    const string = (parameterName: string, value: string, detail: string) => this.parameters.push(
+      new ssm.StringParameter(this, constructId(parameterName), {
+        parameterName: `${path}${parameterName}`, stringValue: value, description: describe(detail),
+      }),
+    );
+    const stringList = (parameterName: string, value: string[], detail: string) => this.parameters.push(
+      new ssm.StringListParameter(this, constructId(parameterName), {
+        parameterName: `${path}${parameterName}`, stringListValue: value, description: describe(detail),
+      }),
+    );
+
+    string('vpc_id', vpc.vpcId, 'shared Beta VPC id');
+    stringList('public_subnet_ids', vpc.publicSubnets.map((subnet) => subnet.subnetId),
+      'shared Beta public subnet ids');
+    stringList('private_subnet_ids', privateSubnets.map((subnet) => subnet.subnetId),
+      'shared Beta private subnet ids for workload tasks');
+    string('ecs_cluster_name', cluster.clusterName, 'shared Beta ECS cluster name');
+    string('database_secret_arn', database.secret.secretArn, 'Aurora credential secret ARN');
+    string('database_host', database.clusterEndpoint.hostname, 'Aurora writer endpoint hostname');
+    string('database_port', database.clusterEndpoint.port.toString(), 'Aurora writer endpoint port');
+    string('api_security_group_id', apiSecurityGroup.securityGroupId, 'API task security group id');
+    string('worker_security_group_id', workerSecurityGroup.securityGroupId, 'worker task security group id');
+    string('load_balancer_security_group_id', loadBalancerSecurityGroup.securityGroupId,
+      'shared load-balancer security group id; the consumer adds only its own ingress rule');
+    string('service_repository_uri', platform.repository.repositoryUri, 'service ECR repository URI');
+    string('service_repository_name', platform.repository.repositoryName, 'service ECR repository name');
+    string('service_repository_arn', platform.repository.repositoryArn, 'service ECR repository ARN');
+    string('vto_queue_url', platform.vtoQueue.queueUrl, 'VTO task queue URL');
+    string('vto_queue_arn', platform.vtoQueue.queueArn, 'VTO task queue ARN');
+    string('vto_queue_name', platform.vtoQueue.queueName, 'VTO task queue name');
+    string('auto_tagging_queue_url', platform.autoTaggingQueue.queueUrl, 'auto-tagging task queue URL');
+    string('auto_tagging_queue_arn', platform.autoTaggingQueue.queueArn, 'auto-tagging task queue ARN');
+    string('auto_tagging_queue_name', platform.autoTaggingQueue.queueName, 'auto-tagging task queue name');
+    string('vto_dlq_name', platform.vtoDeadLetterQueue.queueName, 'VTO dead-letter queue name');
+    string('auto_tagging_dlq_name', platform.autoTaggingDeadLetterQueue.queueName, 'auto-tagging dead-letter queue name');
+    string('s3_bucket_arn', platform.wardrobeBucket.bucketArn, 'wardrobe bucket ARN');
+    string('operations_topic_arn', operationsTopic.topicArn, 'Beta operations SNS topic ARN');
+    string('cloudfront_prefix_list_id', inputs.cloudFrontPrefixListId,
+      'AWS-managed CloudFront origin-facing prefix list id for the shared load-balancer ingress');
+    string('vlm_config_arn', inputs.vlmConfigArn, 'Secrets Manager ARN holding DOUBAO_VLM_API_KEY');
+    if (this.parameters.length !== 25) throw new Error(`Stage contract must publish 25 new parameters, got ${this.parameters.length}`);
+  }
+}

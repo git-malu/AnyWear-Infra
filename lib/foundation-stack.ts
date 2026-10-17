@@ -128,5 +128,186 @@ export class FoundationStack extends cdk.Stack {
         'ecr:DescribeImages', 'ecr:DescribeImageScanFindings', 'ecr:ListImages', 'ecr:GetLifecyclePolicy'],
       resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/beta-anywear-service`],
     }));
+
+    // Issue #158 step A: the Service repository deploys its own release slice
+    // with two reviewed identities. The OIDC role can only drive a
+    // CloudFormation change set for AnyWearWorkloadStack-beta and pass one
+    // execution role; that execution role is trusted by CloudFormation alone
+    // and operates only the Workload stack's resource families. Neither role
+    // carries a managed policy, `iam:*`, `*` or any VPC/Aurora/Cognito/SQS
+    // configuration/ECR configuration/Foundation grant.
+    const serviceDeploy = createRole('BetaServiceDeployRole', 'service-deploy',
+      betaSubject('AnyWear-Service', 1158460323));
+    const serviceCfn = new iam.Role(this, 'BetaServiceDeployCfnRole', {
+      roleName: 'beta-service-deploy-cfn-role',
+      assumedBy: new iam.ServicePrincipal('cloudformation.amazonaws.com'),
+    });
+    const slashArn = (service: string, resource: string, resourceName: string, region = this.region,
+      account = this.account) => this.formatArn({
+      service, resource, resourceName, region, account, arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+    });
+    const stackArn = (stackName: string) => slashArn('cloudformation', 'stack', `${stackName}/*`);
+    const cloudformationStack = stackArn('AnyWearWorkloadStack-beta');
+    // Change sets carry their own ARN; executing one still requires the target
+    // stack ARN, which is limited to the Workload stack.
+    const changeSetArn = slashArn('cloudformation', 'changeSet', '*');
+    const platformStack = stackArn('AnyWearPlatformStack-beta');
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudformation:*'], resources: [cloudformationStack],
+    }));
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudformation:CreateChangeSet', 'cloudformation:DescribeChangeSet', 'cloudformation:DeleteChangeSet'],
+      resources: [changeSetArn],
+    }));
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudformation:DescribeStacks'], resources: [platformStack],
+    }));
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'], resources: [serviceCfn.roleArn],
+      conditions: { StringEquals: { 'iam:PassedToService': 'cloudformation.amazonaws.com' } },
+    }));
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath'],
+      resources: [slashArn('ssm', 'parameter', 'anywear/beta/*')],
+    }));
+    serviceDeploy.addToPolicy(new iam.PolicyStatement({
+      actions: ['ecr:DescribeImages'],
+      resources: [slashArn('ecr', 'repository', 'beta-anywear-service')],
+    }));
+
+    const taskDefinitions = ['api', 'worker'].map((service) => (
+      slashArn('ecs', 'task-definition', `beta-anywear-${service}:*`)));
+    const services = ['api', 'worker'].map((service) => (
+      slashArn('ecs', 'service', `beta-anywear/beta-anywear-${service}`)));
+    const taskRoles = ['api', 'worker'].flatMap((service) => ['task', 'execution'].map((purpose) => (
+      slashArn('iam', 'role', `beta-anywear-${service}-${purpose}`, '', this.account))));
+    const taskExecutionPolicy = slashArn('iam', 'policy', 'service-role/AmazonECSTaskExecutionRolePolicy', '', 'aws');
+    const scalableTargets = slashArn('application-autoscaling', 'scalable-target', '*');
+    const scalingPolicies = slashArn('application-autoscaling', 'scaling-policy', '*');
+    const loadBalancer = slashArn('elasticloadbalancing', 'loadbalancer', 'app/beta-anywear-api/*');
+    const targetGroup = slashArn('elasticloadbalancing', 'targetgroup', 'beta-anywear-api/*');
+    const listener = slashArn('elasticloadbalancing', 'listener', 'app/beta-anywear-api/*');
+    const listenerRule = slashArn('elasticloadbalancing', 'listener-rule', 'app/beta-anywear-api/*');
+    const distribution = slashArn('cloudfront', 'distribution', '*', '', this.account);
+    const cloudFrontFunction = slashArn('cloudfront', 'function', '*', '', this.account);
+    const alarms = slashArn('cloudwatch', 'alarm', 'beta-anywear-*');
+    const logGroup = (name: string) => this.formatArn({
+      service: 'logs', resource: 'log-group', resourceName: name, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    });
+    // CloudFormation generates the maintenance bucket's physical name from the
+    // Workload stack, so the grant is confined to this stack's generated names.
+    const maintenanceBucket = this.formatArn({
+      service: 's3', region: '', account: '', resource: 'anywearworkloadstack-beta-*',
+    });
+    const loadBalancerSecurityGroups = slashArn('ec2', 'security-group', '*');
+    // The load-balancer security group is a Platform resource whose id is only
+    // known at deploy time. CloudFormation's system tags identify it exactly.
+    const loadBalancerSecurityGroupTags = {
+      StringEquals: {
+        'ec2:ResourceTag/aws:cloudformation:stack-name': 'AnyWearPlatformStack-beta',
+        'ec2:ResourceTag/aws:cloudformation:logical-id': 'LoadBalancerSecurityGroup3036A0FC',
+      },
+    };
+    const betaParameters = slashArn('ssm', 'parameter', 'anywear/beta/*');
+    const bootstrapVersion = slashArn('ssm', 'parameter', 'cdk-bootstrap/hnb659fds/version');
+
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['ecs:RegisterTaskDefinition', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition'],
+      resources: taskDefinitions,
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['ecs:CreateService', 'ecs:UpdateService', 'ecs:DeleteService', 'ecs:DescribeServices'],
+      resources: services,
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['application-autoscaling:RegisterScalableTarget', 'application-autoscaling:DeregisterScalableTarget',
+        'application-autoscaling:DescribeScalableTargets'],
+      resources: [scalableTargets],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['application-autoscaling:PutScalingPolicy', 'application-autoscaling:DeleteScalingPolicy',
+        'application-autoscaling:DescribeScalingPolicies'],
+      resources: [scalableTargets, scalingPolicies],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['elasticloadbalancing:CreateLoadBalancer', 'elasticloadbalancing:DeleteLoadBalancer',
+        'elasticloadbalancing:ModifyLoadBalancerAttributes', 'elasticloadbalancing:SetSecurityGroups',
+        'elasticloadbalancing:SetSubnets'],
+      resources: [loadBalancer],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['elasticloadbalancing:CreateTargetGroup', 'elasticloadbalancing:DeleteTargetGroup',
+        'elasticloadbalancing:ModifyTargetGroup', 'elasticloadbalancing:ModifyTargetGroupAttributes'],
+      resources: [targetGroup],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['elasticloadbalancing:CreateListener', 'elasticloadbalancing:DeleteListener',
+        'elasticloadbalancing:ModifyListener'],
+      resources: [listener],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['elasticloadbalancing:CreateRule', 'elasticloadbalancing:DeleteRule', 'elasticloadbalancing:ModifyRule'],
+      resources: [listenerRule],
+    }));
+    // ELBv2 read actions have no resource-level scope in IAM.
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['elasticloadbalancing:DescribeLoadBalancers', 'elasticloadbalancing:DescribeLoadBalancerAttributes',
+        'elasticloadbalancing:DescribeTargetGroups', 'elasticloadbalancing:DescribeTargetGroupAttributes',
+        'elasticloadbalancing:DescribeListeners', 'elasticloadbalancing:DescribeRules'],
+      resources: ['*'],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudfront:CreateDistribution', 'cloudfront:UpdateDistribution', 'cloudfront:DeleteDistribution',
+        'cloudfront:GetDistribution', 'cloudfront:GetDistributionConfig'],
+      resources: [distribution],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudfront:CreateFunction', 'cloudfront:UpdateFunction', 'cloudfront:DeleteFunction',
+        'cloudfront:DescribeFunction', 'cloudfront:GetFunction', 'cloudfront:PublishFunction'],
+      resources: [cloudFrontFunction],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricAlarm', 'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms'],
+      resources: [alarms],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy'],
+      resources: [logGroup('/anywear/beta/api'), logGroup('/anywear/beta/worker')],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',
+        's3:PutBucketPolicy', 's3:DeleteBucketPolicy', 's3:PutBucketPublicAccessBlock',
+        's3:DeleteBucketPublicAccessBlock'],
+      resources: [maintenanceBucket],
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:AuthorizeSecurityGroupIngress', 'ec2:RevokeSecurityGroupIngress'],
+      resources: [loadBalancerSecurityGroups], conditions: loadBalancerSecurityGroupTags,
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:PutRolePolicy', 'iam:DeleteRolePolicy',
+        'iam:GetRolePolicy', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies'],
+      resources: taskRoles,
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['iam:AttachRolePolicy', 'iam:DetachRolePolicy'], resources: taskRoles,
+      conditions: { ArnEquals: { 'iam:PolicyARN': taskExecutionPolicy } },
+    }));
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'], resources: taskRoles,
+      conditions: { StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } },
+    }));
+    // The Workload template resolves `Fn::GetStackOutput` against Platform with
+    // the CloudFormation execution role, so that role needs the same read-only
+    // producer-stack grant as the deploy job.
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudformation:DescribeStacks'], resources: [platformStack],
+    }));
+    // The Workload template resolves two Systems Manager parameter types with
+    // the CloudFormation execution role: its qweather_api_host input and the
+    // CDK bootstrap version rule.
+    serviceCfn.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter', 'ssm:GetParameters'], resources: [betaParameters, bootstrapVersion],
+    }));
   }
 }

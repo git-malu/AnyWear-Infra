@@ -5,6 +5,7 @@ import { BillingStack } from '../lib/billing-stack';
 import { FoundationStack } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
 import { WorkloadStack } from '../lib/workload-stack';
+import { stageContractInputs } from '../lib/stage-contract';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import * as path from 'node:path';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
@@ -900,6 +901,52 @@ describe('Platform and workload safety controls', () => {
     expect(JSON.stringify(lifecycleStatements[0].Resource)).not.toContain('*');
   });
 
+  it('publishes exactly the 25 reviewed Beta stage-contract parameters without duplicates', () => {
+    const resources = Object.values(synthesizePlatform('beta').Resources) as any[];
+    const parameters = resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter');
+    const names = parameters.map((parameter) => parameter.Properties.Name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(parameters).toHaveLength(32);
+    const stageContract = parameters.filter((parameter) => (
+      parameter.Properties.Description?.startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: ')));
+    expect(stageContract).toHaveLength(25);
+    expect(stageContract.map((parameter) => parameter.Properties.Name).sort()).toEqual([
+      'auto_tagging_dlq_name', 'auto_tagging_queue_arn', 'auto_tagging_queue_name', 'auto_tagging_queue_url',
+      'api_security_group_id', 'cloudfront_prefix_list_id', 'database_host', 'database_port',
+      'database_secret_arn', 'ecs_cluster_name', 'load_balancer_security_group_id', 'operations_topic_arn',
+      'private_subnet_ids', 'public_subnet_ids', 's3_bucket_arn', 'service_repository_arn',
+      'service_repository_name', 'service_repository_uri', 'vlm_config_arn', 'vpc_id', 'vto_dlq_name',
+      'vto_queue_arn', 'vto_queue_name', 'vto_queue_url', 'worker_security_group_id',
+    ].map((name) => `/anywear/beta/${name}`).sort());
+    expect(stageContract.filter((parameter) => parameter.Properties.Type === 'StringList')
+      .map((parameter) => parameter.Properties.Name).sort())
+      .toEqual(['/anywear/beta/private_subnet_ids', '/anywear/beta/public_subnet_ids']);
+    expect(stageContract.every((parameter) => ['String', 'StringList'].includes(parameter.Properties.Type))).toBe(true);
+    expect(stageContract.every((parameter) => parameter.Properties.Name.startsWith('/anywear/beta/'))).toBe(true);
+    expect(stageContract.find((parameter) => parameter.Properties.Name === '/anywear/beta/vlm_config_arn')!.Properties.Value)
+      .toBe('arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ');
+    expect(stageContract.find((parameter) => parameter.Properties.Name === '/anywear/beta/cloudfront_prefix_list_id')!
+      .Properties.Value).toBe('pl-14b2577d');
+    // The four reused published names and the three runtime-owned parameters
+    // keep their existing single resource.
+    for (const name of ['cognito_user_pool_id', 'cognito_client_id', 's3_bucket_name', 'qweather_api_host',
+      'admission_mode', 'tester_allowlist', 'aws_region']) {
+      expect(parameters.filter((parameter) => parameter.Properties.Name === `/anywear/beta/${name}`)).toHaveLength(1);
+    }
+    for (const stage of ['dev', 'prod']) {
+      const other = Object.values(synthesizePlatform(stage).Resources) as any[];
+      expect(other.filter((resource) => resource.Type === 'AWS::SSM::Parameter'
+        && resource.Properties.Description?.includes('stage contract'))).toHaveLength(0);
+    }
+
+    expect(stageContractInputs('beta')).toEqual({
+      vlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ',
+      cloudFrontPrefixListId: 'pl-14b2577d',
+    });
+    expect(() => stageContractInputs('prod')).toThrow(/requires explicit vlmConfigArn and cloudFrontPrefixListId/);
+    expect(() => stageContractInputs('dev')).toThrow(/requires explicit vlmConfigArn and cloudFrontPrefixListId/);
+  });
+
   it('limits synthetic lifecycle message cleanup to the two Beta dead-letter queues', () => {
     const template = synthesizePlatform('beta');
     const lifecycleRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
@@ -977,6 +1024,9 @@ describe('Platform and workload safety controls', () => {
 
 describe('Explicit infrastructure identity cutover', () => {
   const names = ['infra-deploy', 'infra-runtime', 'service-artifact', 'service-data', 'client-publish', 'e2e-qualification'];
+  // Issue #158 step A adds the Service deployment identities. Their grants live
+  // in Foundation, not in the Platform-side dedicated role map.
+  const serviceDeployRoleNames = ['service-deploy', 'service-deploy-cfn'];
   const policiesFor = (template: any, name: string) => Object.values(template.Resources).filter((resource: any) =>
     ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
       && resource.Properties.Roles?.some((role: any) => role === `beta-${name}-role` || (role.Ref && template.Resources[role.Ref]?.Properties?.RoleName === `beta-${name}-role`))) as any[];
@@ -990,7 +1040,7 @@ describe('Explicit infrastructure identity cutover', () => {
     for (const value of [null, '', true, 'production', 'cutover']) expect(() => readIdentityPhase(value)).toThrow();
   });
 
-  it('adds six distinct immutable OIDC identities without changing existing Foundation resources', () => {
+  it('adds six distinct immutable OIDC identities and two Service deployment roles without changing existing Foundation resources', () => {
     const legacy = synthesizeFoundation();
     const added = synthesizeFoundation('roles-added');
     for (const [id, resource] of Object.entries(legacy.Resources)) expect(added.Resources[id]).toEqual(resource);
@@ -1013,6 +1063,227 @@ describe('Explicit infrastructure identity cutover', () => {
         .toBe('repo:git-malu@11473072/AnyWear-Client@1176104200:environment:beta');
       else expect(subject).toBe('repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:beta');
     }
+    const serviceRoles = (Object.values(added.Resources) as any[]).filter((resource) => resource.Type === 'AWS::IAM::Role'
+      && serviceDeployRoleNames.some((name) => resource.Properties.RoleName === `beta-${name}-role`));
+    expect(serviceRoles).toHaveLength(2);
+    const deployRole = serviceRoles.find((role) => role.Properties.RoleName === 'beta-service-deploy-role')!;
+    const cfnRole = serviceRoles.find((role) => role.Properties.RoleName === 'beta-service-deploy-cfn-role')!;
+    const deployTrust = deployRole.Properties.AssumeRolePolicyDocument.Statement;
+    expect(deployTrust).toHaveLength(1);
+    expect(deployTrust[0]).toMatchObject({
+      Action: 'sts:AssumeRoleWithWebIdentity',
+      Effect: 'Allow',
+      Condition: { StringEquals: {
+        'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+        'token.actions.githubusercontent.com:sub': 'repo:git-malu@11473072/AnyWear-Service@1158460323:environment:beta',
+      } },
+    });
+    expect(deployTrust[0].Principal.Federated.Ref).toMatch(/^GitHubProvider[A-F0-9]{8}$/);
+    expect(cfnRole.Properties.AssumeRolePolicyDocument.Statement).toEqual([
+      { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'cloudformation.amazonaws.com' } },
+    ]);
+    for (const role of serviceRoles) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+  });
+
+  it('inventories the Service deployment roles as least privilege', () => {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = (roleName: string) => Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === roleName))![0];
+    const statementsFor = (roleName: string): any[] => {
+      const id = roleId(roleName);
+      return resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === id))
+        .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    };
+    const deploy = statementsFor('beta-service-deploy-role');
+    const cfn = statementsFor('beta-service-deploy-cfn-role');
+    const flatten = (values: any[]) => values.flatMap((value) => [value].flat());
+    const actions = (statements: any[]) => flatten(statements.map((statement) => statement.Action)).sort();
+    // Foundation synthesizes the partition as a token; resolve the fixed
+    // partition and keep structural GetAtt references as their JSON form.
+    const resourceOf = (value: any): string | string[] => {
+      if (Array.isArray(value)) return value.map((entry) => resourceOf(entry) as string);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    const normalized = (statements: any[]) => statements.map((statement) => ({
+      ...statement,
+      Action: Array.isArray(statement.Action) ? [...statement.Action].sort() : statement.Action,
+      Resource: resourceOf(statement.Resource),
+    }));
+    const resourcesOf = (statements: any[]) => new Set(flatten(statements.map((statement) => statement.Resource))
+      .map(resourceOf) as string[]);
+
+    // Positive: the OIDC role can only drive the Workload stack and pass one
+    // CloudFormation execution role.
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudformation:*', Effect: 'Allow',
+      Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: ['cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet', 'cloudformation:DescribeChangeSet'],
+      Effect: 'Allow', Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudformation:DescribeStacks', Effect: 'Allow',
+      Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+    });
+    const deployPassRole = deploy.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
+    expect(deployPassRole).toHaveLength(1);
+    expect(JSON.stringify(deployPassRole[0].Resource)).toContain('BetaServiceDeployCfnRole');
+    expect(deployPassRole[0].Condition).toEqual({ StringEquals: { 'iam:PassedToService': 'cloudformation.amazonaws.com' } });
+    expect(normalized(deploy)).toContainEqual({
+      Action: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath'], Effect: 'Allow',
+      Resource: 'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'ecr:DescribeImages', Effect: 'Allow',
+      Resource: 'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
+    });
+
+    // Negative: no wildcard, managed or administrative authority, and no
+    // resource outside the reviewed Workload-stack surface.
+    expect(actions(deploy)).toEqual([
+      'cloudformation:*', 'cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet',
+      'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks', 'ecr:DescribeImages', 'iam:PassRole',
+      'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
+    ]);
+    expect(deploy.every((statement) => statement.Effect === 'Allow')).toBe(true);
+    expect(resourcesOf(deploy)).toEqual(new Set([
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
+      'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
+      JSON.stringify({ 'Fn::GetAtt': ['BetaServiceDeployCfnRoleB6333451', 'Arn'] }),
+    ]));
+
+    // Positive: the CloudFormation execution role covers exactly the Workload
+    // template's resource families.
+    const expectedCfnActions = [
+      'application-autoscaling:DeleteScalingPolicy', 'application-autoscaling:DeregisterScalableTarget',
+      'application-autoscaling:DescribeScalableTargets', 'application-autoscaling:DescribeScalingPolicies',
+      'application-autoscaling:PutScalingPolicy', 'application-autoscaling:RegisterScalableTarget',
+      'cloudformation:DescribeStacks',
+      'cloudfront:CreateDistribution', 'cloudfront:CreateFunction', 'cloudfront:DeleteDistribution',
+      'cloudfront:DeleteFunction', 'cloudfront:DescribeFunction', 'cloudfront:GetDistribution',
+      'cloudfront:GetDistributionConfig', 'cloudfront:GetFunction', 'cloudfront:PublishFunction',
+      'cloudfront:UpdateDistribution', 'cloudfront:UpdateFunction',
+      'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm',
+      'ec2:AuthorizeSecurityGroupIngress', 'ec2:RevokeSecurityGroupIngress',
+      'ecs:CreateService', 'ecs:DeleteService', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeServices',
+      'ecs:DescribeTaskDefinition', 'ecs:RegisterTaskDefinition', 'ecs:UpdateService',
+      'elasticloadbalancing:CreateListener', 'elasticloadbalancing:CreateLoadBalancer',
+      'elasticloadbalancing:CreateRule', 'elasticloadbalancing:CreateTargetGroup',
+      'elasticloadbalancing:DeleteListener', 'elasticloadbalancing:DeleteLoadBalancer',
+      'elasticloadbalancing:DeleteRule', 'elasticloadbalancing:DeleteTargetGroup',
+      'elasticloadbalancing:DescribeListeners', 'elasticloadbalancing:DescribeLoadBalancerAttributes',
+      'elasticloadbalancing:DescribeLoadBalancers', 'elasticloadbalancing:DescribeRules',
+      'elasticloadbalancing:DescribeTargetGroupAttributes', 'elasticloadbalancing:DescribeTargetGroups',
+      'elasticloadbalancing:ModifyListener', 'elasticloadbalancing:ModifyLoadBalancerAttributes',
+      'elasticloadbalancing:ModifyRule', 'elasticloadbalancing:ModifyTargetGroup',
+      'elasticloadbalancing:ModifyTargetGroupAttributes', 'elasticloadbalancing:SetSecurityGroups',
+      'elasticloadbalancing:SetSubnets',
+      'iam:AttachRolePolicy', 'iam:CreateRole', 'iam:DeleteRole', 'iam:DeleteRolePolicy', 'iam:DetachRolePolicy',
+      'iam:GetRole', 'iam:GetRolePolicy', 'iam:ListAttachedRolePolicies', 'iam:ListRolePolicies',
+      'iam:PassRole', 'iam:PutRolePolicy',
+      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy', 'logs:PutRetentionPolicy',
+      's3:CreateBucket', 's3:DeleteBucket', 's3:DeleteBucketPolicy', 's3:DeleteBucketPublicAccessBlock',
+      's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
+      's3:PutBucketPublicAccessBlock',
+      'ssm:GetParameter', 'ssm:GetParameters',
+    ].sort();
+    expect(actions(cfn)).toEqual(expectedCfnActions);
+    expect(cfn.every((statement) => statement.Effect === 'Allow')).toBe(true);
+    expect(cfn.some((statement) => statement.NotAction !== undefined || statement.NotResource !== undefined)).toBe(false);
+    const taskRoleArns = ['task', 'execution'].flatMap((purpose) => ['api', 'worker'].map((service) => (
+      `arn:aws:iam::650880818323:role/beta-anywear-${service}-${purpose}`))).sort();
+    const iamPassRole = cfn.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
+    expect(iamPassRole).toHaveLength(1);
+    expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf).sort()).toEqual(taskRoleArns);
+    expect(iamPassRole[0].Condition).toEqual({ StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } });
+    const attachPolicy = cfn.filter((statement) => [statement.Action].flat().includes('iam:AttachRolePolicy'));
+    expect(attachPolicy).toHaveLength(1);
+    expect(resourceOf(attachPolicy[0].Condition.ArnEquals['iam:PolicyARN']))
+      .toBe('arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy');
+    const ec2Ingress = cfn.filter((statement) => [statement.Action].flat().includes('ec2:AuthorizeSecurityGroupIngress'));
+    expect(ec2Ingress).toHaveLength(1);
+    expect(ec2Ingress[0].Condition).toEqual({ StringEquals: {
+      'ec2:ResourceTag/aws:cloudformation:stack-name': 'AnyWearPlatformStack-beta',
+      'ec2:ResourceTag/aws:cloudformation:logical-id': 'LoadBalancerSecurityGroup3036A0FC',
+    } });
+    expect(resourcesOf(cfn)).toEqual(new Set([
+      'arn:aws:application-autoscaling:ap-east-1:650880818323:scalable-target/*',
+      'arn:aws:application-autoscaling:ap-east-1:650880818323:scaling-policy/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+      'arn:aws:cloudfront::650880818323:distribution/*',
+      'arn:aws:cloudfront::650880818323:function/*',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+      'arn:aws:ec2:ap-east-1:650880818323:security-group/*',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+      'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:*',
+      'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener-rule/app/beta-anywear-api/*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener/app/beta-anywear-api/*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:targetgroup/beta-anywear-api/*',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+      'arn:aws:s3:::anywearworkloadstack-beta-*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
+      ...taskRoleArns,
+      '*',
+    ]));
+
+    // The acceptance criterion: neither role can modify the VPC, Aurora,
+    // Cognito, the wardrobe/client buckets, SQS or ECR configuration, or the
+    // Foundation stack and its existing roles.
+    for (const [roleName, statements] of [['beta-service-deploy-role', deploy],
+      ['beta-service-deploy-cfn-role', cfn]] as const) {
+      const allActions = actions(statements);
+      const serialized = JSON.stringify(statements);
+      expect(allActions).not.toContain('*');
+      for (const forbidden of ['rds:', 'cognito-idp:', 'sqs:', 'secretsmanager:', 'kms:', 's3:PutObject',
+        's3:DeleteObject', 'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
+        'ecr:CreateRepository', 'ec2:CreateVpc', 'ec2:DeleteVpc', 'ec2:ModifyVpcAttribute',
+        'ec2:CreateSubnet', 'ec2:DeleteSubnet', 'ec2:CreateSecurityGroup', 'ec2:DeleteSecurityGroup',
+        'ec2:AuthorizeSecurityGroupEgress', 'cloudformation:CreateStack', 'cloudformation:UpdateStack',
+        'cloudformation:DeleteStack', 'iam:CreatePolicy', 'iam:CreatePolicyVersion', 'iam:PutRolePermissionsBoundary',
+        'iam:AttachUserPolicy', 'iam:CreateUser', 'iam:UpdateAssumeRolePolicy']) {
+        expect(allActions.some((action) => action.startsWith(forbidden))).toBe(false);
+      }
+      expect(serialized).not.toContain('AdministratorAccess');
+      expect(serialized).not.toContain('AnyWearFoundationStack');
+      expect(serialized).not.toContain('AnyWearWardrobeBucket');
+      expect(serialized).not.toContain('AnyWearClientBucket');
+      expect(serialized).not.toContain('AnyWearUserPool');
+      expect(serialized).not.toContain('github-actions-pipeline-role');
+      for (const resource of resourcesOf(statements)) {
+        if (resource.startsWith('arn:aws:iam::')) {
+          expect(taskRoleArns).toContain(resource);
+        }
+      }
+      expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
+        && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
+    }
+    // The CloudFormation role can read the producer stack for
+    // `Fn::GetStackOutput`, but it cannot drive CloudFormation itself; only the
+    // OIDC role owns the Workload stack's stack-level authority.
+    expect(actions(cfn).filter((action) => action.startsWith('cloudformation:')))
+      .toEqual(['cloudformation:DescribeStacks']);
+    expect(resourceOf(cfn.filter((statement) => [statement.Action].flat().includes('cloudformation:DescribeStacks'))[0]
+      .Resource)).toBe('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*');
   });
 
   it.each([true, false])('adds policies while retaining every legacy Beta resource and output (active=%s)', (active) => {
@@ -1160,7 +1431,7 @@ describe('Explicit infrastructure identity cutover', () => {
     });
     const foundation = Template.fromStack(foundationStack).toJSON();
     const platform = Template.fromStack(platformStack).toJSON();
-    for (const name of names) {
+    for (const name of [...names, ...serviceDeployRoleNames]) {
       const local = policiesFor(platform, name);
       const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) =>
         resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === `beta-${name}-role`)![0];

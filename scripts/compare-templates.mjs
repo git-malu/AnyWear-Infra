@@ -27,7 +27,9 @@ function differences(before, after, at = '') {
 const dedicatedRoleIds = new Map([['BetaInfraDeployRole', 'beta-infra-deploy-role'],
   ['BetaInfraRuntimeRole', 'beta-infra-runtime-role'], ['BetaServiceArtifactRole', 'beta-service-artifact-role'],
   ['BetaServiceDataRole', 'beta-service-data-role'], ['BetaClientPublishRole', 'beta-client-publish-role'],
-  ['BetaE2EQualificationRole', 'beta-e2e-qualification-role']]);
+  ['BetaE2EQualificationRole', 'beta-e2e-qualification-role'],
+  ['BetaServiceDeployRole', 'beta-service-deploy-role'],
+  ['BetaServiceDeployCfnRole', 'beta-service-deploy-cfn-role']]);
 const dedicatedPolicyIds = new Map([...dedicatedRoleIds].map(([id, name]) => [id.slice(4), name]));
 function dedicatedResource(id, resource) {
   return (resource.Type === 'AWS::IAM::Role'
