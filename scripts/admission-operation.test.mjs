@@ -6,6 +6,7 @@ import path from 'node:path';
 import { readAdmissionState, assertClosedAdmission, assertOpenedAdmission, parseLifecycleStatus,
   classifyCloseKind, runCloseAdmission, runOpenAdmission } from './admission-operation.mjs';
 import { ADMISSION_WINDOW_CLOCK_SKEW_MS, admissionWindowPayload } from './admission-window.mjs';
+import { assertOneShotAllowed } from './operation-boundaries.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
 import { contentHash } from './json-contract.mjs';
 
@@ -27,6 +28,12 @@ const stackOutputs = Object.fromEntries(['PrivateSubnetIds', 'OneShotSecurityGro
   'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName', 'WardrobeBucketName'].map(key => [key, key]));
 Object.assign(stackOutputs, { EcsClusterName: 'beta-anywear', BetaActive: 'true' });
 const outputEntries = outputs => Object.entries(outputs).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue }));
+
+// The dispatch envelope the real one-shot guard reads: the admission entry
+// point, the operation under test, the bounded window and no tester payload.
+const guardEnv = (operation, windowMinutes) => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
+  GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main',
+  INFRA_OPERATION: operation, WINDOW_MINUTES: String(windowMinutes), TESTER_EMAILS: '[]' });
 
 // The one-shot mock is operation-scoped: a close may run `status` and `close`,
 // and `open` is permitted only for the open operation and only with the exact
@@ -77,6 +84,10 @@ function mockIo(options = {}) {
   }, async oneShot(role, revision, action, payload) {
     calls.push(['oneShot', role, revision, action, ...(payload === undefined ? [] : [payload])]);
     assert.equal(role, 'lifecycle');
+    // The real reviewed guard runs here, so this mock cannot admit an action the
+    // runtime would refuse. The action set below is the mock's own expectation on
+    // top of it, not a substitute for it.
+    assertOneShotAllowed(guardEnv(operation, windowMinutes), role, action, payload);
     assert.ok(actionSet.includes(action), `No reopen, drain, migration, or tester configuration is permitted for ${operation}: ${action}`);
     if (action === 'open') {
       assert.equal(operation, 'open-admission', 'Only open-admission may open admission');
@@ -403,6 +414,27 @@ test('a window that fails after opening still closes and records close_kind fail
   const io = mockIo({ operation: 'open-admission', now: NOW, original: closedTuple, openMinutes: 240 });
   await assert.rejects(open(io));
   assert.deepEqual(await readAdmissionState(io), closedTuple);
+});
+
+test('the real one-shot guard admits the recovery close so a failed window can restore the tuple', async () => {
+  // The mock now runs the reviewed guard for every one-shot, so this fails if the
+  // recovery close stops being allowed for open-admission: the failure path would
+  // leave suspension lifted instead of restoring the recorded tuple.
+  const io = mockIo({ operation: 'open-admission', now: NOW, original: closedTuple, openMinutes: 62 });
+  await assert.rejects(open(io), error => error.cause?.message === 'Observed admission window expiry is outside the requested bound');
+  // The recovery close was actually issued after the failed read-back.
+  assert.deepEqual(lifecycleActionsRun(io), ['status', 'open', 'status', 'close']);
+  const closed = io.events.find(event => event.phase === 'closed');
+  // The closed tuple was re-asserted against the tuple recorded before the window.
+  assert.deepEqual(closed.state, closedTuple);
+  assert.equal(closed.close_kind, 'failed-window');
+  const failure = io.events.at(-1);
+  assert.equal(failure.phase, 'failed'); assert.equal(failure.result, 'failed');
+  assert.equal(failure.close_kind, 'failed-window');
+  assert.deepEqual(await readAdmissionState(io), closedTuple);
+  // The guard itself, not only the driver, is what permits it.
+  assertOneShotAllowed(guardEnv('open-admission', 60), 'lifecycle', 'close');
+  assert.throws(() => assertOneShotAllowed(guardEnv('close-admission', 60), 'lifecycle', 'open', '{"window_minutes":60}'), /forbidden/);
 });
 
 test('a recovery close that cannot restore the tuple aggregates the original error and names the unsafe state', async () => {

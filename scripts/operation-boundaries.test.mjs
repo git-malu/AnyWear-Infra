@@ -225,16 +225,46 @@ test('the open-admission allow-list entry is explicit in all three tables that w
   // passing by forbidding the capability is the defect this issue removes.
   assert.deepEqual(workflowOperations['.github/workflows/beta-admission.yml'],
     ['tester-status', 'tester-add', 'tester-replace', 'close-admission', 'open-admission']);
-  assert.deepEqual(lifecycleActions('open-admission'), ['open', 'status']);
+  assert.deepEqual(lifecycleActions('open-admission'), ['open', 'status', 'close']);
   assert.deepEqual(operationEvidence['open-admission'].roles, ['lifecycle', 'artifact-verify']);
   assert.equal(operationEvidence['open-admission'].qualified_by, 'not-applicable');
   assert.match(operationEvidence['open-admission'].evidence, /window bound/);
   assert.match(operationEvidence['open-admission'].evidence, /expiry/);
+  assert.match(operationEvidence['open-admission'].evidence, /recovery-only close/);
+  assert.match(operationEvidence['open-admission'].evidence, /no operator path can request it/);
   // No other operation gains the direction, and no operation gains an implicit open.
   const openers = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('open'));
   assert.deepEqual(openers, ['open-admission']);
   for (const operation of ['start', 'stop', 'tester-status', 'tester-add', 'tester-replace', 'close-admission']) {
     assert.equal(lifecycleActions(operation).includes('open'), false, operation);
+  }
+});
+
+test('the recovery-only close is reachable for open-admission and nowhere it did not already belong', () => {
+  const admissionOpening = envFor('.github/workflows/beta-admission.yml', 'open-admission');
+  // `open-admission` may run the pinned close task, but only so a failed window
+  // can restore the tuple the failure would otherwise leave open.
+  assertOneShotAllowed(admissionOpening, 'lifecycle', 'close');
+  assertOneShotAllowed(admissionOpening, 'lifecycle', 'status');
+  assertOneShotAllowed(admissionOpening, 'lifecycle', 'open', admissionWindowPayload(admissionOpening));
+  // Adding `close` here opened it for exactly the operations that already had it.
+  const owners = ['start', 'stop', 'close-admission', 'open-admission'];
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    assert.equal(lifecycleActions(operation).includes('close'), owners.includes(operation), `${file} ${operation}`);
+  }
+  const closers = [...new Set(Object.values(workflowOperations).flat())].filter(operation => lifecycleActions(operation).includes('close'));
+  assert.deepEqual(closers.sort(), ['close-admission', 'open-admission', 'start', 'stop']);
+  // The tester operations never gain a close: their only mutation stays
+  // configure-testers, and the guard refuses a lifecycle close for each of them.
+  for (const operation of ['tester-status', 'tester-add', 'tester-replace']) {
+    const env = envFor('.github/workflows/beta-admission.yml', operation);
+    assert.equal(lifecycleActions(operation).includes('close'), false, operation);
+    assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'close'), /forbidden/, operation);
+  }
+  // A non-admission pair still refuses the close.
+  for (const [file, operation] of [['.github/workflows/runtime.yml', 'observe'], ['.github/workflows/beta-deploy.yml', 'restore-release'],
+    ['.github/workflows/beta-observe.yml', 'state'], ['.github/workflows/beta-schema.yml', 'migrate']]) {
+    assert.throws(() => assertOneShotAllowed(envFor(file, operation), 'lifecycle', 'close'), /forbidden/, `${file} ${operation}`);
   }
 });
 

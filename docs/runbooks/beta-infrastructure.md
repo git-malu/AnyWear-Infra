@@ -166,7 +166,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `state` | Record Platform/Workload status/activity and sanitized SSM admission state; no DB/schema/policy qualification |
 | `tester-status` | Read admission/tester status through the selected existing Service lifecycle command |
 | `tester-add`, `tester-replace` | Update the exact normalized tester list using the selected lifecycle command, with public intake closed; that command resumes admission only for the Service's bounded 60-minute default window, which ends at its bound by itself with no reminder and no second operation. The operation record labels that expiry as derived from the Service default. Request a chosen 15–240 minute bound with `open-admission` |
-| `open-admission` | Verify the deployed selected image/schema, refuse before opening unless the selected Service reports the recorded window expiry and admission is provably closed, then open the tester lane for the explicit `window_minutes` bound (15–240, default 60) and prove the recorded expiry through the lifecycle status read-back; public intake stays closed, the tester list is unchanged, and a failure after the open attempt closes the window back to the recorded tuple |
+| `open-admission` | Verify the deployed selected image/schema, refuse before opening unless the selected Service reports the recorded window expiry and admission is provably closed, then open the tester lane for the explicit `window_minutes` bound (15–240, default 60) and prove the recorded expiry through the lifecycle status read-back; public intake stays closed, the tester list is unchanged, and a failure after the open attempt closes the window back to the recorded tuple. Its only extra lifecycle action is that recovery-only `close`: reachable from the failed-window path alone, with no operator input that can request it |
 | `close-admission` | Verify the deployed selected image/schema, suspend admission through its pinned lifecycle command, then prove DB/SSM consistency and preserve the observed tester list; keep both stacks active. Records whether it ended a live window (`ordinary`) or one the bound had already ended (`recovery`) |
 
 A dispatch uses reviewed repository files and explicit inputs, for example:
@@ -250,22 +250,36 @@ required observed membership.
 
 ## Bounded admission windows
 
-`open-admission` is the only operation that lifts suspension, and it is the only
+`open-admission` is the only operation that lifts suspension, and the only
 operation whose one-shot authority lists the lifecycle `open` action. It requests
 a window through the same reviewed `beta-admission.yml` entry point: dispatch
 `operation=open-admission` with `window_minutes` between 15 and 240 (default 60).
-The bound is enforced in four places that read the same value — the dispatch
-input, the one-shot payload guard, the driver's post-open status read-back, and
-the Service's admission gate — so a window cannot be longer than the dispatch
-asked for and cannot be minted by any other route.
+That requestable bound is what the dispatch input, the one-shot payload guard and
+the writer all carry, so a window cannot be longer than the dispatch asked for and
+cannot be minted by any other route.
+
+Three values are easy to confuse, so read them as one statement:
+
+- **requestable:** `window_minutes` is a required integer from 15 to 240. 241 is
+  refused at the dispatch input and again at the one-shot payload guard.
+- **written:** the Service writes `now + window_minutes`, the same bound, so the
+  recorded expiry can never be longer than the request.
+- **read:** the Service gate grants a **named one-minute clock-skew tolerance** on
+  top of the written bound, because the writer (the one-shot lifecycle container)
+  and the reader (the API/worker task) are separate clocks; a window written at
+  exactly 240 minutes must not read closed. The reader therefore treats a marker
+  as live while it is present, valid, strictly in the future and no further ahead
+  than 240 minutes plus that one minute. Missing, malformed, past and beyond that
+  tolerance all read as closed. The tolerance never widens what can be requested.
+
+The driver's post-open status read-back refuses a recorded expiry outside
+`window_minutes + one minute`, so the operation record cannot claim a longer window
+than was requested even if the writer erred.
 
 The window is the tester lane: suspension is lifted, public intake stays closed
 and the tester list does not change. **The window ends at its bound without
-anyone acting.** The Service's gate admits only while suspension is false and the
-recorded expiry is present, valid, strictly in the future and no further than 240
-minutes ahead; missing, malformed, past or over-long all read as closed. Ending
-the window is the bound's job; restoring the recorded tuple — including the SSM
-mirror — is a separate `close-admission` dispatch. That
+anyone acting.** Ending the window is the bound's job; restoring the recorded tuple
+— including the SSM mirror — is a separate `close-admission` dispatch. That
 operation restores the recorded tuple and records whether it ended a live
 window (`ordinary`) or one the bound had already ended (`recovery`); it also
 classifies `already-closed` when suspension was already on. The classification is
@@ -280,10 +294,17 @@ access, can accept a sign-up attempt that then dead-ends at provisioning. Run
 `close-admission` to restore the mirror and the recorded tuple; it is a required
 predecessor of any later window, because `open-admission` refuses to open from a
 state the database does not report as suspended. A window that fails after the
-open attempt closes itself before failing: the operation issues the same
+open attempt closes itself before failing: the operation issues the same pinned
 `close`, re-asserts the recorded tuple and records `close_kind=failed-window`. If
 that recovery close cannot restore the tuple, the run fails with an aggregate
 error naming the observed unsafe state instead of reporting a clean failure.
+
+`close` is the only lifecycle action `open-admission` carries beyond `open` and
+`status`, and it is **recovery-only**: the driver reaches it solely from that
+failed-window path, no operator input can request it, and it is the same pinned
+close task `close-admission` runs. The permission sits in the reviewed one-shot
+table next to the operation rather than in a hidden bypass, and
+`close-admission`, `start` and `stop` keep the only other `close` entries.
 
 After cutover, Service's `beta-testers` entry point retains application-data
 `cleanup` only. Infra owns status/add/replace. `beta-service-data-role` can run
@@ -409,8 +430,12 @@ status to report suspension off, intake closed, a matching database policy and a
 expiry between now and the requested bound plus one minute of clock skew. Its
 admission record carries the requested `window_minutes`, the accepted
 `admission_window_expires_at`, both admission phases and the lifecycle status
-hash. No CFN, service scaling or migration occurs, and public intake is never
-reopened.
+hash. That one-minute tolerance exists only because the writer and the reader are
+separate containers; it is not requestable. `close` is the operation's only extra
+lifecycle action, and it is recovery-only: the driver issues it solely on the
+failed-window path to restore the recorded tuple, and no operator input can
+request it. No CFN, service scaling or migration occurs, and public intake is
+never reopened.
 
 For a source-only admission operation, the committed
 [runtime-only map](../../stack-sources/beta-runtime-only.json) retains all four

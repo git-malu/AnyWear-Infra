@@ -78,18 +78,22 @@ export const operationEvidence = Object.freeze({
   'close-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
     'The accepted record does not observe admission state; the operation record lifecycle status and admission readback evidence it.'),
   'open-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record carries the requested window bound, both admission phases and the lifecycle status read-back proving the recorded expiry.'),
+    'The accepted record does not observe admission state; the operation record carries the requested window bound, both admission phases and the lifecycle status read-back proving the recorded expiry. Its only extra lifecycle action is the recovery-only close a failed window issues to restore the recorded tuple; no operator path can request it.'),
 });
 // `artifact-verify` is the verification task family registered by
 // `runRuntimeVerification`, never a one-shot helper role, so the one-shot guard
 // keeps its current allow-set.
 const oneShotRoles = operation => operationEvidence[operation].roles.filter(role => role !== 'artifact-verify');
-// `open` appears for exactly one operation. Every other entry listing it, or
-// listing a payload-bearing action other than `configure-testers` and `open`,
-// would be a new admission direction that this table is the place to review.
+// `open` appears for exactly one operation. `open-admission` also lists `close`,
+// and that entry is recovery-only: the driver may issue it solely on its
+// failed-window path, to restore the tuple a failure would otherwise leave open.
+// No operator input can request it, and it is the same pinned close task
+// `close-admission` runs. Every other entry listing `open`, or listing a
+// payload-bearing action other than `configure-testers` and `open`, would be a
+// new admission direction that this table is the place to review.
 export const lifecycleActions = operation => ({ start: ['close'], stop: ['close', 'drain'],
   'tester-status': ['status'], 'tester-add': ['configure-testers'], 'tester-replace': ['configure-testers'],
-  'close-admission': ['close', 'status'], 'open-admission': ['open', 'status'] }[operation] ?? []);
+  'close-admission': ['close', 'status'], 'open-admission': ['open', 'status', 'close'] }[operation] ?? []);
 const payloadActions = ['configure-testers', 'open'];
 // Only `open-admission` may send a lifecycle `open` payload, and it must be the
 // exact byte string the driver builds from the reviewed dispatch input. The
