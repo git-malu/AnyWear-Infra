@@ -23,4 +23,6 @@ cdk.protected.matrix/
 cdk.live-foundation/
 *.zip
 !test/fixtures/placeholder.zip
+# The packed constructs library is a consumer artifact; rebuild it from its tag.
+packages/stage-contracts/*.tgz
 .worktree/

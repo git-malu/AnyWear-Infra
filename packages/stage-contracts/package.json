@@ -1,0 +1,38 @@
+{
+  "name": "@git-malu/stage-contracts",
+  "version": "0.1.0",
+  "description": "Versioned AnyWear Beta stage contract, stack identities and v3 Service deployment-record validators",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "pack": "npm pack"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/git-malu/AnyWear-Infra.git",
+    "directory": "packages/stage-contracts"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}
