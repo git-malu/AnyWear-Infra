@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { assertMigrationAdmissionClosed, describeAdmissionMode, isAdmissionClosed, readAdmissionMode } from '../../scripts/admission-mode.mjs';
 const platformStack = 'AnyWearPlatformStack-beta';
 const workloadStack = 'AnyWearWorkloadStack-beta';
 const terminalStackStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
@@ -130,30 +131,32 @@ export async function runBetaLifecycle(action, io, { selectedRevision } = {}) {
     await io.verifyHealth(outputs.ApiBaseUrl, selected);
     await io.oneShot('verify', selected, outputs.ApiBaseUrl);
   };
-  const readAdmissionSuspension = async (operation) => {
-    const value = (await io.aws(['ssm', 'get-parameter',
-      '--name', '/anywear/beta/admission_suspended'])).Parameter?.Value;
-    if (value !== 'true' && value !== 'false') {
-      throw new Error(`Beta admission suspension must be a valid boolean before ${operation}`);
+  const readAdmissionClosure = async (operation) => {
+    const admission = await readAdmissionMode(io);
+    if (!isAdmissionClosed(admission)) {
+      throw new Error(`Beta admission must be closed ${operation}; observed ${describeAdmissionMode(admission)}`);
     }
-    return value;
+    return admission;
   };
 
   if (action === 'start') {
     assertStartStack(platform, 'Platform');
     assertStartStack(workload, 'Workload');
     const startRevision = selectedStartRevision(workload, selectedRevision);
-    const priorSuspension = await readAdmissionSuspension('starting');
-    if (priorSuspension !== 'true') throw new Error('Stopped Beta admission must be suspended before starting');
-    // Network restoration precedes every private task. Intake stays closed
+    await readAdmissionClosure('before starting');
+    // Network restoration precedes every private task. Admission stays closed
     // through schema verification, workload rollout, and public health checks.
     await deploy(platformStack, true, startRevision);
-    await oneShot('close', startRevision);
+    await oneShot('suspend', startRevision);
+    // The same forward-migration fence the standalone `migrate` operation uses:
+    // `start` invokes that one-shot directly, so it must consult the same check
+    // rather than trusting the plan that led here.
+    await assertMigrationAdmissionClosed(io, 'the Beta start migration sequence');
     await io.oneShot('migrate', startRevision);
     await io.oneShot('verify', startRevision);
     await deploy(workloadStack, true, startRevision);
     await healthy(startRevision);
-    await oneShot('close', startRevision);
+    await oneShot('suspend', startRevision);
     return;
   }
 
@@ -166,29 +169,33 @@ export async function runBetaLifecycle(action, io, { selectedRevision } = {}) {
         state[`${key}_status`] = stack?.StackStatus ?? 'unavailable';
       } catch { state[`${key}_active`] = 'unavailable'; state[`${key}_status`] = 'unavailable'; }
     }
-    try { state.admission_suspended = await readAdmissionSuspension('readback'); }
-    catch { state.admission_suspended = 'unavailable'; }
+    try { state.admission_mode = (await readAdmissionMode(io)).admission_mode; }
+    catch { state.admission_mode = 'unavailable'; }
     io.recordLifecycleState?.(state);
     return state;
   };
   const fail = async error => {
     const observed = await observe();
     io.recordRecovery?.('requires-explicit-start');
-    throw new Error(`Beta shutdown failed; observed Platform=${observed.platform_active} (${observed.platform_status}), Workload=${observed.workload_active} (${observed.workload_status}), admission_suspended=${observed.admission_suspended}; select start separately after review`, { cause: error });
+    throw new Error(`Beta shutdown failed; observed Platform=${observed.platform_active} (${observed.platform_status}), Workload=${observed.workload_active} (${observed.workload_status}), admission_mode=${observed.admission_mode}; select start separately after review`, { cause: error });
   };
   if (!active || !platformActive) {
     if (active !== platformActive) return fail(new Error('Beta is partially stopped'));
     const observed = await observe();
-    if (observed.platform_active !== 'false' || observed.workload_active !== 'false' || observed.admission_suspended !== 'true') return fail(new Error('Stopped Beta admission is not proven closed'));
+    if (observed.platform_active !== 'false' || observed.workload_active !== 'false' || observed.admission_mode !== 'closed') return fail(new Error('Stopped Beta admission is not proven closed'));
     return;
   }
-  await readAdmissionSuspension('stopping');
+  // Stopping begins by suspending, so it may start from any readable decision;
+  // the read proves the mirror is reachable before any mutation. An unreadable
+  // mirror aborts here rather than after the first task has already run.
+  await readAdmissionMode(io);
   try {
-    await oneShot('close');
-    // The verified pinned-image close task sets both SSM and DB suspension.
-    // Re-read SSM before drain, whose old-image implementation restores its
-    // observed prior suspension; an inconsistent close must never reach drain.
-    if (await readAdmissionSuspension('draining') !== 'true') throw new Error('Successful pinned close did not prove suspended admission before drain');
+    await oneShot('suspend');
+    // The verified pinned-image suspend task sets both the SSM mode and the DB
+    // decision. Re-read the mirror before drain, whose old-image implementation
+    // restores its observed prior suspension; an inconsistent suspend must never
+    // reach drain.
+    await readAdmissionClosure('after the suspend task, before drain');
     await oneShot('drain');
     await waitForTasks(io, cluster, { servicesAllowed: true });
     await deploy(workloadStack, false);
@@ -196,7 +203,7 @@ export async function runBetaLifecycle(action, io, { selectedRevision } = {}) {
     await deploy(platformStack, false);
     const observed = await observe();
     if (observed.platform_active !== 'false' || observed.workload_active !== 'false'
-      || observed.admission_suspended !== 'true') throw new Error('Stop readback does not prove both stacks stopped with admission closed');
+      || observed.admission_mode !== 'closed') throw new Error('Stop readback does not prove both stacks stopped with admission closed');
   } catch (error) { await fail(error); }
 }
 
