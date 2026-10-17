@@ -1,7 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import {
   DEFAULT_FOUNDATION_SERVICE,
@@ -37,17 +36,6 @@ const secondService = Object.freeze({
   service: 'ocr', repository: 'AnyWear-OCR', repositoryId: 1189999999, environment: 'beta',
 });
 
-// Same canonical bytes rule the repository uses for template hashes: RFC
-// 8785-style sorted keys, arrays preserved.
-function canonical(value: any): any {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
-  }
-  return value;
-}
-const canonicalHash = (value: any) => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
-
 // Directories are created per synthesis and removed after the suite; they live
 // outside the repository.
 const directories: string[] = [];
@@ -64,13 +52,13 @@ function templateOf(directory: string): any {
 // The reviewed Foundation-only CLI entry exactly as CI synthesizes it. This is
 // the path the live-Foundation comparison consumes, so its bytes are the
 // pre-change proof rather than a second synthesis implementation.
-function synthesizeDefaultWithCli(): any {
+function synthesizeDefaultWithCli(): { directory: string; template: any } {
   const output = outputDirectory('infra-foundation-cli-');
   execFileSync(process.execPath, [cdkCli, 'synth', 'AnyWearFoundationStack', '--lookups', 'false',
     '--output', output, '-c', 'deployScope=foundation', '-c', 'identityPhase=roles-added',
     '-c', 'legacyRoleSource=external', '--quiet'],
   { cwd: root, stdio: 'pipe', timeout: 300_000, env: childEnvironment() });
-  return templateOf(output);
+  return { directory: output, template: templateOf(output) };
 }
 
 // The app entry with an explicit CDK context, the form a reviewed
@@ -100,12 +88,24 @@ const policiesFor = (template: any, role: any): any[] => {
 
 describe('Foundation reviewed service set (CDK context)', () => {
   it('keeps the default context byte-identical to the pre-change Foundation template', () => {
-    const template = synthesizeDefaultWithCli();
-    // The authenticated live-Foundation provenance pins the template the round-3
-    // candidate synthesized at 53f1b54; the default context must reproduce it
-    // byte for byte (Resources, Outputs, Parameters and Rules).
-    expect(canonicalHash(template)).toBe(provenance.dedicated_candidate_canonical_sha256);
-    expect(Object.keys(template.Resources)).toHaveLength(16);
+    const { directory, template } = synthesizeDefaultWithCli();
+    // The committed live-Foundation provenance and the round-3 comparison pin the
+    // default candidate: four original resources plus exactly the twelve reviewed
+    // additions, and the normalized content hash recorded before this change.
+    // Run the same comparison script CI runs rather than a second implementation.
+    const reportPath = path.join(outputDirectory('infra-foundation-report-'), 'comparison.json');
+    execFileSync(process.execPath, [path.join(root, 'scripts', 'compare-live-foundation.mjs'),
+      '--candidate', path.join(directory, 'AnyWearFoundationStack.template.json'), '--output', reportPath],
+    { cwd: root, stdio: 'pipe', timeout: 60_000, env: childEnvironment() });
+    const comparison = JSON.parse(readFileSync(reportPath, 'utf8'));
+    expect(comparison.accepted).toBe(true);
+    expect(comparison.original_resource_count).toBe(4);
+    expect(comparison.candidate_resource_count).toBe(16);
+    expect(comparison.added).toHaveLength(12);
+    // sha256 of the normalized pre-change candidate (round 3, 53f1b54); the
+    // comparison normalizes only the declared CDK diagnostic metadata.
+    expect(comparison.normalized_canonical_sha256)
+      .toBe('593538634996ac07b8662dd26743769437ddf3ec192a404fba61b7dd59d92815');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();
