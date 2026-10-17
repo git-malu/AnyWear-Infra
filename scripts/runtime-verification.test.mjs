@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -101,7 +101,7 @@ test('final qualification appends authenticated task events to the actual parsed
   await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Reviewed selection']);
   const source = await git(['rev-parse', 'HEAD']);
   const runtimeEnv = { ...env, GITHUB_SHA: source, GITHUB_REPOSITORY_ID: '1409047265', GITHUB_EVENT_NAME: 'workflow_dispatch',
-    ENABLE_BETA_DEPLOY: 'true', INFRA_OPERATION: 'observe', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
+    ENABLE_BETA_MUTATION: 'true', INFRA_OPERATION: 'observe', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
     SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: contentHash(selector) };
   const interfaces = { ...outputs, VerificationTaskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-verification-task',
     OneShotExecutionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution' };

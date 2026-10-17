@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { workflowOperations, operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed,
-  operationEvidence, lifecycleActions, families, qualifiedWorkflowPaths } from './operation-boundaries.mjs';
+  operationEvidence, lifecycleActions, families, qualifiedWorkflowPaths, liveQualifiedWorkflowPaths, transitionalExecutorPaths,
+  operationFamilies } from './operation-boundaries.mjs';
 import { admissionWindowPayload } from './admission-window.mjs';
 import { validateOperationInputs, credentialEnvironment, createRuntimeIo } from './runtime-operation.mjs';
 import { createTestInputs, stackManifestFixture } from './create-test-inputs.mjs';
@@ -18,70 +19,169 @@ import { createOperationRecord } from './operation-record.mjs';
 import { validateDeploymentRecord } from './deployment-contract.mjs';
 import { runtimeCommandBytes } from './runtime-command.mjs';
 
+const runtimeEntry = '.github/workflows/runtime.yml';
+const mutateEntry = '.github/workflows/mutate.yml';
 const envFor = (workflow, operation) => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
   GITHUB_SHA: '5'.repeat(40), GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
   GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/${workflow}@refs/heads/main`, GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1',
-  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_DEPLOY: 'true',
+  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
   INFRA_OPERATION: operation, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]',
   WINDOW_MINUTES: '60',
   SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: 'a'.repeat(64),
   INFRA_RUNTIME_ROLE_ARN: 'arn:aws:iam::650880818323:role/beta-infra-runtime-role',
   INFRA_DEPLOY_ROLE_ARN: 'arn:aws:iam::650880818323:role/beta-infra-deploy-role' });
-const stateEnv = () => ({ ...envFor('.github/workflows/beta-observe.yml', 'state'), ENABLE_BETA_DEPLOY: 'false' });
+const stateEnv = () => ({ ...envFor(runtimeEntry, 'state'), ENABLE_BETA_MUTATION: 'false' });
+const workflowFile = async file => yaml.load(await readFile(new URL(`../${file}`, import.meta.url), 'utf8'));
 
-test('five manual entry schemas select only their family and preserve the protected shared queue', async () => {
+test('only two dispatch entries and one automatic entry exist, and each entry maps to its operations', async () => {
+  const files = (await readdir(new URL('../.github/workflows', import.meta.url))).filter(file => file.endsWith('.yml')).sort();
+  assert.deepEqual(files, ['check.yml', 'mutate.yml', 'production.yml', 'runtime.yml']);
+  const entries = [];
+  for (const file of files) {
+    const workflow = await workflowFile(`.github/workflows/${file}`);
+    if (workflow.on?.workflow_dispatch) entries.push(file);
+    // `production.yml` remains a file with its tested blocker, but it is not an
+    // entry: it must stay `workflow_call`-only.
+    if (file === 'production.yml') {
+      assert.deepEqual(Object.keys(workflow.on), ['workflow_call'], 'production.yml declares no dispatch surface');
+    }
+    if (file === 'check.yml') assert.deepEqual(Object.keys(workflow.on).sort(), ['pull_request', 'push'], 'check.yml stays automatic');
+  }
+  assert.deepEqual(entries, ['mutate.yml', 'runtime.yml'], 'exactly the two manual dispatch entries remain');
   for (const [file, operations] of Object.entries(workflowOperations)) {
-    const workflow = yaml.load(await readFile(new URL(`../${file}`, import.meta.url), 'utf8'));
+    const workflow = await workflowFile(file);
     assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch']);
     assert.deepEqual(workflow.concurrency, { group: 'anywear-infra-runtime', 'cancel-in-progress': false });
     const inputs = workflow.on.workflow_dispatch.inputs;
-    assert.deepEqual(inputs.operation?.options ?? [workflow.jobs.operation.env.INFRA_OPERATION], operations);
+    assert.deepEqual(inputs.operation.options, operations);
+    assert.equal(inputs.operation.required, true);
     for (const key of ['selection_file', 'selection_sha256', 'stack_sources_file', 'stack_sources_sha256']) assert.equal(inputs[key].required, true);
-    const cdk = file.includes('deploy');
-    assert.equal(Object.hasOwn(inputs, 'identity_phase'), cdk);
-    assert.equal(Object.hasOwn(inputs, 'retention_protection'), cdk);
-    assert.equal(Object.hasOwn(inputs, 'tester_emails'), file.includes('admission'));
-    assert.equal(Object.hasOwn(inputs, 'beta_api_sizing_profile'), file.includes('beta-deploy'));
-    assert.equal(Object.hasOwn(inputs, 'beta_sizing_telemetry'), file.includes('beta-deploy'));
-    if (file.includes('beta-deploy')) {
-      assert.deepEqual(inputs.beta_api_sizing_profile.options, ['preserve', 's1', 's2-api']);
-      assert.deepEqual(inputs.beta_sizing_telemetry.options, ['preserve', 'enable', 'disable']);
-      assert.equal(inputs.beta_api_sizing_profile.default, 'preserve');
-      assert.equal(inputs.beta_sizing_telemetry.default, 'preserve');
-      assert.equal(workflow.jobs.operation.steps[1].with.beta_api_sizing_profile, '${{ inputs.beta_api_sizing_profile }}');
-      assert.equal(workflow.jobs.operation.steps[1].with.beta_sizing_telemetry, '${{ inputs.beta_sizing_telemetry }}');
-    }
-    if (file.includes('beta-admission')) {
-      // The bound is a required, defaulted dispatch input of the existing entry
-      // point; no seventh workflow hosts it.
-      assert.equal(inputs.window_minutes.type, 'number');
-      assert.equal(inputs.window_minutes.default, 60);
-      assert.match(inputs.window_minutes.description, /15-240/);
-      assert.match(inputs.window_minutes.description, /resume-admission/);
-      assert.equal(workflow.jobs.operation.env.WINDOW_MINUTES, '${{ inputs.window_minutes }}');
-    }
-    const job = workflow.jobs.operation;
-    assert.equal(job.environment, 'beta');
-    assert.deepEqual(job.permissions, { contents: 'read', 'id-token': 'write' });
-    assert.equal(job.if, file.includes('beta-observe') ? "github.ref == 'refs/heads/main'"
-      : "github.ref == 'refs/heads/main' && vars.ENABLE_BETA_DEPLOY == 'true'");
-    assert.equal(Object.hasOwn(job.env, 'INFRA_DEPLOY_ROLE_ARN'), cdk);
-    assert.equal(job.steps[0].with.ref, '${{ github.sha }}');
-    assert.equal(job.steps[0].with['persist-credentials'], false);
-    assert.equal(job.steps[1].uses, './.github/actions/beta-operation');
+    assert.equal(inputs.selection_file.default, 'selections/beta-baseline.json');
   }
-  const common = yaml.load(await readFile(new URL('../.github/actions/beta-operation/action.yml', import.meta.url), 'utf8'));
-  const steps = common.runs.steps;
-  for (const key of ['beta_api_sizing_profile', 'beta_sizing_telemetry']) assert.equal(common.inputs[key].default, 'preserve');
-  for (const step of steps.filter(step => step.run?.includes('check-operation.mjs') || ['operation', 'observation'].includes(step.id))) {
+  // The absorbed files may never reappear as entries or as extra dispatch surfaces.
+  for (const retired of ['beta-deploy', 'beta-observe', 'beta-schema', 'beta-admission', 'beta-cleanup-acceptance']) {
+    assert.equal(files.includes(`${retired}.yml`), false, retired);
+  }
+  assert.deepEqual(Object.keys(workflowOperations).sort(), [mutateEntry, runtimeEntry].sort());
+});
+
+test('the mutate chain keeps build separation: preflight, verify, deploy and record are distinct jobs', async () => {
+  const workflow = await workflowFile(mutateEntry);
+  const inputs = workflow.on.workflow_dispatch.inputs;
+  // A dispatch surface is per workflow, so every absorbed input is now visible to
+  // every operation of this entry; the per-operation scope is enforced in preflight.
+  for (const key of ['identity_phase', 'retention_protection', 'window_minutes', 'tester_emails',
+    'beta_api_sizing_profile', 'beta_sizing_telemetry']) assert.ok(inputs[key], key);
+  assert.equal(inputs.window_minutes.type, 'number');
+  assert.equal(inputs.window_minutes.default, 60);
+  assert.match(inputs.window_minutes.description, /15-240/);
+  assert.match(inputs.window_minutes.description, /resume-admission/);
+  assert.equal(inputs.tester_emails.default, '[]');
+  assert.deepEqual(inputs.beta_api_sizing_profile.options, ['preserve', 's1', 's2-api']);
+  assert.deepEqual(inputs.beta_sizing_telemetry.options, ['preserve', 'enable', 'disable']);
+  assert.equal(inputs.beta_api_sizing_profile.default, 'preserve');
+  assert.equal(inputs.beta_sizing_telemetry.default, 'preserve');
+  assert.deepEqual(inputs.identity_phase.options, ['retired', 'roles-added', 'legacy']);
+  assert.equal(inputs.identity_phase.default, 'retired');
+  assert.equal(inputs.retention_protection.default, true);
+  assert.deepEqual(inputs.operation.options, workflowOperations[mutateEntry]);
+  assert.deepEqual(Object.keys(workflow.jobs), ['preflight', 'verify', 'deploy', 'record']);
+  const { preflight, verify, deploy, record } = workflow.jobs;
+  // preflight: no environment, no id-token, no App token, no AWS.
+  assert.equal(preflight.environment, undefined);
+  assert.deepEqual(preflight.permissions, { contents: 'read' });
+  assert.equal(preflight.if, "github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true'");
+  const preflightRuns = preflight.steps.filter(step => step.run).map(step => step.run).join('\n');
+  assert.match(preflightRuns, /check-operation\.mjs/);
+  assert.match(preflightRuns, /check-stack-sources\.mjs/);
+  assert.match(preflightRuns, /release verify/);
+  assert.equal(preflight.steps.some(step => step.uses?.includes('create-github-app-token')), false);
+  assert.equal(preflight.steps.some(step => step.uses?.includes('configure-aws-credentials')), false);
+  // verify: read-only App token, no environment, no OIDC.
+  assert.equal(verify.needs, 'preflight');
+  assert.equal(verify.environment, undefined);
+  assert.deepEqual(verify.permissions, { contents: 'read' });
+  assert.deepEqual(verify.steps.map(step => step.uses ?? step.run), ['actions/checkout@v4', './.github/actions/verify-operation']);
+  // deploy: the only credential job, after verification.
+  assert.equal(deploy.needs, 'verify');
+  assert.equal(deploy.environment, 'beta');
+  assert.deepEqual(deploy.permissions, { contents: 'read', 'id-token': 'write' });
+  assert.equal(deploy.steps.some(step => step.uses === './.github/actions/deploy-operation'), true);
+  // record: after the credential job and itself credential-free.
+  assert.equal(record.needs, 'deploy');
+  assert.equal(record.environment, undefined);
+  assert.deepEqual(record.permissions, { contents: 'read' });
+  assert.match(record.steps.find(step => step.run)?.run ?? '', /record-deployment\.mjs/);
+  // Exactly one job declares environment and id-token: write.
+  const credentialed = Object.entries(workflow.jobs).filter(([, job]) => job.environment !== undefined
+    || job.permissions?.['id-token'] === 'write').map(([name]) => name);
+  assert.deepEqual(credentialed, ['deploy']);
+});
+
+test('the runtime entry keeps state unswitched and observe switched, with one credential job each', async () => {
+  const workflow = await workflowFile(runtimeEntry);
+  const inputs = workflow.on.workflow_dispatch.inputs;
+  assert.deepEqual(inputs.operation.options, ['state', 'observe']);
+  assert.equal(inputs.operation.required, true);
+  for (const absent of ['identity_phase', 'retention_protection', 'window_minutes', 'tester_emails',
+    'beta_api_sizing_profile', 'beta_sizing_telemetry']) assert.equal(inputs[absent], undefined, absent);
+  assert.deepEqual(Object.keys(workflow.jobs), ['preflight', 'state', 'observe', 'record']);
+  const { preflight, state, observe, record } = workflow.jobs;
+  assert.equal(preflight.environment, undefined);
+  assert.deepEqual(preflight.permissions, { contents: 'read' });
+  assert.equal(preflight.if, "github.ref == 'refs/heads/main'");
+  // `state` must work with the stage switch closed; `observe` (a task-running
+  // deployment-record producer) must not.
+  assert.equal(state.if, "github.ref == 'refs/heads/main' && inputs.operation == 'state'");
+  assert.equal(state.environment, 'beta');
+  assert.deepEqual(state.permissions, { contents: 'read', 'id-token': 'write' });
+  assert.equal(/ENABLE_BETA_MUTATION/.test(JSON.stringify(state)), false, 'state runs with the switch closed');
+  assert.match(observe.if, /vars\.ENABLE_BETA_MUTATION == 'true'/);
+  assert.match(observe.if, /inputs\.operation == 'observe'/);
+  assert.equal(observe.environment, 'beta');
+  assert.deepEqual(observe.permissions, { contents: 'read', 'id-token': 'write' });
+  assert.equal(record.environment, undefined);
+  assert.deepEqual(record.permissions, { contents: 'read' });
+  const credentialed = Object.entries(workflow.jobs).filter(([, job]) => job.environment !== undefined
+    || job.permissions?.['id-token'] === 'write').map(([name]) => name);
+  assert.deepEqual(credentialed, ['state', 'observe']);
+  // The path is pinned cross-repository as the only accepted deployment-record
+  // producer; it never moves to another file.
+  assert.deepEqual(workflowOperations[runtimeEntry], ['state', 'observe']);
+});
+
+test('the split composites keep verification before any AWS execution step', async () => {
+  const verify = yaml.load(await readFile(new URL('../.github/actions/verify-operation/action.yml', import.meta.url), 'utf8'));
+  const deploy = yaml.load(await readFile(new URL('../.github/actions/deploy-operation/action.yml', import.meta.url), 'utf8'));
+  assert.equal(verify.runs.using, 'composite');
+  assert.equal(deploy.runs.using, 'composite');
+  for (const key of ['beta_api_sizing_profile', 'beta_sizing_telemetry']) {
+    assert.equal(verify.inputs[key].default, 'preserve');
+    assert.equal(deploy.inputs[key].default, 'preserve');
+  }
+  const verifySteps = verify.runs.steps;
+  for (const step of verifySteps.filter(step => step.run?.includes('check-operation.mjs'))) {
     assert.equal(step.env.INFRA_BETA_API_SIZING_PROFILE, '${{ inputs.beta_api_sizing_profile }}');
     assert.equal(step.env.INFRA_BETA_SIZING_TELEMETRY, '${{ inputs.beta_sizing_telemetry }}');
   }
-  assert.ok(steps.findIndex(step => step.run?.includes('check-operation.mjs')) < steps.findIndex(step => step.id === 'app'));
-  assert.ok(steps.findIndex(step => step.run?.includes('release verify-asset')) < steps.findIndex(step => step.id === 'app'));
-  assert.equal(steps.some(step => step.uses?.includes('configure-aws-credentials')), false);
-  assert.equal(steps.find(step => step.id === 'observation').run, 'node scripts/observe-operation.mjs');
-  for (const step of steps.filter(step => step.uses === 'actions/upload-artifact@v4')) assert.equal(step.with['retention-days'], 90);
+  assert.ok(verifySteps.findIndex(step => step.run?.includes('check-operation.mjs')) < verifySteps.findIndex(step => step.id === 'app'));
+  assert.ok(verifySteps.findIndex(step => step.run?.includes('release verify-asset')) < verifySteps.findIndex(step => step.id === 'app'));
+  assert.ok(verifySteps.findIndex(step => step.id === 'app') < verifySteps.findIndex(step => step.run?.includes('verify-operation-inputs.mjs')));
+  assert.equal(verifySteps.some(step => step.uses?.includes('configure-aws-credentials')), false);
+  assert.equal(verifySteps.some(step => /runtime-operation|observe-operation/.test(step.run ?? '')), false);
+  const deploySteps = deploy.runs.steps;
+  for (const step of deploySteps.filter(step => ['operation', 'observation'].includes(step.id))) {
+    assert.equal(step.env.INFRA_BETA_API_SIZING_PROFILE, '${{ inputs.beta_api_sizing_profile }}');
+    assert.equal(step.env.INFRA_BETA_SIZING_TELEMETRY, '${{ inputs.beta_sizing_telemetry }}');
+  }
+  assert.equal(deploySteps.some(step => step.uses?.includes('configure-aws-credentials')), false);
+  assert.ok(deploySteps.findIndex(step => step.run?.includes('check-verified-inputs.mjs')) < deploySteps.findIndex(step => step.id === 'app'));
+  assert.ok(deploySteps.findIndex(step => step.id === 'app') < deploySteps.findIndex(step => step.run?.includes('runtime-operation.mjs')));
+  assert.equal(deploySteps.find(step => step.id === 'operation').run, 'node scripts/runtime-operation.mjs');
+  assert.equal(deploySteps.find(step => step.id === 'observation').run, 'node scripts/observe-operation.mjs');
+  assert.equal(deploySteps.find(step => step.run?.includes('finalize-operation.mjs')) !== undefined, true);
+  for (const step of deploySteps.filter(step => step.uses === 'actions/upload-artifact@v4')) assert.equal(step.with['retention-days'], 90);
+  for (const step of verifySteps.filter(step => step.uses === 'actions/upload-artifact@v4')) assert.equal(step.with['retention-days'], 90);
 });
 
 test('preflight rejects explicit sizing/telemetry in other operations before OIDC or commands', async () => {
@@ -106,14 +206,31 @@ test('preflight rejects every cross-family operation before credentials and perm
       const env = envFor(file, operation);
       if (operations.includes(operation)) {
         validateOperationInputs(env);
-        if (operation === 'state') validateOperationInputs({ ...env, ENABLE_BETA_DEPLOY: 'false' });
-        else assert.throws(() => validateOperationInputs({ ...env, ENABLE_BETA_DEPLOY: 'false' }));
+        if (operation === 'state') validateOperationInputs({ ...env, ENABLE_BETA_MUTATION: 'false' });
+        else assert.throws(() => validateOperationInputs({ ...env, ENABLE_BETA_MUTATION: 'false' }));
       } else assert.throws(() => validateOperationInputs(env), /forbidden/);
     }
   }
   for (const patch of [{ GITHUB_REF: 'refs/heads/feature' }, { GITHUB_EVENT_NAME: 'push' }, { AWS_REGION: 'us-east-1' },
     { GITHUB_REPOSITORY_ID: '1' }, { GITHUB_SHA: 'short' }, { TESTER_EMAILS: '["private@example.com"]' }]) {
     assert.throws(() => validateOperationInputs({ ...stateEnv(), ...patch }));
+  }
+  // Identity phase and retention protection are workflow-level inputs on the
+  // single mutate surface; only a deployment or a release recovery may vary them.
+  for (const operation of workflowOperations[mutateEntry]) {
+    const env = envFor(mutateEntry, operation);
+    const varies = ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'].includes(operation);
+    if (varies) validateOperationInputs({ ...env, INFRA_IDENTITY_PHASE: 'roles-added', INFRA_RETENTION_PROTECTION: 'false' });
+    else for (const change of [{ INFRA_IDENTITY_PHASE: 'roles-added' }, { INFRA_RETENTION_PROTECTION: 'false' }]) {
+      assert.throws(() => validateOperationInputs({ ...env, ...change }), /vary identity phase and retention protection/, operation);
+    }
+  }
+  // Tester payloads are accepted by exactly the tester operations.
+  for (const operation of workflowOperations[mutateEntry]) {
+    const env = envFor(mutateEntry, operation);
+    if (['add-testers', 'set-testers'].includes(operation)) validateOperationInputs({ ...env, TESTER_EMAILS: '["a@example.com"]' });
+    else assert.throws(() => validateOperationInputs({ ...env, TESTER_EMAILS: '["a@example.com"]' }),
+      /Tester payload belongs only|tester mutation payload|Admission status accepts no mutation payload/, operation);
   }
 });
 
@@ -190,13 +307,13 @@ test('cleanup fence reads stay exact and belong only to Platform or Workload ope
 });
 
 test('one-shot resume is refused for every operation except the one bounded admission operation that owns it', () => {
-  // `resume` is the one admission direction exactly one workflow/operation pair
+  // `resume` is the one admission direction exactly one entry/operation pair
   // owns. Every other pair still refuses it, with or without a payload, and the
   // owning pair accepts only the exact bytes its driver builds.
   const owners = [];
   for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
     const env = envFor(file, operation);
-    if (file === '.github/workflows/beta-admission.yml' && operation === 'resume-admission') {
+    if (file === mutateEntry && operation === 'resume-admission') {
       owners.push(`${file} ${operation}`);
       assertOneShotAllowed(env, 'lifecycle', 'resume', admissionWindowPayload(env));
       // Without the payload, with any other payload, and with every shape that is
@@ -217,14 +334,15 @@ test('one-shot resume is refused for every operation except the one bounded admi
     assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'resume'), /forbidden/, `${file} ${operation}`);
     assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'resume', admissionWindowPayload(env)), /forbidden/, `${file} ${operation}`);
   }
-  assert.deepEqual(owners, ['.github/workflows/beta-admission.yml resume-admission']);
+  assert.deepEqual(owners, [`${mutateEntry} resume-admission`]);
 });
 
 test('the resume-admission allow-list entry is explicit in all three tables that would otherwise forbid it', () => {
   // Removing any one of these entries must fail this suite: a test that keeps
   // passing by forbidding the capability is the defect this issue removes.
-  assert.deepEqual(workflowOperations['.github/workflows/beta-admission.yml'],
-    ['admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission']);
+  assert.deepEqual(workflowOperations[mutateEntry],
+    ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release', 'migrate',
+      'admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission']);
   assert.deepEqual(lifecycleActions('resume-admission'), ['resume', 'status', 'suspend']);
   assert.deepEqual(operationEvidence['resume-admission'].roles, ['lifecycle', 'artifact-verify']);
   assert.equal(operationEvidence['resume-admission'].qualified_by, 'not-applicable');
@@ -241,7 +359,7 @@ test('the resume-admission allow-list entry is explicit in all three tables that
 });
 
 test('the recovery-only suspend is reachable for resume-admission and nowhere it did not already belong', () => {
-  const admissionOpening = envFor('.github/workflows/beta-admission.yml', 'resume-admission');
+  const admissionOpening = envFor(mutateEntry, 'resume-admission');
   // `resume-admission` may run the pinned suspend task, but only so a failed window
   // can restore the decision the failure would otherwise leave open.
   assertOneShotAllowed(admissionOpening, 'lifecycle', 'suspend');
@@ -257,13 +375,13 @@ test('the recovery-only suspend is reachable for resume-admission and nowhere it
   // The tester operations never gain a suspend: their only mutation stays
   // set-testers, and the guard refuses a lifecycle suspend for each of them.
   for (const operation of ['admission-status', 'add-testers', 'set-testers']) {
-    const env = envFor('.github/workflows/beta-admission.yml', operation);
+    const env = envFor(mutateEntry, operation);
     assert.equal(lifecycleActions(operation).includes('suspend'), false, operation);
     assert.throws(() => assertOneShotAllowed(env, 'lifecycle', 'suspend'), /forbidden/, operation);
   }
   // A non-admission pair still refuses the suspend.
-  for (const [file, operation] of [['.github/workflows/runtime.yml', 'observe'], ['.github/workflows/beta-deploy.yml', 'restore-release'],
-    ['.github/workflows/beta-observe.yml', 'state'], ['.github/workflows/beta-schema.yml', 'migrate']]) {
+  for (const [file, operation] of [[runtimeEntry, 'observe'], [mutateEntry, 'restore-release'],
+    [runtimeEntry, 'state'], [mutateEntry, 'migrate'], [mutateEntry, 'deploy-workload']]) {
     assert.throws(() => assertOneShotAllowed(envFor(file, operation), 'lifecycle', 'suspend'), /forbidden/, `${file} ${operation}`);
   }
 });
@@ -292,7 +410,7 @@ test('a hand-made lifecycle task definition cannot smuggle resume or a payload p
     family: 'beta-anywear-lifecycle', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
     containerDefinitions: [{ name: 'OneShot', command }] })];
-  const tester = envFor('.github/workflows/beta-admission.yml', 'add-testers');
+  const tester = envFor(mutateEntry, 'add-testers');
   tester.TESTER_EMAILS = '["a@example.com"]';
   // `resume` is not in this operation's allow-list, with or without its exact bytes.
   assert.throws(() => assertAwsAllowed(tester,
@@ -300,13 +418,13 @@ test('a hand-made lifecycle task definition cannot smuggle resume or a payload p
   assert.throws(() => assertAwsAllowed(tester,
     registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', admissionWindowPayload(tester)])), /forbidden/);
   // A payload on a payload-free action is refused whatever the operation.
-  const suspending = envFor('.github/workflows/beta-admission.yml', 'suspend-admission');
+  const suspending = envFor(mutateEntry, 'suspend-admission');
   for (const action of ['suspend', 'status']) {
     assert.throws(() => assertAwsAllowed(suspending,
       registration(['node', 'dist/ops/beta-lifecycle.js', action, '{}'])), /forbidden/, action);
   }
   // The owning pair accepts exactly its own bytes and refuses a different window.
-  const resuming = envFor('.github/workflows/beta-admission.yml', 'resume-admission');
+  const resuming = envFor(mutateEntry, 'resume-admission');
   assertAwsAllowed(resuming, registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', admissionWindowPayload(resuming)]));
   assert.throws(() => assertAwsAllowed(resuming,
     registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', '{"window_minutes":59}'])), /forbidden|payload/i);
@@ -325,13 +443,13 @@ test('operation guards block cross-family tasks, arbitrary writes and lifecycle 
       'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:1']));
     assert.throws(() => assertDeployAllowed(env, 'AnyWearPlatformStack-prod'));
   }
-  const admission = envFor('.github/workflows/beta-admission.yml', 'add-testers');
+  const admission = envFor(mutateEntry, 'add-testers');
   admission.TESTER_EMAILS = '["a@example.com"]';
   assertOneShotAllowed(admission, 'lifecycle', 'set-testers', '["a@example.com"]');
   assertOneShotAllowed(admission, 'lifecycle', 'status');
   assert.throws(() => assertOneShotAllowed(admission, 'migrate'));
   assert.throws(() => assertDeployAllowed(admission, 'AnyWearPlatformStack-beta'));
-  const restore = envFor('.github/workflows/beta-deploy.yml', 'restore-release');
+  const restore = envFor(mutateEntry, 'restore-release');
   assert.throws(() => assertOneShotAllowed(restore, 'migrate'));
   assert.throws(() => assertOneShotAllowed(restore, 'lifecycle', 'suspend'));
   assertDeployAllowed(restore, 'AnyWearWorkloadStack-beta');
@@ -345,7 +463,7 @@ test('operation guards block cross-family tasks, arbitrary writes and lifecycle 
     registration(['node', 'dist/ops/beta-lifecycle.js', action])));
   assertAwsAllowed(admission, registration(['node', 'dist/ops/beta-lifecycle.js', 'status']));
   assertAwsAllowed(admission, registration(['node', 'dist/ops/beta-lifecycle.js', 'set-testers', '["a@example.com"]']));
-  const qualified = envFor('.github/workflows/runtime.yml', 'observe');
+  const qualified = envFor(runtimeEntry, 'observe');
   const artifact = command => ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify({
     family: 'beta-anywear-artifact-verify', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-verification-task',
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
@@ -356,7 +474,7 @@ test('operation guards block cross-family tasks, arbitrary writes and lifecycle 
 });
 
 test('every operation records its credential families and how its mutation is qualified', () => {
-  assert.deepEqual(Object.keys(operationEvidence).sort(), [...Object.values(workflowOperations).flat()].sort());
+  assert.deepEqual(Object.keys(operationEvidence).sort(), [...new Set(Object.values(workflowOperations).flat())].sort());
   for (const [file, fileOperations] of Object.entries(workflowOperations)) for (const operation of fileOperations) {
     const entry = operationEvidence[operation]; const env = envFor(file, operation);
     // One table drives both the session families and the evidence statement.
@@ -382,8 +500,52 @@ test('every operation records its credential families and how its mutation is qu
   assert.equal(operationEvidence.observe.qualified_by, 'self');
   assert.equal(operationEvidence.state.qualified_by, 'not-applicable');
   assert.equal(operationEvidence.migrate.qualified_by, '.github/workflows/runtime.yml');
-  assert.equal(operationEvidence.verify.qualified_by, 'not-applicable');
+  // The standalone `verify` operation is retired from the menu and the table; the
+  // `verify` task family survives as an internal step of the operations that run it.
+  assert.equal(Object.hasOwn(operationEvidence, 'verify'), false);
+  assert.equal(Object.values(workflowOperations).flat().includes('verify'), false);
   assert.equal(operationEvidence['resume-admission'].qualified_by, 'not-applicable');
+});
+
+test('record families derive from the operation so runtime.yml state can never be a deployment record', () => {
+  assert.deepEqual(operationFamilies, {
+    state: 'beta-observe', observe: 'runtime',
+    'deploy-foundation': 'beta-deploy', 'deploy-billing': 'beta-deploy', 'deploy-platform': 'beta-deploy',
+    'deploy-workload': 'beta-deploy', 'restore-release': 'beta-deploy',
+    migrate: 'beta-schema', 'admission-status': 'beta-admission', 'add-testers': 'beta-admission',
+    'set-testers': 'beta-admission', 'suspend-admission': 'beta-admission', 'resume-admission': 'beta-admission',
+  });
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    const boundary = operationBoundary(envFor(file, operation));
+    assert.equal(boundary.workflow, file);
+    assert.equal(boundary.family, operationFamilies[operation]);
+    assert.equal(boundary.readOnly, operation === 'state');
+    // The same path hosts `state` and `observe`, so only the operation can tell
+    // the read-only state family from the deployment-record producer.
+    if (operation === 'state') assert.notEqual(boundary.family, 'runtime');
+    if (operation === 'observe') assert.equal(boundary.family, 'runtime');
+  }
+  assert.deepEqual(liveQualifiedWorkflowPaths, [runtimeEntry, mutateEntry]);
+  // Transitional executor allowance for the #159 restore-release test pair.
+  assert.deepEqual(transitionalExecutorPaths, ['.github/workflows/beta-deploy.yml']);
+  assert.deepEqual(qualifiedWorkflowPaths, [runtimeEntry, mutateEntry, '.github/workflows/beta-deploy.yml']);
+  const state = operationBoundary(stateEnv());
+  assert.equal(state.family, 'beta-observe');
+  assert.equal(state.readOnly, true);
+  assert.deepEqual(families(stateEnv(), 'operation'), []);
+  assert.throws(() => families(stateEnv(), 'qualification'), /Read-only observation cannot qualify with tasks/);
+});
+
+test('operation record executor and family follow the operation, not the hosting file', () => {
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    const env = envFor(file, operation);
+    const record = createOperationRecord({ env, selector: { release: {}, image: {}, lambdas: {}, runtime_policy: {}, schema: {} },
+      stackManifest: stackManifestFixture() });
+    assert.equal(record.operation, operation);
+    assert.equal(record.family, operationFamilies[operation]);
+    assert.equal(record.executor.workflow_path, file);
+    assert.equal(record.record_type, 'anywear_infra_operation');
+  }
 });
 
 test('state executor observes stopped or active Beta with no tasks, deploys, schema assertions or raw tester emails', async () => {
@@ -427,7 +589,7 @@ test('state executor observes stopped or active Beta with no tasks, deploys, sch
   await assert.rejects(io.aws(['ecs', 'run-task']), /forbidden/);
   await assert.rejects(io.aws(['ssm', 'get-parameter', '--region', 'eu-west-1']), /Unexpected operation region/);
   assert.equal(calls, prior); assert.equal(assumptions, 1);
-  assert.equal(record.executor.workflow_path, '.github/workflows/beta-observe.yml');
+  assert.equal(record.executor.workflow_path, runtimeEntry);
   assert.equal(operationBoundary(env).readOnly, true);
   assert.throws(() => validateDeploymentRecord({ ...record, record_type: 'anywear_infra_family_observation' }));
 });

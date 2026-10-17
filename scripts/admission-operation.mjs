@@ -15,7 +15,7 @@ const stableStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_CO
 const values = stack => Object.fromEntries((stack?.Outputs ?? []).map(row => [row.OutputKey, row.OutputValue]));
 const testerList = value => canonicalJson(canonicalTesterList(value));
 
-const admissionEntry = 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main';
+const admissionEntry = 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main';
 function assertAdmissionExecutor(env) {
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_WORKFLOW_REF !== admissionEntry) throw new Error('Protected Infra admission executor required');
 }

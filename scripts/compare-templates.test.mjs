@@ -200,7 +200,7 @@ test('live cleanup task identity and output allowances stay exact and scoped to 
   const result = compareTemplates(before, cleanup(), options);
   assert.equal(result.accepted, true);
   assert.deepEqual(result.allowed.map(({ path }) => path).sort(),
-    ['/Outputs/CleanupTaskRoleArn', `/Resources/${policyId}`, `/Resources/${roleId}`]);
+    ['/Outputs/CleanupTaskRoleArn', `/Resources/${roleId}`, `/Resources/${policyId}`].sort());
   // The allowance is a reviewed identity, not a wildcard: a different role name,
   // policy reference, output binding or logical ID is ordinary drift.
   for (const mutate of [f => f.Resources[roleId].Properties.RoleName = 'other-role',

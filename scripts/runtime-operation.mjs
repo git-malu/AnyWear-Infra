@@ -30,30 +30,44 @@ export const testerOperationActions = Object.freeze({
   'admission-status': 'status', 'add-testers': 'add', 'set-testers': 'set',
 });
 const admissionRecoveryOperations = ['suspend-admission', 'resume-admission', 'restore-release'];
+// A dispatch surface is a workflow, not an operation. These inputs now exist on
+// every operation of their entry, so their per-operation scope is enforced here
+// (before credentials) instead of by the file that carries them.
+const testerOperations = ['add-testers', 'set-testers'];
+const contextVariableOperations = ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'];
 export function validateOperationInputs(env = process.env) {
   const boundary = operationBoundary(env);
+  const operation = env.INFRA_OPERATION;
   validateBetaSizingInput(env);
   validateBetaTelemetryInput(env);
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
     || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
-    || !boundary.readOnly && env.ENABLE_BETA_DEPLOY !== 'true') throw new Error('Protected Infra main executor and activation required');
+    || !boundary.readOnly && env.ENABLE_BETA_MUTATION !== 'true') throw new Error('Protected Infra main executor and activation required');
   if (env.AWS_ACCOUNT_ID !== '650880818323' || env.AWS_REGION !== 'ap-east-1') throw new Error('Unexpected account/region');
   if (!['legacy', 'roles-added', 'retired'].includes(env.INFRA_IDENTITY_PHASE)) throw new Error('Explicit identity phase required');
   if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
   if (!HASH.test(env.SELECTION_SHA256 ?? '')) throw new Error('Explicit selection hash required');
   if (!/^selections\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(env.SELECTION_FILE ?? '')) throw new Error('Selection must be a reviewed repository file');
-  if (admissionRecoveryOperations.includes(env.INFRA_OPERATION)) {
-    if (env.INFRA_IDENTITY_PHASE !== 'retired' || env.INFRA_RETENTION_PROTECTION !== 'true') throw new Error('Admission and release recovery require retired identity and protected retention');
+  // Only a deployment or a release recovery may vary these workflow-level
+  // inputs; every other operation runs the retired, protected context.
+  if (!contextVariableOperations.includes(operation)
+    && (env.INFRA_IDENTITY_PHASE !== 'retired' || env.INFRA_RETENTION_PROTECTION !== 'true')) {
+    throw new Error('Only deployment and release recovery may vary identity phase and retention protection');
+  }
+  if (admissionRecoveryOperations.includes(operation)) {
     if (normalizeTesterEmails(env.TESTER_EMAILS) !== '[]') throw new Error('Admission and release recovery accept no tester mutation payload');
   }
   // An admission window is only bounded if the bound is a required input. The
-  // shared parser is the same one that builds and checks the payload bytes.
-  if (env.INFRA_OPERATION === 'resume-admission') parseWindowMinutes(env.WINDOW_MINUTES);
-  if (Object.hasOwn(testerOperationActions, env.INFRA_OPERATION)) {
+  // shared parser is the same one that builds and checks the payload bytes. The
+  // window contract is unchanged: only `resume-admission` reads the bound.
+  if (operation === 'resume-admission') parseWindowMinutes(env.WINDOW_MINUTES);
+  if (Object.hasOwn(testerOperationActions, operation)) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
-    if (env.INFRA_OPERATION === 'admission-status' && payload !== '[]') throw new Error('Admission status accepts no mutation payload');
+    if (operation === 'admission-status' && payload !== '[]') throw new Error('Admission status accepts no mutation payload');
   }
-  if (!boundary.workflow.endsWith('beta-admission.yml') && env.TESTER_EMAILS !== undefined && env.TESTER_EMAILS !== '[]') throw new Error('Tester payload belongs only to admission');
+  if (!testerOperations.includes(operation) && normalizeTesterEmails(env.TESTER_EMAILS ?? '[]') !== '[]') {
+    throw new Error('Tester payload belongs only to the tester operations');
+  }
   // Cross-repository boundary, not a local preference: these names remain live
   // outside Infra. Service's own .github/scripts/run-one-shot-task.sh:19,29,34 and
   // .github/scripts/runtime-checkpoint.test.mjs:97-98,148,161 read the evidence and
