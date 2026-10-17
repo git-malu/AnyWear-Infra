@@ -122,7 +122,7 @@ configured. Approval and writer allocation remain separate operational gates.
 | [runtime.yml](../../.github/workflows/runtime.yml) | Fixed `observe`; no operation input | Qualified observation with artifact-verification task; legacy E2E producer |
 | [beta-observe.yml](../../.github/workflows/beta-observe.yml) | Fixed `state`; no operation input | CFN and SSM read-only session; no tasks/PassRole/deploy role or schema assertion |
 | [beta-lifecycle.yml](../../.github/workflows/beta-lifecycle.yml) | `start`, `stop` | Explicit required identity phase/retention; deploy and bounded lifecycle/schema task sessions |
-| [beta-deploy.yml](../../.github/workflows/beta-deploy.yml) | Four `deploy-*`, `restore-release` | Explicit required identity phase/retention; stack-specific deployment and selected verification tasks |
+| [beta-deploy.yml](../../.github/workflows/beta-deploy.yml) | Four `deploy-*`, `restore-release` | Explicit required identity phase/retention; stack-specific deployment and selected verification tasks; `deploy-platform` is qualified only by a following fixed `runtime.yml` `observe` |
 | [beta-schema.yml](../../.github/workflows/beta-schema.yml) | `migrate`, `verify` | Selected corresponding task only |
 | [beta-admission.yml](../../.github/workflows/beta-admission.yml) | `tester-status`, `tester-add`, `tester-replace`, `close-admission` | Only entry accepting `tester_emails`; verification/lifecycle tasks, no CDK |
 
@@ -154,7 +154,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | --- | --- |
 | `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; ordinary workflow still requires a sealed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
-| `deploy-platform` | Reconcile Platform using selected prebuilt Lambda/policy inputs; retain observed image and both stacks' active/stopped state; reject mixed/unknown state |
+| `deploy-platform` | Reconcile Platform using selected prebuilt Lambda/policy inputs; retain observed image and both stacks' active/stopped state; reject mixed/unknown state; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
 | `deploy-workload` | Select the explicit immutable image; verify compatible applied schema before rollout; no implicit migration or down-migration |
 | `restore-release` | Verify the candidate image's actual policy/schema against the applied DB, then reconcile selected Workload and Platform in the same queue; retain retired identity, protected retention, active state and closed admission; qualify the coherent tuple at the end |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
@@ -434,6 +434,29 @@ integration, run gate-disabled read-only observation and fixed qualified observa
 with restricted sessions against the retained tuple, then obtain E2E acceptance of
 the exact resulting legacy record. This source split does not imply AWS resource or
 template deployment.
+
+A `deploy-platform` run has no accepted evidence step of its own. It is qualified
+only by a following fixed `runtime.yml` `observe` run at reviewed main, which
+uploads `infra-deployment-<run-id>-<attempt>` containing
+`deployment-record.json`. The deploy run cannot produce that record: it stamps the
+run's own `.github/workflows/beta-deploy.yml` path and the record type
+`anywear_infra_family_observation`, while the accepted record pins both
+`anywear_infra_deployment` and the `runtime.yml` workflow path that the E2E
+consumer also pins, and the `deploy-platform` operation session carries no task
+family of its own. The deploy run still requires its own successful observation
+whenever a stack ends active and uploads that family record
+(`finalize-operation.mjs`); it is evidence, but not the accepted record. The
+qualifying run needs both stacks active for the same reason the stopped case below
+records: a stopped Beta produces no active-runtime record, and with either stack
+stopped the observation step is skipped, leaving the run's own
+`infra-operation-<run-id>-<attempt>` record as its only artifact; a failure before
+record creation can leave none.
+
+`runtime.yml` is the only workflow producer of the accepted record. This is a
+statement about workflow runs, not about all software: the standalone
+`observe-deployment.mjs` CLI can also emit an accepted-shaped record from ambient
+environment variables outside a workflow run.
+
 The read-only observer emits `anywear_infra_state` inside its operation artifact,
 records final activity/status plus sanitized admission counts/hashes, and labels
 qualification Not Applicable. Failed reads retain known partial state and mark
