@@ -1060,6 +1060,14 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(resources).not.toContain('beta-anywear-api');
       expect(resources).not.toContain('beta-anywear-worker');
     }
+    // The selection/deployment records are emitted as artifacts and never
+    // written. compare-templates.mjs allows a dedicated Beta identity policy
+    // wholesale, so this negative assertion is what stops the grant returning.
+    const runtimePuts = grantsFor(template, 'infra-runtime')
+      .filter((grant) => [grant.Action].flat().includes('ssm:PutParameter'));
+    for (const record of ['/anywear/beta/infra_selection', '/anywear/beta/infra_deployment']) {
+      expect(JSON.stringify(runtimePuts.map((grant) => grant.Resource))).not.toContain(record);
+    }
     const passRoles = grantsFor(template, 'e2e-qualification').find((grant) => [grant.Action].flat().includes('iam:PassRole'));
     expect([passRoles.Resource].flat()).toHaveLength(2);
     for (const forbidden of ['MigrationTaskRole', 'LifecycleTaskRole', 'CleanupTaskRole']) expect(JSON.stringify(passRoles)).not.toContain(forbidden);
