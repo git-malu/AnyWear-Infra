@@ -93,22 +93,21 @@ Foundation's accepted Infra bootstrap source
 `88679b61630bc2344258cafb0d35b4d0b02e3a0d` and Billing's Service source
 `58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759`. Their historical operation and
 preservation-overlay evidence remains independent of these four-key rows.
-Platform and Workload use Infra `@executor` because `start` deploys both stacks;
-the merge's actual reviewed main SHA becomes their producer only after the
-operation succeeds. No separate stopped Platform maintenance deployment is
-needed: `start` already reconciles Platform before its pinned migration/verification.
+Platform and Workload use Infra `@executor` because `restore-release` reconciles both
+stacks; the merge's actual reviewed main SHA becomes their producer only after the
+operation succeeds.
 
-Keep that reviewed main fixed through start and subsequent observation. The
-restart map is valid for later `observe` at the same SHA after both deployments;
-using it at a newer main would wrongly relabel unchanged stacks. Observation
-from newer main requires a separately reviewed fixed map preserving the actual
-deployed Platform/Workload SHAs. Final E2E binds the actual record-producing
+Keep that reviewed main fixed through the protected deployment and subsequent
+observation. The map is valid for later `observe` at the same SHA after both
+deployments; using it at a newer main would wrongly relabel unchanged stacks.
+Observation from newer main requires a separately reviewed fixed map preserving the
+actual deployed Platform/Workload SHAs. Final E2E binds the actual record-producing
 Infra source and deployment record. This source map alone is not runtime proof
-or authorization to activate Beta.
+or authorization to deploy.
 
 ## Entry points
 
-All six workflows use manual dispatch, exact reviewed main, the `beta` environment
+All five workflows use manual dispatch, exact reviewed main, the `beta` environment
 and shared non-cancelling queue `anywear-infra-runtime`. Their local composite
 [executor](../../.github/actions/beta-operation/action.yml) rejects cross-family
 operations, verifies committed selection/stack-source hashes, probes native CLI
@@ -122,7 +121,6 @@ configured. Approval and writer allocation remain separate operational gates.
 | --- | --- | --- |
 | [runtime.yml](../../.github/workflows/runtime.yml) | Fixed `observe`; no operation input | Qualified observation with artifact-verification task; legacy E2E producer |
 | [beta-observe.yml](../../.github/workflows/beta-observe.yml) | Fixed `state`; no operation input | CFN and SSM read-only session; no tasks/PassRole/deploy role or schema assertion |
-| [beta-lifecycle.yml](../../.github/workflows/beta-lifecycle.yml) | `start`, `stop` | Explicit required identity phase/retention; deploy and bounded lifecycle/schema task sessions |
 | [beta-deploy.yml](../../.github/workflows/beta-deploy.yml) | Four `deploy-*`, `restore-release` | Explicit required identity phase/retention; stack-specific deployment and selected verification tasks; `deploy-platform` is qualified only by a following fixed `runtime.yml` `observe` |
 | [beta-schema.yml](../../.github/workflows/beta-schema.yml) | `migrate`, `verify` | Selected corresponding task only |
 | [beta-admission.yml](../../.github/workflows/beta-admission.yml) | `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` | Only entry accepting `tester_emails` (and `window_minutes`, required by `resume-admission`); verification/lifecycle tasks, no CDK |
@@ -131,10 +129,9 @@ Every dispatch requires selection file/raw hash and stack-source file/raw hash.
 Non-CDK entries omit identity/retention inputs and fix `retired`/`true` source
 context, which does not change CFN or prove observed IAM/retention state. CDK
 entries accept explicit values without silently choosing a legacy/unprotected
-context. Lifecycle dispatches and activation changes require explicit
-authorization; starting/reactivating Beta requires explicit user consent. Source
-delivery alone does not grant an environment writer or establish runtime
-acceptance.
+context. Deployment and admission dispatches require explicit authorization; Beta
+is resident, so no operation starts or stops it. Source delivery alone does not
+grant an environment writer or establish runtime acceptance.
 
 Every STS assumption includes an inline session restriction of at most 2048
 characters. Task register/run/PassRole are limited to the operation's exact
@@ -155,13 +152,11 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | --- | --- |
 | `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; ordinary workflow still requires a sealed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
-| `deploy-platform` | Reconcile Platform using selected prebuilt Lambda/policy inputs; retain observed image and both stacks' active/stopped state; reject mixed/unknown state; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
+| `deploy-platform` | Reconcile Platform using selected prebuilt Lambda/policy inputs; retain the observed image; every deploy takes the resident active path and its postcondition is both stacks active; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
 | `deploy-workload` | Select the explicit immutable image; verify compatible applied schema before rollout; no implicit migration or down-migration |
-| `restore-release` | Verify the candidate image's actual policy/schema against the applied DB, then reconcile selected Workload and Platform in the same queue; retain retired identity, protected retention, active state and closed admission; qualify the coherent tuple at the end |
+| `restore-release` | Verify the candidate image's actual policy/schema against the applied DB, then reconcile selected Workload and Platform active in the same queue; require retired identity, protected retention and closed admission, with stable stack status as the CloudFormation mutation-safety precondition; both stacks active is the postcondition; qualify the coherent tuple at the end |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
-| `start` | Restore network, suspend admission, run the pinned migration/verification sequence, restore Workload and health, then keep admission suspended |
-| `stop` | Suspend admission, drain, stop Workload, verify task cessation, then stop paid Platform network; require both stopped outputs and closed admission readback; preserve failure state |
 | `observe` | Collect authenticated active-Beta deployment evidence by launching a verification task; not AWS read-only |
 | `state` | Record Platform/Workload status/activity and sanitized SSM admission state; no DB/schema/policy qualification |
 | `admission-status` | Read the admission mode, its bound, the tester list and the database status through the selected existing Service lifecycle command. The record publishes the effective decision every gate uses, the raw record each surface stores and whether those raw records disagree |
@@ -198,13 +193,13 @@ alone do not establish that application behavior.
 
 Only `beta-deploy.yml` exposes `beta_api_sizing_profile=preserve|s1|s2-api` and
 `beta_sizing_telemetry=preserve|enable|disable`, both defaulting to `preserve`.
-Absent or ordinary inputs retain both observed parameters through maintenance,
-stop/start and release recovery. A pre-parameter deployment means S1 and telemetry
+Absent or ordinary inputs retain both observed parameters through maintenance
+deployments and release recovery. A pre-parameter deployment means S1 and telemetry
 off. Unknown retained values fail before workload helper operations. An explicit
-override is allowed only for `deploy-workload` on already-active, coherent Beta,
-with the selected Service SHA/digest exactly matching the observed image. Other
-operations reject overrides before credentials. Fixed `runtime.yml` has no sizing
-or telemetry input. Neither input starts Beta or grants an environment writer.
+override is allowed only for `deploy-workload`, with the selected Service SHA/digest
+exactly matching the observed resident image. Other operations reject overrides
+before credentials. Fixed `runtime.yml` has no sizing or telemetry input. Neither
+input starts or stops Beta or grants an environment writer.
 
 For an explicitly authorized measurement, dispatch the reviewed `beta-deploy.yml`
 with `operation=deploy-workload`, the unchanged immutable selection/stack-source
@@ -221,8 +216,8 @@ stack-source binding. Use `beta_api_sizing_profile=s1` in that operation when
 restoring S1, or `preserve` when retaining an accepted profile. Verify
 `BetaSizingTelemetry=false`, both actual containers reporting telemetry `false`,
 stable service rollout and the final observer/health result. An ordinary `preserve`
-input or a stop/start cycle does not disable telemetry. If Beta is stopped or its
-state is unknown, preserve that state; never reactivate Beta to restore telemetry.
+input does not disable telemetry. Beta is resident, so there is no stopped state to
+preserve; never reactivate a stopped stack merely to restore telemetry.
 This source delivery does not claim deployment, runtime acceptance or telemetry-off
 restoration.
 
@@ -307,10 +302,7 @@ and `status`, and it is **recovery-only**: the driver reaches it solely from tha
 failed-window path, no operator input can request it, and it is the same pinned
 suspend task `suspend-admission` runs. The permission sits in the reviewed
 one-shot table next to the operation rather than in a hidden bypass, and
-`suspend-admission`, `start` and `stop` keep the only other `suspend` entries.
-A stopped image's `drain` still restores the window it observed: that is state
-restoration, not a new opening, and it is why the claim above is about what an
-operator can *request*.
+`suspend-admission` keeps the only other `suspend` entry.
 
 After cutover, Service's `beta-testers` entry point retains application-data
 `cleanup` only. Infra owns status/add/replace. `beta-service-data-role` can run
@@ -321,7 +313,7 @@ as `CleanupTaskRoleArn`; it does not receive the lifecycle task's admission-para
 permissions. E2E delegates application cleanup through the pinned Service cleanup
 entry point in its scheduled window. Its qualification role passes only the
 read-only verification/execution task roles and cannot schedule tester cleanup or
-lifecycle configuration/start/stop directly. Migrate older direct recovery helpers
+admission configuration directly. Migrate older direct recovery helpers
 before retiring the old role; no shared-role fallback is allowed. Enumerate nested
 cleanup jobs and ECS tasks before narrowing or retiring access.
 
@@ -386,14 +378,14 @@ its exact version/task ARNs and their compatibility; no wildcard, latest-family
 fallback or retention-only claim supplies that authority. Retained resources
 remain inventoried for separately authorized cleanup.
 
-Immediately before every Platform or Workload CDK call, including start/stop and recovery,
+Immediately before every Platform or Workload CDK call, including recovery,
 the runtime checks the exact synthesized cleanup output name and performs two
 matching complete bounded execution/task inventory scans. Active, pending,
 unknown, malformed, incomplete or changing inventories block deployment. The
 cleanup task-family filters use the existing cluster-scoped ECS read permission;
 IAM does not restrict that read to individual task families. The family executor
 admits the exact cleanup machine/execution read ARNs only
-for Platform/Workload deployment, recovery and lifecycle operation sessions.
+for Platform/Workload deployment and recovery operation sessions.
 Read-only state and final qualification sessions receive no Step Functions
 permissions; neither can replace the cleanup capability or invoke cleanup.
 Historical terminal failures require separate result reconciliation
@@ -500,8 +492,9 @@ If actual producers change, review a new exact map before use. New admission/
 recovery operations (`suspend-admission`, `resume-admission`, `restore-release`) reject
 `@executor` on any untouched stack.
 
-`restore-release` requires both stacks already active/stable and admission already
-closed. It verifies the selected candidate image's raw
+`restore-release` has one activation precondition: admission already closed. A
+stable stack status is required for the CloudFormation mutation itself, not as an
+activation requirement. It verifies the selected candidate image's raw
 runtime-policy identity, migration journal and compatibility with the applied DB
 before either CFN deployment. It then deploys selected Workload, verifies its four
 parameters and stable interfaces, deploys selected Platform, and qualifies selected
@@ -509,9 +502,9 @@ health and verification in the same queue. The strict fulltuple observer runs on
 after this coherent sequence. Workload/Platform source rows bind this executor;
 Foundation/Billing retain their explicit historical producers. Review the exact
 Platform component/resource diff and recovery selection before allocating runtime.
-The operation never migrates, starts stopped stacks, changes phase/retention,
-writes testers or opens admission. It preserves observed membership and
-closed admission at every phase boundary.
+The operation never migrates, changes phase/retention, writes testers or opens
+admission. It preserves observed membership and closed admission at every phase
+boundary, and its postcondition is both stacks `BetaActive=true` after each deploy.
 
 An old signed release alone does not establish a usable rollback image: a raw
 policy-byte mismatch fails the existing candidate check even if canonical policy
@@ -522,11 +515,11 @@ Platform matches. Do not weaken these checks or call that mixed state a successf
 recovery. Any restore failure records its stage, observed CFN parameters/activity,
 admission and task evidence, with `requires-explicit-recovery`; those CFN parameter
 readbacks are not actual running ECS identity proof. It never automatically
-deploys the other stack, reverts or starts/reopens Beta. Final observation failure
+deploys the other stack, reverts or reopens admission. Final observation failure
 also marks the preserved operation artifact failed. Only a separately reviewed
 recovery may proceed from the observed partial state.
 
-## Evidence and stopped-state recovery
+## Evidence and operation recovery
 
 Preserve `deployment-evidence/operation-record.json` under the always-attempted
 `infra-operation-<run-id>-<attempt>` artifact even on failure. Its version-3
@@ -536,12 +529,12 @@ separate from the current Infra executor SHA/run/attempt. It records actual
 Original template hashes and the original Workload image/source readbacks,
 the validated all-stack `stack_manifest` plus the operation's `changed_stack_names`,
 completed one-shot task/deployment events,
-recovery status and the operation result. Failed stop records actual Platform/Workload
-outputs and stack statuses plus admission readback, and marks recovery as
-`requires-explicit-start`; it never deploys active stacks or opens admission. A
-separately selected start is required after reviewing partial state. The record also retains the copied
+recovery status and the operation result. A failed operation retains the actual
+Platform/Workload outputs and stack statuses plus admission readback, and marks
+recovery as `requires-explicit-recovery`; it never redeploys a sibling stack or
+opens admission. The record also retains the copied
 lifecycle implementation's original Service source. Preserve authenticated task,
-admission and stopped-state readbacks plus Actions logs for interruption/recovery
+admission and runtime readbacks plus Actions logs for interruption/recovery
 review; a recovery status alone does not establish those observations. A
 successful recovery does not turn the failed operation into success. Failures
 before record creation can leave no artifact; preserve Actions logs and the
@@ -585,14 +578,11 @@ run's own `.github/workflows/beta-deploy.yml` path and the record type
 `anywear_infra_family_observation`, while the accepted record pins both
 `anywear_infra_deployment` and the `runtime.yml` workflow path that the E2E
 consumer also pins, and the `deploy-platform` operation session carries no task
-family of its own. The deploy run still requires its own successful observation
-whenever a stack ends active and uploads that family record
-(`finalize-operation.mjs`); it is evidence, but not the accepted record. The
-qualifying run needs both stacks active for the same reason the stopped case below
-records: a stopped Beta produces no active-runtime record, and with either stack
-stopped the observation step is skipped, leaving the run's own
-`infra-operation-<run-id>-<attempt>` record as its only artifact; a failure before
-record creation can leave none. That `deployment-record.json` is what advances the
+family of its own. The deploy run still requires and uploads its own successful
+observation (`finalize-operation.mjs`): Beta is resident, so every non-state
+operation ends on an active final readback that must be observed and accepted.
+That family record is evidence, but not the accepted record. That
+`deployment-record.json` is what advances the
 compatibility pin, which `AnyWear-E2E` owns; the routine is in that repository's
 [`docs/compatibility-pin.md`](https://github.com/git-malu/AnyWear-E2E/blob/main/docs/compatibility-pin.md).
 
@@ -605,8 +595,7 @@ The read-only observer emits `anywear_infra_state` inside its operation artifact
 records final activity/status plus sanitized admission counts/hashes, and labels
 qualification Not Applicable. Failed reads retain known partial state and mark
 the operation failed. This record never claims DB policy equality or applied
-schema. Observation remains possible while stopped or partially stopped and
-never changes activation or starts tasks.
+schema. Observation never changes activation or starts tasks.
 
 The unchanged image's one-shot inspection embeds Infra's reviewed read-only
 command; it does not assume newly added Service code. Evidence binds command hash,
@@ -615,12 +604,10 @@ task/definition. Selected image migrations and observed applied migrations are
 separate histories. A compatible older image may run against a later applied
 schema; rollback never runs down migrations.
 
-`stop` and maintenance deployments preserving both stopped stacks cannot produce
-an active-runtime deployment record. The final actual Platform/Workload activity
-readback controls active observation and upload, rather than the selected action. Preserve its operation
-record and independently capture the original image/parameter tuple, admission
-state and stopped-stack/task readbacks; the subsequent reviewed `start` supplies
-active evidence. A still-running
+Read-only `state` is the only operation that can observe an out-of-band stopped
+stack without failing; every protected operation requires the resident
+postcondition, so the final Platform/Workload activity readback must prove both
+stacks active and a failure to do so fails the operation. A still-running
 verification/helper task remains registered for explicit recovery. Inspect it and
 its owner before cleanup; expiry or task-runner failure is not task cessation.
 
@@ -631,20 +618,6 @@ artifacts cannot authorize qualification or rollback. SSM selection/deployment
 values alone are not observed release proof. Final E2E v2 qualification runs in a
 separate scheduled window and compares authenticated observations before/after
 against the exact deployment record.
-
-Inactive CDK deployments explicitly pass `--no-rollback` to prevent native
-CloudFormation rollback from restoring activity during stop or stopped-state
-maintenance. Failure leaves partial resource state for explicit reviewed recovery;
-resource replacements unsupported in this mode must fail rather than trigger a
-restart. Preserve actual stack outputs/statuses and admission readback.
-
-Before stop drains, the successful one-shot suspend is bound to the exact pinned
-image/task/command and must write the closed admission record to both SSM and the
-database in that reviewed Service image. Infra immediately re-reads the mirror and
-requires its effective decision to be `closed`; an open, unreadable or
-unexpected readback aborts before drain or CFN. The #54 maintenance operator also
-preserves independent DB/SSM status proof before native drain. Task success or
-requested flags do not substitute for these observed maintenance conditions.
 
 ## Admission-mode migration and rollout
 
@@ -756,14 +729,12 @@ is left open by the collapse.
 
 **The cost is a maintenance window.** Between that Platform deploy and
 `deploy-workload`, no admission operation can run: they require the selected
-revision to equal the deployed image, which is still the old one. `start` and `stop`
-cannot close admission either, because the lifecycle role's grant for the old
-parameter names disappears in the same deploy. Admission is nevertheless closed
-throughout, for the reasons above, so nothing is left open — but the environment
-cannot be re-closed, stopped or observed through a reviewed operation until the
-rollout lands. Dispatch the Platform deploy, `migrate` and `deploy-workload` back to
-back, and treat the gap as a maintenance window rather than a normal operating
-state.
+revision to equal the deployed image, which is still the old one. Admission is
+nevertheless closed throughout, for the reasons above, so nothing is left open —
+but the environment cannot be re-closed or observed through a reviewed operation
+until the rollout lands. Dispatch the Platform deploy, `migrate` and `deploy-workload`
+back to back, and treat the gap as a maintenance window rather than a normal
+operating state.
 
 **The alternative, and its cost.** If that window is unacceptable, cut the additive
 half as an intermediate reviewed Infra revision that declares
@@ -784,24 +755,11 @@ effective closed decision, or because the selected image cannot report the bound
 and recovery is roll-forward, because `deploy-workload` already refuses an image the
 applied schema cannot support, so the pair cannot be reversed by accident.
 
-**The standalone `migrate` fence is shared with `start`.** `start` invokes the same
-migrate one-shot directly, so it runs the same check immediately before it. The
-fence reads `/anywear/beta/admission_mode` — already in the runtime read set, so it
-adds no grant and no CDK change — and answers `closed`, `open` or `unproven`; only
-`closed` (a valid closed record, or a tester window its own bound already ended) is
-accepted. The consequence is stated rather than hidden: after an unattended expiry
-the record's own bound reads closed, so the fence admits the migration, while a
-mirror restored to a bare word or any other value that cannot prove closure makes
-it refuse. On an active environment `suspend-admission` restores that record — it
-is already the documented predecessor of any window — and on a stopped
-environment the repair is the out-of-band write described below.
-
-**A stopped Beta with a missing or unreadable mode cannot be repaired by any
-reviewed operation.** Admission operations require active stacks, and `start`
-requires a readable mirror, so neither can restore the parameter. The repair is an
-explicitly authorised out-of-band `PutParameter` of the `String` value
-`{"mode":"closed"}`, followed by a readback of the same value. Treat that as an
-operational decision with its own authorization, not as a workaround for a failed
-operation. A malformed but readable value is different: `start` can rewrite it
-through its own first `suspend` task, and the migration fence then sees the
-record that task wrote.
+**The standalone `migrate` fence.** `migrate` reads `/anywear/beta/admission_mode`
+— already in the runtime read set, so it adds no grant and no CDK change — and
+answers `closed`, `open` or `unproven`; only `closed` (a valid closed record, or a
+tester window its own bound already ended) is accepted. The consequence is stated
+rather than hidden: after an unattended expiry the record's own bound reads closed,
+so the fence admits the migration, while a mirror restored to a bare word or any
+other value that cannot prove closure makes it refuse. `suspend-admission` restores
+that record — it is already the documented predecessor of any window.

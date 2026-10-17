@@ -41,7 +41,6 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 | --- | --- |
 | [runtime.yml](.github/workflows/runtime.yml) | Fixed qualified `observe`; preserves the existing E2E trusted v2 producer interface; starts an ECS verification task |
 | [beta-observe.yml](.github/workflows/beta-observe.yml) | Fixed AWS read-only state/SSM status; usable with activation disabled; no tasks or schema qualification |
-| [beta-lifecycle.yml](.github/workflows/beta-lifecycle.yml) | `start` / `stop` with the existing coordinated sequence |
 | [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release`; a `deploy-platform` run is qualified only by a following fixed `runtime.yml` `observe` |
 | [beta-schema.yml](.github/workflows/beta-schema.yml) | Selected-image `migrate` / `verify` tasks; `migrate` alone refuses unless the admission mirror proves closed admission |
 | [beta-admission.yml](.github/workflows/beta-admission.yml) | `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission`; `resume-admission` is the only operator-requestable opener and requests a bounded 15–240 minute window (default 60) that ends at its own bound and runs the recovery-only suspend a failed window needs; a tester write changes no admission state; status still starts tasks |
@@ -53,8 +52,8 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 
 Every Beta entry requires exact reviewed main, protected `beta`, committed
 selection/hash, reviewed stack sources/hash and complete native release/publisher
-verification before AWS credentials. Only deployment/lifecycle expose explicit
-identity phase and retention inputs; other entries fix a protected source context
+verification before AWS credentials. Only deployment exposes explicit identity phase
+and retention inputs; other entries fix a protected source context
 without asserting observed IAM state or changing CFN. Only admission accepts
 tester payloads. All task/deployment entries require `ENABLE_BETA_DEPLOY=true`;
 read-only state remains available when false. Repository-local Actions concurrency serializes Infra jobs; separate
@@ -103,10 +102,8 @@ resume attempt issues the same pinned `suspend`, re-asserts the recorded decisio
 and records `close_kind=failed-window` rather than leaving a window open.
 `suspend` is the only extra lifecycle action `resume-admission` may run, and it is
 recovery-only: reachable from that failed-window path alone, with no operator
-input that can request it. The same caveat applies to the stopped image's `drain`,
-which restores the window it found: that is state restoration, not a new opening,
-so the claim is that `resume-admission` is the only operation an operator can
-*request* that opens admission.
+input that can request it. `resume-admission` is therefore the only operation an
+operator can *request* that opens admission.
 
 A tester write (`add-testers` / `set-testers` through the lifecycle `set-testers`
 action) writes the exact list and changes no admission state, so the flow for a
@@ -114,14 +111,14 @@ window is `add-testers` (optional) then `resume-admission`. `admission-status`
 reports the effective mode every gate uses, the raw record each surface stores and
 whether those raw records disagree, because after an abandoned window the database
 still stores `testers` with a past bound while admission is closed. The standalone
-`migrate` operation and the `start` migration sequence refuse unless the mirror
-proves closed admission: a closed record or a tester window its own bound already
-ended, never a record that merely reads closed because it is unreadable. [Beta
+`migrate` operation refuses unless the mirror proves closed admission: a closed record
+or a tester window its own bound already ended, never a record that merely reads closed
+because it is unreadable. [Beta
 runbook](docs/runbooks/beta-infrastructure.md#admission-mode-migration-and-rollout)
-carries the admission-mode migration order, its bounded failure mode and the
-stopped-environment repair.
+carries the admission-mode migration order, its bounded failure mode and the resident
+environment repair.
 
-All six manual entries share `anywear-infra-runtime` without cancellation.
+All five manual entries share `anywear-infra-runtime` without cancellation.
 `runtime.yml` is the only workflow family whose run produces the legacy
 `anywear_infra_deployment` v2 accepted by E2E; the standalone
 [observe-deployment.mjs](scripts/observe-deployment.mjs) CLI can also emit an

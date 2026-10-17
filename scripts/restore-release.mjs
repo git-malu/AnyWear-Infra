@@ -1,4 +1,4 @@
-import { workloadRevision } from '../.github/scripts/beta-lifecycle.mjs';
+import { workloadRevision } from './workload-revision.mjs';
 import { readAdmissionState, assertClosedAdmission } from './admission-operation.mjs';
 import { assertVerificationExecutor, runRuntimeVerification } from './verify-runtime-task.mjs';
 import { canonicalJson, sha256, SHA } from './json-contract.mjs';
@@ -22,12 +22,24 @@ function assertContext(infraSha, env) {
   }
 }
 
-function assertActiveStacks(platform, workload) {
+// Closed admission is the only activation precondition. Stable stack status is a
+// CloudFormation mutation-safety requirement, not an activation requirement; an
+// inactive stack is rejected later by the resident postcondition below (and by the
+// shared runtime verifier before any deploy), never by this precondition.
+function assertRestoreTarget(platform, workload) {
   for (const [name, stack] of [[platformName, platform], [workloadName, workload]]) {
     if (!stableStatuses.has(stack?.StackStatus)) throw new Error(`Restore requires stable ${name}`);
-    if (outputs(stack).BetaActive !== 'true') throw new Error(`Restore requires active ${name}`);
   }
   if (outputs(platform).EcsClusterName !== 'beta-anywear') throw new Error('Restore is restricted to beta-anywear');
+}
+
+// The resident invariant, re-asserted after each deploy rather than required of
+// the operator's starting point.
+function assertResidentStacks(platform, workload) {
+  for (const [name, stack] of [[platformName, platform], [workloadName, workload]]) {
+    if (!stableStatuses.has(stack?.StackStatus)) throw new Error(`Restore requires stable ${name} after deploy`);
+    if (outputs(stack).BetaActive !== 'true') throw new Error(`Restore requires active ${name} after deploy`);
+  }
 }
 
 function assertParameters(workload, selected) {
@@ -107,7 +119,7 @@ export async function runRestoreRelease({ io, selector, manifest, schema, infraS
     await io.recordRestoreStage?.({ stage, result: 'began' });
     assertContext(infraSha, env);
     const platform = await stackRead(io, platformName); const workload = await stackRead(io, workloadName);
-    assertActiveStacks(platform, workload);
+    assertRestoreTarget(platform, workload);
     const originalOutputs = outputs(platform); const originalWorkloadOutputs = outputs(workload);
     if (!originalWorkloadOutputs.ApiBaseUrl) throw new Error('Restore API interface unavailable');
     const current = workloadRevision(workload);
@@ -125,16 +137,16 @@ export async function runRestoreRelease({ io, selector, manifest, schema, infraS
       selector, manifest, schema, infraSha, env }));
     const readSelected = async () => {
       const actualPlatform = await stackRead(io, platformName); const actualWorkload = await stackRead(io, workloadName);
-      assertActiveStacks(actualPlatform, actualWorkload); assertParameters(actualWorkload, selected);
+      assertResidentStacks(actualPlatform, actualWorkload); assertParameters(actualWorkload, selected);
       if (canonicalJson(outputs(actualPlatform)) !== canonicalJson(originalOutputs)) throw new Error('Restore Platform interfaces changed');
       if (canonicalJson(outputs(actualWorkload)) !== canonicalJson(originalWorkloadOutputs)) throw new Error('Restore Workload interfaces changed');
       return actualWorkload;
     };
-    await phase('workload-deploy', () => io.deploy(workloadName, true, selected));
+    await phase('workload-deploy', () => io.deploy(workloadName, selected));
     const stableServices = () => io.aws(['ecs', 'wait', 'services-stable', '--cluster', 'beta-anywear',
       '--services', 'beta-anywear-api', 'beta-anywear-worker']);
     await phase('workload-stable-readback', async () => { await stableServices(); await readSelected(); });
-    await phase('platform-deploy', () => io.deploy(platformName, true, selected));
+    await phase('platform-deploy', () => io.deploy(platformName, selected));
     await phase('selected-runtime-qualification', async () => {
       await stableServices();
       const actual = await readSelected(); const url = outputs(actual).ApiBaseUrl;

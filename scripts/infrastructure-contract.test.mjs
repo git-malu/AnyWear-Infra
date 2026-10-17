@@ -12,7 +12,7 @@ import { qualifiedWorkflowPaths, workflowOperations, operationBoundary, families
 import { isDeploymentFamily, observationRecordType, deploymentRecordType, familyObservationRecordType } from './observation-record.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { validateOperationInputs, betaDeploymentActivity } from './runtime-operation.mjs';
+import { validateOperationInputs, assertResidentBeta } from './runtime-operation.mjs';
 import { verifyRetentionPolicy, verifyProtectedImages, verifyLifecyclePreview } from './ecr-retention.mjs';
 import { observeDeployment } from './observe-deployment.mjs';
 
@@ -325,12 +325,13 @@ test('admission operations and coherent restore require retired protected contex
     } else validateOperationInputs({ ...input, WINDOW_MINUTES: '1' });
   }
 });
-test('maintenance deployment preserves both stopped stacks and rejects either mixed or unknown state', () => {
+test('protected deploys require the resident active postcondition and reject inactive or unobservable stacks', () => {
   const stack = value => ({ Outputs: [{ OutputKey: 'BetaActive', OutputValue: value }] });
-  assert.equal(betaDeploymentActivity(stack('false'), stack('false')), false);
-  assert.equal(betaDeploymentActivity(stack('true'), stack('true')), true);
-  for (const [platform, workload] of [['true', 'false'], ['false', 'true']]) assert.throws(() => betaDeploymentActivity(stack(platform), stack(workload)), new RegExp(`Platform=${platform}, Workload=${workload}`));
-  assert.throws(() => betaDeploymentActivity(stack(undefined), stack('false')), /Both/);
+  assert.equal(assertResidentBeta(stack('true'), stack('true')), undefined);
+  for (const [platform, workload] of [['false', 'false'], ['true', 'false'], ['false', 'true']]) {
+    assert.throws(() => assertResidentBeta(stack(platform), stack(workload)), /Resident Beta requires active/);
+  }
+  assert.throws(() => assertResidentBeta(stack(undefined), stack('true')), /Both/);
 });
 test('deployment strict binding rejects legacy, undeclared artifact and template/code/schema drift', () => {
   const record = recordWithIds(); validateDeploymentRecord(record);

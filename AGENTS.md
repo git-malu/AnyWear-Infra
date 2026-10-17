@@ -42,17 +42,16 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   Enumerate conflicting Actions, local processes, CloudFormation operations and
   ECS/helper tasks; timeout does not establish cessation. Repository concurrency
   is not a cross-repository lock; migration rollout stays separately coordinated.
-- Maintenance deploys preserve both observed Platform and Workload activity.
-  Unknown/mixed state fails with concrete evidence. Stop failures never implicitly
-  start stacks or reopen admission; inactive CDK deploys use `--no-rollback` so
-  native CFN failure cannot silently reactivate resources; preserve actual state and select start
-  separately. Requested flags do not prove stopped state after CFN rollback.
-- Use the six bounded Beta entry points in the [operations catalog](README.md#operations):
+- Beta is resident. Every protected deploy takes the active path and its postcondition
+  is both Beta stacks reporting `BetaActive=true`; no operation switches
+  `environmentRunning` or selects the dormant stopped template. A stack observed
+  inactive is an out-of-band invariant violation that fails closed in verification,
+  never a lifecycle state to maintain.
+- Use the five bounded Beta entry points in the [operations catalog](README.md#operations):
   `runtime.yml` is fixed task-mutating qualified observation for E2E compatibility;
   `beta-observe.yml` is read-only state with restricted STS credentials and works
-  with activation disabled; lifecycle, deployment/recovery, schema and admission
-  each reject cross-family operations before credentials. Start/reactivation
-  requires explicit user consent. Preserve session restrictions for final
+  with activation disabled; deployment/recovery, schema and admission each reject
+  cross-family operations before credentials. Preserve session restrictions for final
   qualification, actual workflow record identity and the existing v2 E2E producer
   boundary. Existing OIDC trust is repository/environment scoped, not workflow
   scoped; source/session checks do not narrow inherited task-role or downstream
