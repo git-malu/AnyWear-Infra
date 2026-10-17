@@ -1,5 +1,5 @@
-name: Reviewed Beta operation
-description: Verify reviewed source and immutable Service inputs before family-restricted AWS sessions
+name: Execute reviewed Beta operation
+description: Execute the operation under a restricted OIDC session, observe the accepted record and finalize evidence
 inputs:
   app_private_key:
     required: true
@@ -10,6 +10,9 @@ inputs:
   beta_sizing_telemetry:
     default: preserve
     description: Beta sizing telemetry; explicit changes belong only to active deploy-workload
+  verify_artifact:
+    default: 'true'
+    description: Bind a verify-job artifact before any credential; false only for a read-only state run with no separate verify job
 runs:
   using: composite
   steps:
@@ -18,21 +21,13 @@ runs:
         node-version: 24
     - run: npm ci
       shell: bash
-    - name: Validate operation family, committed source and stack provenance before credentials
+    - name: Bind the verified-inputs artifact to this dispatch before any credential
+      if: inputs.verify_artifact == 'true'
       shell: bash
       env:
         INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
         INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
-      run: |
-        mkdir -p deployment-evidence
-        node scripts/check-operation.mjs
-        node scripts/check-stack-sources.mjs
-    - name: Check native release verification CLI before credentials
-      shell: bash
-      run: |
-        gh --version | tee deployment-evidence/github-cli-version.txt
-        gh release verify --format json --help > /dev/null
-        gh release verify-asset --format json --help > /dev/null
+      run: node scripts/check-verified-inputs.mjs
     - name: Create read-only private artifact token
       id: app
       uses: actions/create-github-app-token@v3
