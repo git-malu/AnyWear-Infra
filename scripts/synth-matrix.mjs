@@ -101,7 +101,7 @@ for (const variant of variants) {
   }
 }
 const report = { ...source, generated_at: new Date().toISOString(), variants, phases,
-  comparison_kind: 'service-source-simulation', legacy_role_ownership: 'cdk',
+  comparison_kind: 'service-source-simulation', legacy_role_source: 'cdk',
   retention_protection: ecrImageRetention,
   accepted: reports.length ? reports.every((entry) => entry.accepted) : null, comparisons: reports };
 writeFileSync(path.join(output, 'comparison.json'), `${JSON.stringify(report, null, 2)}\n`);
