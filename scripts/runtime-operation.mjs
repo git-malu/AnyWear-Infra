@@ -9,10 +9,11 @@ import { runBetaLifecycle, workloadRevision } from '../.github/scripts/beta-life
 import { runRuntimeVerification } from './verify-runtime-task.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
+import { parseWindowMinutes } from './admission-window.mjs';
 import { createOperationRecord, recordRecovery } from './operation-record.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
-import { runCloseAdmission } from './admission-operation.mjs';
+import { runCloseAdmission, runOpenAdmission } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
@@ -34,10 +35,13 @@ export function validateOperationInputs(env = process.env) {
   if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
   if (!HASH.test(env.SELECTION_SHA256 ?? '')) throw new Error('Explicit selection hash required');
   if (!/^selections\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(env.SELECTION_FILE ?? '')) throw new Error('Selection must be a reviewed repository file');
-  if (['close-admission', 'restore-release'].includes(env.INFRA_OPERATION)) {
+  if (['close-admission', 'open-admission', 'restore-release'].includes(env.INFRA_OPERATION)) {
     if (env.INFRA_IDENTITY_PHASE !== 'retired' || env.INFRA_RETENTION_PROTECTION !== 'true') throw new Error('Admission and release recovery require retired identity and protected retention');
     if (normalizeTesterEmails(env.TESTER_EMAILS) !== '[]') throw new Error('Admission and release recovery accept no tester mutation payload');
   }
+  // An admission window is only bounded if the bound is a required input. The
+  // shared parser is the same one that builds and checks the payload bytes.
+  if (env.INFRA_OPERATION === 'open-admission') parseWindowMinutes(env.WINDOW_MINUTES);
   if (env.INFRA_OPERATION.startsWith('tester-')) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
     if (env.INFRA_OPERATION === 'tester-status' && payload !== '[]') throw new Error('Tester status accepts no mutation payload');
@@ -300,6 +304,7 @@ export async function runOperation(env = process.env) {
     await runBetaLifecycle(operation, io, { selectedRevision });
   } else if (operation === 'stop') await runBetaLifecycle(operation, io);
   else if (operation === 'close-admission') await runCloseAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
+  else if (operation === 'open-admission') await runOpenAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
   else if (operation === 'restore-release') await runRestoreRelease({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
   else if (operation.startsWith('tester-')) await runTesterAllowlist(operation.slice(7), env.TESTER_EMAILS, io, selector);
   else if (operation !== 'observe') {
