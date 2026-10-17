@@ -92,7 +92,7 @@ and must not be relabeled as an Infra-produced deployment.
   deploys through `beta-service-deploy-role` (CloudFormation change sets for
   `AnyWearWorkloadStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`;
   the CDK CLI's own-credentials path: the `cdk-bootstrap/hnb659fds/version`
-  parameter and object/bucket-location access to the dedicated
+  parameter, list/object/bucket-location access to the dedicated
   `cdk-hnb659fds-assets-<account>-<region>` bucket)
   and `beta-service-deploy-cfn-role` (CloudFormation trust only, the Workload
   stack's resource families and its four task roles). Neither assumes a

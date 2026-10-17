@@ -158,9 +158,10 @@ export class FoundationStack extends cdk.Stack {
     // CloudFormation execution role. The CLI path therefore reads the bootstrap
     // version itself and publishes the synthesized template asset, `<hash>.json`
     // at the root of the dedicated CDK assets bucket. The pinned aws-cdk CLI's
-    // file-asset publish path checks bucket ownership with `GetBucketLocation`
-    // before uploading and fails the publish on AccessDenied, so that bucket-level
-    // read is part of the same narrow path (see test/infra.test.ts).
+    // file-asset publish path lists the object key and checks bucket ownership
+    // (`ListBucket`, `GetBucketLocation`) before uploading, and a denial fails the
+    // publish, so those bucket-level reads are part of the same narrow path (see
+    // test/infra.test.ts).
     const bootstrapVersion = slashArn('ssm', 'parameter', 'cdk-bootstrap/hnb659fds/version');
     const cdkAssetsBucket = this.formatArn({
       service: 's3', region: '', account: '', resource: `cdk-hnb659fds-assets-${this.account}-${this.region}`,
@@ -188,17 +189,20 @@ export class FoundationStack extends cdk.Stack {
       resources: [slashArn('ecr', 'repository', 'beta-anywear-service')],
     }));
     // The CLI's own-credentials path: only the bootstrap version parameter and
-    // the dedicated assets bucket, and only the object read/write the template
-    // publish needs. No bootstrap role assumption, no ListBucket, no bucket
-    // configuration and no other bucket.
+    // the dedicated assets bucket, and only the reads/writes the template publish
+    // and the CloudFormation template read need. No bootstrap role assumption, no
+    // bucket configuration and no other bucket.
     serviceDeploy.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:GetParameter'], resources: [bootstrapVersion],
     }));
     serviceDeploy.addToPolicy(new iam.PolicyStatement({
       actions: ['s3:PutObject', 's3:GetObject'], resources: [`${cdkAssetsBucket}/*`],
     }));
+    // The publish path lists the root object key before uploading, and both the
+    // ownership check behind it (`GetBucketLocation`) and that listing operate on
+    // the bucket itself.
     serviceDeploy.addToPolicy(new iam.PolicyStatement({
-      actions: ['s3:GetBucketLocation'], resources: [cdkAssetsBucket],
+      actions: ['s3:ListBucket', 's3:GetBucketLocation'], resources: [cdkAssetsBucket],
     }));
 
     const taskDefinitions = ['api', 'worker'].map((service) => (

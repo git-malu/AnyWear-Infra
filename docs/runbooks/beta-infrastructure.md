@@ -26,7 +26,7 @@ chain, and that path needs the deferred Foundation deploy (the two Service deplo
 roles from step A, plus the round-3 CLI-path grants to `beta-service-deploy-role`:
 the `cdk-bootstrap/hnb659fds/version` parameter, the dedicated
 `cdk-hnb659fds-assets-650880818323-ap-east-1` template object, and that bucket's
-location read; no `cdk-hnb659fds-*` role assumption) and Service's own
+list and location reads; no `cdk-hnb659fds-*` role assumption) and Service's own
 `ENABLE_BETA_MUTATION=true`. Until that
 round no workload deploy may be attempted from anywhere, and no Infra entry may
 re-add one. The committed `selection`/`stack_sources` contract, its double-write

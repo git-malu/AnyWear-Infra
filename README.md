@@ -71,8 +71,9 @@ sets for `AnyWearWorkloadStack-beta`, `ssm:GetParameter*` under
 `/anywear/beta/`, `ecr:DescribeImages` on `beta-anywear-service`, plus the CDK
 CLI's own-credentials path: `ssm:GetParameter` on
 `cdk-bootstrap/hnb659fds/version`, `s3:PutObject`/`s3:GetObject` on
-`cdk-hnb659fds-assets-650880818323-ap-east-1/*` and that bucket's
-`s3:GetBucketLocation`) and `beta-service-deploy-cfn-role` (trusted by
+`cdk-hnb659fds-assets-650880818323-ap-east-1/*` and
+`s3:ListBucket`/`s3:GetBucketLocation` on that bucket) and
+`beta-service-deploy-cfn-role` (trusted by
 `cloudformation.amazonaws.com`; the
 Workload stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
 load-balancer-ingress and four task-role families). Neither role assumes a

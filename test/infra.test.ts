@@ -955,7 +955,7 @@ describe('Explicit infrastructure identity cutover', () => {
       Resource: 'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
     });
     expect(normalized(deploy)).toContainEqual({
-      Action: 's3:GetBucketLocation', Effect: 'Allow',
+      Action: ['s3:GetBucketLocation', 's3:ListBucket'], Effect: 'Allow',
       Resource: 'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
     });
 
@@ -964,8 +964,8 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(actions(deploy)).toEqual([
       'cloudformation:*', 'cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet',
       'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks', 'ecr:DescribeImages', 'iam:PassRole',
-      's3:GetBucketLocation', 's3:GetObject', 's3:PutObject', 'ssm:GetParameter', 'ssm:GetParameter',
-      'ssm:GetParameters', 'ssm:GetParametersByPath',
+      's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject', 'ssm:GetParameter',
+      'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
     ]);
     expect(deploy.every((statement) => statement.Effect === 'Allow')).toBe(true);
     expect(resourcesOf(deploy)).toEqual(new Set([
@@ -1068,7 +1068,7 @@ describe('Explicit infrastructure identity cutover', () => {
       const serialized = JSON.stringify(statements);
       expect(allActions).not.toContain('*');
       for (const forbidden of ['rds:', 'cognito-idp:', 'sqs:', 'secretsmanager:', 'kms:',
-        's3:DeleteObject', 's3:ListBucket', 's3:PutBucketAcl', 's3:PutObjectAcl',
+        's3:DeleteObject', 's3:PutBucketAcl', 's3:PutObjectAcl',
         'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
         'ecr:CreateRepository', 'ec2:CreateVpc', 'ec2:DeleteVpc', 'ec2:ModifyVpcAttribute',
         'ec2:CreateSubnet', 'ec2:DeleteSubnet', 'ec2:CreateSecurityGroup', 'ec2:DeleteSecurityGroup',
@@ -1093,7 +1093,7 @@ describe('Explicit infrastructure identity cutover', () => {
     }
     // The only object write either role holds is the template asset in the
     // dedicated CDK assets bucket; no other bucket, bucket configuration or
-    // listing grant returns with it.
+    // object deletion grant returns with it.
     const cdkAssetsBucketArns = new Set([
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
@@ -1101,9 +1101,9 @@ describe('Explicit infrastructure identity cutover', () => {
     const deployS3Resources = [...resourcesOf(deploy)].filter((resource) => resource.startsWith('arn:aws:s3:::'));
     expect(new Set(deployS3Resources)).toEqual(cdkAssetsBucketArns);
     expect(actions(deploy).filter((action) => action.startsWith('s3:')))
-      .toEqual(['s3:GetBucketLocation', 's3:GetObject', 's3:PutObject']);
+      .toEqual(['s3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject']);
     for (const forbidden of ['s3:CreateBucket', 's3:DeleteBucket', 's3:PutBucketPolicy', 's3:DeleteBucketPolicy',
-      's3:PutBucketPublicAccessBlock', 's3:DeleteBucketPublicAccessBlock', 's3:ListBucket', 's3:DeleteObject']) {
+      's3:PutBucketPublicAccessBlock', 's3:DeleteBucketPublicAccessBlock', 's3:DeleteObject']) {
       expect(actions(deploy)).not.toContain(forbidden);
     }
     expect(resourcesOf(cfn).has('arn:aws:s3:::anywearworkloadstack-beta-*')).toBe(true);
