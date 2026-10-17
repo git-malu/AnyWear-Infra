@@ -4,7 +4,6 @@ import { Template } from 'aws-cdk-lib/assertions';
 import { BillingStack } from '../lib/billing-stack';
 import { FoundationStack } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
-import { WorkloadStack } from '../lib/workload-stack';
 import { stageContractInputs } from '../lib/stage-contract';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import * as path from 'node:path';
@@ -24,13 +23,6 @@ function synthesizePlatform(stage: string, environmentRunning?: boolean, identit
   const app = new cdk.App();
   const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, environmentRunning, artifactInputs, identityPhase });
   return Template.fromStack(stack).toJSON();
-}
-
-function synthesizeWorkload(stage: 'beta' | 'prod', environmentRunning?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
-  const app = new cdk.App();
-  const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, environmentRunning, artifactInputs, identityPhase });
-  const workload = new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, { stage, platform, environmentRunning });
-  return Template.fromStack(workload).toJSON();
 }
 
 function synthesizeFoundation(identityPhase?: IdentityPhase): Record<string, any> {
@@ -115,7 +107,7 @@ function policyValueUpperBound(value: any, template: Record<string, any>): any {
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, policyValueUpperBound(entry, template)]));
 }
 
-describe('Platform and workload safety controls', () => {
+describe('Platform safety controls', () => {
   it.each([
     ['dev', true, 'c45a8484eff8aabe92a894d5db6df813457ec863678a55eba153605d00098161'],
     // Includes the Beta-only scoped AdminInitiateAuth grant. The Beta hash moves
@@ -439,198 +431,6 @@ describe('Platform and workload safety controls', () => {
     }
   });
 
-  it('keeps versioned API and worker compute in WorkloadStack', () => {
-    const template = synthesizeWorkload('beta');
-    const resources = Object.values(template.Resources) as any[];
-    const taskDefinitions = resources.filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition');
-    const services = resources.filter((resource) => resource.Type === 'AWS::ECS::Service');
-    const taskRoles = resources.filter((resource) => (
-      resource.Type === 'AWS::IAM::Role'
-      && resource.Properties?.AssumeRolePolicyDocument?.Statement?.some(
-        (statement: any) => statement.Principal?.Service === 'ecs-tasks.amazonaws.com',
-      )
-    ));
-
-    expect(taskDefinitions).toHaveLength(2);
-    expect(services).toHaveLength(2);
-    expect(taskRoles).toHaveLength(4);
-    expect(template.Parameters.ServiceImageDigest.AllowedPattern).toBe('^sha256:[a-f0-9]{64}$');
-    expect(template.Parameters.ServiceCommitSha.AllowedPattern).toBe('^[a-f0-9]{40}$');
-    expect(template.Parameters.CloudFrontPrefixListId.AllowedPattern).toBe('^pl-[a-z0-9]+$');
-    expect(template.Parameters.CloudFrontOriginHeaderValue).toBeUndefined();
-    const distribution = Object.values(template.Resources).find(
-      (resource: any) => resource.Type === 'AWS::CloudFront::Distribution',
-    ) as any;
-    const originHeader = distribution.Properties.DistributionConfig.Origins[0].OriginCustomHeaders[0];
-    expect(JSON.stringify(originHeader.HeaderValue)).toContain('resolve:secretsmanager:');
-    const apiContainer = taskDefinitions
-      .flatMap((task: any) => task.Properties.ContainerDefinitions)
-      .find((container: any) => container.Name === 'ApiContainer');
-    const qweatherSecret = apiContainer.Secrets.find((secret: any) => secret.Name === 'QWEATHER_API_KEY');
-    expect(JSON.stringify(qweatherSecret.ValueFrom))
-      .toContain('/anywear/beta/qweather_api_key');
-    const cleanupMachineAuthSecret = apiContainer.Secrets.find(
-      (secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET',
-    );
-    expect(JSON.stringify(cleanupMachineAuthSecret?.ValueFrom))
-      .toContain('/anywear/beta/cleanup_machine_auth');
-    const workerContainer = taskDefinitions
-      .flatMap((task: any) => task.Properties.ContainerDefinitions)
-      .find((container: any) => container.Name === 'WorkerContainer');
-    expect(workerContainer.Secrets.some((secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET')).toBe(false);
-    const apiTaskRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
-      resource.Type === 'AWS::IAM::Role' && resource.Properties?.RoleName === 'beta-anywear-api-task'
-    ))?.[0];
-    const apiTaskPolicy = Object.values(template.Resources).find((resource: any) => (
-      resource.Type === 'AWS::IAM::Policy'
-      && resource.Properties?.Roles?.some((role: any) => role.Ref === apiTaskRoleId)
-    )) as any;
-    expect(JSON.stringify(apiTaskPolicy.Properties.PolicyDocument.Statement))
-      .toContain('/anywear/beta/cleanup_machine_auth-??????');
-    const workerTaskRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
-      resource.Type === 'AWS::IAM::Role' && resource.Properties?.RoleName === 'beta-anywear-worker-task'
-    ))?.[0];
-    const workerTaskPolicy = Object.values(template.Resources).find((resource: any) => (
-      resource.Type === 'AWS::IAM::Policy'
-      && resource.Properties?.Roles?.some((role: any) => role.Ref === workerTaskRoleId)
-    )) as any;
-    expect(JSON.stringify(workerTaskPolicy.Properties.PolicyDocument.Statement))
-      .not.toContain('/anywear/beta/cleanup_machine_auth');
-    const productionContainers = (Object.values(synthesizeWorkload('prod').Resources) as any[])
-      .filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition')
-      .flatMap((task: any) => task.Properties.ContainerDefinitions);
-    expect(productionContainers.some((container: any) => (
-      container.Secrets?.some((secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET')
-    ))).toBe(false);
-    const qweatherHost = apiContainer.Environment.find((entry: any) => entry.Name === 'QWEATHER_API_HOST');
-    expect(qweatherHost).toBeDefined();
-    expect(qweatherHost.Value.Ref).toMatch(/^SsmParameterValue/);
-  });
-
-  it('reduces only the active Beta API baseline to one task and keeps Production HA', () => {
-    const beta = Object.values(synthesizeWorkload('beta').Resources) as any[];
-    const prod = Object.values(synthesizeWorkload('prod').Resources) as any[];
-    const service = (resources: any[], name: string) => resources.find((resource) => (
-      resource.Type === 'AWS::ECS::Service' && resource.Properties?.ServiceName === name
-    ));
-    const target = (resources: any[], logicalId: string) => resources.find((resource) => (
-      resource.Type === 'AWS::ApplicationAutoScaling::ScalableTarget' && resource.__logicalId === logicalId
-    ));
-    const betaTargetId = Object.keys(synthesizeWorkload('beta').Resources).find((id) => id.includes('ApiServiceTaskCountTarget'))!;
-    const prodTargetId = Object.keys(synthesizeWorkload('prod').Resources).find((id) => id.includes('ApiServiceTaskCountTarget'))!;
-    const betaWithIds = Object.entries(synthesizeWorkload('beta').Resources).map(([id, resource]) => ({ ...(resource as any), __logicalId: id }));
-    const prodWithIds = Object.entries(synthesizeWorkload('prod').Resources).map(([id, resource]) => ({ ...(resource as any), __logicalId: id }));
-    expect(service(beta, 'beta-anywear-api').Properties.DesiredCount).toBe(1);
-    expect(service(beta, 'beta-anywear-worker').Properties.DesiredCount).toBe(1);
-    expect(target(betaWithIds, betaTargetId).Properties.MinCapacity).toBe(1);
-    expect(service(prod, 'prod-anywear-api').Properties.DesiredCount).toBe(2);
-    expect(target(prodWithIds, prodTargetId).Properties.MinCapacity).toBe(2);
-  });
-
-  it.each(['legacy', 'roles-added', 'retired'] as const)(
-    'synthesizes the Beta S2 API candidate while preserving Worker and helper sizes in %s', (phase) => {
-      const template = synthesizeWorkload('beta', true, phase);
-      const tasks = Object.values(template.Resources).filter((resource: any) => (
-        resource.Type === 'AWS::ECS::TaskDefinition'
-      )) as any[];
-      const task = (family: string) => tasks.find((resource) => resource.Properties.Family === family);
-      expect(template.Parameters.BetaApiSizingProfile).toMatchObject({ Default: 's1', AllowedValues: ['s1', 's2-api'] });
-      expect(template.Conditions.BetaApiS2).toEqual({ 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] });
-      expect(template.Parameters.BetaSizingTelemetry).toMatchObject({ Type: 'String', Default: 'false', AllowedValues: ['false', 'true'] });
-      for (const family of ['beta-anywear-api', 'beta-anywear-worker']) {
-        expect(task(family).Properties.ContainerDefinitions[0].Environment.filter((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY'))
-          .toEqual([{ Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } }]);
-      }
-      for (const profile of ['s1', 's2-api']) {
-        const resolveSize = (value: any) => {
-          const [condition, whenTrue, whenFalse] = value['Fn::If'];
-          const [parameter, expected] = template.Conditions[condition]['Fn::Equals'];
-          expect(parameter).toEqual({ Ref: 'BetaApiSizingProfile' });
-          return profile === expected ? whenTrue : whenFalse;
-        };
-        expect([resolveSize(task('beta-anywear-api').Properties.Cpu), resolveSize(task('beta-anywear-api').Properties.Memory)])
-          .toEqual(profile === 's1' ? ['512', '1024'] : ['256', '512']);
-      }
-      expect(task('beta-anywear-worker').Properties).toMatchObject({ Cpu: '1024', Memory: '2048' });
-      if (phase !== 'legacy') {
-        for (const family of ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup']) {
-          expect(task(family).Properties).toMatchObject({ Cpu: '512', Memory: '1024' });
-          expect(task(family).Properties.ContainerDefinitions[0].Environment.some((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY')).toBe(false);
-        }
-      }
-      const resources = Object.values(template.Resources) as any[];
-      for (const name of ['beta-anywear-api', 'beta-anywear-worker']) {
-        expect(resources.find((resource) => resource.Type === 'AWS::ECS::Service'
-          && resource.Properties.ServiceName === name).Properties.DesiredCount).toBe(1);
-      }
-      const targets = resources.filter((resource) => resource.Type === 'AWS::ApplicationAutoScaling::ScalableTarget');
-      expect(targets).toHaveLength(2);
-      expect(targets.map((resource) => resource.Properties.MinCapacity)).toEqual([1, 1]);
-    },
-  );
-
-  it('preserves Production API and Worker sizes outside the Beta S2 candidate', () => {
-    const tasks = Object.values(synthesizeWorkload('prod').Resources).filter((resource: any) => (
-      resource.Type === 'AWS::ECS::TaskDefinition'
-    )) as any[];
-    expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-api').Properties)
-      .toMatchObject({ Cpu: '512', Memory: '1024' });
-    expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-worker').Properties)
-      .toMatchObject({ Cpu: '1024', Memory: '2048' });
-    expect(synthesizeWorkload('prod').Parameters.BetaApiSizingProfile).toBeUndefined();
-    expect(synthesizeWorkload('prod').Parameters.BetaSizingTelemetry).toBeUndefined();
-    for (const task of tasks) {
-      expect(task.Properties.ContainerDefinitions[0].Environment.some((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY')).toBe(false);
-    }
-  });
-
-  it('publishes a fixed, versioned Beta cleanup state machine with E2E read-only execution', () => {
-    const template = synthesizeWorkload('beta', true, 'roles-added');
-    const resources = Object.values(template.Resources) as any[];
-    const machines = resources.filter((resource) => resource.Type === 'AWS::StepFunctions::StateMachine');
-    const versions = resources.filter((resource) => resource.Type === 'AWS::StepFunctions::StateMachineVersion');
-    const definitions = resources.filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition');
-    expect(machines).toHaveLength(1);
-    expect(machines[0].Properties.StateMachineType).toBe('STANDARD');
-    expect(machines[0].Properties.StateMachineName).toBe('beta-anywear-tester-cleanup');
-    expect(versions).toHaveLength(1);
-    expect(Object.keys(template.Outputs)).toContain('CleanupOperationCleanupStateMachineArn3993CAF0');
-    expect(definitions.map((definition) => definition.Properties.Family)).toEqual(expect.arrayContaining([
-      'beta-anywear-cleanup-verify', 'beta-anywear-cleanup',
-    ]));
-    const definition = JSON.stringify(machines[0].Properties.DefinitionString);
-    expect(definition).toContain('beta-cleanup-operation.js');
-    expect(definition).toContain('cleanup_request');
-    const policies = resources.filter((resource) => resource.Type === 'AWS::IAM::Policy');
-    const e2ePolicy = policies.find((policy) => JSON.stringify(policy.Properties.Roles).includes('beta-e2e-qualification-role'));
-    const startExecution = e2ePolicy.Properties.PolicyDocument.Statement.find((statement: any) =>
-      [statement.Action].flat().includes('states:StartExecution'));
-    expect(startExecution).toBeDefined();
-    expect([startExecution.Resource].flat()).toHaveLength(2);
-    expect(JSON.stringify(startExecution.Resource)).toContain('CleanupOperationStateMachine');
-    expect(JSON.stringify(startExecution.Resource)).toContain('CleanupOperationStateMachineVersion');
-    expect(JSON.stringify(startExecution.Resource)).not.toContain('*');
-    expect(JSON.stringify(e2ePolicy)).toContain('states:DescribeExecution');
-    expect(JSON.stringify(e2ePolicy)).toContain('states:GetExecutionHistory');
-    expect(JSON.stringify(e2ePolicy)).not.toContain('ecs:RunTask');
-  });
-
-  it('stops only Beta paid workload resources while preserving CloudFront and maintenance origin', () => {
-    const template = synthesizeWorkload('beta', false);
-    const resources = Object.values(template.Resources) as any[];
-    expect(resources.filter((resource) => resource.Type === 'AWS::ECS::Service')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::LoadBalancer')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::Listener')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::CloudFront::Distribution')).toHaveLength(1);
-    expect(resources.filter((resource) => resource.Type === 'AWS::S3::Bucket')).toHaveLength(1);
-    expect(template.Outputs.BetaActive.Value).toBe('false');
-    expect(template.Outputs.ApiBaseUrl).toBeDefined();
-    expect(template.Parameters.BetaApiSizingProfile.Default).toBe('s1');
-    expect(template.Parameters.BetaApiSizingProfile.AllowedValues).toEqual(['s1', 's2-api']);
-    expect(template.Parameters.BetaSizingTelemetry.Default).toBe('false');
-    expect(template.Parameters.BetaSizingTelemetry.AllowedValues).toEqual(['false', 'true']);
-  });
 
   it('allows the Beta database to pause at zero ACU after five minutes without connections', () => {
     const resources = Object.values(synthesizePlatform('beta').Resources) as any[];
@@ -664,39 +464,6 @@ describe('Platform and workload safety controls', () => {
     expect(template.Outputs.BetaActive.Value).toBe('false');
   });
 
-  it('uses CloudFront HTTPS with caching disabled and restricts direct ALB traffic', () => {
-    const template = synthesizeWorkload('beta');
-    const resources = Object.values(template.Resources) as any[];
-    const distributions = resources.filter((resource) => resource.Type === 'AWS::CloudFront::Distribution');
-    const listeners = resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::Listener');
-    const listenerRules = resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::ListenerRule');
-    const prefixIngress = resources.find((resource) => (
-      resource.Type === 'AWS::EC2::SecurityGroupIngress'
-      && resource.Properties?.SourcePrefixListId?.Ref === 'CloudFrontPrefixListId'
-    ));
-
-    expect(distributions).toHaveLength(1);
-    expect(distributions[0].Properties.DistributionConfig.DefaultCacheBehavior.CachePolicyId)
-      .toBe('4135ea2d-6df8-44a3-9df3-4b5a84be39ad');
-    expect(distributions[0].Properties.DistributionConfig.Origins[0].OriginCustomHeaders[0].HeaderName)
-      .toBe('X-AnyWear-Origin-Verify');
-    expect(distributions[0].Properties.DistributionConfig.Origins[0].CustomOriginConfig.OriginReadTimeout)
-      .toBe(60);
-    expect(distributions[0].Properties.DistributionConfig.Origins[0].ResponseCompletionTimeout)
-      .toBeUndefined();
-    expect(listeners).toHaveLength(1);
-    expect(listenerRules).toHaveLength(1);
-    expect(prefixIngress).toBeDefined();
-  });
-
-  it('adds queue, DLQ, and API failure alarms with the Beta operations topic', () => {
-    const alarms = Object.values(synthesizeWorkload('beta').Resources).filter(
-      (resource: any) => resource.Type === 'AWS::CloudWatch::Alarm'
-        && resource.Properties?.AlarmName?.startsWith('beta-anywear-'),
-    );
-    expect(alarms).toHaveLength(5);
-    expect(alarms.every((alarm: any) => alarm.Properties.AlarmActions?.length === 1)).toBe(true);
-  });
 
   it('keeps billing controls out of regional platform stacks', () => {
     const betaResources = Object.values(synthesizePlatform('beta').Resources) as any[];

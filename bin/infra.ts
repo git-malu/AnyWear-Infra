@@ -3,7 +3,6 @@ import * as cdk from 'aws-cdk-lib/core';
 import { BillingStack } from '../lib/billing-stack';
 import { FoundationStack } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
-import { WorkloadStack } from '../lib/workload-stack';
 import { loadArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
 import { readLegacyRoleSource } from '../lib/legacy-role-source';
@@ -59,7 +58,12 @@ const environmentRunning = environmentRunningContext !== 'false' && environmentR
 const qWeatherApiHost = app.node.tryGetContext('qweatherApiHost')
   || process.env.QWEATHER_API_HOST
   || DEFAULT_QWEATHER_API_HOST;
-const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
+// Infra owns the account-wide Foundation/Billing stacks and the stage base only.
+// The release slice (`AnyWearWorkloadStack-beta` / `-prod`) was moved to
+// AnyWear-Service in #158 step B and is deployed from Service's own release
+// chain; this app must not synthesize or deploy it. The stage base publishes the
+// values that slice consumes as `/anywear/<stage>/...` SSM parameters.
+new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
   stage,
   artifactInputs,
   identityPhase,
@@ -71,14 +75,5 @@ const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
 
 if (stage === 'beta') {
   new BillingStack(app, 'AnyWearBillingStack-beta', { stage, env: billingEnv });
-}
-
-if (stage === 'beta' || stage === 'prod') {
-  new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, {
-    stage,
-    platform,
-    environmentRunning,
-    env,
-  });
 }
 }

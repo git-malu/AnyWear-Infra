@@ -33,14 +33,11 @@
     "beta-active/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
     "beta-active/AnyWearPlatformStack-beta.template.json": "4d96329d1a5520a596f6040577b140ccc89730c47eb24221a122436a20d1b364",
-    "beta-active/AnyWearWorkloadStack-beta.template.json": "753bc573da590520cfa6848620439046ccab4607ee242e1b24e030f6add173a5",
     "beta-stopped/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-stopped/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
     "beta-stopped/AnyWearPlatformStack-beta.template.json": "c0f6071987430afc4ae403c22caa231a5848f75c135ed8fa9525a8496a6f9069",
-    "beta-stopped/AnyWearWorkloadStack-beta.template.json": "9cb6bf6fe82aa0cd3809993df0c64eca520aa6a5861c973ac2557e815118f272",
     "prod-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "prod-active/AnyWearPlatformStack-prod.template.json": "6518a05b639025ff99bdedbf6600a6fc2500eba61b1f07b9ce40d7f4678bd312",
-    "prod-active/AnyWearWorkloadStack-prod.template.json": "047afdb88fb2bde43905914aa8069ee6287df13ed2ead595fee2d4b86fb8dbfa"
+    "prod-active/AnyWearPlatformStack-prod.template.json": "6518a05b639025ff99bdedbf6600a6fc2500eba61b1f07b9ce40d7f4678bd312"
   },
   "scope": "Source synth comparison only. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes."
 }

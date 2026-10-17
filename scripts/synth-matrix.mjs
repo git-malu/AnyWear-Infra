@@ -52,7 +52,9 @@ if (baselineTemplates) {
   const cdkVersion = JSON.parse(readFileSync(path.join(repository, 'node_modules/aws-cdk-lib/package.json'), 'utf8')).version;
   assert.equal(provenance.cdk_version, cdkVersion, 'CDK version differs from the resource baseline');
   for (const [file, hash] of Object.entries(provenance.templates)) {
-    assert.match(file, /^(dev-active|beta-active|beta-stopped|prod-active)\/AnyWear(?:Foundation|Platform|Workload|Billing)Stack(?:-(?:dev|beta|prod))?\.template\.json$/);
+    // The release slice is Service's baseline; this repository's baseline set is
+    // exactly the stack set this app still synthesizes.
+    assert.match(file, /^(dev-active|beta-active|beta-stopped|prod-active)\/AnyWear(?:Foundation|Platform|Billing)Stack(?:-(?:dev|beta|prod))?\.template\.json$/);
     assert.match(hash, /^[a-f0-9]{64}$/);
     assert.equal(createHash('sha256').update(readFileSync(path.join(baselineTemplates, file))).digest('hex'), hash,
       `Baseline template integrity: ${file}`);
