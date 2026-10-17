@@ -36,14 +36,7 @@ export const operationFamilies = Object.freeze({
 
 // Live entries that execute verification. Every other path is a dispatch surface
 // only: `check.yml` is automatic and `production.yml` is `workflow_call`-only.
-export const liveQualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.yml', '.github/workflows/mutate.yml']);
-// Transitional executor allowance: `scripts/restore-release.test.mjs` builds its
-// environment from the retired `beta-deploy.yml` ref, and the #159 restore-release
-// fix PR owns that file pair until it merges. `deployment-contract.mjs` already
-// retains the retired E2E `integration.yml` path as historical executor evidence;
-// this allowance is removed with the same follow-up that repoints restore-release.
-export const transitionalExecutorPaths = Object.freeze(['.github/workflows/beta-deploy.yml']);
-export const qualifiedWorkflowPaths = Object.freeze([...liveQualifiedWorkflowPaths, ...transitionalExecutorPaths]);
+export const qualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.yml', '.github/workflows/mutate.yml']);
 
 export function operationBoundary(env) {
   const operation = env.INFRA_OPERATION;

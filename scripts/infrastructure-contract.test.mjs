@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import { createTestInputs } from './create-test-inputs.mjs';
 import { validateSelection, verifySelection } from './artifact-consumer.mjs';
 import { assertNativeReleaseAttestation } from './vendor/service-release-attestation.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment, stableLambdaConfiguration } from './deployment-contract.mjs';
-import { liveQualifiedWorkflowPaths, workflowOperations, operationFamilies, operationBoundary, families } from './operation-boundaries.mjs';
+import { qualifiedWorkflowPaths, workflowOperations, operationFamilies, operationBoundary, families } from './operation-boundaries.mjs';
 import { isDeploymentFamily, observationRecordType, deploymentRecordType, familyObservationRecordType } from './observation-record.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -355,7 +355,7 @@ test('valid family observations retain actual provenance and cannot satisfy the 
   const legacy = recordWithIds();
   validateDeploymentRecord(legacy);
   assertObservedMatchesDeployment(legacy, { stacks: legacy.stacks, observed: legacy.observed, schema: legacy.schema });
-  for (const file of liveQualifiedWorkflowPaths.filter(file => !file.endsWith('/runtime.yml'))) {
+  for (const file of qualifiedWorkflowPaths.filter(file => !file.endsWith('/runtime.yml'))) {
     const record = recordWithIds();
     record.record_type = 'anywear_infra_family_observation';
     record.infra.workflow_path = file;

@@ -26,7 +26,7 @@ const stackRead = async (io, name) => (await io.aws(['cloudformation', 'describe
 function assertContext(infraSha, env) {
   assertVerificationExecutor(infraSha, env);
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || !SHA.test(infraSha ?? '') || env.GITHUB_SHA !== infraSha
-    || env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-Infra/.github/workflows/beta-deploy.yml@refs/heads/main') {
+    || env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main') {
     throw new Error('Restore requires the reviewed Infra executor source');
   }
   if (env.INFRA_IDENTITY_PHASE !== 'retired' || env.INFRA_RETENTION_PROTECTION !== 'true') {

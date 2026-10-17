@@ -7,8 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { workflowOperations, operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed,
-  operationEvidence, lifecycleActions, families, qualifiedWorkflowPaths, liveQualifiedWorkflowPaths, transitionalExecutorPaths,
-  operationFamilies } from './operation-boundaries.mjs';
+  operationEvidence, lifecycleActions, families, qualifiedWorkflowPaths, operationFamilies } from './operation-boundaries.mjs';
 import { admissionWindowPayload } from './admission-window.mjs';
 import { validateOperationInputs, credentialEnvironment, createRuntimeIo } from './runtime-operation.mjs';
 import { createTestInputs, stackManifestFixture } from './create-test-inputs.mjs';
@@ -525,10 +524,10 @@ test('record families derive from the operation so runtime.yml state can never b
     if (operation === 'state') assert.notEqual(boundary.family, 'runtime');
     if (operation === 'observe') assert.equal(boundary.family, 'runtime');
   }
-  assert.deepEqual(liveQualifiedWorkflowPaths, [runtimeEntry, mutateEntry]);
-  // Transitional executor allowance for the #159 restore-release test pair.
-  assert.deepEqual(transitionalExecutorPaths, ['.github/workflows/beta-deploy.yml']);
-  assert.deepEqual(qualifiedWorkflowPaths, [runtimeEntry, mutateEntry, '.github/workflows/beta-deploy.yml']);
+  assert.deepEqual(qualifiedWorkflowPaths, [runtimeEntry, mutateEntry]);
+  // #159's restore-release fix pins `mutate.yml`; no retired path is a verification
+  // executor any more.
+  assert.equal(qualifiedWorkflowPaths.some(file => file.endsWith('beta-deploy.yml')), false);
   const state = operationBoundary(stateEnv());
   assert.equal(state.family, 'beta-observe');
   assert.equal(state.readOnly, true);
