@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { RECOVERY_TARGETS } from './recovery-contract.mjs';
+
 // Full reviewed fixture resources include exact roles, environment, conditions,
 // retention and image bindings; an action-name match cannot authorize drift.
 const cleanupAcceptanceFixture = JSON.parse(readFileSync(new URL('../test/fixtures/cleanup-acceptance-resources.json', import.meta.url), 'utf8'));
@@ -127,6 +129,23 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
         && JSON.stringify(canonical(original.rules[0].selection)) === JSON.stringify(canonical(expected.rules[1].selection))
         && JSON.stringify(canonical(JSON.parse(difference.after))) === JSON.stringify(canonical(expected));
     }
+    // Issue #161: only the reviewed database recovery delta on the Platform
+    // cluster may pass, and only from the exact pre-change baseline value.
+    const recoveryTarget = RECOVERY_TARGETS[stage];
+    const recoveryDelta = recoveryTarget && stackName === recoveryTarget.stackName
+      && resource?.Type === 'AWS::RDS::DBCluster' && (() => {
+        const targets = {
+          BackupRetentionPeriod: recoveryTarget.pitrRetentionDays,
+          PreferredBackupWindow: recoveryTarget.preferredBackupWindow,
+          DeletionProtection: recoveryTarget.deletionProtection,
+        };
+        const prefix = `/Resources/${id}/Properties/`;
+        if (!difference.path.startsWith(prefix)) return false;
+        const property = difference.path.slice(prefix.length);
+        if (!Object.hasOwn(targets, property) || difference.after !== targets[property]) return false;
+        const baseline = property === 'DeletionProtection' ? stage === 'prod' : undefined;
+        return difference.before === baseline;
+      })();
     // CDK analytics is diagnostic metadata rather than a cloud resource update.
     const telemetry = resource?.Type === 'AWS::CDK::Metadata'
       && difference.path === `/Resources/${id}/Properties/Analytics`;
@@ -270,6 +289,7 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.path.includes('/Resources/OneShotExecutionRoleDefaultPolicy')
       && difference.path.endsWith('/Properties/PolicyDocument/Statement');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
+      || recoveryDelta
       || betaS1ReplicaReduction || betaS2ApiSize || betaSizingDeclaration
       || betaTelemetryDeclaration || betaTelemetryEnvironment
       || betaMachineAuthPolicy || betaMachineAuthContainer
@@ -277,6 +297,7 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
+          : recoveryDelta ? 'Issue #161 explicit database recovery targets'
           : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
             : betaS2ApiSize || betaSizingDeclaration ? 'Issue #95 retained Beta API size profile (S2 runtime unqualified)'
               : betaTelemetryDeclaration || betaTelemetryEnvironment ? 'Issue #95 retained Beta sizing telemetry (disabled by default)'
