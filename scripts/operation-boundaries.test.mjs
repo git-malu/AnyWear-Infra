@@ -268,6 +268,50 @@ test('the recovery-only suspend is reachable for resume-admission and nowhere it
   }
 });
 
+test('lifecycle actions that carry no payload refuse one for every operation that may run them', () => {
+  // `suspend`, `drain` and `status` are pinned by behaviour, not by shape: adding
+  // any of them to the payload table would otherwise leave the suite green.
+  for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
+    const env = envFor(file, operation);
+    for (const action of ['suspend', 'drain', 'status']) {
+      if (!lifecycleActions(operation).includes(action)) continue;
+      for (const payload of ['{}', '[]', 'null', '', '{"window_minutes":60}', '["a@example.com"]']) {
+        assert.throws(() => assertOneShotAllowed(env, 'lifecycle', action, payload), /forbidden/,
+          `${file} ${operation} ${action} ${JSON.stringify(payload)}`);
+      }
+      // The payload-free form of the same action stays allowed.
+      assertOneShotAllowed(env, 'lifecycle', action);
+    }
+  }
+});
+
+test('a hand-made lifecycle task definition cannot smuggle resume or a payload past the registration guard', () => {
+  const registration = command => ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify({
+    family: 'beta-anywear-lifecycle', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
+    executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
+    containerDefinitions: [{ name: 'OneShot', command }] })];
+  const tester = envFor('.github/workflows/beta-admission.yml', 'add-testers');
+  tester.TESTER_EMAILS = '["a@example.com"]';
+  // `resume` is not in this operation's allow-list, with or without its exact bytes.
+  assert.throws(() => assertAwsAllowed(tester,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume'])), /forbidden/);
+  assert.throws(() => assertAwsAllowed(tester,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', admissionWindowPayload(tester)])), /forbidden/);
+  // A payload on a payload-free action is refused whatever the operation.
+  const suspending = envFor('.github/workflows/beta-admission.yml', 'suspend-admission');
+  for (const action of ['suspend', 'status']) {
+    assert.throws(() => assertAwsAllowed(suspending,
+      registration(['node', 'dist/ops/beta-lifecycle.js', action, '{}'])), /forbidden/, action);
+  }
+  // The owning pair accepts exactly its own bytes and refuses a different window.
+  const resuming = envFor('.github/workflows/beta-admission.yml', 'resume-admission');
+  assertAwsAllowed(resuming, registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', admissionWindowPayload(resuming)]));
+  assert.throws(() => assertAwsAllowed(resuming,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume', '{"window_minutes":59}'])), /forbidden|payload/i);
+  assert.throws(() => assertAwsAllowed(resuming,
+    registration(['node', 'dist/ops/beta-lifecycle.js', 'resume'])), /forbidden|payload/i);
+});
+
 test('operation guards block cross-family tasks, arbitrary writes and lifecycle opening', () => {
   for (const [file, operations] of Object.entries(workflowOperations)) for (const operation of operations) {
     const env = envFor(file, operation);

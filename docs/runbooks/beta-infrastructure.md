@@ -268,7 +268,9 @@ Three values are easy to confuse, so read them as one statement:
   exactly 240 minutes must not read closed. The reader therefore treats a record
   as live while it is present, canonical, strictly in the future and no further
   ahead than 240 minutes plus that one minute. Missing, malformed, duplicated-key,
-  unknown-mode, extra-key, wrong-type, past and beyond that tolerance all read as
+  non-canonical, unknown-mode, extra-key, wrong-type, a `testers` record without a
+  canonical bound, a record carrying an explicit `null` bound, a `closed` record
+  carrying an instant, past and beyond that tolerance all read as
   closed. The tolerance never widens what can be requested.
 
 The driver's post-resume status read-back refuses a recorded expiry outside
@@ -474,6 +476,9 @@ The parameter value encoding is fixed: `{"mode":"closed"}` and
 `{"mode":"testers","expires_at":"<ISO-8601 with milliseconds and Z>"}` are the only
 accepted shapes, and each must be its own canonical JSON encoding — the same
 `JSON.stringify(JSON.parse(value)) === value` rule the Service reader applies. The
+bound is present exactly when the record is `testers`: an explicit `null` bound
+(`{"mode":"closed","expires_at":null}`) is a contradiction, not an absent bound,
+and is refused with its own reason. The
 Infra reader additionally refuses duplicate keys outright (its strict parser), so a
 hand-edited value with a repeated `mode` is not a record for either the fence or
 the admission read. The conformance table in
@@ -650,7 +655,9 @@ Service image:
 0. **With the previous Infra revision**, dispatch its admission-status operation
    (named `tester-status` there) and require the effective decision closed; record
    the observed mode, bound and tester list. That recorded tuple is the pre-state
-   the later equality proof compares against.
+   the later equality proof compares against. Dispatch it with the deployed tuple's
+   selection, `selections/beta-cleanup-150-148-5d16543.json` (Service `5d16543`,
+   release `415612529`, schema 19).
 1. **Platform deploy**: create `/anywear/beta/admission_mode` at
    `{"mode":"closed"}`, deploy the new Lambda readers and their exact
    `ssm:GetParameter`/`ssm:GetParameters` grant, and — when the additive and
@@ -658,6 +665,8 @@ Service image:
    old parameters and their grants in place. The Platform stack owns the
    parameters, the grants and the two trigger readers; no admission operation can
    create them, and the old Workload image can only write the old parameters.
+   Dispatch it with the same deployed-image selection;
+   `deploy-platform` must retain the observed running image.
 2. **`migrate`**: the forward-migration fence is satisfied by the
    CloudFormation-created `closed` value and by step 0's recorded tuple. The fence
    refuses an open window and every value that cannot *prove* closure, including a
@@ -675,6 +684,14 @@ Service image:
    skipping this step does not partially roll Beta: it produces an `incompatible
    applied schema` refusal at step 3. The migration is a separate dispatch an
    operator must run, and step 3 is possible only after it applies.
+
+   **Dispatch this step with a canonical selection for the schema-20 Service
+   release**, not the deployed tuple's selection. The operation overwrites the
+   observed revision's digest and commit with the selector's before it registers
+   the one-shot, so this step legitimately runs the *new* image's migration while
+   the old image is still deployed, and the operation record attributes the
+   migrate one-shot (task ARN, `service_sha`, `image_digest`) to the new image.
+   Report that identity, not the still-deployed old one.
 
    **A failed conclusion is not the evidence.** Issue
    [#157](https://github.com/git-malu/AnyWear/issues/157) records that `migrate`
@@ -695,10 +712,14 @@ Service image:
    This reading is a **dependency on #157** and must be removed when that issue
    lands, so the workaround does not become folklore.
 3. **`deploy-workload`**: roll out the new API/worker image, which reads and writes
-   the mode record and queries the renamed admission table.
+   the mode record and queries the renamed admission table. Dispatch it with the
+   same schema-20 selection; `deploy-workload` refuses an image the applied schema
+   cannot support.
 4. **`admission-status`**: read the new surface back and compare it with step 0's
    tuple. Both must be closed, and the record's `effective_matches` must be true;
    that comparison — not a diff of history — is the old/new equality proof.
+   Dispatch it with the same schema-20 selection, which now matches the deployed
+   image.
 5. **Platform deploy**: delete the two old parameters **and** their IAM grants in
    the **same** deploy, never split. `PutParameter` with overwrite can recreate a
    deleted parameter, so resources without their grants are not a cut-off; the
@@ -707,7 +728,18 @@ Service image:
    returning `ParameterNotFound` **and** the deployed lifecycle role policy no
    longer listing them. From that point every image below the new revision is
    incapable of admission: it reads deleted parameters and queries a renamed
-   table.
+   table. Dispatch it with the same schema-20 selection; the removal deploy
+   retains the deployed new image.
+
+**Step 3 needs a selection this revision does not contain.** Beta is deployed at
+Service `5d16543` (release `415612529`, schema 19), and every committed
+`selections/*.json` in this revision tops out at that revision: none of them
+selects the schema-20 Service release the new image belongs to. Steps 0 and 1 use
+`selections/beta-cleanup-150-148-5d16543.json`; steps 2–5 need the canonical
+selection for the schema-20 release, which must be added to `selections/` (with its
+raw hash) before step 2 is dispatched. An operator who dispatches step 3 with a
+schema-19 selection gets the `incompatible applied schema` refusal from the
+pre-deploy compatibility check, not a partial rollout.
 
 This revision's Platform source declares only the mode record, so a Platform deploy
 from it performs steps 1 and 5 in one CloudFormation update. Accept that collapse,

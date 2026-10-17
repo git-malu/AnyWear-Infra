@@ -172,6 +172,11 @@ const CONFORMANCE = [
   // at all. One implementation must not read it open while another reads closed.
   ['{"mode":"closed","mode":"testers","expires_at":"2030-01-01T00:00:00.000Z"}', 'closed', 'malformed', false, 'unproven'],
   ['{"mode":"closed","extra":1}', 'closed', 'extra-key', false, 'unproven'],
+  // An explicit `null` bound is a contradiction, not an absent bound. The writer
+  // emits `expires_at` only with a real instant, so the null spelling is refused
+  // for its own reason and never reads as "closed, no bound".
+  ['{"mode":"closed","expires_at":null}', 'closed', 'null-expiry', false, 'unproven'],
+  ['{"mode":"testers","expires_at":null}', 'closed', 'null-expiry', false, 'unproven'],
   ['{"mode":true}', 'closed', 'wrong-type', false, 'unproven'],
   ['not-json', 'closed', 'malformed', false, 'unproven'],
   // The encoding is fixed: whitespace (and any other non-canonical spelling) is
@@ -179,6 +184,9 @@ const CONFORMANCE = [
   // rule so the writer and every reader agree on one byte string per decision.
   [' {"mode":"closed"}', 'closed', 'non-canonical', false, 'unproven'],
   ['{"mode":"closed"} ', 'closed', 'non-canonical', false, 'unproven'],
+  // This spaced row exercises whitespace only. It is not coverage of the unspaced
+  // `{"mode":"closed","expires_at":null}`, which has its own row above and is
+  // refused for a different reason.
   ['{"mode":"closed", "expires_at":null}', 'closed', 'non-canonical', false, 'unproven'],
   // Lenient date parsing would accept every one of these as a live bound.
   ['{"mode":"testers","expires_at":"2026-01-02"}', 'closed', 'malformed-expiry', false, 'unproven'],

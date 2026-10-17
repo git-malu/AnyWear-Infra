@@ -77,10 +77,11 @@ parameter whose value is a small JSON record. `{"mode":"closed"}` admits nothing
 `{"mode":"testers","expires_at":"<ISO instant>"}` admits only an exact-listed
 tester or the anchored synthetic E2E namespace, and only until that instant.
 `open` does not exist: Beta is tester-only by contract. Every reader applies the
-same fail-closed rules — a missing, malformed, duplicated-key, unknown-mode,
-extra-key, wrong-type or unparseable value reads closed, as does a `testers`
-record without a canonical bound, a `closed` record carrying one, a past bound and
-a bound beyond 240 minutes plus the read's one-minute clock-skew allowance.
+same fail-closed rules — a missing, malformed, duplicated-key, non-canonical,
+unknown-mode, extra-key, wrong-type or unparseable value reads closed, as does a
+`testers` record without a canonical bound, a record carrying an explicit `null`
+bound, a `closed` record carrying an instant, a past bound and a bound beyond 240
+minutes plus the read's one-minute clock-skew allowance.
 Because the value carries its own bound, an abandoned window closes itself on this
 surface with no writer, no grant and no deployment.
 

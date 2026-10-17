@@ -127,6 +127,13 @@ export function parseAdmissionModeValue(value, now = Date.now()) {
     return resolution({ admission_mode_reason: 'extra-key', admission_recorded_mode: record.mode,
       admission_recorded_expires_at: typeof record.expires_at === 'string' ? record.expires_at : null });
   }
+  // An explicit `null` bound is a contradiction, not an absent bound. The writer
+  // emits `expires_at` only with a real instant, and a closed record carrying a
+  // bound is already refused — so refuse the null spelling for its own reason
+  // rather than reading it as "no bound" and widening the accepted set.
+  if (Object.hasOwn(record, 'expires_at') && record.expires_at === null) {
+    return resolution({ admission_mode_reason: 'null-expiry', admission_recorded_mode: record.mode });
+  }
   return resolveAdmissionDecision(record.mode, record.expires_at, now);
 }
 
