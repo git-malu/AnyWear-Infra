@@ -59,7 +59,8 @@ function normalized(template) {
 export function compareLiveFoundation(original, candidate, additions) {
   const expected = normalized({ ...original, Resources: { ...original.Resources, ...additions } });
   const actual = normalized(candidate);
-  assert.deepEqual(Object.keys(candidate.Resources).sort(), Object.keys(expected.Resources).sort(), 'Only the reviewed eight additive resources are allowed');
+  assert.deepEqual(Object.keys(candidate.Resources).sort(), Object.keys(expected.Resources).sort(),
+    `Only the reviewed ${Object.keys(additions).length} additive resources are allowed`);
   assert.deepEqual(actual, expected, 'Live provider/helper/output or dedicated role/policy drift');
   return { accepted: true, comparison_kind: 'live-foundation-original-source-check', legacy_role_source: 'external',
     added: Object.keys(additions).sort(), original_resource_count: Object.keys(original.Resources).length,

@@ -29,18 +29,27 @@
   },
   "templates": {
     "dev-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "dev-active/AnyWearPlatformStack-dev.template.json": "de18c535e8c1ba219f84867791d04be137c39e45c18421e2862347a42d3b6a6b",
+    "dev-active/AnyWearPlatformStack-dev.template.json": "6f19d62816a3a45ac30b977d6b0057af4630c074593b9bd60e325086575adb16",
     "beta-active/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "beta-active/AnyWearPlatformStack-beta.template.json": "9b0f58e4890fcd29b2f011337b872fa0e9845794fd3c53c8aa53dce7e9cfbc22",
-    "beta-active/AnyWearWorkloadStack-beta.template.json": "753bc573da590520cfa6848620439046ccab4607ee242e1b24e030f6add173a5",
+    "beta-active/AnyWearPlatformStack-beta.template.json": "d80e97fd3a5daa8cfd660eefacd2ea16724a44c31c538957da818ee77cc8ebf8",
     "beta-stopped/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-stopped/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "beta-stopped/AnyWearPlatformStack-beta.template.json": "24f1d8f7a742d063a1e966679c0f15f3823bab8492d8c635050389c31560b3f4",
-    "beta-stopped/AnyWearWorkloadStack-beta.template.json": "9cb6bf6fe82aa0cd3809993df0c64eca520aa6a5861c973ac2557e815118f272",
+    "beta-stopped/AnyWearPlatformStack-beta.template.json": "35497ed1edc1da5ca3d342747011a6a0509b8cef030512b2f861a4c86007d2d9",
     "prod-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "prod-active/AnyWearPlatformStack-prod.template.json": "6518a05b639025ff99bdedbf6600a6fc2500eba61b1f07b9ce40d7f4678bd312",
-    "prod-active/AnyWearWorkloadStack-prod.template.json": "047afdb88fb2bde43905914aa8069ee6287df13ed2ead595fee2d4b86fb8dbfa"
+    "prod-active/AnyWearPlatformStack-prod.template.json": "20d234cdf3dfdcfa5fe307baa7328546ba94f59effeaecccaecb7d1ca88e67cd"
   },
-  "scope": "Source synth comparison only. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes."
+  "platform_baseline": {
+    "re-recorded_from": "AnyWear-Infra final source synth (#158 step C extension)",
+    "files": [
+      "dev-active/AnyWearPlatformStack-dev.template.json",
+      "beta-active/AnyWearPlatformStack-beta.template.json",
+      "beta-stopped/AnyWearPlatformStack-beta.template.json",
+      "prod-active/AnyWearPlatformStack-prod.template.json"
+    ],
+    "reason": "The Workload consumer left this app, so the beta and prod Platform templates no longer contain the CDK weak cross-stack PublishOutput* outputs; the same re-record records the issue #161 recovery targets and the 34/35-value stage contract as template content instead of a permanent comparator allowance.",
+    "dev_note": "dev has no PublishOutput* output and no contract or recovery change; it is re-recorded only so the declared fixture Lambda asset location is recorded in the template and every Platform comparison is exact.",
+    "move_anchor": "The three Workload baseline templates deleted in #158 step C, and their byte-identical `move` proof from Infra 5c571cd, are recorded in AnyWear-Service's infra/test/baselines/provenance.json at its move-anchor commit; they are not duplicated here."
+  },
+  "scope": "Source synth comparison only. Foundation and Billing templates remain the Service source move anchor; the Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes."
 }

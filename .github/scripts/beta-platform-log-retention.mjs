@@ -101,5 +101,5 @@ export async function enforceBetaPlatformLogRetention(io, {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  throw new Error('Use scripts/runtime-operation.mjs with the committed selection');
+  throw new Error('Use scripts/runtime-operation.mjs through the reviewed deployment path');
 }

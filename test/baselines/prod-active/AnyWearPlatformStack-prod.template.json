@@ -745,7 +745,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-hnb659fds-assets-650880818323-ap-east-1",
-     "S3Key": "a01797605d9d4e1c1108721a950bcab293c54eeb9627c5059ce9661e94fd6dce.zip"
+     "S3Key": "57e507d5b07f837eb8989f0088ede5b4742c9163ffab48740ccfcc66540f234c.zip"
     },
     "Environment": {
      "Variables": {
@@ -1300,6 +1300,7 @@
   "AnyWearDatabase2CD487D8": {
    "Type": "AWS::RDS::DBCluster",
    "Properties": {
+    "BackupRetentionPeriod": 35,
     "CopyTagsToSnapshot": true,
     "DBClusterParameterGroupName": "default.aurora-postgresql17",
     "DBSubnetGroupName": {
@@ -1334,6 +1335,7 @@
      ]
     },
     "Port": 5432,
+    "PreferredBackupWindow": "16:00-16:30",
     "ServerlessV2ScalingConfiguration": {
      "MaxCapacity": 2,
      "MinCapacity": 0.5
@@ -1814,175 +1816,6 @@
        "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
       }
      ]
-    ]
-   }
-  },
-  "PublishOutputFnGetAttLoadBalancerSecurityGroup3036A0FCGroupId273B4B7E": {
-   "Value": {
-    "Fn::GetAtt": [
-     "LoadBalancerSecurityGroup3036A0FC",
-     "GroupId"
-    ]
-   }
-  },
-  "PublishOutputRefAnyWearVpcPublicSubnet1Subnet5CC36A8305BC9630": {
-   "Value": {
-    "Ref": "AnyWearVpcPublicSubnet1Subnet5CC36A83"
-   }
-  },
-  "PublishOutputRefAnyWearVpcPublicSubnet2Subnet78E1776F16455447": {
-   "Value": {
-    "Ref": "AnyWearVpcPublicSubnet2Subnet78E1776F"
-   }
-  },
-  "PublishOutputRefAnyWearVpcA8B15590AB9CA509": {
-   "Value": {
-    "Ref": "AnyWearVpcA8B15590"
-   }
-  },
-  "PublishOutputRefAnyWearDatabaseSecretAttachment4886B38144EA741B": {
-   "Value": {
-    "Ref": "AnyWearDatabaseSecretAttachment4886B381"
-   }
-  },
-  "PublishOutputFnGetAttAnyWearWardrobeBucket61DCC096Arn724558D0": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AnyWearWardrobeBucket61DCC096",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeServiceRepository6535F885Arn0E0FEE89": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeServiceRepository6535F885",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeVtoQueue7826D09DArnE4D35296": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeVtoQueue7826D09D",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingQueueEC10AA50ArnF3081676": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeAutoTaggingQueueEC10AA50",
-     "Arn"
-    ]
-   }
-  },
-  "PublishOutputRefAsyncRuntimeServiceRepository6535F885E981090C": {
-   "Value": {
-    "Ref": "AsyncRuntimeServiceRepository6535F885"
-   }
-  },
-  "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointAddress8F10C00D": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AnyWearDatabase2CD487D8",
-     "Endpoint.Address"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAnyWearDatabase2CD487D8EndpointPort898B970A": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AnyWearDatabase2CD487D8",
-     "Endpoint.Port"
-    ]
-   }
-  },
-  "PublishOutputRefAnyWearWardrobeBucket61DCC096146CB5ED": {
-   "Value": {
-    "Ref": "AnyWearWardrobeBucket61DCC096"
-   }
-  },
-  "PublishOutputRefAsyncRuntimeVtoQueue7826D09D30543F7E": {
-   "Value": {
-    "Ref": "AsyncRuntimeVtoQueue7826D09D"
-   }
-  },
-  "PublishOutputRefAsyncRuntimeAutoTaggingQueueEC10AA508CE2FD1E": {
-   "Value": {
-    "Ref": "AsyncRuntimeAutoTaggingQueueEC10AA50"
-   }
-  },
-  "PublishOutputRefAnyWearUserPoolAFAAA9816AD1F62D": {
-   "Value": {
-    "Ref": "AnyWearUserPoolAFAAA981"
-   }
-  },
-  "PublishOutputRefAnyWearUserPoolClient15EC205A2F344351": {
-   "Value": {
-    "Ref": "AnyWearUserPoolClient15EC205A"
-   }
-  },
-  "PublishOutputRefClusterEB0386A7D87642F6": {
-   "Value": {
-    "Ref": "ClusterEB0386A7"
-   }
-  },
-  "PublishOutputRefAnyWearVpcPrivateSubnet1Subnet2CB21A9B8EE63669": {
-   "Value": {
-    "Ref": "AnyWearVpcPrivateSubnet1Subnet2CB21A9B"
-   }
-  },
-  "PublishOutputRefAnyWearVpcPrivateSubnet2Subnet360A1C5092550D4E": {
-   "Value": {
-    "Ref": "AnyWearVpcPrivateSubnet2Subnet360A1C50"
-   }
-  },
-  "PublishOutputFnGetAttApiSecurityGroup4E5BB726GroupIdF3427EAD": {
-   "Value": {
-    "Fn::GetAtt": [
-     "ApiSecurityGroup4E5BB726",
-     "GroupId"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttWorkerSecurityGroup5529CF0BGroupId1D09B9A4": {
-   "Value": {
-    "Fn::GetAtt": [
-     "WorkerSecurityGroup5529CF0B",
-     "GroupId"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeVtoQueue7826D09DQueueNameE55C65DE": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeVtoQueue7826D09D",
-     "QueueName"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingQueueEC10AA50QueueName4DC945B2": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeAutoTaggingQueueEC10AA50",
-     "QueueName"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeVtoDeadLetterQueueE526C0CEQueueNameB688750E": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeVtoDeadLetterQueueE526C0CE",
-     "QueueName"
-    ]
-   }
-  },
-  "PublishOutputFnGetAttAsyncRuntimeAutoTaggingDeadLetterQueueD5D55868QueueName504A8E35": {
-   "Value": {
-    "Fn::GetAtt": [
-     "AsyncRuntimeAutoTaggingDeadLetterQueueD5D55868",
-     "QueueName"
     ]
    }
   }

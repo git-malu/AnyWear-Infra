@@ -21,6 +21,7 @@ import { AsyncRuntime } from './async-runtime';
 import type { ArtifactInputs } from './artifact-inputs';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
 import { grantBetaDedicatedRoles } from './beta-role-grants';
+import { StageContract } from './stage-contract';
 
 export const DEFAULT_QWEATHER_API_HOST = 'jt4d94d58q.re.qweatherapi.com';
 
@@ -610,6 +611,8 @@ export class PlatformStack extends cdk.Stack {
 
     if (stage === 'beta') {
       this.createCustomResourceLogGroups(logs.RetentionDays.TWO_WEEKS);
+      // Publish the Beta stage-base SSM contract from the resources above.
+      new StageContract(this, 'StageContract', { platform: this });
     }
 
     new cdk.CfnOutput(this, 'UserPoolId', { value: this.userPool.userPoolId });

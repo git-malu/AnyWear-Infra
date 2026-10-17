@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib/core';
 import { BillingStack } from '../lib/billing-stack';
-import { FoundationStack } from '../lib/foundation-stack';
+import { FoundationStack, readFoundationServices, SERVICE_SET_CONTEXT } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
-import { WorkloadStack } from '../lib/workload-stack';
 import { loadArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
 import { readLegacyRoleSource } from '../lib/legacy-role-source';
@@ -30,6 +29,11 @@ if (ecrImageRetentionContext !== undefined && !['true', 'false', true, false].in
 }
 const ecrImageRetention = ecrImageRetentionContext === true || ecrImageRetentionContext === 'true';
 
+// Reviewed CDK context: the Foundation service set. It defaults to exactly
+// today's single AnyWear-Service service; an additional service is a context
+// value (`-c infraServices='[...]'`) plus a deploy, never an Infra source edit.
+const services = readFoundationServices(app.node.tryGetContext(SERVICE_SET_CONTEXT));
+
 // The FoundationStack creates account-wide resources like the GitHub OIDC Provider.
 // It should be deployed ONCE per AWS account, before any environment stacks.
 const env = process.env.CDK_DEFAULT_ACCOUNT && process.env.CDK_DEFAULT_REGION
@@ -39,7 +43,7 @@ const billingEnv = process.env.CDK_DEFAULT_ACCOUNT
   ? { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.BILLING_REGION || 'us-east-1' }
   : { region: process.env.BILLING_REGION || 'us-east-1' };
 
-if (deployScope !== 'billing') new FoundationStack(app, 'AnyWearFoundationStack', { env, identityPhase, legacyRoleSource });
+if (deployScope !== 'billing') new FoundationStack(app, 'AnyWearFoundationStack', { env, identityPhase, legacyRoleSource, services });
 if (deployScope === 'billing') new BillingStack(app, 'AnyWearBillingStack-beta', { stage: 'beta', env: billingEnv });
 
 if (deployScope === 'application') {
@@ -59,7 +63,12 @@ const environmentRunning = environmentRunningContext !== 'false' && environmentR
 const qWeatherApiHost = app.node.tryGetContext('qweatherApiHost')
   || process.env.QWEATHER_API_HOST
   || DEFAULT_QWEATHER_API_HOST;
-const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
+// Infra owns the account-wide Foundation/Billing stacks and the stage base only.
+// The release slice (`AnyWearWorkloadStack-beta` / `-prod`) was moved to
+// AnyWear-Service in #158 step B and is deployed from Service's own release
+// chain; this app must not synthesize or deploy it. The stage base publishes the
+// values that slice consumes as `/anywear/<stage>/...` SSM parameters.
+new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
   stage,
   artifactInputs,
   identityPhase,
@@ -71,14 +80,5 @@ const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
 
 if (stage === 'beta') {
   new BillingStack(app, 'AnyWearBillingStack-beta', { stage, env: billingEnv });
-}
-
-if (stage === 'beta' || stage === 'prod') {
-  new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, {
-    stage,
-    platform,
-    environmentRunning,
-    env,
-  });
 }
 }

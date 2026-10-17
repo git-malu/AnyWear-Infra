@@ -4,7 +4,7 @@ import { Template } from 'aws-cdk-lib/assertions';
 import { BillingStack } from '../lib/billing-stack';
 import { FoundationStack } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
-import { WorkloadStack } from '../lib/workload-stack';
+import { stageContractInputs } from '../lib/stage-contract';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import * as path from 'node:path';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
@@ -23,13 +23,6 @@ function synthesizePlatform(stage: string, environmentRunning?: boolean, identit
   const app = new cdk.App();
   const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, environmentRunning, artifactInputs, identityPhase });
   return Template.fromStack(stack).toJSON();
-}
-
-function synthesizeWorkload(stage: 'beta' | 'prod', environmentRunning?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
-  const app = new cdk.App();
-  const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, environmentRunning, artifactInputs, identityPhase });
-  const workload = new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, { stage, platform, environmentRunning });
-  return Template.fromStack(workload).toJSON();
 }
 
 function synthesizeFoundation(identityPhase?: IdentityPhase): Record<string, any> {
@@ -114,7 +107,7 @@ function policyValueUpperBound(value: any, template: Record<string, any>): any {
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, policyValueUpperBound(entry, template)]));
 }
 
-describe('Platform and workload safety controls', () => {
+describe('Platform safety controls', () => {
   it.each([
     ['dev', true, 'c45a8484eff8aabe92a894d5db6df813457ec863678a55eba153605d00098161'],
     // Includes the Beta-only scoped AdminInitiateAuth grant. The Beta hash moves
@@ -438,198 +431,6 @@ describe('Platform and workload safety controls', () => {
     }
   });
 
-  it('keeps versioned API and worker compute in WorkloadStack', () => {
-    const template = synthesizeWorkload('beta');
-    const resources = Object.values(template.Resources) as any[];
-    const taskDefinitions = resources.filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition');
-    const services = resources.filter((resource) => resource.Type === 'AWS::ECS::Service');
-    const taskRoles = resources.filter((resource) => (
-      resource.Type === 'AWS::IAM::Role'
-      && resource.Properties?.AssumeRolePolicyDocument?.Statement?.some(
-        (statement: any) => statement.Principal?.Service === 'ecs-tasks.amazonaws.com',
-      )
-    ));
-
-    expect(taskDefinitions).toHaveLength(2);
-    expect(services).toHaveLength(2);
-    expect(taskRoles).toHaveLength(4);
-    expect(template.Parameters.ServiceImageDigest.AllowedPattern).toBe('^sha256:[a-f0-9]{64}$');
-    expect(template.Parameters.ServiceCommitSha.AllowedPattern).toBe('^[a-f0-9]{40}$');
-    expect(template.Parameters.CloudFrontPrefixListId.AllowedPattern).toBe('^pl-[a-z0-9]+$');
-    expect(template.Parameters.CloudFrontOriginHeaderValue).toBeUndefined();
-    const distribution = Object.values(template.Resources).find(
-      (resource: any) => resource.Type === 'AWS::CloudFront::Distribution',
-    ) as any;
-    const originHeader = distribution.Properties.DistributionConfig.Origins[0].OriginCustomHeaders[0];
-    expect(JSON.stringify(originHeader.HeaderValue)).toContain('resolve:secretsmanager:');
-    const apiContainer = taskDefinitions
-      .flatMap((task: any) => task.Properties.ContainerDefinitions)
-      .find((container: any) => container.Name === 'ApiContainer');
-    const qweatherSecret = apiContainer.Secrets.find((secret: any) => secret.Name === 'QWEATHER_API_KEY');
-    expect(JSON.stringify(qweatherSecret.ValueFrom))
-      .toContain('/anywear/beta/qweather_api_key');
-    const cleanupMachineAuthSecret = apiContainer.Secrets.find(
-      (secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET',
-    );
-    expect(JSON.stringify(cleanupMachineAuthSecret?.ValueFrom))
-      .toContain('/anywear/beta/cleanup_machine_auth');
-    const workerContainer = taskDefinitions
-      .flatMap((task: any) => task.Properties.ContainerDefinitions)
-      .find((container: any) => container.Name === 'WorkerContainer');
-    expect(workerContainer.Secrets.some((secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET')).toBe(false);
-    const apiTaskRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
-      resource.Type === 'AWS::IAM::Role' && resource.Properties?.RoleName === 'beta-anywear-api-task'
-    ))?.[0];
-    const apiTaskPolicy = Object.values(template.Resources).find((resource: any) => (
-      resource.Type === 'AWS::IAM::Policy'
-      && resource.Properties?.Roles?.some((role: any) => role.Ref === apiTaskRoleId)
-    )) as any;
-    expect(JSON.stringify(apiTaskPolicy.Properties.PolicyDocument.Statement))
-      .toContain('/anywear/beta/cleanup_machine_auth-??????');
-    const workerTaskRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
-      resource.Type === 'AWS::IAM::Role' && resource.Properties?.RoleName === 'beta-anywear-worker-task'
-    ))?.[0];
-    const workerTaskPolicy = Object.values(template.Resources).find((resource: any) => (
-      resource.Type === 'AWS::IAM::Policy'
-      && resource.Properties?.Roles?.some((role: any) => role.Ref === workerTaskRoleId)
-    )) as any;
-    expect(JSON.stringify(workerTaskPolicy.Properties.PolicyDocument.Statement))
-      .not.toContain('/anywear/beta/cleanup_machine_auth');
-    const productionContainers = (Object.values(synthesizeWorkload('prod').Resources) as any[])
-      .filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition')
-      .flatMap((task: any) => task.Properties.ContainerDefinitions);
-    expect(productionContainers.some((container: any) => (
-      container.Secrets?.some((secret: any) => secret.Name === 'CLEANUP_MACHINE_AUTH_SECRET')
-    ))).toBe(false);
-    const qweatherHost = apiContainer.Environment.find((entry: any) => entry.Name === 'QWEATHER_API_HOST');
-    expect(qweatherHost).toBeDefined();
-    expect(qweatherHost.Value.Ref).toMatch(/^SsmParameterValue/);
-  });
-
-  it('reduces only the active Beta API baseline to one task and keeps Production HA', () => {
-    const beta = Object.values(synthesizeWorkload('beta').Resources) as any[];
-    const prod = Object.values(synthesizeWorkload('prod').Resources) as any[];
-    const service = (resources: any[], name: string) => resources.find((resource) => (
-      resource.Type === 'AWS::ECS::Service' && resource.Properties?.ServiceName === name
-    ));
-    const target = (resources: any[], logicalId: string) => resources.find((resource) => (
-      resource.Type === 'AWS::ApplicationAutoScaling::ScalableTarget' && resource.__logicalId === logicalId
-    ));
-    const betaTargetId = Object.keys(synthesizeWorkload('beta').Resources).find((id) => id.includes('ApiServiceTaskCountTarget'))!;
-    const prodTargetId = Object.keys(synthesizeWorkload('prod').Resources).find((id) => id.includes('ApiServiceTaskCountTarget'))!;
-    const betaWithIds = Object.entries(synthesizeWorkload('beta').Resources).map(([id, resource]) => ({ ...(resource as any), __logicalId: id }));
-    const prodWithIds = Object.entries(synthesizeWorkload('prod').Resources).map(([id, resource]) => ({ ...(resource as any), __logicalId: id }));
-    expect(service(beta, 'beta-anywear-api').Properties.DesiredCount).toBe(1);
-    expect(service(beta, 'beta-anywear-worker').Properties.DesiredCount).toBe(1);
-    expect(target(betaWithIds, betaTargetId).Properties.MinCapacity).toBe(1);
-    expect(service(prod, 'prod-anywear-api').Properties.DesiredCount).toBe(2);
-    expect(target(prodWithIds, prodTargetId).Properties.MinCapacity).toBe(2);
-  });
-
-  it.each(['legacy', 'roles-added', 'retired'] as const)(
-    'synthesizes the Beta S2 API candidate while preserving Worker and helper sizes in %s', (phase) => {
-      const template = synthesizeWorkload('beta', true, phase);
-      const tasks = Object.values(template.Resources).filter((resource: any) => (
-        resource.Type === 'AWS::ECS::TaskDefinition'
-      )) as any[];
-      const task = (family: string) => tasks.find((resource) => resource.Properties.Family === family);
-      expect(template.Parameters.BetaApiSizingProfile).toMatchObject({ Default: 's1', AllowedValues: ['s1', 's2-api'] });
-      expect(template.Conditions.BetaApiS2).toEqual({ 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] });
-      expect(template.Parameters.BetaSizingTelemetry).toMatchObject({ Type: 'String', Default: 'false', AllowedValues: ['false', 'true'] });
-      for (const family of ['beta-anywear-api', 'beta-anywear-worker']) {
-        expect(task(family).Properties.ContainerDefinitions[0].Environment.filter((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY'))
-          .toEqual([{ Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } }]);
-      }
-      for (const profile of ['s1', 's2-api']) {
-        const resolveSize = (value: any) => {
-          const [condition, whenTrue, whenFalse] = value['Fn::If'];
-          const [parameter, expected] = template.Conditions[condition]['Fn::Equals'];
-          expect(parameter).toEqual({ Ref: 'BetaApiSizingProfile' });
-          return profile === expected ? whenTrue : whenFalse;
-        };
-        expect([resolveSize(task('beta-anywear-api').Properties.Cpu), resolveSize(task('beta-anywear-api').Properties.Memory)])
-          .toEqual(profile === 's1' ? ['512', '1024'] : ['256', '512']);
-      }
-      expect(task('beta-anywear-worker').Properties).toMatchObject({ Cpu: '1024', Memory: '2048' });
-      if (phase !== 'legacy') {
-        for (const family of ['beta-anywear-cleanup-verify', 'beta-anywear-cleanup']) {
-          expect(task(family).Properties).toMatchObject({ Cpu: '512', Memory: '1024' });
-          expect(task(family).Properties.ContainerDefinitions[0].Environment.some((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY')).toBe(false);
-        }
-      }
-      const resources = Object.values(template.Resources) as any[];
-      for (const name of ['beta-anywear-api', 'beta-anywear-worker']) {
-        expect(resources.find((resource) => resource.Type === 'AWS::ECS::Service'
-          && resource.Properties.ServiceName === name).Properties.DesiredCount).toBe(1);
-      }
-      const targets = resources.filter((resource) => resource.Type === 'AWS::ApplicationAutoScaling::ScalableTarget');
-      expect(targets).toHaveLength(2);
-      expect(targets.map((resource) => resource.Properties.MinCapacity)).toEqual([1, 1]);
-    },
-  );
-
-  it('preserves Production API and Worker sizes outside the Beta S2 candidate', () => {
-    const tasks = Object.values(synthesizeWorkload('prod').Resources).filter((resource: any) => (
-      resource.Type === 'AWS::ECS::TaskDefinition'
-    )) as any[];
-    expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-api').Properties)
-      .toMatchObject({ Cpu: '512', Memory: '1024' });
-    expect(tasks.find((task) => task.Properties.Family === 'prod-anywear-worker').Properties)
-      .toMatchObject({ Cpu: '1024', Memory: '2048' });
-    expect(synthesizeWorkload('prod').Parameters.BetaApiSizingProfile).toBeUndefined();
-    expect(synthesizeWorkload('prod').Parameters.BetaSizingTelemetry).toBeUndefined();
-    for (const task of tasks) {
-      expect(task.Properties.ContainerDefinitions[0].Environment.some((entry: any) => entry.Name === 'BETA_SIZING_TELEMETRY')).toBe(false);
-    }
-  });
-
-  it('publishes a fixed, versioned Beta cleanup state machine with E2E read-only execution', () => {
-    const template = synthesizeWorkload('beta', true, 'roles-added');
-    const resources = Object.values(template.Resources) as any[];
-    const machines = resources.filter((resource) => resource.Type === 'AWS::StepFunctions::StateMachine');
-    const versions = resources.filter((resource) => resource.Type === 'AWS::StepFunctions::StateMachineVersion');
-    const definitions = resources.filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition');
-    expect(machines).toHaveLength(1);
-    expect(machines[0].Properties.StateMachineType).toBe('STANDARD');
-    expect(machines[0].Properties.StateMachineName).toBe('beta-anywear-tester-cleanup');
-    expect(versions).toHaveLength(1);
-    expect(Object.keys(template.Outputs)).toContain('CleanupOperationCleanupStateMachineArn3993CAF0');
-    expect(definitions.map((definition) => definition.Properties.Family)).toEqual(expect.arrayContaining([
-      'beta-anywear-cleanup-verify', 'beta-anywear-cleanup',
-    ]));
-    const definition = JSON.stringify(machines[0].Properties.DefinitionString);
-    expect(definition).toContain('beta-cleanup-operation.js');
-    expect(definition).toContain('cleanup_request');
-    const policies = resources.filter((resource) => resource.Type === 'AWS::IAM::Policy');
-    const e2ePolicy = policies.find((policy) => JSON.stringify(policy.Properties.Roles).includes('beta-e2e-qualification-role'));
-    const startExecution = e2ePolicy.Properties.PolicyDocument.Statement.find((statement: any) =>
-      [statement.Action].flat().includes('states:StartExecution'));
-    expect(startExecution).toBeDefined();
-    expect([startExecution.Resource].flat()).toHaveLength(2);
-    expect(JSON.stringify(startExecution.Resource)).toContain('CleanupOperationStateMachine');
-    expect(JSON.stringify(startExecution.Resource)).toContain('CleanupOperationStateMachineVersion');
-    expect(JSON.stringify(startExecution.Resource)).not.toContain('*');
-    expect(JSON.stringify(e2ePolicy)).toContain('states:DescribeExecution');
-    expect(JSON.stringify(e2ePolicy)).toContain('states:GetExecutionHistory');
-    expect(JSON.stringify(e2ePolicy)).not.toContain('ecs:RunTask');
-  });
-
-  it('stops only Beta paid workload resources while preserving CloudFront and maintenance origin', () => {
-    const template = synthesizeWorkload('beta', false);
-    const resources = Object.values(template.Resources) as any[];
-    expect(resources.filter((resource) => resource.Type === 'AWS::ECS::Service')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::ECS::TaskDefinition')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::LoadBalancer')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::Listener')).toHaveLength(0);
-    expect(resources.filter((resource) => resource.Type === 'AWS::CloudFront::Distribution')).toHaveLength(1);
-    expect(resources.filter((resource) => resource.Type === 'AWS::S3::Bucket')).toHaveLength(1);
-    expect(template.Outputs.BetaActive.Value).toBe('false');
-    expect(template.Outputs.ApiBaseUrl).toBeDefined();
-    expect(template.Parameters.BetaApiSizingProfile.Default).toBe('s1');
-    expect(template.Parameters.BetaApiSizingProfile.AllowedValues).toEqual(['s1', 's2-api']);
-    expect(template.Parameters.BetaSizingTelemetry.Default).toBe('false');
-    expect(template.Parameters.BetaSizingTelemetry.AllowedValues).toEqual(['false', 'true']);
-  });
 
   it('allows the Beta database to pause at zero ACU after five minutes without connections', () => {
     const resources = Object.values(synthesizePlatform('beta').Resources) as any[];
@@ -663,39 +464,6 @@ describe('Platform and workload safety controls', () => {
     expect(template.Outputs.BetaActive.Value).toBe('false');
   });
 
-  it('uses CloudFront HTTPS with caching disabled and restricts direct ALB traffic', () => {
-    const template = synthesizeWorkload('beta');
-    const resources = Object.values(template.Resources) as any[];
-    const distributions = resources.filter((resource) => resource.Type === 'AWS::CloudFront::Distribution');
-    const listeners = resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::Listener');
-    const listenerRules = resources.filter((resource) => resource.Type === 'AWS::ElasticLoadBalancingV2::ListenerRule');
-    const prefixIngress = resources.find((resource) => (
-      resource.Type === 'AWS::EC2::SecurityGroupIngress'
-      && resource.Properties?.SourcePrefixListId?.Ref === 'CloudFrontPrefixListId'
-    ));
-
-    expect(distributions).toHaveLength(1);
-    expect(distributions[0].Properties.DistributionConfig.DefaultCacheBehavior.CachePolicyId)
-      .toBe('4135ea2d-6df8-44a3-9df3-4b5a84be39ad');
-    expect(distributions[0].Properties.DistributionConfig.Origins[0].OriginCustomHeaders[0].HeaderName)
-      .toBe('X-AnyWear-Origin-Verify');
-    expect(distributions[0].Properties.DistributionConfig.Origins[0].CustomOriginConfig.OriginReadTimeout)
-      .toBe(60);
-    expect(distributions[0].Properties.DistributionConfig.Origins[0].ResponseCompletionTimeout)
-      .toBeUndefined();
-    expect(listeners).toHaveLength(1);
-    expect(listenerRules).toHaveLength(1);
-    expect(prefixIngress).toBeDefined();
-  });
-
-  it('adds queue, DLQ, and API failure alarms with the Beta operations topic', () => {
-    const alarms = Object.values(synthesizeWorkload('beta').Resources).filter(
-      (resource: any) => resource.Type === 'AWS::CloudWatch::Alarm'
-        && resource.Properties?.AlarmName?.startsWith('beta-anywear-'),
-    );
-    expect(alarms).toHaveLength(5);
-    expect(alarms.every((alarm: any) => alarm.Properties.AlarmActions?.length === 1)).toBe(true);
-  });
 
   it('keeps billing controls out of regional platform stacks', () => {
     const betaResources = Object.values(synthesizePlatform('beta').Resources) as any[];
@@ -900,6 +668,79 @@ describe('Platform and workload safety controls', () => {
     expect(JSON.stringify(lifecycleStatements[0].Resource)).not.toContain('*');
   });
 
+  it('publishes exactly the 34 unconditional Beta stage-contract parameters without duplicates', () => {
+    const resources = Object.values(synthesizePlatform('beta').Resources) as any[];
+    const parameters = resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter');
+    const names = parameters.map((parameter) => parameter.Properties.Name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(parameters).toHaveLength(41);
+    const stageContract = parameters.filter((parameter) => (
+      parameter.Properties.Description?.startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: ')));
+    expect(stageContract).toHaveLength(34);
+    expect(stageContract.map((parameter) => parameter.Properties.Name).sort()).toEqual([
+      'api_security_group_id', 'auto_tagging_dlq_name', 'auto_tagging_dlq_url', 'auto_tagging_queue_arn',
+      'auto_tagging_queue_name', 'auto_tagging_queue_url', 'cloudfront_prefix_list_id', 'database_host',
+      'database_port', 'database_secret_arn', 'ecs_cluster_arn', 'ecs_cluster_name', 'isolated_subnet_ids',
+      'load_balancer_security_group_id', 'one_shot_execution_role_arn', 'one_shot_log_group_arn',
+      'one_shot_log_group_name', 'one_shot_security_group_id', 'operations_topic_arn', 'private_subnet_ids',
+      'public_subnet_ids', 's3_bucket_arn', 'service_repository_arn', 'service_repository_name',
+      'service_repository_uri', 'verification_task_role_arn', 'vlm_config_arn', 'vpc_id', 'vto_dlq_name',
+      'vto_dlq_url', 'vto_queue_arn', 'vto_queue_name', 'vto_queue_url', 'worker_security_group_id',
+    ].map((name) => `/anywear/beta/${name}`).sort());
+    expect(stageContract.filter((parameter) => parameter.Properties.Type === 'StringList')
+      .map((parameter) => parameter.Properties.Name).sort())
+      .toEqual(['/anywear/beta/isolated_subnet_ids', '/anywear/beta/private_subnet_ids', '/anywear/beta/public_subnet_ids']);
+    expect(stageContract.every((parameter) => ['String', 'StringList'].includes(parameter.Properties.Type))).toBe(true);
+    expect(stageContract.every((parameter) => parameter.Properties.Name.startsWith('/anywear/beta/'))).toBe(true);
+    expect(stageContract.every((parameter) => parameter.Properties.Description.length > 60)).toBe(true);
+    expect(stageContract.find((parameter) => parameter.Properties.Name === '/anywear/beta/vlm_config_arn')!.Properties.Value)
+      .toBe('arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ');
+    expect(stageContract.find((parameter) => parameter.Properties.Name === '/anywear/beta/cloudfront_prefix_list_id')!
+      .Properties.Value).toBe('pl-14b2577d');
+    // The cleanup role exists only outside the legacy phase, so neither the role
+    // nor its ARN parameter is in the legacy synth.
+    expect(resources.some((resource) => resource.Type === 'AWS::IAM::Role'
+      && resource.Properties.RoleName === 'beta-anywear-tester-cleanup-task')).toBe(false);
+    expect(stageContract.some((parameter) => parameter.Properties.Name === '/anywear/beta/cleanup_task_role_arn')).toBe(false);
+    // The four reused published names and the three runtime-owned parameters
+    // keep their existing single resource.
+    for (const name of ['cognito_user_pool_id', 'cognito_client_id', 's3_bucket_name', 'qweather_api_host',
+      'admission_mode', 'tester_allowlist', 'aws_region']) {
+      expect(parameters.filter((parameter) => parameter.Properties.Name === `/anywear/beta/${name}`)).toHaveLength(1);
+    }
+    for (const stage of ['dev', 'prod']) {
+      const other = Object.values(synthesizePlatform(stage).Resources) as any[];
+      expect(other.filter((resource) => resource.Type === 'AWS::SSM::Parameter'
+        && resource.Properties.Description?.includes('stage contract'))).toHaveLength(0);
+    }
+
+    expect(stageContractInputs('beta')).toEqual({
+      vlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ',
+      cloudFrontPrefixListId: 'pl-14b2577d',
+    });
+    expect(() => stageContractInputs('prod')).toThrow(/requires explicit vlmConfigArn and cloudFrontPrefixListId/);
+    expect(() => stageContractInputs('dev')).toThrow(/requires explicit vlmConfigArn and cloudFrontPrefixListId/);
+  });
+
+  it('publishes the phase-dependent cleanup role ARN only while the identity phase creates the role', () => {
+    for (const environmentRunning of [true, false]) {
+      const legacy = Object.values(synthesizePlatform('beta', environmentRunning).Resources) as any[];
+      const added = Object.values(synthesizePlatform('beta', environmentRunning, 'roles-added').Resources) as any[];
+      const retired = Object.values(synthesizePlatform('beta', environmentRunning, 'retired').Resources) as any[];
+      const contract = (resources: any[]) => resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter'
+        && resource.Properties.Description?.startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: '));
+      expect(contract(legacy)).toHaveLength(34);
+      expect(contract(added)).toHaveLength(35);
+      expect(contract(retired)).toHaveLength(35);
+      for (const resources of [added, retired]) {
+        const cleanup = contract(resources).filter((resource) => resource.Properties.Name === '/anywear/beta/cleanup_task_role_arn');
+        expect(cleanup).toHaveLength(1);
+        expect(cleanup[0].Properties.Type).toBe('String');
+        expect(cleanup[0].Properties.Value).toEqual({ 'Fn::GetAtt': [expect.stringMatching(/^CleanupTaskRole[A-F0-9]{8}$/), 'Arn'] });
+      }
+    }
+  });
+
   it('limits synthetic lifecycle message cleanup to the two Beta dead-letter queues', () => {
     const template = synthesizePlatform('beta');
     const lifecycleRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
@@ -977,6 +818,9 @@ describe('Platform and workload safety controls', () => {
 
 describe('Explicit infrastructure identity cutover', () => {
   const names = ['infra-deploy', 'infra-runtime', 'service-artifact', 'service-data', 'client-publish', 'e2e-qualification'];
+  // Issue #158 step A adds the Service deployment identities. Their grants live
+  // in Foundation, not in the Platform-side dedicated role map.
+  const serviceDeployRoleNames = ['service-deploy', 'service-deploy-cfn'];
   const policiesFor = (template: any, name: string) => Object.values(template.Resources).filter((resource: any) =>
     ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
       && resource.Properties.Roles?.some((role: any) => role === `beta-${name}-role` || (role.Ref && template.Resources[role.Ref]?.Properties?.RoleName === `beta-${name}-role`))) as any[];
@@ -990,7 +834,7 @@ describe('Explicit infrastructure identity cutover', () => {
     for (const value of [null, '', true, 'production', 'cutover']) expect(() => readIdentityPhase(value)).toThrow();
   });
 
-  it('adds six distinct immutable OIDC identities without changing existing Foundation resources', () => {
+  it('adds six distinct immutable OIDC identities and two Service deployment roles without changing existing Foundation resources', () => {
     const legacy = synthesizeFoundation();
     const added = synthesizeFoundation('roles-added');
     for (const [id, resource] of Object.entries(legacy.Resources)) expect(added.Resources[id]).toEqual(resource);
@@ -1013,6 +857,333 @@ describe('Explicit infrastructure identity cutover', () => {
         .toBe('repo:git-malu@11473072/AnyWear-Client@1176104200:environment:beta');
       else expect(subject).toBe('repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:beta');
     }
+    const serviceRoles = (Object.values(added.Resources) as any[]).filter((resource) => resource.Type === 'AWS::IAM::Role'
+      && serviceDeployRoleNames.some((name) => resource.Properties.RoleName === `beta-${name}-role`));
+    expect(serviceRoles).toHaveLength(2);
+    const deployRole = serviceRoles.find((role) => role.Properties.RoleName === 'beta-service-deploy-role')!;
+    const cfnRole = serviceRoles.find((role) => role.Properties.RoleName === 'beta-service-deploy-cfn-role')!;
+    const deployTrust = deployRole.Properties.AssumeRolePolicyDocument.Statement;
+    expect(deployTrust).toHaveLength(1);
+    expect(deployTrust[0]).toMatchObject({
+      Action: 'sts:AssumeRoleWithWebIdentity',
+      Effect: 'Allow',
+      Condition: { StringEquals: {
+        'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+        'token.actions.githubusercontent.com:sub': 'repo:git-malu@11473072/AnyWear-Service@1158460323:environment:beta',
+      } },
+    });
+    expect(deployTrust[0].Principal.Federated.Ref).toMatch(/^GitHubProvider[A-F0-9]{8}$/);
+    expect(cfnRole.Properties.AssumeRolePolicyDocument.Statement).toEqual([
+      { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'cloudformation.amazonaws.com' } },
+    ]);
+    for (const role of serviceRoles) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+  });
+
+  it('inventories the Service deployment roles as least privilege', () => {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = (roleName: string) => Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === roleName))![0];
+    const statementsFor = (roleName: string): any[] => {
+      const id = roleId(roleName);
+      return resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === id))
+        .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    };
+    const deploy = statementsFor('beta-service-deploy-role');
+    const cfn = statementsFor('beta-service-deploy-cfn-role');
+    const flatten = (values: any[]) => values.flatMap((value) => [value].flat());
+    const actions = (statements: any[]) => flatten(statements.map((statement) => statement.Action)).sort();
+    // Foundation synthesizes the partition as a token; resolve the fixed
+    // partition and keep structural GetAtt references as their JSON form.
+    const resourceOf = (value: any): string | string[] => {
+      if (Array.isArray(value)) return value.map((entry) => resourceOf(entry) as string);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    const normalized = (statements: any[]) => statements.map((statement) => ({
+      ...statement,
+      Action: Array.isArray(statement.Action) ? [...statement.Action].sort() : statement.Action,
+      Resource: resourceOf(statement.Resource),
+    }));
+    const resourcesOf = (statements: any[]) => new Set(flatten(statements.map((statement) => statement.Resource))
+      .map(resourceOf) as string[]);
+
+    // Positive: the OIDC role can only drive the Workload stack and pass one
+    // CloudFormation execution role.
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudformation:*', Effect: 'Allow',
+      Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: ['cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet', 'cloudformation:DescribeChangeSet'],
+      Effect: 'Allow', Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudformation:DescribeStacks', Effect: 'Allow',
+      Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+    });
+    const deployPassRole = deploy.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
+    expect(deployPassRole).toHaveLength(1);
+    expect(JSON.stringify(deployPassRole[0].Resource)).toContain('BetaServiceDeployCfnRole');
+    expect(deployPassRole[0].Condition).toEqual({ StringEquals: { 'iam:PassedToService': 'cloudformation.amazonaws.com' } });
+    expect(normalized(deploy)).toContainEqual({
+      Action: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath'], Effect: 'Allow',
+      Resource: 'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'ecr:DescribeImages', Effect: 'Allow',
+      Resource: 'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
+    });
+
+    // Positive: the CLI's own-credentials path from #158 round 3 is limited to
+    // the bootstrap version read and the dedicated CDK assets bucket object.
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'ssm:GetParameter', Effect: 'Allow',
+      Resource: 'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: ['s3:GetObject', 's3:PutObject'], Effect: 'Allow',
+      Resource: 'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: ['s3:GetBucketLocation', 's3:ListBucket'], Effect: 'Allow',
+      Resource: 'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
+    });
+
+    // Negative: no wildcard, managed or administrative authority, and no
+    // resource outside the reviewed Workload-stack surface.
+    expect(actions(deploy)).toEqual([
+      'cloudformation:*', 'cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet',
+      'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks', 'ecr:DescribeImages', 'iam:PassRole',
+      's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject', 'ssm:GetParameter',
+      'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
+    ]);
+    expect(deploy.every((statement) => statement.Effect === 'Allow')).toBe(true);
+    expect(resourcesOf(deploy)).toEqual(new Set([
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
+      'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
+      JSON.stringify({ 'Fn::GetAtt': ['BetaServiceDeployCfnRoleB6333451', 'Arn'] }),
+    ]));
+
+    // Positive: the CloudFormation execution role covers exactly the Workload
+    // template's resource families.
+    const expectedCfnActions = [
+      'application-autoscaling:DeleteScalingPolicy', 'application-autoscaling:DeregisterScalableTarget',
+      'application-autoscaling:DescribeScalableTargets', 'application-autoscaling:DescribeScalingPolicies',
+      'application-autoscaling:PutScalingPolicy', 'application-autoscaling:RegisterScalableTarget',
+      'cloudformation:DescribeStacks',
+      'cloudfront:CreateDistribution', 'cloudfront:CreateFunction', 'cloudfront:DeleteDistribution',
+      'cloudfront:DeleteFunction', 'cloudfront:DescribeFunction', 'cloudfront:GetDistribution',
+      'cloudfront:GetDistributionConfig', 'cloudfront:GetFunction', 'cloudfront:PublishFunction',
+      'cloudfront:UpdateDistribution', 'cloudfront:UpdateFunction',
+      'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm',
+      'ec2:AuthorizeSecurityGroupIngress', 'ec2:RevokeSecurityGroupIngress',
+      'ecs:CreateService', 'ecs:DeleteService', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeServices',
+      'ecs:DescribeTaskDefinition', 'ecs:RegisterTaskDefinition', 'ecs:UpdateService',
+      'elasticloadbalancing:CreateListener', 'elasticloadbalancing:CreateLoadBalancer',
+      'elasticloadbalancing:CreateRule', 'elasticloadbalancing:CreateTargetGroup',
+      'elasticloadbalancing:DeleteListener', 'elasticloadbalancing:DeleteLoadBalancer',
+      'elasticloadbalancing:DeleteRule', 'elasticloadbalancing:DeleteTargetGroup',
+      'elasticloadbalancing:DescribeListeners', 'elasticloadbalancing:DescribeLoadBalancerAttributes',
+      'elasticloadbalancing:DescribeLoadBalancers', 'elasticloadbalancing:DescribeRules',
+      'elasticloadbalancing:DescribeTargetGroupAttributes', 'elasticloadbalancing:DescribeTargetGroups',
+      'elasticloadbalancing:ModifyListener', 'elasticloadbalancing:ModifyLoadBalancerAttributes',
+      'elasticloadbalancing:ModifyRule', 'elasticloadbalancing:ModifyTargetGroup',
+      'elasticloadbalancing:ModifyTargetGroupAttributes', 'elasticloadbalancing:SetSecurityGroups',
+      'elasticloadbalancing:SetSubnets',
+      'iam:AttachRolePolicy', 'iam:CreateRole', 'iam:DeleteRole', 'iam:DeleteRolePolicy', 'iam:DetachRolePolicy',
+      'iam:GetRole', 'iam:GetRolePolicy', 'iam:ListAttachedRolePolicies', 'iam:ListRolePolicies',
+      'iam:PassRole', 'iam:PutRolePolicy',
+      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy', 'logs:PutRetentionPolicy',
+      's3:CreateBucket', 's3:DeleteBucket', 's3:DeleteBucketPolicy', 's3:DeleteBucketPublicAccessBlock',
+      's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
+      's3:PutBucketPublicAccessBlock',
+      'ssm:GetParameter', 'ssm:GetParameters',
+    ].sort();
+    expect(actions(cfn)).toEqual(expectedCfnActions);
+    expect(cfn.every((statement) => statement.Effect === 'Allow')).toBe(true);
+    expect(cfn.some((statement) => statement.NotAction !== undefined || statement.NotResource !== undefined)).toBe(false);
+    const taskRoleArns = ['task', 'execution'].flatMap((purpose) => ['api', 'worker'].map((service) => (
+      `arn:aws:iam::650880818323:role/beta-anywear-${service}-${purpose}`))).sort();
+    const iamPassRole = cfn.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
+    expect(iamPassRole).toHaveLength(1);
+    expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf).sort()).toEqual(taskRoleArns);
+    expect(iamPassRole[0].Condition).toEqual({ StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } });
+    const attachPolicy = cfn.filter((statement) => [statement.Action].flat().includes('iam:AttachRolePolicy'));
+    expect(attachPolicy).toHaveLength(1);
+    expect(resourceOf(attachPolicy[0].Condition.ArnEquals['iam:PolicyARN']))
+      .toBe('arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy');
+    const ec2Ingress = cfn.filter((statement) => [statement.Action].flat().includes('ec2:AuthorizeSecurityGroupIngress'));
+    expect(ec2Ingress).toHaveLength(1);
+    expect(ec2Ingress[0].Condition).toEqual({ StringEquals: {
+      'ec2:ResourceTag/aws:cloudformation:stack-name': 'AnyWearPlatformStack-beta',
+      'ec2:ResourceTag/aws:cloudformation:logical-id': 'LoadBalancerSecurityGroup3036A0FC',
+    } });
+    expect(resourcesOf(cfn)).toEqual(new Set([
+      'arn:aws:application-autoscaling:ap-east-1:650880818323:scalable-target/*',
+      'arn:aws:application-autoscaling:ap-east-1:650880818323:scaling-policy/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+      'arn:aws:cloudfront::650880818323:distribution/*',
+      'arn:aws:cloudfront::650880818323:function/*',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+      'arn:aws:ec2:ap-east-1:650880818323:security-group/*',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+      'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:*',
+      'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener-rule/app/beta-anywear-api/*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener/app/beta-anywear-api/*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*',
+      'arn:aws:elasticloadbalancing:ap-east-1:650880818323:targetgroup/beta-anywear-api/*',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+      'arn:aws:s3:::anywearworkloadstack-beta-*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
+      'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
+      ...taskRoleArns,
+      '*',
+    ]));
+
+    // The acceptance criterion: neither role can modify the VPC, Aurora,
+    // Cognito, the wardrobe/client buckets, SQS or ECR configuration, or the
+    // Foundation stack and its existing roles.
+    for (const [roleName, statements] of [['beta-service-deploy-role', deploy],
+      ['beta-service-deploy-cfn-role', cfn]] as const) {
+      const allActions = actions(statements);
+      const serialized = JSON.stringify(statements);
+      expect(allActions).not.toContain('*');
+      for (const forbidden of ['rds:', 'cognito-idp:', 'sqs:', 'secretsmanager:', 'kms:',
+        's3:DeleteObject', 's3:PutBucketAcl', 's3:PutObjectAcl',
+        'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
+        'ecr:CreateRepository', 'ec2:CreateVpc', 'ec2:DeleteVpc', 'ec2:ModifyVpcAttribute',
+        'ec2:CreateSubnet', 'ec2:DeleteSubnet', 'ec2:CreateSecurityGroup', 'ec2:DeleteSecurityGroup',
+        'ec2:AuthorizeSecurityGroupEgress', 'cloudformation:CreateStack', 'cloudformation:UpdateStack',
+        'cloudformation:DeleteStack', 'iam:CreatePolicy', 'iam:CreatePolicyVersion', 'iam:PutRolePermissionsBoundary',
+        'iam:AttachUserPolicy', 'iam:CreateUser', 'iam:UpdateAssumeRolePolicy']) {
+        expect(allActions.some((action) => action.startsWith(forbidden))).toBe(false);
+      }
+      expect(serialized).not.toContain('AdministratorAccess');
+      expect(serialized).not.toContain('AnyWearFoundationStack');
+      expect(serialized).not.toContain('AnyWearWardrobeBucket');
+      expect(serialized).not.toContain('AnyWearClientBucket');
+      expect(serialized).not.toContain('AnyWearUserPool');
+      expect(serialized).not.toContain('github-actions-pipeline-role');
+      for (const resource of resourcesOf(statements)) {
+        if (resource.startsWith('arn:aws:iam::')) {
+          expect(taskRoleArns).toContain(resource);
+        }
+      }
+      expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
+        && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
+    }
+    // The only object write either role holds is the template asset in the
+    // dedicated CDK assets bucket; no other bucket, bucket configuration or
+    // object deletion grant returns with it.
+    const cdkAssetsBucketArns = new Set([
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
+      'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
+    ]);
+    const deployS3Resources = [...resourcesOf(deploy)].filter((resource) => resource.startsWith('arn:aws:s3:::'));
+    expect(new Set(deployS3Resources)).toEqual(cdkAssetsBucketArns);
+    expect(actions(deploy).filter((action) => action.startsWith('s3:')))
+      .toEqual(['s3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject']);
+    for (const forbidden of ['s3:CreateBucket', 's3:DeleteBucket', 's3:PutBucketPolicy', 's3:DeleteBucketPolicy',
+      's3:PutBucketPublicAccessBlock', 's3:DeleteBucketPublicAccessBlock', 's3:DeleteObject']) {
+      expect(actions(deploy)).not.toContain(forbidden);
+    }
+    expect(resourcesOf(cfn).has('arn:aws:s3:::anywearworkloadstack-beta-*')).toBe(true);
+    expect([...resourcesOf(cfn)].some((resource) => resource.includes('cdk-hnb659fds-assets'))).toBe(false);
+    // The CloudFormation role can read the producer stack for
+    // `Fn::GetStackOutput`, but it cannot drive CloudFormation itself; only the
+    // OIDC role owns the Workload stack's stack-level authority.
+    expect(actions(cfn).filter((action) => action.startsWith('cloudformation:')))
+      .toEqual(['cloudformation:DescribeStacks']);
+    expect(resourceOf(cfn.filter((statement) => [statement.Action].flat().includes('cloudformation:DescribeStacks'))[0]
+      .Resource)).toBe('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*');
+  });
+
+  it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const flatten = (values: any[]) => values.flatMap((value) => [value].flat());
+    const actions = flatten(statements.map((statement) => statement.Action)) as string[];
+    const resolve = (value: any): string | string[] => {
+      if (Array.isArray(value)) return value.map((entry) => resolve(entry) as string);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    // Round 3 puts the asset publish on the deploy job's own credentials. That is
+    // not authority to reassume the bootstrap deploy/file-publishing/lookup
+    // roles: the role keeps no sts:AssumeRole at all.
+    expect(actions).not.toContain('sts:AssumeRole');
+    const serializedResources = JSON.stringify(statements.map((statement) => statement.Resource));
+    for (const purpose of ['deploy', 'file-publishing', 'lookup']) {
+      expect(serializedResources).not.toContain(`cdk-hnb659fds-${purpose}-role`);
+    }
+    expect(serializedResources).not.toMatch(/role\/cdk-/);
+    // Every CloudFormation action is bound to the Workload stack, its change
+    // sets, or the exact producer-stack read; nothing else can be deployed.
+    const cloudformationResources = new Set<string>();
+    for (const statement of statements.filter((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('cloudformation:')))) {
+      const statementActions = [statement.Action].flat() as string[];
+      for (const resource of flatten([statement.Resource]).map(resolve) as string[]) {
+        cloudformationResources.add(resource);
+        if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*') {
+          for (const action of statementActions) expect(['cloudformation:CreateChangeSet',
+            'cloudformation:DeleteChangeSet', 'cloudformation:DescribeChangeSet']).toContain(action);
+        } else if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*') {
+          expect(statementActions.every((action) => action === 'cloudformation:*')).toBe(true);
+        } else if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*') {
+          expect(statementActions).toEqual(['cloudformation:DescribeStacks']);
+        } else {
+          throw new Error(`Unreviewed CloudFormation resource ${resource}`);
+        }
+      }
+    }
+    expect(cloudformationResources).toEqual(new Set([
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
+    ]));
+    // `cloudformation:*` appears once, on the Workload stack, so no other stack
+    // can be created, updated or deleted.
+    const wildcardStatements = statements.filter((statement) => [statement.Action].flat()
+      .includes('cloudformation:*'));
+    expect(wildcardStatements).toHaveLength(1);
+    expect(flatten([wildcardStatements[0].Resource]).map(resolve))
+      .toEqual(['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*']);
+    for (const action of ['cloudformation:CreateStack', 'cloudformation:UpdateStack', 'cloudformation:DeleteStack']) {
+      expect(actions).not.toContain(action);
+    }
   });
 
   it.each([true, false])('adds policies while retaining every legacy Beta resource and output (active=%s)', (active) => {
@@ -1022,10 +1193,15 @@ describe('Explicit infrastructure identity cutover', () => {
     for (const [key, value] of Object.entries(legacy.Outputs)) expect(added.Outputs[key]).toEqual(value);
     expect(Object.keys(added.Outputs).filter(key => !legacy.Outputs[key])).toEqual(['CleanupTaskRoleArn']);
     const newResources = Object.entries(added.Resources).filter(([id]) => !legacy.Resources[id]);
-    expect(newResources).toHaveLength(7);
+    expect(newResources).toHaveLength(8);
     expect(newResources.filter(([, resource]: [string, any]) => resource.Type === 'AWS::IAM::Policy')).toHaveLength(6);
     const cleanup = newResources.find(([, resource]: [string, any]) => resource.Type === 'AWS::IAM::Role')![1] as any;
     expect(cleanup.Properties.RoleName).toBe('beta-anywear-tester-cleanup-task');
+    const cleanupParameter = newResources
+      .filter(([, resource]: [string, any]) => resource.Type === 'AWS::SSM::Parameter') as [string, any][];
+    expect(cleanupParameter).toHaveLength(1);
+    expect(cleanupParameter[0][1].Properties.Name).toBe('/anywear/beta/cleanup_task_role_arn');
+    expect(cleanupParameter[0][1].Properties.Description).toContain('stage contract: dedicated cleanup task role ARN');
   });
 
   it('keeps the old Beta role identity but removes its trust and template-owned grants only at retirement', () => {
@@ -1160,7 +1336,7 @@ describe('Explicit infrastructure identity cutover', () => {
     });
     const foundation = Template.fromStack(foundationStack).toJSON();
     const platform = Template.fromStack(platformStack).toJSON();
-    for (const name of names) {
+    for (const name of [...names, ...serviceDeployRoleNames]) {
       const local = policiesFor(platform, name);
       const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) =>
         resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === `beta-${name}-role`)![0];

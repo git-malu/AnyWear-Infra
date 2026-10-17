@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseJson, sha256 } from './json-contract.mjs';
-import { validateDeploymentRecord, validateSnapshot } from './deployment-contract.mjs';
+import { validateDeploymentRecord, validateObservationRecord } from './deployment-contract.mjs';
 import { readOperationRecord } from './operation-record.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
 import { deploymentRecordType, familyObservationRecordType } from './observation-record.mjs';
@@ -31,15 +31,12 @@ const checksum = async name => {
 };
 if (deploymentBytes) {
   const record = parseJson(deploymentBytes);
-  if (record.infra?.sha !== env.GITHUB_SHA || record.infra?.workflow_path !== boundary.workflow) {
+  if (record.producer?.sha !== env.GITHUB_SHA || record.producer?.workflow_path !== boundary.workflow) {
     throw new Error('Deployment record describes another executor source or workflow');
   }
   if (record.record_type === deploymentRecordType) validateDeploymentRecord(record);
-  else if (record.record_type === familyObservationRecordType) {
-    if (record.schema_version !== 2) throw new Error('Unknown family observation schema');
-    validateSnapshot({ stacks: record.stacks, observed: record.observed, schema: record.schema },
-      { infraWorkflows: [boundary.workflow] });
-  } else throw new Error('Unknown observation record type');
+  else if (record.record_type === familyObservationRecordType) validateObservationRecord(record);
+  else throw new Error('Unknown observation record type');
   await checksum('deployment-record.json');
 }
 await checksum('operation-record.json');

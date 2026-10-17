@@ -1,8 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { validateOperationInputs, selectionBinding, createRuntimeIo } from './runtime-operation.mjs';
-import { loadCommittedSelection } from './artifact-consumer.mjs';
+import { validateOperationInputs, createRuntimeIo } from './runtime-operation.mjs';
 import { observeDeployment } from './observe-deployment.mjs';
-import { validateDeploymentRecord, validateSnapshot } from './deployment-contract.mjs';
+import { validateDeploymentRecord, validateObservationRecord } from './deployment-contract.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
 import { deploymentRecordType, observationRecordType } from './observation-record.mjs';
 import { canonicalJson, parseJson } from './json-contract.mjs';
@@ -12,21 +11,20 @@ validateOperationInputs();
 const env = process.env;
 const boundary = operationBoundary(env);
 if (boundary.readOnly) throw new Error('State observation cannot emit qualification');
-const binding = selectionBinding();
-const selector = await loadCommittedSelection(binding);
 const operation = readOperationRecord(parseJson(await readFile('deployment-evidence/operation-record.json')));
-const io = await createRuntimeIo(selector, '.service-artifacts/selected', env, operation, { purpose: 'qualification' });
+const io = await createRuntimeIo(env, operation, { purpose: 'qualification' });
 try {
-  // observeDeployment repeats complete native release verification before lazy STS.
-  const snapshot = await observeDeployment({ binding, stackSources: operation.stack_manifest ?? operation.reviewed_stack_sources, infraSha: env.GITHUB_SHA, io, env });
-  const { image, lambdas, runtime_policy, schema, release } = selector;
-  const record = { schema_version: 2,
+  // The authenticated observation covers the stacks Infra still produces and the
+  // stage-contract surface it publishes. The release slice is observed by
+  // AnyWear-Service's release chain, never from here.
+  const body = await observeDeployment({ infraSha: env.GITHUB_SHA, io, env });
+  const record = { schema_version: 3,
     record_type: observationRecordType(boundary.family),
-    infra: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: boundary.workflow,
+    producer: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: boundary.workflow,
       workflow_ref: env.GITHUB_WORKFLOW_REF, run_id: Number(env.GITHUB_RUN_ID), run_attempt: Number(env.GITHUB_RUN_ATTEMPT) },
-    selection: { file: binding.selectionFile, sha256: binding.selectionSha256, release, components: { image, lambdas, runtime_policy, schema } }, ...snapshot };
+    ...body };
   if (record.record_type === deploymentRecordType) validateDeploymentRecord(record);
-  else validateSnapshot(snapshot, { infraWorkflows: [boundary.workflow] });
+  else validateObservationRecord(record);
   await writeFile('deployment-evidence/deployment-record.json', canonicalJson(record));
 } finally {
   await writeFile('deployment-evidence/operation-record.json', canonicalJson(operation));

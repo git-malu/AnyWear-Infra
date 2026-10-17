@@ -32,8 +32,9 @@ jobs:
       QUALIFICATION_RECORD_SHA256: ${{ vars.PROD_QUALIFICATION_RECORD_SHA256 }}
       QUALIFICATION_E2E_SHA: ${{ vars.PROD_QUALIFICATION_E2E_SHA }}
       STABLE_RELEASE_ID: ${{ vars.PROD_STABLE_RELEASE_ID }}
-      SELECTION_FILE: ${{ vars.PROD_SELECTION_FILE }}
-      SELECTION_SHA256: ${{ vars.PROD_SELECTION_SHA256 }}
+      SERVICE_RELEASE_ID: ${{ vars.PROD_SERVICE_RELEASE_ID }}
+      SERVICE_SOURCE_SHA: ${{ vars.PROD_SERVICE_SOURCE_SHA }}
+      SERVICE_IMAGE_DIGEST: ${{ vars.PROD_SERVICE_IMAGE_DIGEST }}
       GH_TELEMETRY: disabled
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +59,7 @@ jobs:
           permission-contents: read
           permission-actions: read
           permission-attestations: read
-      - name: Verify committed selection, stable release and trusted Beta qualification before AWS credentials
+      - name: Verify the reviewed release identity, stable release and trusted Beta qualification before AWS credentials
         id: qualified
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -78,7 +79,7 @@ jobs:
           path: .qualification-verifier
           token: ${{ steps.app.outputs.token }}
           persist-credentials: false
-      - name: Verify qualification v2 integrity and exact artifact/run/attempt/image binding
+      - name: Verify qualification v2 integrity and exact artifact/run/attempt/release binding
         run: node scripts/production-preflight.mjs verify
       # Execution stays source-disabled in scripts/promote-production.mjs, which
       # runs before credentials and cannot be bypassed by an activation variable.

@@ -51,8 +51,9 @@ this same external mode for all CDK construction, avoiding a later collision.
 This creates the six dedicated roles while retaining the old Beta trust/grants.
 Read back roles, immutable OIDC subjects and effective policies before configuring
 consumers. Keep the old executor usable until its jobs and rollback obligations
-have ended. Ordinary `mutate.yml` deployment later requires a sealed selection;
-that requirement does not apply to this explicit Foundation-only operator path.
+have ended. Ordinary `mutate.yml` deployment later requires the reviewed sealed
+Service release identity; that requirement does not apply to this explicit
+Foundation-only operator path.
 `deployScope=billing` similarly synthesizes only Billing and requires its separately
 assigned `us-east-1` window.
 
@@ -68,56 +69,41 @@ resource security boundary. Inventory the deployed bootstrap assume/pass chain,
 inline/managed policies and execution role before authorizing that chain. A future
 permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 
-## Direct release verification
+## Direct release identity
 
-The [v2 committed selection](../contracts/release-selection.md) is the one input
-authority. A source PR reviews the exact release/component identities and hashes.
-The two [bounded Beta entries](beta-infrastructure.md#entry-points) and their
-read-only `state` path automatically
-checks actual Service inputs before AWS credentials; source checks themselves
-perform no private native read or deployment. E2E uses the same reviewed verifier
-with its actual immutable Infra checkout, rather than reconstructing a selector
-as an authority. Historical v1 receipts and handshake diagnostics remain preserved
-historical evidence and are explicitly rejected as new runtime inputs.
+After #158 step C there is no committed selection and no cross-repository native
+asset verification. `deploy-platform` and `restore-release` take one reviewed
+Service release identity (`service_release_tag` + `service_commit`). A source PR
+reviews the tag and the Service commit; the sealed release is then downloaded
+(`service-artifacts.json`, `pre-sign-up.zip`, `post-confirmation.zip`,
+`runtime-policy.json`) with a read-only token, every byte is proved against the
+release manifest, and the manifest's image source must equal the reviewed commit.
+Every other operation rejects a release identity. Deployment records are v3 and
+contain no `selection`.
 
-Verification requires trusted Infra origin/full HEAD and clean tracked/untracked
-source, without replacement refs or hidden index flags. The selected file must be
-a regular tracked canonical blob without path links and its raw bytes must equal
-both the commit and the explicit SHA-256. Verify the immutable release ID/tag/
-source, all five asset IDs/names/uploaded states/API sizes/digests and downloaded
-hashes, then validate Lambda/policy/schema components. Preserve the complete
-native v0.1/v0.2 signed immutable-release statement across `release verify` and
-all five `verify-asset` calls. The native statement does not carry workflow/run
-identity: independently read the exact completed-success publisher main source,
-workflow/run/attempt and both repository/head-repository IDs/owner IDs/logins
-before and after verification. Re-read immutable release identities at the end.
-Unavailable or changed evidence fails closed.
-
-The protected Beta job first checks exact main/workflow/account/region, operation,
-selection and stack sources, with explicit identity/retention only for CDK
-families and fixed protected source context for other entries. It then creates a scoped
-read-only App token for AnyWear-Service contents/actions/attestations, verifies
-the selected release, and only then obtains operation-specific restricted AWS
-OIDC sessions. Final qualification also uses a restricted session, not a role-wide
+The protected Beta job first checks exact main/workflow/account/region and
+operation, plus the release identity only for the two operations that take one,
+with explicit identity/retention only for CDK families and fixed protected source
+context for other entries. It then obtains the sealed release and immediately
+re-hashes the downloaded bytes before any credential, and only then obtains
+operation-specific restricted AWS OIDC sessions. Final qualification also uses a restricted session, not a role-wide
 credential action. The CLI
 uses a fresh external empty config and fixes telemetry off, excluding ambient
 credentials, debug/config/Git/Node overrides. Source CI pins CLI 2.101.0 and
 reproduces its original relative device-id write in a credential-free isolated
 Linux network namespace; the fixed environment must preserve strict clean source.
 
-A direct invocation uses explicit immutable inputs:
+A direct invocation uses the same reviewed inputs through the workflow:
 
 ```sh
-node scripts/artifact-consumer.mjs \
-  --selection selections/beta-baseline.json --selection-sha256 "$SELECTION_SHA256" \
-  --trusted-infra-root "$TRUSTED_INFRA_ROOT" --infra-sha "$INFRA_SHA" \
-  --output-dir .service-artifacts/selected
+gh workflow run mutate.yml --repo git-malu/AnyWear-Infra \
+  -f operation=deploy-platform \
+  -f service_release_tag="$SERVICE_RELEASE_TAG" -f service_commit="$SERVICE_COMMIT"
 ```
 
 There is no publication Actions ZIP, executable candidate/receipt/handshake,
 mandatory issue-comment URL, writer token or expiry field in this path. The
-reviewed selection and actual signed release/publisher checks replace that
-ceremony. This source interface does not authorize the #54 cutover, which still
+reviewed release tag/commit and the manifest byte proof replace that ceremony. This source interface does not authorize the #54 cutover, which still
 requires one rollout writer, resource cessation and the separately
 reviewed maintenance/recovery plan. Foundation-only bootstrap remains below its
 existing separately allocated operator boundary and requires no Service artifact.
@@ -196,15 +182,16 @@ that the effective repository policy has the same hash.
    the policy or upload/delete images. Initial policy installation uses the
    separately assigned existing operator, not an expanded runtime role.
 6. Publish/import the sealed Service baseline with the verified policy hash and
-   protected current/rollback list, then commit the reviewed v2 selection
-   and verify it through the ordinary workflow described above. Reconcile Platform later with
-   the same live artifacts and explicit `ecrImageRetention=true`, so CDK owns
+   protected current/rollback list, then deploy the stage base through the
+   ordinary workflow described above with the reviewed Service release identity.
+   Reconcile Platform later with the same live artifacts and explicit
+   `ecrImageRetention=true`, so CDK owns
    the identical policy. Never deploy the default `false` context over the staged
    protection.
 
 Recheck digest/tag presence, effective hash and preview immediately before
 deployment/rollback and after any authorized image publication. If the inventory
-exceeds the bound or any check changes, hold selection/retirement and schedule
+exceeds the bound or any check changes, hold release/retirement and schedule
 repair; never silently raise the threshold or discard a rollback digest.
 
 If policy installation must be reversed, keep writers frozen, recheck that the
@@ -238,10 +225,13 @@ identities; source-matrix equality alone does not authorize a replacement.
 Verify stable independent Client publication through existing CFN/SSM outputs.
 Retain the original templates, selected assets and usable recovery writer.
 
-Exercise reviewed `restore-release` as the compute rollback path. `deploy-workload` can
-select a previous immutable release while retaining compatible applied schema; it does
-not run down migrations. `restore-release` verifies the candidate policy/schema before
-CFN and redeploys Workload then Platform active in the same queue; its only activation
+Exercise reviewed `restore-release` as the stage-base recovery path; it deploys
+only `AnyWearPlatformStack-beta` and leaves the release slice to AnyWear-Service's
+own release chain. It does not run down migrations and it never verifies a
+candidate release. (The former `deploy-workload` path no longer exists in Infra.)
+`restore-release` checks the resident invariant before
+CFN, reads the release slice terminal before and after its own deploy, and
+redeploys only the stage base active; its only activation
 precondition is closed admission, with stable stack status required for the
 CloudFormation mutation itself. Failures preserve observed state and require an
 explicitly reviewed recovery; no automatic sibling deploy, revert or admission
@@ -250,8 +240,10 @@ reopening occurs.
 Current dispatches use `mutate.yml` for maintenance and `restore-release`. Beta is
 resident, so no operation stops or starts it and no inactive deployment path remains.
 A separately coordinated fixed `runtime.yml` `observe` run produces the E2E-compatible
-v2 record after changes; mutation family observations identify their actual workflow
-(`mutate.yml`) and are not accepted as legacy E2E inputs. Read-only `runtime.yml`
+v3 `anywear_infra_deployment` record after changes; mutation family observations
+identify their actual workflow (`mutate.yml`) and are not accepted as E2E deployment
+inputs. The Workload slice's own record is produced by AnyWear-Service's release
+chain (`anywear_service_deployment`). Read-only `runtime.yml`
 `state` remains available with the stage switch closed, including recovery diagnosis,
 and cannot start tasks or qualify database/schema state.
 
@@ -294,7 +286,7 @@ Observe new post-retirement Original templates and actual runtime identities,
 publish a new trusted completed-success Infra deployment record, then run final
 E2E v2 qualification against that exact record in its scheduled window. Pre-retirement
 rehearsal hashes cannot substitute. Preserve deployment/operation/recovery records,
-committed selection bytes, signed releases and publisher identities, authenticated
+sealed Service release identities, signed releases and publisher identities, authenticated
 before/after observations and exact source/run/attempt/artifact hashes before root
 registration, repository reconciliation or resource cleanup.
 

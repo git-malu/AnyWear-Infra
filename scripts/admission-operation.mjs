@@ -4,7 +4,7 @@ import { canonicalTesterList, observeAdmissionState, readAdmissionState, assertP
 import { ADMISSION_MODE_CLOSED, ADMISSION_MODE_TESTERS, admissionClock, describeAdmissionMode,
   effectiveAdmissionBound, parseAdmissionInstant, sameAdmissionInstant } from './admission-mode.mjs';
 import { workloadRevision } from './workload-revision.mjs';
-import { assertVerificationExecutor, runRuntimeVerification } from './verify-runtime-task.mjs';
+import { assertProtectedExecutor } from './operation-boundaries.mjs';
 
 export { readAdmissionState } from './admission-state.mjs';
 // The standalone `migrate` operation uses this fence from `admission-mode.mjs`;
@@ -198,17 +198,16 @@ const clock = admissionClock;
 const describeAdmission = state => `${describeAdmissionMode(state)}, `
   + `tester_count=${Array.isArray(state?.tester_emails) ? state.tester_emails.length : 'unavailable'}`;
 
-export async function runSuspendAdmission({ io, selector, manifest, schema, infraSha, env = process.env, verifyRuntime = runRuntimeVerification }) {
+export async function runSuspendAdmission({ io, infraSha, env = process.env }) {
   // Source rejection must precede any authenticated activity or lifecycle task.
   assertAdmissionExecutor(env);
-  assertVerificationExecutor(infraSha, env);
+  assertProtectedExecutor(infraSha, env);
   let revision; let prior; let suspendAttempted = false;
   try {
     const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
     const outputs = assertActiveBeta(platform, workload, 'suspend admission');
     revision = workloadRevision(workload);
-    if (revision.commit !== selector.image.service_sha || revision.digest !== selector.image.digest) throw new Error('Admission suspension must retain the deployed selected image');
     const original = await readAdmissionState(io);
     io.recordAdmissionState?.({ phase: 'original', state: original, result: 'observed' });
     // Read the database admission state before suspending so the operation
@@ -216,7 +215,6 @@ export async function runSuspendAdmission({ io, selector, manifest, schema, infr
     prior = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
     const closeKind = classifyCloseKind(prior);
     const priorExpiresAt = observedExpiry(prior);
-    const verification = await verifyRuntime({ io, outputs, selector, manifest, schema, infraSha, env });
     suspendAttempted = true;
     await io.oneShot('lifecycle', revision, 'suspend');
     const state = await readAdmissionState(io);
@@ -231,7 +229,7 @@ export async function runSuspendAdmission({ io, selector, manifest, schema, infr
     assertStatusMatchesAdmission(status, finalState, clock(io));
     io.recordAdmissionState?.({ phase: 'suspended', state: finalState, result: 'verified', close_kind: closeKind,
       prior_expires_at: priorExpiresAt, lifecycle_status_sha256: contentHash(status) });
-    return { original, state: finalState, status, close_kind: closeKind, prior_expires_at: priorExpiresAt, runtime_verification: verification };
+    return { original, state: finalState, status, close_kind: closeKind, prior_expires_at: priorExpiresAt };
   } catch (error) {
     const { state } = await observeAdmissionState(io);
     io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed',
@@ -240,10 +238,10 @@ export async function runSuspendAdmission({ io, selector, manifest, schema, infr
   }
 }
 
-export async function runResumeAdmission({ io, selector, manifest, schema, infraSha, env = process.env, verifyRuntime = runRuntimeVerification }) {
+export async function runResumeAdmission({ io, infraSha, env = process.env }) {
   // Source rejection must precede any authenticated activity or lifecycle task.
   assertAdmissionExecutor(env);
-  assertVerificationExecutor(infraSha, env);
+  assertProtectedExecutor(infraSha, env);
   const windowMinutes = parseWindowMinutes(env.WINDOW_MINUTES);
   const payload = admissionWindowPayload(env);
   let revision; let original; let requested = false;
@@ -252,7 +250,6 @@ export async function runResumeAdmission({ io, selector, manifest, schema, infra
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
     const outputs = assertActiveBeta(platform, workload, 'resume admission');
     revision = workloadRevision(workload);
-    if (revision.commit !== selector.image.service_sha || revision.digest !== selector.image.digest) throw new Error('Admission window must retain the deployed selected image');
     // Refuse before resuming when the selected Service cannot report the recorded
     // expiry, or when the database decision is not provably closed.
     assertClosedWindowStatus(parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status')), clock(io));
@@ -264,7 +261,6 @@ export async function runResumeAdmission({ io, selector, manifest, schema, infra
     // restored to a value that cannot prove closure is repaired by
     // `suspend-admission`, the documented predecessor of any window.
     assertProvableAdmissionClosure(original, 'Admission mirror does not prove closed admission before a window resumes');
-    const verification = await verifyRuntime({ io, outputs, selector, manifest, schema, infraSha, env });
     requested = true;
     await io.oneShot('lifecycle', revision, 'resume', payload);
     const state = await readAdmissionState(io);
@@ -280,7 +276,7 @@ export async function runResumeAdmission({ io, selector, manifest, schema, infra
     io.recordAdmissionState?.({ phase: 'verified', state: finalState, result: 'verified', window_minutes: windowMinutes,
       admission_window_expires_at: admissionWindowExpiresAt, lifecycle_status_sha256: contentHash(status) });
     return { original, state: finalState, status, window_minutes: windowMinutes,
-      admission_window_expires_at: admissionWindowExpiresAt, runtime_verification: verification };
+      admission_window_expires_at: admissionWindowExpiresAt };
   } catch (error) {
     // Nothing before the resume attempt can have lifted suspension, so those
     // failures record the observed state and never issue a suspension of their own.

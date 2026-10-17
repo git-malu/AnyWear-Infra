@@ -1,15 +1,9 @@
 name: Verify reviewed Beta operation inputs
-description: Verify committed source, stack provenance and immutable Service inputs before any job obtains AWS credentials
+description: Verify the reviewed Service release identity before any job obtains AWS credentials
 inputs:
   app_private_key:
     required: true
     description: Protected read-only Service App key
-  beta_api_sizing_profile:
-    default: preserve
-    description: Beta API profile; explicit changes belong only to active deploy-workload
-  beta_sizing_telemetry:
-    default: preserve
-    description: Beta sizing telemetry; explicit changes belong only to active deploy-workload
 runs:
   using: composite
   steps:
@@ -18,23 +12,14 @@ runs:
         node-version: 24
     - run: npm ci
       shell: bash
-    - name: Validate operation family, committed source and stack provenance before credentials
+    - name: Validate operation family and reviewed Service release identity before credentials
       shell: bash
-      env:
-        INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
-        INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
       run: |
         mkdir -p deployment-evidence
         node scripts/check-operation.mjs
-        node scripts/check-stack-sources.mjs
-    - name: Check native release verification CLI before credentials
-      shell: bash
-      run: |
-        gh --version | tee deployment-evidence/github-cli-version.txt
-        gh release verify --format json --help > /dev/null
-        gh release verify-asset --format json --help > /dev/null
-    - name: Create read-only private artifact token
+    - name: Create the read-only Service release token when this operation takes a release
       id: app
+      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release'
       uses: actions/create-github-app-token@v3
       with:
         app-id: 3346940
@@ -42,23 +27,17 @@ runs:
         owner: git-malu
         repositories: AnyWear-Service
         permission-contents: read
-        permission-actions: read
-        permission-attestations: read
-    - name: Verify the immutable Service release and every committed input
+    - name: Download and prove the sealed Service release assets
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app.outputs.token }}
-        INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
-        INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
       run: node scripts/verify-operation-inputs.mjs
-    - name: Preserve the verified inputs and the verified artifact directory
+    - name: Preserve the verified inputs and the sealed release directory
       uses: actions/upload-artifact@v4
       with:
         name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}
         path: |
           deployment-evidence/verified-inputs.json
-          deployment-evidence/github-cli-version.txt
-          deployment-evidence/stack-sources.json
           .service-artifacts/selected
         retention-days: 90
-        if-no-files-found: error
+        if-no-files-found: warn

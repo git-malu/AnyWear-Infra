@@ -33,23 +33,23 @@ function ioFixture({ active = true, digest = selector.image.digest } = {}) {
     }
   }, recordAdmissionState(event) { events.push(structuredClone(event)); } };
 }
-test('Infra tester add merges exact emails and retains the running revision; inactive or unselected image performs no task', async () => {
+test('Infra tester add merges exact emails on the revision the release slice reports; inactive Beta performs no task', async () => {
   const io = ioFixture();
-  await runTesterAllowlist('add', '[" NEW@example.com ", "new@example.com"]', io, selector);
+  await runTesterAllowlist('add', '[" NEW@example.com ", "new@example.com"]', io);
   const lifecycle = io.calls.find(call => call[0] === 'lifecycle');
   assert.equal(lifecycle[2], 'set-testers');
   assert.equal(lifecycle[3], '["existing@example.com","new@example.com"]');
-  for (const options of [{ active: false }, { digest: `sha256:${'3'.repeat(64)}` }]) {
+  for (const options of [{ active: false }]) {
     const blocked = ioFixture(options);
-    await assert.rejects(runTesterAllowlist('set', '[]', blocked, selector));
+    await assert.rejects(runTesterAllowlist('set', '[]', blocked));
     assert.equal(blocked.calls.length, 0);
   }
-  await assert.rejects(runTesterAllowlist('cleanup', '[]', io, selector));
+  await assert.rejects(runTesterAllowlist('cleanup', '[]', io));
   for (const input of ['["*@example.com"]', '["@example.com"]', JSON.stringify(Array(51).fill('a@example.com'))]) assert.throws(() => normalizeTesterEmails(input));
 });
 test('tester operations record the admission read-back their evidence claim rests on, with admission unchanged', async () => {
   const io = ioFixture();
-  await runTesterAllowlist('add', '["new@example.com"]', io, selector);
+  await runTesterAllowlist('add', '["new@example.com"]', io);
   assert.deepEqual(io.events.map(event => [event.phase, event.result]), [['original', 'observed'], ['written', 'observed']]);
   // The mirror is self-describing, so the record shows the write changed no
   // admission state: no derived expiry, no window, the same recorded decision.
@@ -88,7 +88,7 @@ test('tester operation validates protected executor and explicit normalized payl
   const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: '4'.repeat(40),
     GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
     AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true', INFRA_OPERATION: 'add-testers',
-    INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', SELECTION_FILE: 'selections/beta.json', SELECTION_SHA256: '5'.repeat(64), TESTER_EMAILS: '["test@example.com"]' };
+    INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '["test@example.com"]' };
   validateOperationInputs(env);
   validateOperationInputs({ ...env, TESTER_EMAILS: '[" OTHER@example.com "]', INFRA_OPERATION: 'set-testers' });
   for (const change of [{ TESTER_EMAILS: '["*@example.com"]' }, { INFRA_OPERATION: 'tester-cleanup' }, { GITHUB_SHA: 'short' },

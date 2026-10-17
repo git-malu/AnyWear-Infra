@@ -3,6 +3,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { platformStackName } from '@git-malu/stage-contracts';
+
+// The stack name is the versioned stage-contracts package's identity helper.
+export { platformStackName };
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -31,10 +35,6 @@ export const RECOVERY_TARGETS = Object.freeze({
     clusterDeletionPolicy: 'Retain',
   }),
 });
-
-export function platformStackName(stage) {
-  return `AnyWearPlatformStack-${stage}`;
-}
 
 export function platformStackStage(stackName) {
   return /^AnyWearPlatformStack-(dev|beta|prod)$/.exec(stackName ?? '')?.[1];

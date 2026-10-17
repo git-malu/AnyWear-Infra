@@ -1,364 +1,107 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 import { runRestoreRelease } from './restore-release.mjs';
-import { createTestInputs } from './create-test-inputs.mjs';
-import { canonicalJson, sha256 } from './json-contract.mjs';
+import { canonicalJson } from './json-contract.mjs';
 
-const { selector, manifest, schema } = await createTestInputs(await mkdtemp(path.join(os.tmpdir(), 'infra-restore-')));
 const infraSha = '5'.repeat(40);
-const env = { GITHUB_SHA: infraSha, GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
-  GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
-  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true', TESTER_EMAILS: '[]' };
-const platformName = 'AnyWearPlatformStack-beta'; const workloadName = 'AnyWearWorkloadStack-beta';
-const fourTesters = ['beta-worker-0@example.com', 'beta-worker-1@example.com', 'first@example.com', 'second@example.com'];
-const outputs = Object.fromEntries(['PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn', 'OneShotExecutionRoleArn',
-  'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName', 'WardrobeBucketName'].map(key => [key, key]));
-Object.assign(outputs, { EcsClusterName: 'beta-anywear', BetaActive: 'true',
-  VtoQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/anywear-vto',
-  AutoTaggingQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/anywear-auto-tagging',
-  DatabaseEndpoint: 'beta-anywear.cluster-abc.ap-east-1.rds.amazonaws.com:5432' });
-const entries = (values, nameKey, valueKey) => Object.entries(values).map(([name, value]) => ({ [nameKey]: name, [valueKey]: value }));
-const stackOutputs = values => entries(values, 'OutputKey', 'OutputValue');
+const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
+  GITHUB_RUN_ID: '31', GITHUB_RUN_ATTEMPT: '2', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
+  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true' };
+const platformOutputs = () => Object.fromEntries(['EcsClusterName', 'PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn',
+  'OneShotExecutionRoleArn', 'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName',
+  'WardrobeBucketName', 'VtoQueueUrl', 'AutoTaggingQueueUrl', 'ServiceRepositoryUri', 'ServiceRepositoryName', 'BetaActive']
+  .map(key => [key, key === 'EcsClusterName' ? 'beta-anywear' : key === 'BetaActive' ? 'true' : `${key}-value`]));
+const entries = outputs => Object.entries(outputs).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue }));
 
-function fixture(options = {}) {
-  const calls = []; const actions = []; const stages = []; const states = []; const recovery = [];
-  const admission = { admission_mode: canonicalJson({ mode: 'closed' }),
-    tester_allowlist: canonicalJson(options.testers ?? fourTesters), ...options.admission };
-  // A live tester window, so a drift case can open admission the way a dispatched
-  // window would. The reader uses the real clock here, so the bound is relative.
-  admission.openWindow = () => { admission.admission_mode = canonicalJson({
-    mode: 'testers', expires_at: new Date(Date.now() + 3_600_000).toISOString() }); };
-  const preserved = { VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:retained-vlm', CloudFrontPrefixListId: 'pl-retained',
-    ...(options.preParameters ? {} : { BetaApiSizingProfile: 's2-api', BetaSizingTelemetry: 'true' }) };
-  const originalParameters = { ServiceImageDigest: `sha256:${'a'.repeat(64)}`, ServiceCommitSha: 'b'.repeat(40), ...preserved };
-  const platform = { StackStatus: 'UPDATE_COMPLETE', Outputs: stackOutputs(outputs) };
-  const workload = { StackStatus: 'UPDATE_COMPLETE', Parameters: entries(originalParameters, 'ParameterKey', 'ParameterValue'),
-    Outputs: stackOutputs({ BetaActive: 'true', ApiBaseUrl: 'https://retained.example.com', ApiServiceName: 'beta-anywear-api',
-      WorkerServiceName: 'beta-anywear-worker', ApiLoadBalancerDnsName: 'internal-beta-anywear-123.ap-east-1.elb.amazonaws.com',
-      ApiDistributionDomainName: 'd111111abcdef8.cloudfront.net',
-      // Release-derived outputs. The acceptance task definition and the cleanup
-      // state-machine version both embed the image, so these ARNs move on every
-      // image change; they are the outputs that actually moved during the drill.
-      CleanupAcceptanceTaskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:3',
-      CleanupStateMachineVersionArn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:1' }) };
-  let waits = 0;
-  const io = { calls, actions, stages, states, recovery, admission, platform, workload, preserved, originalParameters,
+// The stage base is the only stack a restore deploys now. The release slice is
+// AnyWear-Service's; it is read only to prove it is terminal, never deployed.
+function mockIo(options = {}) {
+  const calls = []; const stages = []; const states = []; let recovered; let deployCount = 0;
+  let platform = { StackStatus: options.platformStatus ?? 'UPDATE_COMPLETE', Outputs: entries(options.platform ?? platformOutputs()) };
+  let workload = { StackStatus: options.workloadStatus ?? 'UPDATE_COMPLETE', Outputs: entries({ BetaActive: options.workloadActive ?? 'true' }) };
+  return { calls, stages, states, get recovered() { return recovered; }, get deployCount() { return deployCount; },
     async aws(args) {
-      calls.push(structuredClone(args));
-      if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
-        const name = args[args.indexOf('--stack-name') + 1];
-        assert.ok([platformName, workloadName].includes(name));
-        return { Stacks: [structuredClone(name === platformName ? platform : workload)] };
+      calls.push([...args]);
+      if (args[0] === 'cloudformation') return { Stacks: [args.at(-1).includes('Platform') ? platform : workload] };
+      if (args[0] === 'ssm') {
+        const name = args.at(-1);
+        if (name.endsWith('tester_allowlist')) return { Parameter: { Name: name, Value: '[]' } };
+        return { Parameter: { Name: name, Value: canonicalJson(options.mirror ?? { mode: 'closed' }) } };
       }
-      if (args[0] === 'ssm' && args[1] === 'get-parameter') {
-        const name = args[args.indexOf('--name') + 1];
-        const key = name.split('/').at(-1); assert.ok(Object.hasOwn(admission, key));
-        if (key === 'admission_mode' && io.unreadableAdmission) throw new Error('SSM admission mode unavailable');
-        return { Parameter: { Name: name, Value: admission[key] } };
-      }
-      if (args[0] === 'ecs' && args[1] === 'wait' && args[2] === 'services-stable') {
-        assert.deepEqual(args, ['ecs', 'wait', 'services-stable', '--cluster', 'beta-anywear', '--services', 'beta-anywear-api', 'beta-anywear-worker']);
-        actions.push('services-stable');
-        if (++waits === options.failWait) throw new Error('Services failed to stabilize');
-        return {};
-      }
-      assert.fail(`Unexpected AWS action: ${args.slice(0, 3).join(' ')}`);
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
     },
-    async deploy(name, revision) {
-      actions.push(name === workloadName ? 'deploy-workload' : 'deploy-platform');
-      assert.ok([platformName, workloadName].includes(name));
-      assert.equal(revision.digest, selector.image.digest); assert.equal(revision.commit, selector.image.service_sha);
-      assert.deepEqual(revision.parameters, { ...originalParameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha });
-      if (options.failDeploy === name) throw new Error('Deployment failed');
-      // A protected deploy always reconciles the active path; the postcondition
-      // below is what proves the resident invariant, not the operator's start state.
-      const deployed = name === platformName ? platform : workload;
-      deployed.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'true';
-      if (name === workloadName) {
-        workload.Parameters = entries(revision.parameters, 'ParameterKey', 'ParameterValue');
-        if (options.materializeDefaults) workload.Parameters.push(
-          { ParameterKey: 'BetaApiSizingProfile', ParameterValue: 's1' }, { ParameterKey: 'BetaSizingTelemetry', ParameterValue: 'false' });
-        if (options.parameterDrift) workload.Parameters.find(row => row.ParameterKey === options.parameterDrift).ParameterValue = 'unreviewed';
-        if (options.activityDrift) workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false';
-        if (options.workloadInterfaceDrift) workload.Outputs.find(row => row.OutputKey === 'ApiBaseUrl').OutputValue = 'https://changed.example.com';
-        if (options.workloadInternalDrift) {
-          workload.Outputs.find(row => row.OutputKey === 'ApiLoadBalancerDnsName').OutputValue = 'internal-replaced.ap-east-1.elb.amazonaws.com';
-          workload.Outputs.find(row => row.OutputKey === 'CleanupAcceptanceTaskDefinitionArn').OutputValue =
-            'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:4';
-          workload.Outputs.find(row => row.OutputKey === 'CleanupStateMachineVersionArn').OutputValue =
-            'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:2';
-        }
-        if (options.removeWorkloadOutput) {
-          workload.Outputs = workload.Outputs.filter(row => row.OutputKey !== options.removeWorkloadOutput);
-        }
-      }
-      if (name === platformName) {
-        if (options.platformInterfaceDrift) {
-          platform.Outputs.find(row => row.OutputKey === options.platformInterfaceDrift).OutputValue = 'changed-platform-value';
-        }
-        if (options.platformInternalDrift) {
-          platform.Outputs.find(row => row.OutputKey === 'DatabaseEndpoint').OutputValue = 'replaced.cluster.ap-east-1.rds.amazonaws.com:5432';
-        }
-        if (options.removePlatformOutput) {
-          platform.Outputs = platform.Outputs.filter(row => row.OutputKey !== options.removePlatformOutput);
-        }
-      }
-      if (name === options.admissionDriftAfterDeploy) admission.openWindow();
+    async deploy(stack) {
+      calls.push(['deploy', stack]); deployCount++;
+      assert.equal(stack, 'AnyWearPlatformStack-beta', 'only the stage base is deployed');
+      if (options.deployError) throw options.deployError;
+      platform = { StackStatus: 'UPDATE_COMPLETE', Outputs: entries(options.afterPlatform?.() ?? options.platform ?? platformOutputs()) };
+      workload = { StackStatus: options.afterWorkloadStatus ?? 'UPDATE_COMPLETE', Outputs: entries({ BetaActive: options.afterWorkloadActive ?? 'true' }) };
     },
-    async verifyHealth(url, revision) {
-      actions.push('health'); assert.equal(url, 'https://retained.example.com');
-      assert.equal(revision.digest, selector.image.digest); assert.equal(revision.commit, selector.image.service_sha);
-      if (options.failHealth) throw new Error('Health mismatch');
-    },
-    async oneShot(role, revision, url) {
-      actions.push(`one-shot:${role}`); assert.equal(role, 'verify'); assert.equal(url, 'https://retained.example.com');
-      assert.equal(revision.digest, selector.image.digest); assert.equal(revision.commit, selector.image.service_sha);
-      if (options.failVerify) throw new Error('Selected verification failed');
-      if (options.finalAdmissionDrift) admission.tester_allowlist = '[]';
-    },
-    recordRestoreStage(value) { stages.push(structuredClone(value)); options.onStage?.(value, io); },
-    recordRestoreState(value) { states.push(structuredClone(value)); },
-    recordRecovery(value) { recovery.push(value); },
-  };
-  const verifyRuntime = async input => {
-    actions.push('candidate-verification');
-    // Activity is a separate postcondition; the candidate verifier only consumes
-    // the runtime interface it needs.
-    assert.deepEqual({ ...input.outputs, BetaActive: 'true' }, outputs); assert.equal(input.selector, selector);
-    assert.equal(input.manifest, manifest); assert.equal(input.schema, schema); assert.equal(input.infraSha, infraSha);
-    if (options.failCandidate) throw new Error('Candidate policy/schema mismatch');
-    return { schema: { compatibility_result: 'compatible' }, policy_content_sha256: manifest.components.runtime_policy.content_sha256 };
-  };
-  return { io, input: { io, selector, manifest, schema, infraSha, env: { ...env }, verifyRuntime } };
+    recordRestoreStage(event) { stages.push(event); },
+    recordRestoreState(observed) { states.push(observed); },
+    recordRecovery(outcome) { recovered = outcome; } };
 }
 
-test('restore verifies a different candidate first, selects both stacks in order and preserves four original testers and interfaces', async () => {
-  const { io, input } = fixture(); const result = await runRestoreRelease(input);
-  assert.deepEqual(io.actions, ['candidate-verification', 'deploy-workload', 'services-stable', 'deploy-platform', 'services-stable', 'health', 'one-shot:verify']);
-  assert.deepEqual(io.stages.filter(row => row.result === 'succeeded').map(row => row.stage), [
-    'preconditions', 'candidate-verification', 'workload-deploy', 'workload-stable-readback', 'platform-deploy', 'selected-runtime-qualification', 'final-readback',
-  ]);
-  assert.deepEqual(io.originalParameters, { ServiceImageDigest: `sha256:${'a'.repeat(64)}`, ServiceCommitSha: 'b'.repeat(40), ...io.preserved });
-  assert.deepEqual(result.selected_revision.parameters, { ...io.originalParameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha });
-  assert.deepEqual(result.admission, { admission_mode: 'closed', admission_window_expires_at: null, admission_mode_source: 'record', tester_count: 4,
-    tester_allowlist_sha256: sha256(canonicalJson(fourTesters)) });
-  assert.deepEqual(io.states, []); assert.deepEqual(io.recovery, []);
-  assert.equal(io.admission.tester_allowlist, canonicalJson(fourTesters));
-  assert.ok(!JSON.stringify(result).includes('first@example.com'));
+test('restore deploys only the stage base and leaves the release slice untouched', async () => {
+  const io = mockIo();
+  const result = await runRestoreRelease({ io, infraSha, env });
+  assert.equal(io.deployCount, 1);
+  assert.deepEqual(io.calls.filter(call => call[0] === 'deploy'), [['deploy', 'AnyWearPlatformStack-beta']]);
+  assert.ok(!io.calls.some(call => call[0] === 'oneShot'), 'no release-slice task runs from a stage-base restore');
+  assert.equal(result.restored_stack, 'AnyWearPlatformStack-beta');
+  assert.equal(result.admission.admission_mode, 'closed');
+  assert.ok(io.stages.filter(stage => stage.result === 'succeeded').length >= 3);
+  assert.equal(io.recovered, undefined);
 });
 
-test('invalid source, executor, phase or retention fails before authenticated reads or candidate tasks', async () => {
-  for (const change of [{ GITHUB_SHA: '6'.repeat(40) }, { GITHUB_REF: 'refs/heads/other' }, { GITHUB_REPOSITORY: 'git-malu/AnyWear-Service' },
-    { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main' },
-    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/other.yml@refs/heads/main' }, { AWS_ACCOUNT_ID: '000000000000' },
-    { INFRA_IDENTITY_PHASE: 'roles-added' }, { INFRA_RETENTION_PROTECTION: 'false' }]) {
-    const { io, input } = fixture(); input.env = { ...input.env, ...change };
-    await assert.rejects(runRestoreRelease(input)); assert.deepEqual(io.calls, []); assert.deepEqual(io.actions, []);
-  }
-});
-
-test('restore normalizes pre-parameter S1/off source after defaults materialize during deployment', async () => {
-  const { io, input } = fixture({ preParameters: true, materializeDefaults: true });
-  await runRestoreRelease(input);
-  assert.deepEqual(io.workload.Parameters.filter(row => row.ParameterKey.startsWith('Beta')), [
-    { ParameterKey: 'BetaApiSizingProfile', ParameterValue: 's1' }, { ParameterKey: 'BetaSizingTelemetry', ParameterValue: 'false' },
-  ]);
-  assert.equal(io.stages.at(-1).stage, 'final-readback');
-  assert.equal(io.stages.at(-1).result, 'succeeded');
-});
-
-test('restore final readback rejects a valid but changed sizing profile or telemetry setting', async () => {
-  for (const [key, value] of [['BetaApiSizingProfile', 's1'], ['BetaSizingTelemetry', 'false']]) {
-    const { io, input } = fixture({ onStage(stage, currentIo) {
-      if (stage.stage === 'selected-runtime-qualification' && stage.result === 'succeeded') {
-        currentIo.workload.Parameters.find(row => row.ParameterKey === key).ParameterValue = value;
-      }
-    } });
-    await assert.rejects(runRestoreRelease(input), error => {
-      assert.match(error.message, /failed at final-readback/);
-      assert.match(error.cause.message, /retained Beta sizing parameter readback mismatch/);
-      return true;
+test('restore refuses a non-terminal release slice before deploying the stage base', async () => {
+  for (const workloadStatus of ['UPDATE_IN_PROGRESS', 'UPDATE_ROLLBACK_FAILED', 'CREATE_IN_PROGRESS']) {
+    const io = mockIo({ workloadStatus });
+    await assert.rejects(runRestoreRelease({ io, infraSha, env }), error => {
+      assert.match(error.cause?.message ?? error.message, /terminal AnyWearWorkloadStack-beta/); return true;
     });
-    assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
+    assert.equal(io.deployCount, 0);
+    assert.equal(io.states.length, 1);
   }
 });
 
-test('unstable stacks or open/unprovable admission performs no candidate task or deploy and preserves failure readback', async () => {
-  const cases = [
-    io => { io.platform.StackStatus = 'UPDATE_IN_PROGRESS'; },
-    io => { io.workload.StackStatus = 'UPDATE_ROLLBACK_COMPLETE'; },
-    // An open tester window is not closed admission.
-    io => io.admission.openWindow(),
-    // A mirror that cannot prove closure is not closed admission either.
-    io => { io.admission.admission_mode = '{"mode":"closed","extra":1}'; },
-    io => { io.admission.tester_allowlist = 'malformed'; },
-  ];
-  for (const mutate of cases) {
-    const { io, input } = fixture(); mutate(io); await assert.rejects(runRestoreRelease(input), /explicit recovery required/);
-    assert.deepEqual(io.actions, []); assert.equal(io.states[0].failure_stage, 'preconditions');
-    assert.deepEqual(io.recovery, ['requires-explicit-recovery']); assert.equal(io.states[0].image_digest, io.originalParameters.ServiceImageDigest);
-    assert.ok(!JSON.stringify(io.states).includes('first@example.com'));
-  }
+test('restore refuses a non-terminal stage base, an open admission or a non-beta cluster before any deploy', async () => {
+  const cause = pattern => error => { assert.match(error.cause?.message ?? error.message, pattern); return true; };
+  await assert.rejects(runRestoreRelease({ io: mockIo({ platformStatus: 'UPDATE_IN_PROGRESS' }), infraSha, env }), cause(/stable AnyWearPlatformStack-beta/));
+  await assert.rejects(runRestoreRelease({ io: mockIo({ mirror: { mode: 'testers', expires_at: new Date(Date.now() + 30 * 60_000).toISOString() } }), infraSha, env }),
+    cause(/not proven closed/));
+  const otherCluster = { ...platformOutputs(), EcsClusterName: 'other' };
+  await assert.rejects(runRestoreRelease({ io: mockIo({ platform: otherCluster }), infraSha, env }), cause(/restricted to beta-anywear/));
 });
 
-test('inactive or mixed stable stacks are not a precondition; the resident postcondition still fails closed after deploy', async () => {
-  // Closed admission is the only activation precondition. The deploy takes the
-  // active path, and the readback after it must observe both stacks active.
-  const cases = [
-    io => { for (const stack of [io.platform, io.workload]) stack.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
-    io => { io.workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
-    io => { io.platform.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
-  ];
-  for (const mutate of cases) {
-    const { io, input } = fixture(); mutate(io);
-    // The fixture's deploy keeps the pre-deploy activity outputs, so the
-    // postcondition refuses after the workload deploy instead of at preconditions.
-    io.deploy = async name => { io.actions.push(name === workloadName ? 'deploy-workload' : 'deploy-platform'); };
-    await assert.rejects(runRestoreRelease(input), /explicit recovery required/);
-    assert.equal(io.states[0].failure_stage, 'workload-stable-readback', JSON.stringify(io.states[0]));
-    assert.deepEqual(io.actions, ['candidate-verification', 'deploy-workload', 'services-stable']);
-    assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
-  }
-});
-
-test('candidate verification failure prevents either CFN deploy and every admission/lifecycle mutation', async () => {
-  const { io, input } = fixture({ failCandidate: true });
-  await assert.rejects(runRestoreRelease(input), /failed at candidate-verification/);
-  assert.deepEqual(io.actions, ['candidate-verification']); assert.equal(io.states[0].admission_mode, 'closed');
-  assert.equal(io.states[0].admission_window_expires_at, null); assert.equal(io.states[0].tester_count, 4);
-});
-
-test('each deploy, stability, health and verification failure stops without automatic sibling deploy or revert', async () => {
-  for (const [options, stage, expectedDeploys] of [
-    [{ failDeploy: workloadName }, 'workload-deploy', ['deploy-workload']],
-    [{ failWait: 1 }, 'workload-stable-readback', ['deploy-workload']],
-    [{ failDeploy: platformName }, 'platform-deploy', ['deploy-workload', 'deploy-platform']],
-    [{ failWait: 2 }, 'selected-runtime-qualification', ['deploy-workload', 'deploy-platform']],
-    [{ failHealth: true }, 'selected-runtime-qualification', ['deploy-workload', 'deploy-platform']],
-    [{ failVerify: true }, 'selected-runtime-qualification', ['deploy-workload', 'deploy-platform']],
-  ]) {
-    const { io, input } = fixture(options); await assert.rejects(runRestoreRelease(input), /explicit recovery required/);
-    assert.deepEqual(io.actions.filter(action => action.startsWith('deploy-')), expectedDeploys);
-    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
-    assert.equal(io.stages.at(-1).result, 'failed');
-    assert.ok(!io.actions.includes('one-shot:verify') || options.failVerify);
-  }
-});
-
-test('parameter, activity, interface and admission drift abort at the next boundary with actual readback', async () => {
-  for (const [options, stage] of [
-    [{ parameterDrift: 'VlmConfigArn' }, 'workload-stable-readback'],
-    [{ parameterDrift: 'ServiceImageDigest' }, 'workload-stable-readback'],
-    [{ parameterDrift: 'BetaApiSizingProfile' }, 'workload-stable-readback'],
-    [{ parameterDrift: 'BetaSizingTelemetry' }, 'workload-stable-readback'],
-    [{ activityDrift: true }, 'workload-stable-readback'],
-    [{ workloadInterfaceDrift: true }, 'workload-stable-readback'],
-    [{ admissionDriftAfterDeploy: workloadName }, 'workload-deploy'],
-    [{ finalAdmissionDrift: true }, 'selected-runtime-qualification'],
-    [{ onStage(value, io) { if (value.stage === 'candidate-verification' && value.result === 'succeeded') io.admission.tester_allowlist = '[]'; } }, 'workload-deploy'],
-  ]) {
-    const { io, input } = fixture(options); await assert.rejects(runRestoreRelease(input), /explicit recovery required/);
-    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
-    assert.equal(io.actions.filter(action => action === 'deploy-workload').length, stage === 'workload-deploy' && options.onStage ? 0 : 1);
-    if (stage === 'workload-stable-readback' || stage === 'workload-deploy') assert.ok(!io.actions.includes('deploy-platform'));
-    if (options.finalAdmissionDrift) assert.equal(io.states[0].tester_count, 0);
-  }
-});
-
-test('restore accepts a release-changing deploy that only moves outputs outside the consumed interface', async () => {
-  // A restore necessarily changes the release; internal attributes such as the
-  // ALB DNS name, the database endpoint and the image-derived cleanup ARNs move
-  // with it and are not an interface. The cleanup ARNs are the outputs that
-  // actually moved during the drill's restore run, which is why this boundary
-  // is exercised with them.
-  const { io, input } = fixture({ workloadInternalDrift: true, platformInternalDrift: true });
-  const result = await runRestoreRelease(input);
-  assert.deepEqual(io.actions, ['candidate-verification', 'deploy-workload', 'services-stable', 'deploy-platform', 'services-stable', 'health', 'one-shot:verify']);
-  assert.deepEqual(io.stages.filter(row => row.result === 'succeeded').map(row => row.stage), [
-    'preconditions', 'candidate-verification', 'workload-deploy', 'workload-stable-readback', 'platform-deploy', 'selected-runtime-qualification', 'final-readback',
-  ]);
-  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'ApiLoadBalancerDnsName').OutputValue,
-    'internal-replaced.ap-east-1.elb.amazonaws.com');
-  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'CleanupAcceptanceTaskDefinitionArn').OutputValue,
-    'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:4');
-  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'CleanupStateMachineVersionArn').OutputValue,
-    'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:2');
-  assert.equal(io.platform.Outputs.find(row => row.OutputKey === 'DatabaseEndpoint').OutputValue,
-    'replaced.cluster.ap-east-1.rds.amazonaws.com:5432');
-  assert.deepEqual(io.states, []); assert.deepEqual(io.recovery, []);
-  assert.equal(result.selected_revision.digest, selector.image.digest);
-});
-
-test('restore fails closed when a consumed interface output changes after deploy', async () => {
-  for (const [options, stage, expected] of [
-    [{ workloadInterfaceDrift: true }, 'workload-stable-readback', /Restore Workload interface output ApiBaseUrl changed after deploy/],
-    [{ platformInterfaceDrift: 'DatabaseHost' }, 'selected-runtime-qualification', /Restore Platform interface output DatabaseHost changed after deploy/],
-  ]) {
-    const { io, input } = fixture(options);
-    await assert.rejects(runRestoreRelease(input), error => {
-      assert.match(error.message, new RegExp(`failed at ${stage}`)); assert.match(error.cause.message, expected); return true;
-    });
-    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
-    assert.equal(io.stages.at(-1).result, 'failed');
-  }
-});
-
-test('restore fails closed when a consumed interface output is missing after deploy', async () => {
-  for (const [options, stage, expected] of [
-    [{ removeWorkloadOutput: 'ApiBaseUrl' }, 'workload-stable-readback', /Restore Workload interface output ApiBaseUrl missing after deploy/],
-    [{ removePlatformOutput: 'VtoQueueUrl' }, 'selected-runtime-qualification', /Restore Platform interface output VtoQueueUrl missing after deploy/],
-  ]) {
-    const { io, input } = fixture(options);
-    await assert.rejects(runRestoreRelease(input), error => {
-      assert.match(error.message, new RegExp(`failed at ${stage}`)); assert.match(error.cause.message, expected); return true;
-    });
-    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
-    assert.equal(io.stages.at(-1).result, 'failed');
-  }
-});
-
-test('failed readback remains bounded and redacted even when one SSM value and evidence hooks fail', async () => {
-  const { io, input } = fixture({ failCandidate: true });
-  input.verifyRuntime = async () => { io.unreadableAdmission = true; throw new Error('Precheck failed'); };
-  io.recordRestoreStage = value => { if (value.result === 'failed') throw new Error('Evidence hook failed'); };
-  await assert.rejects(runRestoreRelease(input), /failed at candidate-verification/);
-  assert.equal(io.states[0].admission_mode, 'unavailable'); assert.equal(io.states[0].admission_window_expires_at, 'unavailable');
-  assert.equal(io.states[0].tester_count, 4); assert.ok(!JSON.stringify(io.states).includes('secret-text'));
-  assert.deepEqual(io.recovery, ['requires-explicit-recovery']); assert.deepEqual(io.actions, []);
-});
-
-test('real candidate verifier rejects changed raw policy bytes despite matching canonical policy and schema, before any CFN deploy', async () => {
-  const { io, input } = fixture(); delete input.verifyRuntime;
-  const fallback = io.aws.bind(io); let definition;
-  const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'c'.repeat(32)}`;
-  const taskDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:1';
-  const migrations = schema.migrations.map(row => ({ id: row.sha256, created_at: row.created_at }));
-  const evidence = { record_type: 'anywear_read_only_runtime', schema_version: 1, service_sha: selector.image.service_sha, image_digest: selector.image.digest,
-    policy_file_sha256: 'e'.repeat(64), policy_content_sha256: manifest.components.runtime_policy.content_sha256,
-    selected_journal_sha256: manifest.components.schema.journal_sha256, selected_migration_ids: migrations,
-    applied_schema_version: schema.current_version, applied_migration_ids: migrations, observed_applied_journal_sha256: sha256(canonicalJson(migrations)) };
-  io.aws = async args => {
-    if (['cloudformation', 'ssm'].includes(args[0])) return fallback(args);
-    io.calls.push(args);
-    switch (args[1]) {
-      case 'register-task-definition': definition = JSON.parse(args[args.indexOf('--cli-input-json') + 1]); return { taskDefinition: { taskDefinitionArn } };
-      case 'run-task': return { tasks: [{ taskArn }] };
-      case 'wait': return {};
-      case 'describe-tasks': return { tasks: [{ taskArn, taskDefinitionArn, lastStatus: 'STOPPED', containers: [{ name: 'OneShot', exitCode: 0, imageDigest: selector.image.digest }] }] };
-      case 'describe-task-definition': return { taskDefinition: definition };
-      case 'get-log-events': return { events: [{ message: `ANYWEAR_RUNTIME_EVIDENCE:${JSON.stringify(evidence)}` }] };
-      case 'deregister-task-definition': return {};
-      default: assert.fail(`Unexpected candidate AWS action: ${args.slice(0, 3).join(' ')}`);
-    }
-  };
-  await assert.rejects(runRestoreRelease(input), error => {
-    assert.match(error.message, /failed at candidate-verification/);
-    assert.match(error.cause.message, /Immutable image policy\/journal identity mismatch/); return true;
+test('restore fails closed when a consumed interface output changes or disappears after deploy', async () => {
+  const changed = mockIo({ afterPlatform: () => ({ ...platformOutputs(), DatabaseHost: 'changed' }) });
+  await assert.rejects(runRestoreRelease({ io: changed, infraSha, env }), error => {
+    assert.match(error.message, /stage-base restore failed at platform-readback/); assert.match(error.cause.message, /interface output DatabaseHost changed/); return true;
   });
-  assert.deepEqual(io.actions, []); assert.ok(io.calls.some(call => call[1] === 'run-task'));
-  assert.ok(io.calls.some(call => call[1] === 'deregister-task-definition'));
-  assert.ok(!io.calls.some(call => call[0] === 'ssm' && call[1] !== 'get-parameter'));
+  const missing = mockIo({ afterPlatform: () => { const outputs = platformOutputs(); delete outputs.VtoQueueUrl; return outputs; } });
+  await assert.rejects(runRestoreRelease({ io: missing, infraSha, env }), error => {
+    assert.match(error.message, /stage-base restore failed at platform-readback/); assert.match(error.cause.message, /interface output VtoQueueUrl missing/); return true;
+  });
+  assert.equal(changed.recovered, 'requires-explicit-recovery');
+  assert.equal(missing.recovered, 'requires-explicit-recovery');
+  assert.equal(changed.states.length, 1);
+  assert.match(changed.states[0].platform_status, /UPDATE_COMPLETE/);
+});
+
+test('restore never resumes admission or deploys a sibling stack when a deploy fails', async () => {
+  const io = mockIo({ deployError: new Error('CloudFormation failed') });
+  await assert.rejects(runRestoreRelease({ io, infraSha, env }), /stage-base restore failed at platform-deploy/);
+  assert.equal(io.deployCount, 1);
+  assert.equal(io.recovered, 'requires-explicit-recovery');
+  assert.ok(!io.calls.some(call => call[0] === 'oneShot'));
+  assert.equal(io.states[0].failure_stage, 'platform-deploy');
+});
+
+test('restore rejects an unreviewed source, workflow or identity context before any AWS read', async () => {
+  const io = mockIo();
+  await assert.rejects(runRestoreRelease({ io, infraSha: '6'.repeat(40), env }), /Protected executor/);
+  await assert.rejects(runRestoreRelease({ io, infraSha, env: { ...env, GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main' } }), /Restore requires the reviewed Infra executor source/);
+  await assert.rejects(runRestoreRelease({ io, infraSha, env: { ...env, INFRA_IDENTITY_PHASE: 'legacy' } }), /retired identity/);
+  assert.equal(io.calls.length, 0);
 });
