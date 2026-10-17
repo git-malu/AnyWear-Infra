@@ -231,7 +231,7 @@ test('the forward-migration fence refuses anything that is not proven closed, in
   const throttled = { now: () => NOW, async aws() { throw new Error('Throttling'); }, recordAdmissionState() {} };
   await assert.rejects(assertMigrationAdmissionClosed(throttled), /unreadable mirror/);
   // The fence offers the same answer to the operation that names itself.
-  await assert.rejects(assertMigrationAdmissionClosed(throttled, 'the Beta start migration sequence'), /the Beta start migration sequence/);
+  await assert.rejects(assertMigrationAdmissionClosed(throttled, 'the standalone migrate fence'), /the standalone migrate fence/);
 });
 
 test('strict SSM read normalizes testers, keeps the recorded record, and never turns an unreadable field into closed', async () => {

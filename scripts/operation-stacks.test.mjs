@@ -7,7 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRuntimeIo } from './runtime-operation.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
-import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
+import { canonicalJson, contentHash, parseJson, sha256 } from './json-contract.mjs';
 import { changedStackNames, configuredStacks, configuredStackNames, validateStackManifest } from './operation-stacks.mjs';
 import { createOperationRecord, readOperationRecord } from './operation-record.mjs';
 import { stackManifestFixture } from './create-test-inputs.mjs';
@@ -23,6 +23,29 @@ test('source provenance binds every stack mutated by deployment and recovery ope
   // An admission window changes admission state only; it mutates no stack.
   assert.deepEqual(changedStackNames('resume-admission'), []);
   assert.deepEqual(changedStackNames('restore-release'), ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']);
+});
+
+test('resident workload stack sources bind the live Platform producer and this executor', async () => {
+  // A workload-only deploy against the resident Platform is the ordinary path.
+  // The file is a dispatch input, so its shape is asserted here rather than
+  // trusted: the changed Workload row resolves `@executor` to this exact Infra
+  // source (check-stack-sources.mjs:27), while every untouched row keeps its
+  // explicit 40-hex producer (check-stack-sources.mjs:22-23).
+  const bytes = await readFile(new URL('../stack-sources/beta-workload-resident.json', import.meta.url));
+  const rows = parseJson(bytes);
+  validateStackManifest(rows, 'resident workload stack sources');
+  assert.deepEqual(changedStackNames('deploy-workload'), ['AnyWearWorkloadStack-beta']);
+  assert.deepEqual(rows.map(row => [row.stack_name, row.region, row.source_repository, row.source_sha]), [
+    ['AnyWearFoundationStack', 'ap-east-1', 'git-malu/AnyWear-Infra', '88679b61630bc2344258cafb0d35b4d0b02e3a0d'],
+    ['AnyWearPlatformStack-beta', 'ap-east-1', 'git-malu/AnyWear-Infra', 'b8e37fa91ef61e4e073505c76619f9364f6ae1bb'],
+    ['AnyWearWorkloadStack-beta', 'ap-east-1', 'git-malu/AnyWear-Infra', '@executor'],
+    ['AnyWearBillingStack-beta', 'us-east-1', 'git-malu/AnyWear-Service', '58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759'],
+  ]);
+  for (const row of rows) {
+    assert.deepEqual(Object.keys(row), ['stack_name', 'region', 'source_repository', 'source_sha']);
+    if (row.stack_name === 'AnyWearWorkloadStack-beta') assert.equal(row.source_sha, '@executor');
+    else assert.match(row.source_sha, /^[a-f0-9]{40}$/);
+  }
 });
 
 test('validated all-stack manifest is defined by the configured set, not the changed subset', () => {
