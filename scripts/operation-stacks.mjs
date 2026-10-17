@@ -2,17 +2,19 @@ const stackChanges = Object.freeze({
   'deploy-foundation': ['AnyWearFoundationStack'],
   'deploy-billing': ['AnyWearBillingStack-beta'],
   'deploy-platform': ['AnyWearPlatformStack-beta'],
-  'deploy-workload': ['AnyWearWorkloadStack-beta'],
-  'restore-release': ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'],
+  // Release recovery restores the stage base only. The release slice is deployed
+  // and recovered by AnyWear-Service's release chain, never from here.
+  'restore-release': ['AnyWearPlatformStack-beta'],
 });
 
 // One authoritative table for the configured stack set. Operation records,
-// observation and provenance validation all read this instead of repeating
-// stack names, regions and count assertions locally.
+// deployment records, observation and provenance validation all read this instead
+// of repeating stack names, regions and count assertions locally. It is exactly
+// the stack set this repository still produces: Foundation, the Beta stage base
+// and Billing. `AnyWearWorkloadStack-beta` left with the release slice.
 export const configuredStacks = Object.freeze([
   Object.freeze({ stack_name: 'AnyWearFoundationStack', region: 'ap-east-1' }),
   Object.freeze({ stack_name: 'AnyWearPlatformStack-beta', region: 'ap-east-1' }),
-  Object.freeze({ stack_name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1' }),
   Object.freeze({ stack_name: 'AnyWearBillingStack-beta', region: 'us-east-1' }),
 ]);
 
