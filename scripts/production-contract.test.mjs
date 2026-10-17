@@ -23,7 +23,7 @@ const run = { id: 77, run_attempt: 2, head_sha: e2eSha, head_branch: 'main', pat
 const artifact = { id: 78, expired: false, name: 'beta-qualification-77-2', workflow_run: { id: 77, head_sha: e2eSha },
   created_at: '2026-10-08T00:20:00Z', expires_at: '2099-01-01T00:00:00Z' };
 const stable = { id: 79, tag_name: 'v1.2.3', draft: false, prerelease: false, immutable: true };
-const env = { ENABLE_PROD_DEPLOY: 'true', GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
+const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
   GITHUB_SHA: infraSha, GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/production.yml@refs/heads/main',
   AWS_ACCOUNT_ID: '123456789012', AWS_REGION: 'ap-east-1', PROD_DEPLOY_ROLE_ARN: 'arn:aws:iam::123456789012:role/prod-infra-deploy-role',
@@ -44,7 +44,7 @@ function qualificationFixture() {
 
 test('future Production context binds protected source, account, IDs and explicit selection', () => {
   validateProductionContext(env, now);
-  for (const patch of [{ ENABLE_PROD_DEPLOY: 'false' }, { GITHUB_REPOSITORY_ID: '1' }, { GITHUB_REF: 'refs/heads/branch' },
+  for (const patch of [{ GITHUB_REPOSITORY_ID: '1' }, { GITHUB_REF: 'refs/heads/branch' },
     { GITHUB_EVENT_NAME: 'push' }, { GITHUB_WORKFLOW_REF: env.GITHUB_WORKFLOW_REF.replace('production', 'runtime') },
     { PROD_DEPLOY_ROLE_ARN: 'arn:aws:iam::123456789012:role/prod-github-actions-pipeline-role' },
     { QUALIFICATION_RUN_ATTEMPT: '9007199254740992' }, { SELECTION_FILE: '../selection.json' }]) {
@@ -177,7 +177,7 @@ test('scan guard binds repository+digest, completes after copy, blocks critical 
   assert.throws(() => verifyPromotionScan(high, { ...approved, highApproval: { ...approval, infra_sha: '8'.repeat(40) } }));
 });
 
-test('Production remains source-disabled before AWS credentials even when activation/readiness variables are enabled', async () => {
+test('Production remains source-disabled before AWS credentials even when readiness variables are enabled', async () => {
   assert.throws(() => assertProductionExecutorReady(), /Production execution remains disabled/);
   await assert.rejects(execute(process.execPath, ['scripts/promote-production.mjs'], {
     env: { ...process.env, ...env, PROD_PROMOTION_READY: 'true' }, timeout: 10_000,
@@ -185,4 +185,14 @@ test('Production remains source-disabled before AWS credentials even when activa
   const workflow = await readFile(new URL('../.github/workflows/production.yml', import.meta.url), 'utf8');
   assert.ok(workflow.indexOf('run: node scripts/promote-production.mjs') < workflow.indexOf('actions/create-github-app-token'));
   assert.equal(/configure-aws-credentials|id-token:\s*write/.test(workflow), false);
+  // No variable can unlock Production: the only job condition is the source
+  // ref, and the source blocker is the first run step. These structural
+  // assertions replace the retired activation-variable fixture.
+  const job = workflow.slice(workflow.indexOf('  promotion:'));
+  const condition = job.match(/^\s*if: (.*)$/m);
+  assert.ok(condition, 'Production job keeps an explicit source condition');
+  assert.equal(/\bvars\./.test(condition[1]), false, 'No repository variable may gate the Production job');
+  assert.equal(/^\s*environment:/m.test(job), false, 'An unregistered protected environment must not be materialised');
+  const steps = [...job.matchAll(/^\s*run: (.+)$/gm)].map((match) => match[1].trim());
+  assert.equal(steps[0], 'node scripts/promote-production.mjs', 'The source blocker stays the first executed step');
 });

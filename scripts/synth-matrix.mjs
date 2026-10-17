@@ -23,7 +23,7 @@ assert.ok(options['artifact-directory'], '--artifact-directory is required');
 const phases = options.phase ? [options.phase] : ['legacy', 'roles-added', 'retired'];
 assert.ok(options['retention-protection'] === undefined || ['true', 'false'].includes(options['retention-protection']),
   '--retention-protection must be true or false');
-const retentionProtection = options['retention-protection'] === 'true';
+const ecrImageRetention = options['retention-protection'] === 'true';
 assert.ok(phases.every((phase) => ['legacy', 'roles-added', 'retired'].includes(phase)), 'Unknown identity phase');
 const variants = [{ stage: 'dev', active: true }, { stage: 'beta', active: true },
   { stage: 'beta', active: false }, { stage: 'prod', active: true }];
@@ -68,8 +68,8 @@ mkdirSync(output, { recursive: true });
 function synth(cwd, directory, variant, phase, immutableInputs) {
   mkdirSync(directory, { recursive: true });
   const config = JSON.parse(readFileSync(path.join(cwd, 'cdk.json'), 'utf8'));
-  const context = { ...config.context, stage: variant.stage, betaActive: variant.active,
-    ...(immutableInputs ? { identityPhase: phase, retentionProtection, legacyRoleOwnership: 'managed',
+  const context = { ...config.context, stage: variant.stage, environmentRunning: variant.active,
+    ...(immutableInputs ? { identityPhase: phase, ecrImageRetention, legacyRoleSource: 'cdk',
       artifactDirectory: path.resolve(options['artifact-directory']) } : {}) };
   // Execute the existing app directly with its locked local ts-node. CDK App
   // auto-synths because CDK_OUTDIR is set; no AWS context lookup is performed.
@@ -94,20 +94,20 @@ for (const variant of variants) {
       for (const file of files) {
         reports.push(compareTemplates(JSON.parse(readFileSync(path.join(baseline, file), 'utf8')),
           JSON.parse(readFileSync(path.join(target, file), 'utf8')), {
-            phase, stage: variant.stage, stackName: file.slice(0, -'.template.json'.length), retentionProtection,
+            phase, stage: variant.stage, stackName: file.slice(0, -'.template.json'.length), ecrImageRetention,
           }));
       }
     }
   }
 }
 const report = { ...source, generated_at: new Date().toISOString(), variants, phases,
-  comparison_kind: 'service-source-simulation', legacy_role_ownership: 'managed',
-  retention_protection: retentionProtection,
+  comparison_kind: 'service-source-simulation', legacy_role_ownership: 'cdk',
+  retention_protection: ecrImageRetention,
   accepted: reports.length ? reports.every((entry) => entry.accepted) : null, comparisons: reports };
 writeFileSync(path.join(output, 'comparison.json'), `${JSON.stringify(report, null, 2)}\n`);
 process.stdout.write(`${JSON.stringify({ repository_sha: source.repository_sha, baseline_sha: source.baseline_sha,
   baseline_tree_sha: source.baseline_tree_sha, baseline_archive_sha256: source.baseline_archive_sha256,
-  retention_protection: retentionProtection, accepted: report.accepted, comparisons: reports.length,
+  retention_protection: ecrImageRetention, accepted: report.accepted, comparisons: reports.length,
   allowed: reports.reduce((count, entry) => count + entry.allowed.length, 0),
   rejected: reports.flatMap((entry) => entry.rejected.map((difference) => ({ ...difference,
     phase: entry.phase, stage: entry.stage, stackName: entry.stackName }))), report: path.join(output, 'comparison.json') }, null, 2)}\n`);

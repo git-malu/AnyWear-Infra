@@ -90,7 +90,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }).trim();
   const report = { ...compareLiveFoundation(original, candidate, additions), fixture_provenance: provenance,
     candidate_raw_sha256: sha256(candidateBytes), source_sha: sourceSha, source_dirty: dirty.length > 0,
-    context: { appScope: 'foundation', identityPhase: 'roles-added', legacyRoleOwnership: 'external', account: '650880818323', region: 'ap-east-1' } };
+    context: { deployScope: 'foundation', identityPhase: 'roles-added', legacyRoleSource: 'external', account: '650880818323', region: 'ap-east-1' } };
   await writeFile(option('--output'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify({ accepted: true, added: report.added.length, candidate_sha256: report.candidate_canonical_sha256 })}\n`);
 }

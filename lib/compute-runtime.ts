@@ -35,7 +35,7 @@ export interface ComputeRuntimeProps {
   workerSecurityGroup: ec2.SecurityGroup;
   loadBalancerSecurityGroup: ec2.SecurityGroup;
   operationsTopic?: sns.ITopic;
-  betaActive?: boolean;
+  environmentRunning?: boolean;
   betaApiS2Condition?: cdk.CfnCondition;
   betaSizingTelemetry?: string;
 }
@@ -52,7 +52,7 @@ export class ComputeRuntime extends Construct {
   constructor(scope: Construct, id: string, props: ComputeRuntimeProps) {
     super(scope, id);
 
-    const active = props.stage !== 'beta' || props.betaActive !== false;
+    const active = props.stage !== 'beta' || props.environmentRunning !== false;
     const maintenanceBucket = props.stage === 'beta' ? new s3.Bucket(this, 'MaintenanceOrigin', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,

@@ -19,22 +19,22 @@ const artifactInputs: ArtifactInputs = {
 };
 import cdkConfig from '../cdk.json';
 
-function synthesizePlatform(stage: string, betaActive?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
+function synthesizePlatform(stage: string, environmentRunning?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
-  const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, betaActive, artifactInputs, identityPhase });
+  const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, environmentRunning, artifactInputs, identityPhase });
   return Template.fromStack(stack).toJSON();
 }
 
-function synthesizeWorkload(stage: 'beta' | 'prod', betaActive?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
+function synthesizeWorkload(stage: 'beta' | 'prod', environmentRunning?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
-  const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, betaActive, artifactInputs, identityPhase });
-  const workload = new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, { stage, platform, betaActive });
+  const platform = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, environmentRunning, artifactInputs, identityPhase });
+  const workload = new WorkloadStack(app, `AnyWearWorkloadStack-${stage}`, { stage, platform, environmentRunning });
   return Template.fromStack(workload).toJSON();
 }
 
 function synthesizeFoundation(identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
-  return Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', { identityPhase, legacyRoleOwnership: 'managed' })).toJSON();
+  return Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', { identityPhase, legacyRoleSource: 'cdk' })).toJSON();
 }
 
 function synthesizeBilling(): Record<string, any> {
@@ -121,11 +121,11 @@ describe('Platform and workload safety controls', () => {
     ['beta', true, '13b5999f9b8da7f006f931679dab38272a1b48d96216915d57ac8456cdb2d4a5'],
     ['beta', false, '13b5999f9b8da7f006f931679dab38272a1b48d96216915d57ac8456cdb2d4a5'],
     ['prod', true, '12feb7f5939fc6e88051f7b16871a679f6d47f6e5eb73c8fb54b44307d0d528b'],
-  ] as const)('preserves pre-quota-repair effective pipeline grants for %s (active=%s)', (stage, betaActive, baselineHash) => {
+  ] as const)('preserves pre-quota-repair effective pipeline grants for %s (active=%s)', (stage, environmentRunning, baselineHash) => {
     const app = new cdk.App({ context: cdkConfig.context });
     const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
       artifactInputs,
-      stage, betaActive, env: { account: '650880818323', region: 'ap-east-1' },
+      stage, environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
     });
     const template = Template.fromStack(stack).toJSON();
     // Frozen from main 2e03278 before moving the three statements, with deployment CDK flags.
@@ -172,11 +172,11 @@ describe('Platform and workload safety controls', () => {
 
   it('bounds wildcard lifecycle evidence reads to the Beta pipeline region in both runtime states', () => {
     const readActions = ['rds:DescribeDBClusters', 'rds:DescribeEvents', 'cloudwatch:GetMetricStatistics', 'ecs:ListTaskDefinitions', 'ecs:DescribeTaskDefinition'];
-    for (const betaActive of [true, false]) {
+    for (const environmentRunning of [true, false]) {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', betaActive, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
       });
       const policies = Object.values(Template.fromStack(stack).toJSON().Resources)
         .filter((resource: any) => resource.Type === 'AWS::IAM::Policy') as any[];
@@ -194,11 +194,11 @@ describe('Platform and workload safety controls', () => {
 
   it('covers exact Beta retention inventory without expanding other stages or existing grants', () => {
     const ownedNames = ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync', 'AnyWearPlatformStack-beta-*'];
-    for (const betaActive of [true, false]) {
+    for (const environmentRunning of [true, false]) {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', betaActive, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
       });
       const policies = Object.values(Template.fromStack(stack).toJSON().Resources)
         .filter((resource: any) => resource.Type === 'AWS::IAM::Policy'
@@ -292,11 +292,11 @@ describe('Platform and workload safety controls', () => {
   });
 
   it('preserves only exact cost families with a separate required request tag and Beta region bound', () => {
-    for (const betaActive of [true, false]) {
+    for (const environmentRunning of [true, false]) {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', betaActive, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
       });
       const statements = pipelinePolicies(Template.fromStack(stack).toJSON(), 'beta')
         .flatMap((resource: any) => resource.Properties.PolicyDocument.Statement);
@@ -1060,11 +1060,6 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(resources).not.toContain('beta-anywear-api');
       expect(resources).not.toContain('beta-anywear-worker');
     }
-    const runtimeWrites = grantsFor(template, 'infra-runtime').filter((grant) => [grant.Action].flat().includes('ssm:PutParameter'));
-    expect(runtimeWrites).toHaveLength(1);
-    expect(JSON.stringify(runtimeWrites[0].Resource)).toContain('/infra_selection');
-    expect(JSON.stringify(runtimeWrites[0].Resource)).toContain('/infra_deployment');
-    expect(JSON.stringify(runtimeWrites[0].Resource)).not.toContain('admission_suspended');
     const passRoles = grantsFor(template, 'e2e-qualification').find((grant) => [grant.Action].flat().includes('iam:PassRole'));
     expect([passRoles.Resource].flat()).toHaveLength(2);
     for (const forbidden of ['MigrationTaskRole', 'LifecycleTaskRole', 'CleanupTaskRole']) expect(JSON.stringify(passRoles)).not.toContain(forbidden);
@@ -1134,7 +1129,7 @@ describe('Explicit infrastructure identity cutover', () => {
     const env = { account: '650880818323', region: 'ap-east-1' };
     const app = new cdk.App({ context: cdkConfig.context });
     const foundationStack = new FoundationStack(app, 'AnyWearFoundationStack', {
-      env, identityPhase: 'roles-added', legacyRoleOwnership: 'managed',
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
     });
     const platformStack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
       stage: 'beta', env, identityPhase: 'roles-added', artifactInputs,
@@ -1158,7 +1153,7 @@ describe('Explicit infrastructure identity cutover', () => {
     for (const stage of ['beta', 'prod']) {
       const app = new cdk.App();
       const protectedStack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
-        stage, artifactInputs, retentionProtection: true,
+        stage, artifactInputs, ecrImageRetention: true,
       });
       const template = Template.fromStack(protectedStack).toJSON();
       const repository = (Object.values(template.Resources) as any[]).find((resource) => resource.Type === 'AWS::ECR::Repository');

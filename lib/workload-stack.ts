@@ -8,7 +8,7 @@ import { CleanupAcceptance } from './cleanup-acceptance';
 export interface WorkloadStackProps extends cdk.StackProps {
   stage: 'beta' | 'prod';
   platform: PlatformStack;
-  betaActive?: boolean;
+  environmentRunning?: boolean;
 }
 
 export class WorkloadStack extends cdk.Stack {
@@ -45,7 +45,7 @@ export class WorkloadStack extends cdk.Stack {
     }) : undefined;
     this.compute = new ComputeRuntime(this, 'ComputeRuntime', {
       stage: props.stage,
-      betaActive: props.betaActive,
+      environmentRunning: props.environmentRunning,
       betaApiS2Condition,
       betaSizingTelemetry: betaSizingTelemetry?.valueAsString,
       vpc: platform.vpc,
@@ -68,7 +68,7 @@ export class WorkloadStack extends cdk.Stack {
     if (props.stage === 'beta' && platform.cleanupTaskRole
       && platform.verificationTaskRole && platform.oneShotExecutionRole && platform.oneShotLogGroup
       && platform.database?.secret && platform.vpc && platform.oneShotSecurityGroup) {
-      const subnets = props.betaActive === false ? platform.vpc.isolatedSubnets : platform.vpc.privateSubnets;
+      const subnets = props.environmentRunning === false ? platform.vpc.isolatedSubnets : platform.vpc.privateSubnets;
       const cleanupProps = {
         cluster: platform.cluster,
         vpc: platform.vpc,

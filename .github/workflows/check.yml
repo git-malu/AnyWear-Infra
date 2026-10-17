@@ -57,7 +57,7 @@ jobs:
           CDK_DEFAULT_REGION: ap-east-1
           BILLING_REGION: us-east-1
         run: |
-          npx cdk synth AnyWearFoundationStack --lookups false --output cdk.live-foundation -c appScope=foundation -c identityPhase=roles-added -c legacyRoleOwnership=external --quiet
+          npx cdk synth AnyWearFoundationStack --lookups false --output cdk.live-foundation -c deployScope=foundation -c identityPhase=roles-added -c legacyRoleSource=external --quiet
           node scripts/compare-live-foundation.mjs --candidate cdk.live-foundation/AnyWearFoundationStack.template.json --output cdk.live-foundation/comparison.json
       - name: Synthesize identity and runtime matrix from fixture artifacts
         run: |
