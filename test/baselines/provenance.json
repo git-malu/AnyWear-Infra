@@ -32,12 +32,12 @@
     "dev-active/AnyWearPlatformStack-dev.template.json": "6f19d62816a3a45ac30b977d6b0057af4630c074593b9bd60e325086575adb16",
     "beta-active/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "beta-active/AnyWearPlatformStack-beta.template.json": "d80e97fd3a5daa8cfd660eefacd2ea16724a44c31c538957da818ee77cc8ebf8",
+    "beta-active/AnyWearPlatformStack-beta.template.json": "76764a045f2c46c06d14c9dee1ef945a51828467d75664cf81be1f7cc9e035a2",
     "beta-stopped/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-stopped/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "beta-stopped/AnyWearPlatformStack-beta.template.json": "35497ed1edc1da5ca3d342747011a6a0509b8cef030512b2f861a4c86007d2d9",
+    "beta-stopped/AnyWearPlatformStack-beta.template.json": "d1204c7b29f15798566428e72f549e3d95cf81bce0b3a506de57a8c3184a8b32",
     "prod-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "prod-active/AnyWearPlatformStack-prod.template.json": "20d234cdf3dfdcfa5fe307baa7328546ba94f59effeaecccaecb7d1ca88e67cd"
+    "prod-active/AnyWearPlatformStack-prod.template.json": "22daf452aeb0d0a084d212ca8bcdd85a4ff651a3683d885be52db6b29f30fc1c"
   },
   "platform_baseline": {
     "re-recorded_from": "AnyWear-Infra final source synth (#158 step C extension)",
@@ -48,6 +48,14 @@
       "prod-active/AnyWearPlatformStack-prod.template.json"
     ],
     "reason": "The Workload consumer left this app, so the beta and prod Platform templates no longer contain the CDK weak cross-stack PublishOutput* outputs; the same re-record records the issue #161 recovery targets and the 34/35-value stage contract as template content instead of a permanent comparator allowance.",
+    "log_grant_rerecord": {
+      "files": [
+        "beta-active/AnyWearPlatformStack-beta.template.json",
+        "beta-stopped/AnyWearPlatformStack-beta.template.json",
+        "prod-active/AnyWearPlatformStack-prod.template.json"
+      ],
+      "reason": "The live Beta one-shot execution role keeps the awslogs CreateLogStream/PutLogEvents grant that AwsLogDriver.bind() appended while the Workload shared this app; the synthesized Platform policy now states it explicitly. These three baselines were re-recorded from the same source synth and differ from the previous templates only by that one statement; dev has no one-shot execution role and is unchanged."
+    },
     "dev_note": "dev has no PublishOutput* output and no contract or recovery change; it is re-recorded only so the declared fixture Lambda asset location is recorded in the template and every Platform comparison is exact.",
     "move_anchor": "The three Workload baseline templates deleted in #158 step C, and their byte-identical `move` proof from Infra 5c571cd, are recorded in AnyWear-Service's infra/test/baselines/provenance.json at its move-anchor commit; they are not duplicated here."
   },
