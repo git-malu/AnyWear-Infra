@@ -455,13 +455,16 @@ export class FoundationStack extends cdk.Stack {
         actions: ['iam:PassRole'], resources: taskRoles,
         conditions: { StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } },
       }));
-      // The Service-owned workload template still resolves CDK weak
-      // `Fn::GetStackOutput` reads against the Platform stack with the
-      // CloudFormation execution role; AnyWear-Service converts the remaining
-      // reads to `/anywear/beta/` stage-contract parameters in its step D. Until
-      // then the execution role keeps this read-only producer-stack grant. It
-      // cannot drive, update or delete the Platform stack: the only
-      // `cloudformation:*` grant is the service's own workload stack.
+      // This read-only producer-stack grant existed for the pre-#158-step-D weak
+      // `Fn::GetStackOutput` reads the Workload template made against the Platform
+      // stack with the CloudFormation execution role. AnyWear-Service's step D has
+      // delivered (AnyWear-Service PR #91: zero `Fn::GetStackOutput` in 9/9
+      // variant x phase templates), so the Workload template contains no weak
+      // reads now and this grant is redundant. It is retained only because this
+      // round keeps the default Foundation template byte-identical; retire it in a
+      // separate reviewed Foundation change. It cannot drive, update or delete the
+      // Platform stack: the only `cloudformation:*` grant is the service's own
+      // workload stack.
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['cloudformation:DescribeStacks'], resources: [platformStack],
       }));
