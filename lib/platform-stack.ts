@@ -402,16 +402,6 @@ export class PlatformStack extends cdk.Stack {
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
       );
       this.repository.grantPull(this.oneShotExecutionRole);
-      // The live role carries a third statement that the synthesized policy lost:
-      // while the release slice was synthesized in this app, `AwsLogDriver.bind()`
-      // appended the awslogs grant for the one-shot task definitions to this
-      // Platform role. The Workload now imports the role and cannot mutate it, so
-      // the live statement is restored explicitly here, in the live statement order
-      // (after the ECR pull grant and authorization-token statements).
-      this.oneShotExecutionRole.addToPrincipalPolicy(new iam.PolicyStatement({
-        actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
-        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/anywear/${stage}/one-shot`],
-      }));
       this.database.secret?.grantRead(this.migrationTaskRole);
       this.database.secret?.grantRead(this.verificationTaskRole);
       if (stage === 'beta') {
@@ -496,6 +486,18 @@ export class PlatformStack extends cdk.Stack {
         retention: isProd ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.TWO_WEEKS,
         removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
       });
+      // The live role carries a third statement that the synthesized policy lost:
+      // while the release slice was synthesized in this app, `AwsLogDriver.bind()`
+      // appended the awslogs grant for the one-shot task definitions to this
+      // Platform role. The Workload now imports the role and cannot mutate it, so
+      // the live statement is restored explicitly here, in the live statement order
+      // (after the ECR pull grant and authorization-token statements). Reference the
+      // log group's CloudFormation `Arn` attribute instead of a hand-written literal:
+      // it renders with the live grant's trailing `:*`, so the two cannot drift.
+      this.oneShotExecutionRole.addToPrincipalPolicy(new iam.PolicyStatement({
+        actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        resources: [(this.oneShotLogGroup.node.defaultChild as logs.CfnLogGroup).attrArn],
+      }));
 
       pipelineRole.addToPrincipalPolicy(new iam.PolicyStatement({
         actions: stage === 'beta' ? ['ecs:RunTask', 'ecs:DescribeTasks', 'ecs:DescribeServices'] : [
