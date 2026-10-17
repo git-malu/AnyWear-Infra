@@ -16,7 +16,10 @@ const platformName = 'AnyWearPlatformStack-beta'; const workloadName = 'AnyWearW
 const fourTesters = ['beta-worker-0@example.com', 'beta-worker-1@example.com', 'first@example.com', 'second@example.com'];
 const outputs = Object.fromEntries(['PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn', 'OneShotExecutionRoleArn',
   'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName', 'WardrobeBucketName'].map(key => [key, key]));
-Object.assign(outputs, { EcsClusterName: 'beta-anywear', BetaActive: 'true' });
+Object.assign(outputs, { EcsClusterName: 'beta-anywear', BetaActive: 'true',
+  VtoQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/anywear-vto',
+  AutoTaggingQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/anywear-auto-tagging',
+  DatabaseEndpoint: 'beta-anywear.cluster-abc.ap-east-1.rds.amazonaws.com:5432' });
 const entries = (values, nameKey, valueKey) => Object.entries(values).map(([name, value]) => ({ [nameKey]: name, [valueKey]: value }));
 const stackOutputs = values => entries(values, 'OutputKey', 'OutputValue');
 
@@ -33,7 +36,14 @@ function fixture(options = {}) {
   const originalParameters = { ServiceImageDigest: `sha256:${'a'.repeat(64)}`, ServiceCommitSha: 'b'.repeat(40), ...preserved };
   const platform = { StackStatus: 'UPDATE_COMPLETE', Outputs: stackOutputs(outputs) };
   const workload = { StackStatus: 'UPDATE_COMPLETE', Parameters: entries(originalParameters, 'ParameterKey', 'ParameterValue'),
-    Outputs: stackOutputs({ BetaActive: 'true', ApiBaseUrl: 'https://retained.example.com', ApiServiceName: 'beta-anywear-api' }) };
+    Outputs: stackOutputs({ BetaActive: 'true', ApiBaseUrl: 'https://retained.example.com', ApiServiceName: 'beta-anywear-api',
+      WorkerServiceName: 'beta-anywear-worker', ApiLoadBalancerDnsName: 'internal-beta-anywear-123.ap-east-1.elb.amazonaws.com',
+      ApiDistributionDomainName: 'd111111abcdef8.cloudfront.net',
+      // Release-derived outputs. The acceptance task definition and the cleanup
+      // state-machine version both embed the image, so these ARNs move on every
+      // image change; they are the outputs that actually moved during the drill.
+      CleanupAcceptanceTaskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:3',
+      CleanupStateMachineVersionArn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:1' }) };
   let waits = 0;
   const io = { calls, actions, stages, states, recovery, admission, platform, workload, preserved, originalParameters,
     async aws(args) {
@@ -74,8 +84,28 @@ function fixture(options = {}) {
         if (options.parameterDrift) workload.Parameters.find(row => row.ParameterKey === options.parameterDrift).ParameterValue = 'unreviewed';
         if (options.activityDrift) workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false';
         if (options.workloadInterfaceDrift) workload.Outputs.find(row => row.OutputKey === 'ApiBaseUrl').OutputValue = 'https://changed.example.com';
+        if (options.workloadInternalDrift) {
+          workload.Outputs.find(row => row.OutputKey === 'ApiLoadBalancerDnsName').OutputValue = 'internal-replaced.ap-east-1.elb.amazonaws.com';
+          workload.Outputs.find(row => row.OutputKey === 'CleanupAcceptanceTaskDefinitionArn').OutputValue =
+            'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:4';
+          workload.Outputs.find(row => row.OutputKey === 'CleanupStateMachineVersionArn').OutputValue =
+            'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:2';
+        }
+        if (options.removeWorkloadOutput) {
+          workload.Outputs = workload.Outputs.filter(row => row.OutputKey !== options.removeWorkloadOutput);
+        }
       }
-      if (name === platformName && options.platformInterfaceDrift) platform.Outputs.push({ OutputKey: 'Unexpected', OutputValue: 'drift' });
+      if (name === platformName) {
+        if (options.platformInterfaceDrift) {
+          platform.Outputs.find(row => row.OutputKey === options.platformInterfaceDrift).OutputValue = 'changed-platform-value';
+        }
+        if (options.platformInternalDrift) {
+          platform.Outputs.find(row => row.OutputKey === 'DatabaseEndpoint').OutputValue = 'replaced.cluster.ap-east-1.rds.amazonaws.com:5432';
+        }
+        if (options.removePlatformOutput) {
+          platform.Outputs = platform.Outputs.filter(row => row.OutputKey !== options.removePlatformOutput);
+        }
+      }
       if (name === options.admissionDriftAfterDeploy) admission.openWindow();
     },
     async verifyHealth(url, revision) {
@@ -218,7 +248,7 @@ test('each deploy, stability, health and verification failure stops without auto
   }
 });
 
-test('parameter, activity, output and admission drift abort at the next boundary with actual readback', async () => {
+test('parameter, activity, interface and admission drift abort at the next boundary with actual readback', async () => {
   for (const [options, stage] of [
     [{ parameterDrift: 'VlmConfigArn' }, 'workload-stable-readback'],
     [{ parameterDrift: 'ServiceImageDigest' }, 'workload-stable-readback'],
@@ -226,7 +256,6 @@ test('parameter, activity, output and admission drift abort at the next boundary
     [{ parameterDrift: 'BetaSizingTelemetry' }, 'workload-stable-readback'],
     [{ activityDrift: true }, 'workload-stable-readback'],
     [{ workloadInterfaceDrift: true }, 'workload-stable-readback'],
-    [{ platformInterfaceDrift: true }, 'selected-runtime-qualification'],
     [{ admissionDriftAfterDeploy: workloadName }, 'workload-deploy'],
     [{ finalAdmissionDrift: true }, 'selected-runtime-qualification'],
     [{ onStage(value, io) { if (value.stage === 'candidate-verification' && value.result === 'succeeded') io.admission.tester_allowlist = '[]'; } }, 'workload-deploy'],
@@ -236,6 +265,58 @@ test('parameter, activity, output and admission drift abort at the next boundary
     assert.equal(io.actions.filter(action => action === 'deploy-workload').length, stage === 'workload-deploy' && options.onStage ? 0 : 1);
     if (stage === 'workload-stable-readback' || stage === 'workload-deploy') assert.ok(!io.actions.includes('deploy-platform'));
     if (options.finalAdmissionDrift) assert.equal(io.states[0].tester_count, 0);
+  }
+});
+
+test('restore accepts a release-changing deploy that only moves outputs outside the consumed interface', async () => {
+  // A restore necessarily changes the release; internal attributes such as the
+  // ALB DNS name, the database endpoint and the image-derived cleanup ARNs move
+  // with it and are not an interface. The cleanup ARNs are the outputs that
+  // actually moved during the drill's restore run, which is why this boundary
+  // is exercised with them.
+  const { io, input } = fixture({ workloadInternalDrift: true, platformInternalDrift: true });
+  const result = await runRestoreRelease(input);
+  assert.deepEqual(io.actions, ['candidate-verification', 'deploy-workload', 'services-stable', 'deploy-platform', 'services-stable', 'health', 'one-shot:verify']);
+  assert.deepEqual(io.stages.filter(row => row.result === 'succeeded').map(row => row.stage), [
+    'preconditions', 'candidate-verification', 'workload-deploy', 'workload-stable-readback', 'platform-deploy', 'selected-runtime-qualification', 'final-readback',
+  ]);
+  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'ApiLoadBalancerDnsName').OutputValue,
+    'internal-replaced.ap-east-1.elb.amazonaws.com');
+  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'CleanupAcceptanceTaskDefinitionArn').OutputValue,
+    'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:4');
+  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'CleanupStateMachineVersionArn').OutputValue,
+    'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:2');
+  assert.equal(io.platform.Outputs.find(row => row.OutputKey === 'DatabaseEndpoint').OutputValue,
+    'replaced.cluster.ap-east-1.rds.amazonaws.com:5432');
+  assert.deepEqual(io.states, []); assert.deepEqual(io.recovery, []);
+  assert.equal(result.selected_revision.digest, selector.image.digest);
+});
+
+test('restore fails closed when a consumed interface output changes after deploy', async () => {
+  for (const [options, stage, expected] of [
+    [{ workloadInterfaceDrift: true }, 'workload-stable-readback', /Restore Workload interface output ApiBaseUrl changed after deploy/],
+    [{ platformInterfaceDrift: 'DatabaseHost' }, 'selected-runtime-qualification', /Restore Platform interface output DatabaseHost changed after deploy/],
+  ]) {
+    const { io, input } = fixture(options);
+    await assert.rejects(runRestoreRelease(input), error => {
+      assert.match(error.message, new RegExp(`failed at ${stage}`)); assert.match(error.cause.message, expected); return true;
+    });
+    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
+    assert.equal(io.stages.at(-1).result, 'failed');
+  }
+});
+
+test('restore fails closed when a consumed interface output is missing after deploy', async () => {
+  for (const [options, stage, expected] of [
+    [{ removeWorkloadOutput: 'ApiBaseUrl' }, 'workload-stable-readback', /Restore Workload interface output ApiBaseUrl missing after deploy/],
+    [{ removePlatformOutput: 'VtoQueueUrl' }, 'selected-runtime-qualification', /Restore Platform interface output VtoQueueUrl missing after deploy/],
+  ]) {
+    const { io, input } = fixture(options);
+    await assert.rejects(runRestoreRelease(input), error => {
+      assert.match(error.message, new RegExp(`failed at ${stage}`)); assert.match(error.cause.message, expected); return true;
+    });
+    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
+    assert.equal(io.stages.at(-1).result, 'failed');
   }
 });
 
