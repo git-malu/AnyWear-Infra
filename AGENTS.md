@@ -47,15 +47,19 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   `environmentRunning` or selects the dormant stopped template. A stack observed
   inactive is an out-of-band invariant violation that fails closed in verification,
   never a lifecycle state to maintain.
-- Use the five bounded Beta entry points in the [operations catalog](README.md#operations):
-  `runtime.yml` is fixed task-mutating qualified observation for E2E compatibility;
-  `beta-observe.yml` is read-only state with restricted STS credentials and works
-  with activation disabled; deployment/recovery, schema and admission each reject
-  cross-family operations before credentials. Preserve session restrictions for final
-  qualification, actual workflow record identity and the existing v2 E2E producer
-  boundary. Existing OIDC trust is repository/environment scoped, not workflow
-  scoped; source/session checks do not narrow inherited task-role or downstream
-  CDK authority.
+- Use the three bounded Beta entries in the [operations catalog](README.md#operations):
+  `check.yml` is automatic; `runtime.yml` is the manual `state`/`observe` entry,
+  where `state` is read-only with restricted STS credentials and works with
+  `ENABLE_BETA_MUTATION` closed, and `observe` is the task-mutating qualified
+  observation that remains the only accepted `anywear_infra_deployment` v2
+  producer for E2E compatibility; `mutate.yml` is the single manual mutation entry
+  and rejects cross-family or out-of-scope inputs before credentials. `production.yml`
+  is `workflow_call`-only and is not an entry. Record family and record type derive
+  from the operation, never from the hosting file. Preserve session restrictions for
+  final qualification, actual workflow record identity and the existing v2 E2E
+  producer boundary. Existing OIDC trust is repository/environment scoped, not
+  workflow scoped; source/session checks do not narrow inherited task-role or
+  downstream CDK authority.
   Initial `deployScope=foundation`
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new

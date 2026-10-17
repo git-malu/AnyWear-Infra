@@ -1,4 +1,4 @@
-# Infrastructure cutover and recovery
+﻿# Infrastructure cutover and recovery
 
 This is a reviewed procedure for [AnyWear #54](https://github.com/git-malu/AnyWear/issues/54),
 not a record of completed AWS actions. Record execution, original resources,
@@ -51,7 +51,7 @@ this same external mode for all CDK construction, avoiding a later collision.
 This creates the six dedicated roles while retaining the old Beta trust/grants.
 Read back roles, immutable OIDC subjects and effective policies before configuring
 consumers. Keep the old executor usable until its jobs and rollback obligations
-have ended. Ordinary `beta-deploy.yml` deployment later requires a sealed selection;
+have ended. Ordinary `mutate.yml` deployment later requires a sealed selection;
 that requirement does not apply to this explicit Foundation-only operator path.
 `deployScope=billing` similarly synthesizes only Billing and requires its separately
 assigned `us-east-1` window.
@@ -72,8 +72,8 @@ permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 
 The [v2 committed selection](../contracts/release-selection.md) is the one input
 authority. A source PR reviews the exact release/component identities and hashes.
-All five [bounded Beta workflows](beta-infrastructure.md#entry-points), including
-the read-only observer, automatically
+The two [bounded Beta entries](beta-infrastructure.md#entry-points) and their
+read-only `state` path automatically
 checks actual Service inputs before AWS credentials; source checks themselves
 perform no private native read or deployment. E2E uses the same reviewed verifier
 with its actual immutable Infra checkout, rather than reconstructing a selector
@@ -247,13 +247,13 @@ CloudFormation mutation itself. Failures preserve observed state and require an
 explicitly reviewed recovery; no automatic sibling deploy, revert or admission
 reopening occurs.
 
-Current dispatches use `beta-deploy.yml` for maintenance and `restore-release`. Beta is
+Current dispatches use `mutate.yml` for maintenance and `restore-release`. Beta is
 resident, so no operation stops or starts it and no inactive deployment path remains.
-A separately coordinated fixed `runtime.yml` observation produces the E2E-compatible
-v2 record after changes; family observations identify their actual workflow and are
-not accepted as legacy E2E inputs. Read-only `beta-observe.yml` remains available with
-activation false, including recovery diagnosis, and cannot start tasks or qualify
-database/schema state.
+A separately coordinated fixed `runtime.yml` `observe` run produces the E2E-compatible
+v2 record after changes; mutation family observations identify their actual workflow
+(`mutate.yml`) and are not accepted as legacy E2E inputs. Read-only `runtime.yml`
+`state` remains available with the stage switch closed, including recovery diagnosis,
+and cannot start tasks or qualify database/schema state.
 
 At the time, the bounded #54 practical recovery was executed as [stop
 37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)

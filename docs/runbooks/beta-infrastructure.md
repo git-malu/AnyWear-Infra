@@ -1,4 +1,4 @@
-# Reviewed Beta infrastructure operations
+﻿# Reviewed Beta infrastructure operations
 
 This runbook describes the bounded source entry points delivered by
 [AnyWear #104](https://github.com/git-malu/AnyWear/issues/104), retaining the
@@ -37,7 +37,7 @@ correctness only, not a latency SLA.
 ## Protected source and direct immutable inputs
 
 The recorded setup has a `beta` environment restricted to main and an activation
-gate `ENABLE_BETA_DEPLOY=false`. The private plan returned 403 for branch
+gate `ENABLE_BETA_MUTATION=false`. The private plan returned 403 for branch
 protection/rulesets; environment restriction is not repository branch protection.
 Review exact source and inputs, coordinate one writer and freeze conflicting
 Service/Client/E2E operations during #54 rollout. Enumerate Actions/local helpers,
@@ -103,31 +103,43 @@ or authorization to deploy.
 
 ## Entry points
 
-All five workflows use manual dispatch, exact reviewed main, the `beta` environment
-and shared non-cancelling queue `anywear-infra-runtime`. Their local composite
-[executor](../../.github/actions/beta-operation/action.yml) rejects cross-family
-operations, verifies committed selection/stack-source hashes, probes native CLI
-capability before App credentials, and verifies the complete immutable Service
-release/publisher before AWS credentials. All task/deployment entries require
-`ENABLE_BETA_DEPLOY=true`; the read-only observer remains available when false.
-The environment restricts branches to main; no required-reviewer rule is currently
-configured. Approval and writer allocation remain separate operational gates.
+Infra exposes three entries and two manual dispatch surfaces. `check.yml` is
+automatic; `runtime.yml` (`state`, `observe`) and `mutate.yml` (the eleven
+mutation operations) are the only manual dispatch surfaces; `production.yml` is
+`workflow_call`-only and not an entry. Both manual entries use exact reviewed
+main, the `beta` environment and shared non-cancelling queue
+`anywear-infra-runtime`. Their local composites split verification from
+execution: [verify-operation](../../.github/actions/verify-operation/action.yml)
+rejects cross-family operations, verifies committed selection/stack-source
+hashes, probes native CLI capability before App credentials, and verifies the
+complete immutable Service release/publisher before AWS credentials;
+[deploy-operation](../../.github/actions/deploy-operation/action.yml) binds the
+verified-inputs artifact, obtains the operation-specific restricted STS session,
+runs the operation and finalizes the evidence. Only mutation requires
+`ENABLE_BETA_MUTATION=true`; read-only `state` remains available when it is
+closed. The environment restricts branches to main; no required-reviewer rule is
+currently configured. Approval and writer allocation remain separate operational
+gates.
 
 | Workflow | Dispatch operation | Additional inputs / AWS boundary |
 | --- | --- | --- |
-| [runtime.yml](../../.github/workflows/runtime.yml) | Fixed `observe`; no operation input | Qualified observation with artifact-verification task; legacy E2E producer |
-| [beta-observe.yml](../../.github/workflows/beta-observe.yml) | Fixed `state`; no operation input | CFN and SSM read-only session; no tasks/PassRole/deploy role or schema assertion |
-| [beta-deploy.yml](../../.github/workflows/beta-deploy.yml) | Four `deploy-*`, `restore-release` | Explicit required identity phase/retention; stack-specific deployment and selected verification tasks; `deploy-platform` is qualified only by a following fixed `runtime.yml` `observe` |
-| [beta-schema.yml](../../.github/workflows/beta-schema.yml) | `migrate`, `verify` | Selected corresponding task only |
-| [beta-admission.yml](../../.github/workflows/beta-admission.yml) | `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` | Only entry accepting `tester_emails` (and `window_minutes`, required by `resume-admission`); verification/lifecycle tasks, no CDK |
+| [check.yml](../../.github/workflows/check.yml) | none (PR / push main) | Source checks only; no dispatch surface |
+| [runtime.yml](../../.github/workflows/runtime.yml) | `state`, `observe` | `state`: CFN and SSM read-only session, no tasks/PassRole/deploy role or schema assertion, works with the switch closed. `observe`: qualified observation with the artifact-verification task; the legacy E2E deployment-record producer |
+| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-workload`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` | Chain: `preflight` → `verify` → `deploy` (only job with `environment: beta` and `id-token: write`) → `record` (no credentials). Explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks; `deploy-platform` is qualified only by a following fixed `runtime.yml` `observe` |
+| [production.yml](../../.github/workflows/production.yml) | none (`workflow_call` only) | Future Production scaffold; source-disabled pre-AWS blocker; not an entry |
 
 Every dispatch requires selection file/raw hash and stack-source file/raw hash.
-Non-CDK entries omit identity/retention inputs and fix `retired`/`true` source
-context, which does not change CFN or prove observed IAM/retention state. CDK
-entries accept explicit values without silently choosing a legacy/unprotected
-context. Deployment and admission dispatches require explicit authorization; Beta
-is resident, so no operation starts or stops it. Source delivery alone does not
-grant an environment writer or establish runtime acceptance.
+Because one dispatch surface now hosts several operations, the per-operation
+input scope is enforced in `scripts/runtime-operation.mjs` preflight rather than
+by file presence: the tester payload belongs only to `add-testers`/`set-testers`,
+`window_minutes` is read only by `resume-admission`, sizing/telemetry may change
+only in `deploy-workload`, and identity phase/retention protection may vary only
+for `deploy-*`/`restore-release` (every other operation runs `retired`/`true`).
+Non-deployment operations fixing `retired`/`true` source context does not change
+CFN or prove observed IAM/retention state. Deployment and admission dispatches
+require explicit authorization; Beta is resident, so no operation starts or stops
+it. Source delivery alone does not grant an environment writer or establish
+runtime acceptance.
 
 Every STS assumption includes an inline session restriction of at most 2048
 characters. Task register/run/PassRole are limited to the operation's exact
@@ -168,11 +180,14 @@ gh workflow run runtime.yml --repo git-malu/AnyWear-Infra --ref main \
   -f stack_sources_file=stack-sources/cutover.json -f stack_sources_sha256="$STACK_SOURCES_SHA256"
 ```
 
-For state-only observation use `beta-observe.yml` with the same four inputs. For
-other families select their workflow/operation, adding identity/retention only
-for lifecycle/deploy, tester payload only for admission, and `window_minutes` only
-for `resume-admission` (15–240, default 60). Use the actual
-reviewed filenames, phase and retention setting. Initial role bootstrap uses the [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
+For state-only observation dispatch `runtime.yml` with `operation=state` and the same
+four inputs; it works with the stage switch closed. For mutation select
+`mutate.yml` and its operation, adding identity/retention only for `deploy-*`/
+`restore-release`, tester payload only for `add-testers`/`set-testers`, and
+`window_minutes` only for `resume-admission` (15–240, default 60). `observe` is
+dispatched through `runtime.yml`; the workflow path that produces the accepted
+deployment record does not change. Initial role bootstrap uses the [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
+because no sealed Service release is needed to create the artifact publisher role. Initial role bootstrap uses the [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
 because no sealed Service release is needed to create the artifact publisher role.
 
 ## Retained Beta sizing and temporary telemetry
@@ -187,17 +202,17 @@ to both API and Worker. The selected Service artifact must implement the telemet
 contract, and its behavior must be accepted before enabling it; Infra source checks
 alone do not establish that application behavior.
 
-Only `beta-deploy.yml` exposes `beta_api_sizing_profile=preserve|s1|s2-api` and
+Only the `deploy-workload` operation of `mutate.yml` may change `beta_api_sizing_profile=preserve|s1|s2-api` and
 `beta_sizing_telemetry=preserve|enable|disable`, both defaulting to `preserve`.
 Absent or ordinary inputs retain both observed parameters through maintenance
 deployments and release recovery. A pre-parameter deployment means S1 and telemetry
 off. Unknown retained values fail before workload helper operations. An explicit
 override is allowed only for `deploy-workload`, with the selected Service SHA/digest
 exactly matching the observed resident image. Other operations reject overrides
-before credentials. Fixed `runtime.yml` has no sizing or telemetry input. Neither
+before credentials. `runtime.yml` state/observe has no sizing or telemetry input. Neither
 input starts or stops Beta or grants an environment writer.
 
-For an explicitly authorized measurement, dispatch the reviewed `beta-deploy.yml`
+For an explicitly authorized measurement, dispatch the reviewed `mutate.yml`
 with `operation=deploy-workload`, the unchanged immutable selection/stack-source
 inputs and explicit profile/telemetry values. Preserve exact parameter readback
 in the `workload-parameter-readback` event. The final authenticated observer also
@@ -241,7 +256,7 @@ admission is closed, and one boolean cannot say both things.
 `resume-admission` is the only operation an operator can request that opens
 admission, and the only operation whose one-shot authority lists the lifecycle
 `resume` action. It requests a window through the same reviewed
-`beta-admission.yml` entry point: dispatch `operation=resume-admission` with
+`mutate.yml` entry point: dispatch `operation=resume-admission` with
 `window_minutes` between 15 and 240 (default 60). That requestable bound is what
 the dispatch input, the one-shot payload guard and the writer all carry, so a
 window cannot be longer than the dispatch asked for and cannot be requested by any
@@ -570,7 +585,7 @@ A `deploy-platform` run has no accepted evidence step of its own. It is qualifie
 only by a following fixed `runtime.yml` `observe` run at reviewed main, which
 uploads `infra-deployment-<run-id>-<attempt>` containing
 `deployment-record.json`. The deploy run cannot produce that record: it stamps the
-run's own `.github/workflows/beta-deploy.yml` path and the record type
+run's own `.github/workflows/mutate.yml` path and the record type
 `anywear_infra_family_observation`, while the accepted record pins both
 `anywear_infra_deployment` and the `runtime.yml` workflow path that the E2E
 consumer also pins, and the `deploy-platform` operation session carries no task

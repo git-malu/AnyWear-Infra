@@ -37,39 +37,74 @@ retention protection and uploads `cdk.matrix/comparison.json` and
 
 ## Operations
 
-| Entry point | Purpose |
-| --- | --- |
-| [runtime.yml](.github/workflows/runtime.yml) | Fixed qualified `observe`; preserves the existing E2E trusted v2 producer interface; starts an ECS verification task |
-| [beta-observe.yml](.github/workflows/beta-observe.yml) | Fixed AWS read-only state/SSM status; usable with activation disabled; no tasks or schema qualification |
-| [beta-deploy.yml](.github/workflows/beta-deploy.yml) | Four `deploy-*` operations and closed-admission `restore-release`; a `deploy-platform` run is qualified only by a following fixed `runtime.yml` `observe` |
-| [beta-schema.yml](.github/workflows/beta-schema.yml) | Selected-image `migrate` / `verify` tasks; `migrate` alone refuses unless the admission mirror proves closed admission |
-| [beta-admission.yml](.github/workflows/beta-admission.yml) | `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission`; `resume-admission` is the only operator-requestable opener and requests a bounded 15–240 minute window (default 60) that ends at its own bound and runs the recovery-only suspend a failed window needs; a tester write changes no admission state; status still starts tasks |
-| [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
-| [bin/infra.ts](bin/infra.ts), `deployScope=billing` | Separate account billing scope in `us-east-1`; application resources are not synthesized |
-| [ecr-retention.mjs](scripts/ecr-retention.mjs) | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
-| [observe-deployment.mjs](scripts/observe-deployment.mjs) | Authenticate deployed templates, artifacts, configuration, schema and application identities |
-| [production.yml](.github/workflows/production.yml) | Future Production scaffold with a pre-AWS blocker until a separately reviewed onboarding PR completes its contract |
+Infra exposes **3 entries / 2 manual dispatch surfaces / 1 switch**
+(`ENABLE_BETA_MUTATION`): one automatic source check and one release/observe
+chain per deployable unit. `production.yml` stays in the tree but is
+`workflow_call`-only, so it is not an entry.
+
+| Entry | Trigger | Purpose |
+| --- | --- | --- |
+| [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, native-CLI regression, live-Foundation comparison and both source matrices; no dispatch surface |
+| [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the accepted `anywear_infra_deployment` v2 producer; runs the artifact-verification task |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (11 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-workload`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` |
+| [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
+| [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
+| [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
+| [ecr-retention.mjs](scripts/ecr-retention.mjs) | CLI | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
+| [observe-deployment.mjs](scripts/observe-deployment.mjs) | CLI | Authenticate deployed templates, artifacts, configuration, schema and application identities |
+
+The `mutate.yml` menu is a superset of the retired per-family files. A dispatch
+surface is per workflow, so `identity_phase`, `retention_protection`,
+`window_minutes`, `tester_emails`, `beta_api_sizing_profile` and
+`beta_sizing_telemetry` are workflow-level inputs; `scripts/runtime-operation.mjs`
+enforces their per-operation scope in preflight, before any credential. Only a
+`deploy-*` operation or `restore-release` may vary identity phase and retention
+protection; every other operation must run the `retired` / `true` context. Only
+`add-testers` and `set-testers` accept a tester payload. Only `deploy-workload`
+may change sizing or telemetry. Only `resume-admission` reads `window_minutes`,
+with the same bounded 15–240 minute contract (default 60) as before. The
+standalone `verify` operation is retired; the `verify` **task family** remains an
+internal step of `deploy-workload`, `restore-release` and the tester/admission
+operations.
+
+`mutate.yml` is one credential-timing chain: `preflight` (no environment, no
+`id-token`, no App token) → `verify` (read-only App token; native release
+statement, publisher run, every asset digest, committed selection bytes and stack
+sources) → `deploy` (**the only job** with `environment: beta` and
+`id-token: write`, scheduled after `verify`) → `record` (no environment, no
+`id-token`, no `environment:`). `runtime.yml` keeps the same invariant:
+`preflight` holds no credentials, `state` and `observe` are the two credential
+jobs, and `record` holds none. `state` runs with the stage switch closed;
+`observe` stays behind it because it runs a task and produces the accepted
+deployment record.
+
+`state` and `observe` share `runtime.yml`, so the record family is derived from
+the **operation**, not the file: `observe` keeps family `runtime` (the accepted
+deployment-record producer), while `state` keeps family `beta-observe` and can
+never be stamped `anywear_infra_deployment`. `deploy-*`/`restore-release` keep
+`beta-deploy`, `migrate` keeps `beta-schema`, and the admission operations keep
+`beta-admission`, so cross-repository record families stay stable. A
+`deploy-platform` run is still qualified only by a following fixed `runtime.yml`
+`observe` run at reviewed main; a mutate run uploads its own
+`anywear_infra_family_observation` record with its actual workflow path
+(`mutate.yml`), which is not an accepted E2E deployment input.
 
 Every Beta entry requires exact reviewed main, protected `beta`, committed
-selection/hash, reviewed stack sources/hash and complete native release/publisher
-verification before AWS credentials. Only deployment exposes explicit identity phase
-and retention inputs; other entries fix a protected source context
-without asserting observed IAM state or changing CFN. Only admission accepts
-tester payloads. All task/deployment entries require `ENABLE_BETA_DEPLOY=true`;
-read-only state remains available when false. Repository-local Actions concurrency serializes Infra jobs; separate
-Client and E2E writers still require scheduling coordination and verified cessation.
-Deployment and runtime credentials are distinct, with operation-specific STS
-session restrictions and source/IO guards. Final qualification assumes another
-restricted runtime session permitting only the artifact-verifier task and its
-verification/execution PassRole. The read-only session has no ECS or PassRole
-permissions. Existing OIDC trust identifies Infra/environment, not workflow;
-these source/session boundaries do not create an IAM-enforced workflow trust
-boundary or restrict the capabilities of existing task roles. The current CDK CloudFormation
-execution role uses `AdministratorAccess` without a permissions boundary, so the
-deployment chain has account-wide effective authority; the dedicated role names
-do not establish Beta resource isolation.
-Production activation variables cannot bypass its source blocker; keep both
-deployment/readiness gates disabled through #54.
+selection/hash and reviewed stack sources/hash. Complete native release and
+publisher-run verification happens before AWS credentials in both chains; the
+restricted STS sessions are operation-specific and the read-only session carries
+no ECS or PassRole permissions. Only mutation requires
+`ENABLE_BETA_MUTATION=true`; read-only `state` remains available when it is
+closed. Repository-local Actions concurrency (`anywear-infra-runtime`, no
+cancellation) serializes Infra jobs; separate Client and E2E writers still require
+scheduling coordination and verified cessation. Existing OIDC trust identifies
+Infra/environment, not workflow; these source/session boundaries do not create an
+IAM-enforced workflow trust boundary or restrict the capabilities of existing task
+roles. The current CDK CloudFormation execution role uses `AdministratorAccess`
+without a permissions boundary, so the deployment chain has account-wide
+effective authority; the dedicated role names do not establish Beta resource
+isolation. Production activation variables cannot bypass its source blocker; keep
+both deployment/readiness gates disabled through #54.
 
 Admission has one representation: `/anywear/beta/admission_mode`, a `String`
 parameter whose value is a small JSON record. `{"mode":"closed"}` admits nothing;
@@ -86,7 +121,7 @@ surface with no writer, no grant and no deployment.
 
 `resume-admission` is the only operation an operator can request that opens
 admission, and the only one whose one-shot authority lists the lifecycle `resume`
-action. It requests a window through the existing `beta-admission.yml` entry point
+action. It requests a window through the `mutate.yml` entry point
 with an explicit `window_minutes` bound of 15–240 minutes (default 60). That
 requestable bound is what the dispatch input, the one-shot payload guard and the
 writer all carry, so a window can be neither longer nor requested by another
@@ -118,23 +153,25 @@ runbook](docs/runbooks/beta-infrastructure.md#admission-mode-migration-and-rollo
 carries the admission-mode migration order, its bounded failure mode and the resident
 environment repair.
 
-All five manual entries share `anywear-infra-runtime` without cancellation.
+Both manual entries share `anywear-infra-runtime` without cancellation.
 `runtime.yml` is the only workflow family whose run produces the legacy
-`anywear_infra_deployment` v2 accepted by E2E; the standalone
+`anywear_infra_deployment` v2 accepted by E2E, and record type and family are
+derived from the dispatched operation; the standalone
 [observe-deployment.mjs](scripts/observe-deployment.mjs) CLI can also emit an
 accepted-shaped record from ambient environment variables without a workflow run.
-Other task families emit `anywear_infra_family_observation` with their actual
-workflow path; this is not an accepted E2E deployment input. A `deploy-platform`
-run is therefore qualified only by a following fixed `runtime.yml` `observe` run at
+Other operations emit `anywear_infra_family_observation` with their actual
+workflow path (`mutate.yml` for the absorbed families); this is not an accepted
+E2E deployment input. A `deploy-platform` run is therefore qualified only by a
+following fixed `runtime.yml` `observe` run at
 reviewed main, which uploads `infra-deployment-<run-id>-<attempt>` containing
-`deployment-record.json`. A deploy run cannot produce that record: the
+`deployment-record.json`. A mutate run cannot produce that record: the
 `deploy-platform` operation session carries no task family of its own, and the
 observation step of the same run stamps the run's own
-`.github/workflows/beta-deploy.yml` path and record type
+`mutate.yml` path and record type
 `anywear_infra_family_observation`, while the accepted record pins both
 `anywear_infra_deployment` and the `runtime.yml` workflow path, which the E2E
-consumer pins too. The deploy run still requires and uploads its own family
-observation. Read-only observation emits sanitized `anywear_infra_state` inside
+consumer pins too. The mutate run still requires and uploads its own family
+observation. Read-only `state` emits sanitized `anywear_infra_state` inside
 its operation record and makes no DB/policy/schema claim. See the [Beta
 runbook](docs/runbooks/beta-infrastructure.md) for dispatch schemas, permissions,
 lifecycle authority and recovery.
