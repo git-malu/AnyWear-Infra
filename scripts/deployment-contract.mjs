@@ -37,12 +37,17 @@ const equal = (actual, expected, label) => {
 //
 // A record may not list a stack its own producer did not produce, so forcing one
 // producer's stacks into the other's record is a validation failure, not a merge.
-export const DEPLOYMENT_RECORD_MEMBERS = Object.freeze(['producer', 'stacks', 'inputs', 'observed', 'schema']);
+export const DEPLOYMENT_RECORD_MEMBERS = Object.freeze(['schema_version', 'record_type', 'producer', 'stacks', 'inputs', 'observed', 'schema']);
 export const DEPLOYMENT_PRODUCER_FIELDS = Object.freeze(['repository', 'sha', 'workflow_path', 'workflow_ref', 'run_id', 'run_attempt']);
 export const DEPLOYMENT_STACK_FIELDS = Object.freeze(['name', 'region', 'producer_repository', 'producer_sha', 'template_sha256']);
 export const DEPLOYMENT_INPUT_FIELDS = Object.freeze(['parameter', 'version', 'value_sha256']);
 export const INFRA_OBSERVED_FIELDS = Object.freeze(['lambdas', 'queue_config_sha256', 'client_sha', 'endpoints']);
 export const SERVICE_OBSERVED_FIELDS = Object.freeze(['service_sha', 'image_digest', 'ecs', 'endpoints']);
+// A task definition revision is CloudFormation bookkeeping, not identity: the same
+// image/environment/roles/command re-registers as a new revision and must not fail.
+// The ARN is recorded as evidence only; equality is the image digest plus the
+// normalized task-definition content hash below.
+export const SERVICE_ECS_IDENTITY_FIELDS = Object.freeze(['service_arn', 'task_definition_arn', 'task_definition_sha256', 'image_digest']);
 
 export const DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
   schema_version: 3,
@@ -156,14 +161,40 @@ export function validateServiceObserved(observed) {
   matches(observed.service_sha, SHA, 'observed Service'); matches(observed.image_digest, DIGEST, 'observed image');
   exact(observed.ecs, ['api', 'worker'], 'ECS identities');
   for (const [purpose, identity] of Object.entries(observed.ecs)) {
-    exact(identity, ['service_arn', 'task_definition_arn', 'image_digest'], 'ECS task image identity');
-    matches(identity.service_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}$`), 'ECS service');
-    matches(identity.task_definition_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:[1-9][0-9]*$`), 'ECS task definition');
-    if (identity.image_digest !== observed.image_digest) throw new Error('ECS selected digest mismatch');
+    exact(identity, SERVICE_ECS_IDENTITY_FIELDS, `ECS ${purpose} identity`);
+    matches(identity.service_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}$`), `ECS ${purpose} service ARN`);
+    // Evidence only. Re-registering the same task definition produces a new
+    // revision number; identity is the content hash and the image digest.
+    matches(identity.task_definition_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:[1-9][0-9]*$`), `ECS ${purpose} task definition ARN`);
+    matches(identity.task_definition_sha256, HASH, `ECS ${purpose} task definition content hash`);
+    matches(identity.image_digest, DIGEST, `ECS ${purpose} image digest`);
+    if (identity.image_digest !== observed.image_digest) throw new Error(`ECS ${purpose} image_digest differs from the deployed image`);
   }
   exact(observed.endpoints, ['api'], 'endpoints');
   matches(observed.endpoints.api, /^https:\/\/[a-z0-9]+\.cloudfront\.net$/, 'CloudFront endpoint');
   return observed;
+}
+
+// The normalized task definition whose content hash identifies a deployed ECS
+// service. It changes with image, environment, roles, command and sizing, never
+// with the revision number alone.
+export function stableTaskDefinition(definition) {
+  if (!definition || typeof definition !== 'object') throw new Error('Task definition observation unavailable');
+  const container = definition.containerDefinitions?.length === 1 ? definition.containerDefinitions[0] : undefined;
+  if (!container || typeof container.image !== 'string' || !container.image || !Array.isArray(container.environment)) {
+    throw new Error('Single-container task definition required');
+  }
+  const environment = container.environment.map(entry => {
+    if (typeof entry?.name !== 'string' || typeof entry?.value !== 'string') throw new Error('Task definition environment unavailable');
+    return { name: entry.name, value: entry.value };
+  }).sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+  return { family: definition.family, taskRoleArn: definition.taskRoleArn, executionRoleArn: definition.executionRoleArn,
+    networkMode: definition.networkMode, cpu: definition.cpu, memory: definition.memory,
+    container: { name: container.name, image: container.image, command: container.command ?? [], environment } };
+}
+
+export function taskDefinitionContentHash(definition) {
+  return contentHash(stableTaskDefinition(definition));
 }
 
 // Authenticated observation body of the stage base. It covers exactly the stacks
