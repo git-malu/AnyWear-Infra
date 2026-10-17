@@ -684,10 +684,36 @@ Service image:
    table.
 
 This revision's Platform source declares only the mode record, so a Platform deploy
-from it performs steps 1 and 5 in one CloudFormation update. When the additive half
-is dispatched separately it must come from a reviewed revision that still declares
-the old pair; what must never happen is deleting the old parameters before the new
-image is running, or splitting step 5's resource deletion from its grant deletion.
+from it performs steps 1 and 5 in one CloudFormation update. Accept that collapse,
+and know exactly what it forbids and what it costs.
+
+**The collision to forbid** is deleting the parameters while the *old Lambda
+readers* are still deployed — that would leave registrations reading a missing
+record — and splitting step 5's resource deletion from its grant deletion.
+Deleting the old parameters before the new *workload* image runs is what this
+revision does, and it is safe only because steps 0 and 2 already guarantee closure:
+step 0 recorded the environment closed, the new record was created
+`{"mode":"closed"}`, and the migration's constraint refuses a live window. Nothing
+is left open by the collapse.
+
+**The cost is a maintenance window.** Between that Platform deploy and
+`deploy-workload`, no admission operation can run: they require the selected
+revision to equal the deployed image, which is still the old one. `start` and `stop`
+cannot close admission either, because the lifecycle role's grant for the old
+parameter names disappears in the same deploy. Admission is nevertheless closed
+throughout, for the reasons above, so nothing is left open — but the environment
+cannot be re-closed, stopped or observed through a reviewed operation until the
+rollout lands. Dispatch the Platform deploy, `migrate` and `deploy-workload` back to
+back, and treat the gap as a maintenance window rather than a normal operating
+state.
+
+**The alternative, and its cost.** If that window is unacceptable, cut the additive
+half as an intermediate reviewed Infra revision that declares
+`/anywear/beta/admission_mode` **and keeps** the two old parameters and both grant
+sets, with the removal arriving in a later Platform deploy. That gives the old
+readers a working record across the gap at the price of an extra revision to
+maintain and an extra Platform deploy to authorise, which is why this issue
+documents the collapse instead of building it.
 
 **The `migrate` → `deploy-workload` gap is an error state, not a closed one.** The
 old image queries the renamed table and fails with a missing-relation error, so no
