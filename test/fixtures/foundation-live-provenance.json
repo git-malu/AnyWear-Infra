@@ -13,7 +13,7 @@
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "af142f6ec033502f62a381172fbba1b648f2b7f0",
   "dedicated_candidate_canonical_sha256": "58c57366f62ac3ec4eab66a46b565c5a29d633753c7600971d326a87aa807bb9",
-  "dedicated_additions_sha256": "1f9c0e0b362290e1c226ca18c1e8cf2fdb7245f288a2691f26d1f46f3e72a3d2",
+  "dedicated_additions_sha256": "975502cdde7e4883d51a0d4c68328d09e53d5dd701bdabca472d1527ce1a9a51",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -35,22 +35,8 @@
       "issue": 162,
       "recorded_at": "2026-10-18",
       "source_branch": "issue/162-stage-contracts-gate",
-      "scope": "Service deploy role gains read-only bake-gate grants",
-      "detail": "cloudwatch:GetMetricStatistics; cloudwatch:DescribeAlarms on alarm/beta-anywear-*; ecs:DescribeServices on the two workload services; sqs:GetQueueAttributes on beta-anywear-vto, beta-anywear-vto-dlq, beta-anywear-auto-tagging and beta-anywear-auto-tagging-dlq; logs:FilterLogEvents on /anywear/beta/worker. No SQS send/receive grant, no new resource family and no change to the CloudFormation execution role."
-    },
-    {
-      "issue": 162,
-      "recorded_at": "2026-10-18",
-      "source_branch": "issue/162-stage-contracts-gate",
-      "scope": "Service deploy role gains read-only bake-gate grants",
-      "detail": "cloudwatch:GetMetricStatistics; cloudwatch:DescribeAlarms on alarm/beta-anywear-*; ecs:DescribeServices on the two workload services; sqs:GetQueueAttributes on beta-anywear-vto, beta-anywear-vto-dlq, beta-anywear-auto-tagging and beta-anywear-auto-tagging-dlq; logs:FilterLogEvents on /anywear/beta/worker. No SQS send/receive grant, no new resource family and no change to the CloudFormation execution role."
-    },
-    {
-      "issue": 162,
-      "recorded_at": "2026-10-18",
-      "source_branch": "issue/162-stage-contracts-gate",
-      "scope": "Service deploy role gains read-only bake-gate grants",
-      "detail": "cloudwatch:GetMetricStatistics; cloudwatch:DescribeAlarms on alarm/beta-anywear-*; ecs:DescribeServices on the two workload services; sqs:GetQueueAttributes on beta-anywear-vto, beta-anywear-vto-dlq, beta-anywear-auto-tagging and beta-anywear-auto-tagging-dlq; logs:FilterLogEvents on /anywear/beta/worker. No SQS send/receive grant, no new resource family and no change to the CloudFormation execution role."
+      "scope": "Service deploy role read-only bake-gate grants; CloudWatch alarm ARNs in colon resource form",
+      "detail": "cloudwatch:GetMetricStatistics; cloudwatch:DescribeAlarms on arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*; ecs:DescribeServices on the two workload services; sqs:GetQueueAttributes on beta-anywear-vto, beta-anywear-vto-dlq, beta-anywear-auto-tagging and beta-anywear-auto-tagging-dlq; logs:FilterLogEvents on /anywear/beta/worker. No SQS send/receive grant, no new resource family and no change to the CloudFormation execution role. The same colon alarm ARN form is used by the pre-existing CloudFormation alarm grant, because CloudWatch alarm ARNs are alarm:<AlarmName>, never alarm/<AlarmName>."
     }
   ]
 }

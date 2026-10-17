@@ -989,7 +989,7 @@ describe('Explicit infrastructure identity cutover', () => {
     });
     expect(normalized(deploy)).toContainEqual({
       Action: 'cloudwatch:DescribeAlarms', Effect: 'Allow',
-      Resource: 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+      Resource: 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
     });
     expect(normalized(deploy)).toContainEqual(expect.objectContaining({
       Action: 'ecs:DescribeServices', Effect: 'Allow',
@@ -1050,7 +1050,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
       'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
-      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
@@ -1124,7 +1124,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
       'arn:aws:cloudfront::650880818323:distribution/*',
       'arn:aws:cloudfront::650880818323:function/*',
-      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
       'arn:aws:ec2:ap-east-1:650880818323:security-group/*',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
@@ -1202,6 +1202,51 @@ describe('Explicit infrastructure identity cutover', () => {
       .toEqual(['cloudformation:DescribeStacks']);
     expect(resourceOf(cfn.filter((statement) => [statement.Action].flat().includes('cloudformation:DescribeStacks'))[0]
       .Resource)).toBe('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*');
+  });
+
+  // Regression for the #162 Testing failure: a CloudWatch alarm ARN is
+  // `arn:aws:cloudwatch:<region>:<account>:alarm:<AlarmName>`. A slash resource
+  // form (`...:alarm/<AlarmName>`) matches no alarm, so `DescribeAlarms` in the
+  // bake and the CloudFormation role's alarm writes were both AccessDenied. The
+  // fail-closed gate then reported all six signals insufficient and no v4 record
+  // could exist. This test pins the canonical colon form for both roles.
+  it('scopes CloudWatch alarm ARNs with the colon resource form', () => {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = foundation.Resources as Record<string, any>;
+    const roleId = (roleName: string): string => Object.entries(resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === roleName))![0];
+    const statementsFor = (roleName: string): any[] => (Object.values(resources) as any[])
+      .filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === roleId(roleName)))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    const canonical = 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*';
+    for (const [roleName, action] of [['beta-service-deploy-role', 'cloudwatch:DescribeAlarms'],
+      ['beta-service-deploy-cfn-role', 'cloudwatch:PutMetricAlarm']] as const) {
+      const matching = statementsFor(roleName).filter((statement) => [statement.Action].flat().includes(action));
+      expect(matching).toHaveLength(1);
+      expect([matching[0].Resource].flat().map(render)).toEqual([canonical]);
+    }
+    for (const roleName of ['beta-service-deploy-role', 'beta-service-deploy-cfn-role']) {
+      for (const statement of statementsFor(roleName)) {
+        if (![statement.Action].flat().some((action: string) => action.startsWith('cloudwatch:'))) continue;
+        for (const resource of [statement.Resource].flat().map(render)) {
+          expect(resource).not.toContain(':alarm/');
+          if (resource !== '*') expect(resource).toMatch(/^arn:aws:cloudwatch:ap-east-1:650880818323:alarm:[A-Za-z0-9_*?.-]+$/);
+        }
+      }
+    }
   });
 
   it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {

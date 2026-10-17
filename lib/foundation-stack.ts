@@ -276,6 +276,13 @@ export class FoundationStack extends cdk.Stack {
         account = this.account) => this.formatArn({
         service, resource, resourceName, region, account, arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
       });
+      // A colon-resource ARN such as `arn:aws:cloudwatch:<region>:<account>:alarm:<name>`.
+      // CloudWatch alarm ARNs are `alarm:<AlarmName>`, never `alarm/<AlarmName>`; the
+      // slash form matches no resource and turns every read into AccessDenied.
+      const colonArn = (service: string, resource: string, resourceName: string, region = this.region,
+        account = this.account) => this.formatArn({
+        service, resource, resourceName, region, account, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+      });
       const stackArn = (stackName: string) => slashArn('cloudformation', 'stack', `${stackName}/*`);
       const cloudformationStack = stackArn(workloadStack);
       // Change sets carry their own ARN; executing one still requires the target
@@ -350,7 +357,7 @@ export class FoundationStack extends cdk.Stack {
       const listenerRule = slashArn('elasticloadbalancing', 'listener-rule', `app/beta-anywear-${unique('api')}/*`);
       const distribution = slashArn('cloudfront', 'distribution', '*', '', this.account);
       const cloudFrontFunction = slashArn('cloudfront', 'function', '*', '', this.account);
-      const alarms = slashArn('cloudwatch', 'alarm', `beta-anywear-${unique('*')}`);
+      const alarms = colonArn('cloudwatch', 'alarm', `beta-anywear-${unique('*')}`);
       const logGroup = (name: string) => this.formatArn({
         service: 'logs', resource: 'log-group', resourceName: name, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
       });
