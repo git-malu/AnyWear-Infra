@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';

@@ -1,4 +1,4 @@
-﻿# Reviewed Beta infrastructure operations
+# Reviewed Beta infrastructure operations
 
 This runbook describes the bounded source entry points delivered by
 [AnyWear #104](https://github.com/git-malu/AnyWear/issues/104), retaining the

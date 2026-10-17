@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalJson } from './json-contract.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';

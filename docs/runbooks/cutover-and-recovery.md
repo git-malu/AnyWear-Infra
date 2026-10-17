@@ -1,4 +1,4 @@
-﻿# Infrastructure cutover and recovery
+# Infrastructure cutover and recovery
 
 This is a reviewed procedure for [AnyWear #54](https://github.com/git-malu/AnyWear/issues/54),
 not a record of completed AWS actions. Record execution, original resources,

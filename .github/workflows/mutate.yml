@@ -1,4 +1,4 @@
-﻿name: Beta infrastructure mutation
+name: Beta infrastructure mutation
 run-name: Beta ${{ inputs.operation }} at ${{ github.sha }}
 on:
   workflow_dispatch:
