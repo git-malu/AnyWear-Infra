@@ -741,6 +741,42 @@ describe('Platform safety controls', () => {
     }
   });
 
+  it('keeps the live one-shot execution-role log-stream grant', () => {
+    for (const [stage, environmentRunning] of [['beta', true], ['beta', false], ['prod', true]] as const) {
+      const app = new cdk.App();
+      const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
+        artifactInputs, stage, environmentRunning,
+        env: { account: '650880818323', region: 'ap-east-1' },
+      });
+      const template = Template.fromStack(stack).toJSON();
+      const roleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
+        resource.Type === 'AWS::IAM::Role'
+          && resource.Properties.RoleName === `${stage}-anywear-one-shot-execution`
+      ))?.[0];
+      expect(roleId).toBeDefined();
+      const policy = Object.values(template.Resources).find((resource: any) => (
+        resource.Type === 'AWS::IAM::Policy'
+          && resource.Properties.Roles?.length === 1
+          && resource.Properties.Roles[0]?.Ref === roleId
+      )) as any;
+      expect(policy).toBeDefined();
+      const statements = policy.Properties.PolicyDocument.Statement;
+      // The live role has exactly three statements; the third is the awslogs
+      // stream grant that `AwsLogDriver.bind()` appended while the release slice
+      // was synthesized in this app.
+      expect(statements).toHaveLength(3);
+      expect(statements[0].Action).toEqual(expect.arrayContaining([
+        'ecr:BatchCheckLayerAvailability', 'ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer',
+      ]));
+      expect(statements[1]).toEqual({ Action: 'ecr:GetAuthorizationToken', Effect: 'Allow', Resource: '*' });
+      expect(statements[2]).toEqual({
+        Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        Effect: 'Allow',
+        Resource: `arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/${stage}/one-shot`,
+      });
+    }
+  });
+
   it('limits synthetic lifecycle message cleanup to the two Beta dead-letter queues', () => {
     const template = synthesizePlatform('beta');
     const lifecycleRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
