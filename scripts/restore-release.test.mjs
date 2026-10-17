@@ -16,7 +16,10 @@ const platformName = 'AnyWearPlatformStack-beta'; const workloadName = 'AnyWearW
 const fourTesters = ['beta-worker-0@example.com', 'beta-worker-1@example.com', 'first@example.com', 'second@example.com'];
 const outputs = Object.fromEntries(['PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn', 'OneShotExecutionRoleArn',
   'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName', 'WardrobeBucketName'].map(key => [key, key]));
-Object.assign(outputs, { EcsClusterName: 'beta-anywear', BetaActive: 'true' });
+Object.assign(outputs, { EcsClusterName: 'beta-anywear', BetaActive: 'true',
+  VtoQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/anywear-vto',
+  AutoTaggingQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/anywear-auto-tagging',
+  DatabaseEndpoint: 'beta-anywear.cluster-abc.ap-east-1.rds.amazonaws.com:5432' });
 const entries = (values, nameKey, valueKey) => Object.entries(values).map(([name, value]) => ({ [nameKey]: name, [valueKey]: value }));
 const stackOutputs = values => entries(values, 'OutputKey', 'OutputValue');
 
@@ -33,7 +36,14 @@ function fixture(options = {}) {
   const originalParameters = { ServiceImageDigest: `sha256:${'a'.repeat(64)}`, ServiceCommitSha: 'b'.repeat(40), ...preserved };
   const platform = { StackStatus: 'UPDATE_COMPLETE', Outputs: stackOutputs(outputs) };
   const workload = { StackStatus: 'UPDATE_COMPLETE', Parameters: entries(originalParameters, 'ParameterKey', 'ParameterValue'),
-    Outputs: stackOutputs({ BetaActive: 'true', ApiBaseUrl: 'https://retained.example.com', ApiServiceName: 'beta-anywear-api' }) };
+    Outputs: stackOutputs({ BetaActive: 'true', ApiBaseUrl: 'https://retained.example.com', ApiServiceName: 'beta-anywear-api',
+      WorkerServiceName: 'beta-anywear-worker', ApiLoadBalancerDnsName: 'internal-beta-anywear-123.ap-east-1.elb.amazonaws.com',
+      ApiDistributionDomainName: 'd111111abcdef8.cloudfront.net',
+      // Release-derived outputs. The acceptance task definition and the cleanup
+      // state-machine version both embed the image, so these ARNs move on every
+      // image change; they are the outputs that actually moved during the drill.
+      CleanupAcceptanceTaskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:3',
+      CleanupStateMachineVersionArn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:1' }) };
   let waits = 0;
   const io = { calls, actions, stages, states, recovery, admission, platform, workload, preserved, originalParameters,
     async aws(args) {
@@ -57,12 +67,16 @@ function fixture(options = {}) {
       }
       assert.fail(`Unexpected AWS action: ${args.slice(0, 3).join(' ')}`);
     },
-    async deploy(name, active, revision) {
+    async deploy(name, revision) {
       actions.push(name === workloadName ? 'deploy-workload' : 'deploy-platform');
-      assert.ok([platformName, workloadName].includes(name)); assert.equal(active, true);
+      assert.ok([platformName, workloadName].includes(name));
       assert.equal(revision.digest, selector.image.digest); assert.equal(revision.commit, selector.image.service_sha);
       assert.deepEqual(revision.parameters, { ...originalParameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha });
       if (options.failDeploy === name) throw new Error('Deployment failed');
+      // A protected deploy always reconciles the active path; the postcondition
+      // below is what proves the resident invariant, not the operator's start state.
+      const deployed = name === platformName ? platform : workload;
+      deployed.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'true';
       if (name === workloadName) {
         workload.Parameters = entries(revision.parameters, 'ParameterKey', 'ParameterValue');
         if (options.materializeDefaults) workload.Parameters.push(
@@ -70,8 +84,28 @@ function fixture(options = {}) {
         if (options.parameterDrift) workload.Parameters.find(row => row.ParameterKey === options.parameterDrift).ParameterValue = 'unreviewed';
         if (options.activityDrift) workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false';
         if (options.workloadInterfaceDrift) workload.Outputs.find(row => row.OutputKey === 'ApiBaseUrl').OutputValue = 'https://changed.example.com';
+        if (options.workloadInternalDrift) {
+          workload.Outputs.find(row => row.OutputKey === 'ApiLoadBalancerDnsName').OutputValue = 'internal-replaced.ap-east-1.elb.amazonaws.com';
+          workload.Outputs.find(row => row.OutputKey === 'CleanupAcceptanceTaskDefinitionArn').OutputValue =
+            'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:4';
+          workload.Outputs.find(row => row.OutputKey === 'CleanupStateMachineVersionArn').OutputValue =
+            'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:2';
+        }
+        if (options.removeWorkloadOutput) {
+          workload.Outputs = workload.Outputs.filter(row => row.OutputKey !== options.removeWorkloadOutput);
+        }
       }
-      if (name === platformName && options.platformInterfaceDrift) platform.Outputs.push({ OutputKey: 'Unexpected', OutputValue: 'drift' });
+      if (name === platformName) {
+        if (options.platformInterfaceDrift) {
+          platform.Outputs.find(row => row.OutputKey === options.platformInterfaceDrift).OutputValue = 'changed-platform-value';
+        }
+        if (options.platformInternalDrift) {
+          platform.Outputs.find(row => row.OutputKey === 'DatabaseEndpoint').OutputValue = 'replaced.cluster.ap-east-1.rds.amazonaws.com:5432';
+        }
+        if (options.removePlatformOutput) {
+          platform.Outputs = platform.Outputs.filter(row => row.OutputKey !== options.removePlatformOutput);
+        }
+      }
       if (name === options.admissionDriftAfterDeploy) admission.openWindow();
     },
     async verifyHealth(url, revision) {
@@ -91,7 +125,9 @@ function fixture(options = {}) {
   };
   const verifyRuntime = async input => {
     actions.push('candidate-verification');
-    assert.deepEqual(input.outputs, outputs); assert.equal(input.selector, selector);
+    // Activity is a separate postcondition; the candidate verifier only consumes
+    // the runtime interface it needs.
+    assert.deepEqual({ ...input.outputs, BetaActive: 'true' }, outputs); assert.equal(input.selector, selector);
     assert.equal(input.manifest, manifest); assert.equal(input.schema, schema); assert.equal(input.infraSha, infraSha);
     if (options.failCandidate) throw new Error('Candidate policy/schema mismatch');
     return { schema: { compatibility_result: 'compatible' }, policy_content_sha256: manifest.components.runtime_policy.content_sha256 };
@@ -150,10 +186,8 @@ test('restore final readback rejects a valid but changed sizing profile or telem
   }
 });
 
-test('inactive, mixed, unstable or open admission performs no candidate task or deploy and preserves failure readback', async () => {
+test('unstable stacks or open/unprovable admission performs no candidate task or deploy and preserves failure readback', async () => {
   const cases = [
-    io => { for (const stack of [io.platform, io.workload]) stack.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
-    io => { io.workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
     io => { io.platform.StackStatus = 'UPDATE_IN_PROGRESS'; },
     io => { io.workload.StackStatus = 'UPDATE_ROLLBACK_COMPLETE'; },
     // An open tester window is not closed admission.
@@ -167,6 +201,26 @@ test('inactive, mixed, unstable or open admission performs no candidate task or 
     assert.deepEqual(io.actions, []); assert.equal(io.states[0].failure_stage, 'preconditions');
     assert.deepEqual(io.recovery, ['requires-explicit-recovery']); assert.equal(io.states[0].image_digest, io.originalParameters.ServiceImageDigest);
     assert.ok(!JSON.stringify(io.states).includes('first@example.com'));
+  }
+});
+
+test('inactive or mixed stable stacks are not a precondition; the resident postcondition still fails closed after deploy', async () => {
+  // Closed admission is the only activation precondition. The deploy takes the
+  // active path, and the readback after it must observe both stacks active.
+  const cases = [
+    io => { for (const stack of [io.platform, io.workload]) stack.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
+    io => { io.workload.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
+    io => { io.platform.Outputs.find(row => row.OutputKey === 'BetaActive').OutputValue = 'false'; },
+  ];
+  for (const mutate of cases) {
+    const { io, input } = fixture(); mutate(io);
+    // The fixture's deploy keeps the pre-deploy activity outputs, so the
+    // postcondition refuses after the workload deploy instead of at preconditions.
+    io.deploy = async name => { io.actions.push(name === workloadName ? 'deploy-workload' : 'deploy-platform'); };
+    await assert.rejects(runRestoreRelease(input), /explicit recovery required/);
+    assert.equal(io.states[0].failure_stage, 'workload-stable-readback', JSON.stringify(io.states[0]));
+    assert.deepEqual(io.actions, ['candidate-verification', 'deploy-workload', 'services-stable']);
+    assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
   }
 });
 
@@ -194,7 +248,7 @@ test('each deploy, stability, health and verification failure stops without auto
   }
 });
 
-test('parameter, activity, output and admission drift abort at the next boundary with actual readback', async () => {
+test('parameter, activity, interface and admission drift abort at the next boundary with actual readback', async () => {
   for (const [options, stage] of [
     [{ parameterDrift: 'VlmConfigArn' }, 'workload-stable-readback'],
     [{ parameterDrift: 'ServiceImageDigest' }, 'workload-stable-readback'],
@@ -202,7 +256,6 @@ test('parameter, activity, output and admission drift abort at the next boundary
     [{ parameterDrift: 'BetaSizingTelemetry' }, 'workload-stable-readback'],
     [{ activityDrift: true }, 'workload-stable-readback'],
     [{ workloadInterfaceDrift: true }, 'workload-stable-readback'],
-    [{ platformInterfaceDrift: true }, 'selected-runtime-qualification'],
     [{ admissionDriftAfterDeploy: workloadName }, 'workload-deploy'],
     [{ finalAdmissionDrift: true }, 'selected-runtime-qualification'],
     [{ onStage(value, io) { if (value.stage === 'candidate-verification' && value.result === 'succeeded') io.admission.tester_allowlist = '[]'; } }, 'workload-deploy'],
@@ -212,6 +265,58 @@ test('parameter, activity, output and admission drift abort at the next boundary
     assert.equal(io.actions.filter(action => action === 'deploy-workload').length, stage === 'workload-deploy' && options.onStage ? 0 : 1);
     if (stage === 'workload-stable-readback' || stage === 'workload-deploy') assert.ok(!io.actions.includes('deploy-platform'));
     if (options.finalAdmissionDrift) assert.equal(io.states[0].tester_count, 0);
+  }
+});
+
+test('restore accepts a release-changing deploy that only moves outputs outside the consumed interface', async () => {
+  // A restore necessarily changes the release; internal attributes such as the
+  // ALB DNS name, the database endpoint and the image-derived cleanup ARNs move
+  // with it and are not an interface. The cleanup ARNs are the outputs that
+  // actually moved during the drill's restore run, which is why this boundary
+  // is exercised with them.
+  const { io, input } = fixture({ workloadInternalDrift: true, platformInternalDrift: true });
+  const result = await runRestoreRelease(input);
+  assert.deepEqual(io.actions, ['candidate-verification', 'deploy-workload', 'services-stable', 'deploy-platform', 'services-stable', 'health', 'one-shot:verify']);
+  assert.deepEqual(io.stages.filter(row => row.result === 'succeeded').map(row => row.stage), [
+    'preconditions', 'candidate-verification', 'workload-deploy', 'workload-stable-readback', 'platform-deploy', 'selected-runtime-qualification', 'final-readback',
+  ]);
+  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'ApiLoadBalancerDnsName').OutputValue,
+    'internal-replaced.ap-east-1.elb.amazonaws.com');
+  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'CleanupAcceptanceTaskDefinitionArn').OutputValue,
+    'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-acceptance:4');
+  assert.equal(io.workload.Outputs.find(row => row.OutputKey === 'CleanupStateMachineVersionArn').OutputValue,
+    'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:2');
+  assert.equal(io.platform.Outputs.find(row => row.OutputKey === 'DatabaseEndpoint').OutputValue,
+    'replaced.cluster.ap-east-1.rds.amazonaws.com:5432');
+  assert.deepEqual(io.states, []); assert.deepEqual(io.recovery, []);
+  assert.equal(result.selected_revision.digest, selector.image.digest);
+});
+
+test('restore fails closed when a consumed interface output changes after deploy', async () => {
+  for (const [options, stage, expected] of [
+    [{ workloadInterfaceDrift: true }, 'workload-stable-readback', /Restore Workload interface output ApiBaseUrl changed after deploy/],
+    [{ platformInterfaceDrift: 'DatabaseHost' }, 'selected-runtime-qualification', /Restore Platform interface output DatabaseHost changed after deploy/],
+  ]) {
+    const { io, input } = fixture(options);
+    await assert.rejects(runRestoreRelease(input), error => {
+      assert.match(error.message, new RegExp(`failed at ${stage}`)); assert.match(error.cause.message, expected); return true;
+    });
+    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
+    assert.equal(io.stages.at(-1).result, 'failed');
+  }
+});
+
+test('restore fails closed when a consumed interface output is missing after deploy', async () => {
+  for (const [options, stage, expected] of [
+    [{ removeWorkloadOutput: 'ApiBaseUrl' }, 'workload-stable-readback', /Restore Workload interface output ApiBaseUrl missing after deploy/],
+    [{ removePlatformOutput: 'VtoQueueUrl' }, 'selected-runtime-qualification', /Restore Platform interface output VtoQueueUrl missing after deploy/],
+  ]) {
+    const { io, input } = fixture(options);
+    await assert.rejects(runRestoreRelease(input), error => {
+      assert.match(error.message, new RegExp(`failed at ${stage}`)); assert.match(error.cause.message, expected); return true;
+    });
+    assert.equal(io.states[0].failure_stage, stage); assert.deepEqual(io.recovery, ['requires-explicit-recovery']);
+    assert.equal(io.stages.at(-1).result, 'failed');
   }
 });
 

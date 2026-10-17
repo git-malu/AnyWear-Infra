@@ -19,24 +19,26 @@ test('strict final observation failure preserves earlier phase evidence and requ
   finalizeOperationRecord(record, 'success', 'failure');
   assert.equal(record.recovery, 'requires-explicit-recovery');
 });
-test('successful observation, close failure, and stopped operations keep accurate outcomes', () => {
+test('successful observation and close failure keep accurate outcomes; every non-state operation requires observation', () => {
   assert.equal(finalizeOperationRecord(fixture('restore-release'), 'success', 'success').result, 'succeeded');
   const closed = finalizeOperationRecord(fixture('suspend-admission'), 'failure', 'skipped');
   assert.equal(closed.result, 'failed'); assert.equal(closed.recovery, 'not-required');
-  assert.equal(finalizeOperationRecord(fixture('stop'), 'success', 'skipped').result, 'succeeded');
-  assert.equal(finalizeOperationRecord(fixture('restore-release'), 'success', 'skipped').result, 'failed');
-  assert.equal(finalizeOperationRecord(fixture('suspend-admission'), 'success', 'skipped').result, 'failed');
+  // Beta is resident, so no protected operation can end stopped and skip the
+  // final observation; only the read-only state operation is exempt.
+  for (const operation of ['deploy-platform', 'deploy-workload', 'observe', 'set-testers', 'restore-release', 'suspend-admission']) {
+    assert.equal(finalizeOperationRecord(fixture(operation), 'success', 'skipped').result, 'failed', operation);
+  }
+  assert.equal(finalizeOperationRecord(fixture('state'), 'success', 'skipped').result, 'succeeded');
   assert.throws(() => finalizeOperationRecord(fixture('restore-release'), 'unknown', 'success'));
 });
 
-test('any observed active final state requires final observation, while stopped maintenance permits skipping it', () => {
-  for (const operation of ['deploy-platform', 'deploy-workload', 'start', 'observe', 'set-testers']) {
-    const active = fixture(operation);
-    active.events.push({ type: 'final-beta-activity', platform_active: 'true', workload_active: 'true' });
-    assert.equal(finalizeOperationRecord(active, 'success', 'skipped').result, 'failed');
-    const stopped = fixture(operation);
-    stopped.events.push({ type: 'final-beta-activity', platform_active: 'false', workload_active: 'false' });
-    assert.equal(finalizeOperationRecord(stopped, 'success', 'skipped').result, 'succeeded');
+test('final observation is required regardless of the observed final activity', () => {
+  for (const operation of ['deploy-platform', 'deploy-workload', 'observe', 'set-testers']) {
+    for (const active of ['true', 'false']) {
+      const record = fixture(operation);
+      record.events.push({ type: 'final-beta-activity', platform_active: active, workload_active: active });
+      assert.equal(finalizeOperationRecord(record, 'success', 'skipped').result, 'failed', `${operation} ${active}`);
+    }
   }
 });
 
@@ -52,8 +54,9 @@ test('finalizer CLI rewrites strictly parsed state and ordinary records with acc
     ['observe', 'success', 'success', 'succeeded', 'not-required', true],
     ['observe', 'success', 'failure', 'failed', 'not-required', true],
     ['observe', 'success', 'skipped', 'failed', 'not-required', true],
-    ['stop', 'success', 'skipped', 'succeeded', 'not-required', false],
-    ['stop', 'failure', 'skipped', 'failed', 'not-required', false],
+    ['deploy-platform', 'success', 'success', 'succeeded', 'not-required', true],
+    ['deploy-platform', 'failure', 'success', 'failed', 'not-required', true],
+    ['deploy-platform', 'success', 'skipped', 'failed', 'not-required', false],
     ['restore-release', 'success', 'failure', 'failed', 'requires-explicit-recovery', true],
     ['restore-release', 'cancelled', 'skipped', 'failed', 'requires-explicit-recovery', true],
     ['suspend-admission', 'failure', 'skipped', 'failed', 'not-required', true],

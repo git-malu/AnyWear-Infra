@@ -176,9 +176,9 @@ export async function readAdmissionMode(io, now = admissionClock(io)) {
   return parseAdmissionModeValue(parameter?.Value, now);
 }
 
-// The forward-migration fence, shared by the standalone `migrate` operation and
-// the `start` sequence that invokes the same one-shot. It refuses `open` and
-// `unproven` alike, and records what it observed so a refusal is evidence.
+// The forward-migration fence for the standalone `migrate` operation. It refuses
+// `open` and `unproven` alike, and records what it observed so a refusal is
+// evidence.
 export async function assertMigrationAdmissionClosed(io, label = 'the standalone migrate operation') {
   let admission;
   let cause;

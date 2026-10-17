@@ -4,8 +4,6 @@ const stackChanges = Object.freeze({
   'deploy-platform': ['AnyWearPlatformStack-beta'],
   'deploy-workload': ['AnyWearWorkloadStack-beta'],
   'restore-release': ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'],
-  start: ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'],
-  stop: ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'],
 });
 
 // One authoritative table for the configured stack set. Operation records,

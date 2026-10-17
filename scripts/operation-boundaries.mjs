@@ -7,7 +7,6 @@ import { normalizeTesterEmails } from './tester-allowlist.mjs';
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['observe'],
   '.github/workflows/beta-observe.yml': ['state'],
-  '.github/workflows/beta-lifecycle.yml': ['start', 'stop'],
   '.github/workflows/beta-deploy.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'],
   '.github/workflows/beta-schema.yml': ['migrate', 'verify'],
   '.github/workflows/beta-admission.yml': ['admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission'],
@@ -51,10 +50,6 @@ export const operationEvidence = Object.freeze({
     'This run emits the accepted anywear_infra_deployment v2 record for the observed active Beta.'),
   state: evidenceEntry([], 'not-applicable',
     'Read-only: the operation record carries anywear_infra_state and claims no mutation.'),
-  start: evidenceEntry(['migrate', 'verify', 'lifecycle'], '.github/workflows/runtime.yml',
-    'Starting leaves both stacks active, so the following fixed observation records the started tuple.'),
-  stop: evidenceEntry(['lifecycle'], 'not-applicable',
-    'Stopped activity cannot be observed by an active-runtime record; the operation record final activity and admission readback evidence the stop, and the next start plus qualified observation supplies active evidence.'),
   'deploy-foundation': evidenceEntry([], '.github/workflows/runtime.yml',
     'The accepted record carries the configured stack Original template hash; this does not qualify IAM semantics.'),
   'deploy-billing': evidenceEntry([], '.github/workflows/runtime.yml',
@@ -91,9 +86,9 @@ const oneShotRoles = operation => operationEvidence[operation].roles.filter(role
 // `suspend-admission` runs. Every other entry listing `resume`, or listing a
 // payload-bearing action other than `set-testers` and `resume`, would be a new
 // admission direction that this table is the place to review.
-export const lifecycleActions = operation => ({ start: ['suspend'], stop: ['suspend', 'drain'],
-  'admission-status': ['status'], 'add-testers': ['set-testers', 'status'], 'set-testers': ['set-testers', 'status'],
-  'suspend-admission': ['suspend', 'status'], 'resume-admission': ['resume', 'status', 'suspend'] }[operation] ?? []);
+export const lifecycleActions = operation => ({ 'admission-status': ['status'], 'add-testers': ['set-testers', 'status'],
+  'set-testers': ['set-testers', 'status'], 'suspend-admission': ['suspend', 'status'],
+  'resume-admission': ['resume', 'status', 'suspend'] }[operation] ?? []);
 const payloadActions = ['set-testers', 'resume'];
 // Only `resume-admission` may send a lifecycle `resume` payload, and it must be
 // the exact byte string the driver builds from the reviewed dispatch input. The
