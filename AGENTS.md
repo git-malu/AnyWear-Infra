@@ -76,6 +76,19 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   has transitive account-wide authority, not Beta resource isolation. Review
   effective bootstrap/inline/managed policies, including unmanaged
   `AnyWearBetaPipelineBaseline`, before retirement; synth alone cannot prove IAM.
+- The Beta stage base is published as SSM parameters under `/anywear/beta/` so a
+  release slice can be deployed from a checkout that holds no Infra source. Two
+  of those values are reviewed constants, not Platform resources: the VLM config
+  secret ARN and the AWS-managed CloudFront origin-facing prefix list id. Assert
+  the live `AnyWearWorkloadStack-beta` parameters still equal them before
+  deploying Platform, and change the constants only in a reviewed diff. Service
+  deploys through `beta-service-deploy-role` (CloudFormation change sets for
+  `AnyWearWorkloadStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`)
+  and `beta-service-deploy-cfn-role` (CloudFormation trust only, the Workload
+  stack's resource families and its four task roles). Neither carries a managed
+  policy or account-wide grants; the policy-inventory test keeps the absent
+  VPC/Aurora/Cognito/bucket/SQS/ECR/Foundation grants absent. The Workload stack
+  remains in this repository until a later reviewed step moves it.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`
@@ -115,7 +128,7 @@ Also synthesize the live Foundation with `deployScope=foundation`,
 `identityPhase=roles-added`, `legacyRoleSource=external`, account `650880818323`
 and application region `ap-east-1`, then run `scripts/compare-live-foundation.mjs`
 against that output. CI preserves the actual CLI template and comparison. The
-authenticated Original fixture permits exactly six dedicated roles/two policies;
+authenticated Original fixture permits exactly eight dedicated roles/four policies;
 only fixed pseudo-parameter equivalence and declared CDK diagnostic metadata
 differences are normalized. Provider/helper code, output and IAM changes fail.
 

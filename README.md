@@ -35,6 +35,39 @@ canonical committed v2 selections. CI repeats all three phases with explicit
 retention protection and uploads `cdk.matrix/comparison.json` and
 `cdk.protected.matrix/comparison.json` as `infra-source-matrix`.
 
+## Stage contract
+
+`AnyWearPlatformStack-beta` publishes the Beta stage base as plain SSM
+parameters under `/anywear/beta/`: 25 names covering the VPC and subnets, ECS
+cluster, Aurora endpoint and secret, the three workload security groups, the ECR
+repository identity, both task queues and dead-letter queue names, the wardrobe
+bucket ARN, the operations topic, the CloudFront origin-facing prefix list id
+and the VLM config secret ARN. They join the four existing published names
+(`cognito_user_pool_id`, `cognito_client_id`, `s3_bucket_name`,
+`qweather_api_host`); the runtime-owned `admission_mode`, `tester_allowlist` and
+`aws_region` parameters are not duplicated. Values come from the existing
+Platform resources; nothing reads another stack at deploy time.
+
+Two values have no Platform resource: `vlm_config_arn` and
+`cloudfront_prefix_list_id` are reviewed constants read from the live
+`AnyWearWorkloadStack-beta` parameters on 2026-10-18 (account `650880818323`,
+`ap-east-1`), recorded as identifiers only. A Platform deployment must assert the
+live Workload parameters still equal them before applying, so drift is caught
+instead of silently republished. Any other stage must pass explicit values and
+fails closed without them.
+
+Foundation owns the two Service release-slice deployment identities:
+`beta-service-deploy-role` (GitHub OIDC `environment:beta`; CloudFormation change
+sets for `AnyWearWorkloadStack-beta`, `ssm:GetParameter*` under
+`/anywear/beta/`, `ecr:DescribeImages` on `beta-anywear-service`) and
+`beta-service-deploy-cfn-role` (trusted by `cloudformation.amazonaws.com`; the
+Workload stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
+load-balancer-ingress and four task-role families). Neither role carries a
+managed policy or account-wide grants; the policy-inventory test pins both the
+allowed inventory and the absent VPC, Aurora, Cognito, wardrobe/client bucket,
+SQS configuration, ECR configuration and Foundation grants. The Workload stack
+itself still lives in this repository; not every release slice has moved.
+
 ## Operations
 
 Infra exposes **3 entries / 2 manual dispatch surfaces / 1 switch**
