@@ -1,21 +1,19 @@
 import { parseJson, canonicalJson } from './json-contract.mjs';
 import { workloadRevision } from '../.github/scripts/beta-lifecycle.mjs';
 import { normalizeTesterEmails, observeAdmissionState } from './admission-state.mjs';
-import { WINDOW_MINUTES_DEFAULT } from './admission-window.mjs';
+import { compareAdmissionDecision, parseLifecycleStatus } from './admission-operation.mjs';
 
 export { normalizeTesterEmails } from './admission-state.mjs';
 
-// `configure-testers` opens admission with the documented Service default bound.
-// The tester operations keep the single `configure-testers` lifecycle action and
-// may still not run `open` or `status`, so that expiry is not directly
-// observable: it is derived here and labelled as derived rather than recorded as
-// a read-back the run never made.
-function defaultWindowExpiry(openedAt) {
-  return new Date(openedAt + WINDOW_MINUTES_DEFAULT * 60_000).toISOString();
-}
-
+// A tester write is a tester write: it replaces the exact list and changes no
+// admission state. Only `resume-admission` is an operator-requestable opener, so
+// the operator flow for a window is `add-testers` (or `set-testers`) and then
+// `resume-admission`. The admission mirror is still read before and after the
+// selected lifecycle command, because the operation record claims that read-back
+// as its evidence and the mirror carries the bound that proves the write changed
+// nothing.
 export async function runTesterAllowlist(action, input, io, selector) {
-  if (!['status', 'add', 'replace'].includes(action)) throw new Error('Unknown Infra tester action');
+  if (!['status', 'add', 'set'].includes(action)) throw new Error('Unknown Infra tester action');
   let payload = normalizeTesterEmails(input);
   if (action === 'status' && payload !== '[]') throw new Error('Status does not accept emails');
   const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
@@ -34,23 +32,26 @@ export async function runTesterAllowlist(action, input, io, selector) {
     const existing = (await io.aws(['ssm', 'get-parameter', '--name', '/anywear/beta/tester_allowlist'])).Parameter?.Value;
     payload = normalizeTesterEmails(canonicalJson([...parseJson(normalizeTesterEmails(existing)), ...parseJson(payload)]));
   }
-  // `configure-testers` changes admission, and the operation record claims that
-  // admission read-back evidences it. Record the tuple before and after the
-  // selected command instead of asserting the claim the record exists to prove.
-  const mutating = action !== 'status';
-  const original = mutating ? await observeAdmissionState(io) : undefined;
-  if (original) io.recordAdmissionState?.({ phase: 'original', state: original.state, result: original.result });
-  // Timestamped before the one-shot, so the derived expiry can only understate
-  // the window the Service records, never overstate it.
-  const openedAt = io.now?.() ?? Date.now();
-  // The selected Service command owns DB/SSM admission reconciliation and rejects
-  // public intake. Its close/configure/open behavior belongs to Infra runtime.
-  await io.oneShot('lifecycle', revision, action === 'status' ? 'status' : 'configure-testers', action === 'status' ? undefined : payload);
-  if (mutating) {
-    const opened = await observeAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'opened', state: opened.state, result: opened.result,
-      window_minutes: WINDOW_MINUTES_DEFAULT,
-      admission_window_expires_at: defaultWindowExpiry(openedAt),
-      admission_window_source: 'derived from the documented Service default for configure-testers; not observed' });
+  if (action === 'status') {
+    // `admission-status` publishes the effective decision, the raw record each
+    // surface stores and whether those raw records disagree. One boolean cannot
+    // carry both jobs: after an abandoned window the database still stores
+    // `testers` with a past bound while every gate decides `closed`.
+    const status = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
+    const observed = await observeAdmissionState(io);
+    const comparison = compareAdmissionDecision(status, observed.state, io.now?.() ?? Date.now());
+    io.recordAdmissionState?.({ phase: 'status', state: observed.state, result: observed.result, ...comparison });
+    return;
   }
+  // The operation record claims this admission read-back, so take it before and
+  // after the selected command instead of asserting the claim the record exists to
+  // prove. The mirror is self-describing: the mode and its bound are both here, so
+  // the record shows the write left admission exactly as it found it.
+  const original = await observeAdmissionState(io);
+  io.recordAdmissionState?.({ phase: 'original', state: original.state, result: original.result });
+  // The selected Service `set-testers` command owns the tester list and refuses
+  // while admission is not provably closed. It changes no admission state.
+  await io.oneShot('lifecycle', revision, 'set-testers', payload);
+  const written = await observeAdmissionState(io);
+  io.recordAdmissionState?.({ phase: 'written', state: written.state, result: written.result });
 }

@@ -35,11 +35,14 @@ export async function readLifecycleStatus(io, task, definition) {
     const statuses = [];
     for (const message of messages) {
       // The pinned Service emits one plain JSON object; unrelated log messages
-      // are not status evidence. A malformed apparent status fails closed.
-      if (!/"intake_open"/.test(message) || !/"admission_suspended"/.test(message)) continue;
+      // are not status evidence. A malformed apparent status fails closed. The
+      // selector names the Service→Infra contract fields: if the Service stops
+      // emitting both, this scan finds nothing and the read fails loudly instead of
+      // accepting a stale or unrelated object.
+      if (!/"admission_mode"/.test(message) || !/"admission_window_expires_at"/.test(message)) continue;
       const value = parseJson(message);
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Lifecycle status must be an object');
-      if (!Object.hasOwn(value, 'intake_open') || !Object.hasOwn(value, 'admission_suspended')) continue;
+      if (!Object.hasOwn(value, 'admission_mode') || !Object.hasOwn(value, 'admission_window_expires_at')) continue;
       statuses.push(value);
     }
     if (statuses.length > 1) throw new Error('Lifecycle status log evidence is ambiguous');
