@@ -4,22 +4,19 @@ import { readFile, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { parseJson, sha256, canonicalJson, HASH, SHA } from './json-contract.mjs';
-import { verifySelection, loadCommittedSelection } from './artifact-consumer.mjs';
-import { runRuntimeVerification } from './verify-runtime-task.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
 import { parseWindowMinutes } from './admission-window.mjs';
 import { createOperationRecord, recordRecovery } from './operation-record.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
+import { validateReleaseInput } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runSuspendAdmission, runResumeAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
-import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
-import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
+import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
-import { validateBetaSizingInput, validateBetaTelemetryInput, retainedBetaSizingProfile, retainedBetaSizingTelemetry,
-  betaSizingChangeRequested, selectBetaSizingParameters } from './beta-sizing-profile.mjs';
+import { account, region } from './deployment-contract.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,20 +31,19 @@ const admissionRecoveryOperations = ['suspend-admission', 'resume-admission', 'r
 // every operation of their entry, so their per-operation scope is enforced here
 // (before credentials) instead of by the file that carries them.
 const testerOperations = ['add-testers', 'set-testers'];
-const contextVariableOperations = ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'];
+const contextVariableOperations = ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'restore-release'];
 export function validateOperationInputs(env = process.env) {
   const boundary = operationBoundary(env);
   const operation = env.INFRA_OPERATION;
-  validateBetaSizingInput(env);
-  validateBetaTelemetryInput(env);
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
     || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
     || !boundary.readOnly && env.ENABLE_BETA_MUTATION !== 'true') throw new Error('Protected Infra main executor and activation required');
-  if (env.AWS_ACCOUNT_ID !== '650880818323' || env.AWS_REGION !== 'ap-east-1') throw new Error('Unexpected account/region');
+  if (env.AWS_ACCOUNT_ID !== account || env.AWS_REGION !== region) throw new Error('Unexpected account/region');
   if (!['legacy', 'roles-added', 'retired'].includes(env.INFRA_IDENTITY_PHASE)) throw new Error('Explicit identity phase required');
   if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
-  if (!HASH.test(env.SELECTION_SHA256 ?? '')) throw new Error('Explicit selection hash required');
-  if (!/^selections\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(env.SELECTION_FILE ?? '')) throw new Error('Selection must be a reviewed repository file');
+  // Only a Platform deploy and a release recovery consume Service-built Lambda
+  // assets; every other operation must not carry a release identity at all.
+  const release = validateReleaseInput(env, operation);
   // Only a deployment or a release recovery may vary these workflow-level
   // inputs; every other operation runs the retired, protected context.
   if (!contextVariableOperations.includes(operation)
@@ -77,14 +73,12 @@ export function validateOperationInputs(env = process.env) {
   for (const key of ['RUNTIME_DRILL_RUN_SCOPE', 'RUNTIME_DRILL_CHECKPOINT_PROTOCOL', 'LIFECYCLE_EVIDENCE_RUN_SCOPE', 'LIFECYCLE_EVIDENCE_ASYNC']) {
     if (env[key]) throw new Error('Experimental task scopes are not ordinary Beta workflow inputs');
   }
-  return { source_sha: env.GITHUB_SHA, operation: env.INFRA_OPERATION, selection_file: env.SELECTION_FILE, selection_sha256: env.SELECTION_SHA256 };
-}
-export function selectionBinding(env = process.env, trustedInfraRoot = root) {
-  return { trustedInfraRoot, expectedInfraSha: env.GITHUB_SHA, selectionFile: env.SELECTION_FILE, selectionSha256: env.SELECTION_SHA256 };
+  return { source_sha: env.GITHUB_SHA, operation, service_release: release };
 }
 // Beta is resident: every protected operation that reaches a completed deploy must
-// observe both stacks active. A stack stopped out of band is an invariant violation
-// that fails closed here; no protected operation can produce that state.
+// observe both stacks active. The stage base and the release slice have different
+// producers, but a stopped slice is still an invariant violation for the stage
+// base's own deployments. A stack stopped out of band fails closed here.
 export function assertResidentBeta(platform, workload) {
   const state = stack => stack?.Outputs?.find(output => output.OutputKey === 'BetaActive')?.OutputValue;
   for (const [name, stack] of [['Platform', platform], ['Workload', workload]]) {
@@ -96,27 +90,14 @@ export function assertResidentBeta(platform, workload) {
 // Every protected deploy reconciles the resident active environment. The CDK
 // default is the active path (environmentRunning=true), so no operation selects the
 // dormant stopped template and no observed activity changes the arguments.
-export function cdkDeploymentArguments(stack, revision, directory, env) {
-  const preservedParameters = stack.includes('Workload') ? selectBetaSizingParameters(revision.parameters, env) : {};
-  const parameters = stack.includes('Workload') ? Object.entries(preservedParameters).filter(([key]) =>
-    workloadParameterKeys.includes(key)).flatMap(([key, value]) =>
-    ['--parameters', `${stack}:${key}=${value}`]) : [];
+// `deployScope` restricts synthesis to the stack this operation deploys: only an
+// application-scope deploy (the stage base) loads Service-built Lambda assets.
+export function cdkDeploymentArguments(stack, directory, env) {
+  const deployScope = stack.includes('AnyWearPlatformStack') ? 'application'
+    : stack === 'AnyWearBillingStack-beta' ? 'billing' : 'foundation';
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
-    '-c', 'stage=beta', '-c', 'legacyRoleSource=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
-    '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`, '-c', `artifactDirectory=${directory}`, ...parameters];
-}
-const workloadParameterKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId',
-  'BetaApiSizingProfile', 'BetaSizingTelemetry'];
-const terminalStackStatuses = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']);
-function assertWorkloadParameterReadback(stack, revision) {
-  if (!terminalStackStatuses.has(stack?.StackStatus)) throw new Error(`Workload stack is not terminal after deploy: ${stack?.StackStatus ?? 'unavailable'}`);
-  const observed = workloadRevision(stack);
-  for (const key of workloadParameterKeys) {
-    if (observed.parameters[key] !== revision.parameters[key]) {
-      throw new Error(`Workload parameter readback mismatch for ${key}`);
-    }
-  }
-  return observed;
+    '-c', `deployScope=${deployScope}`, '-c', 'stage=beta', '-c', 'legacyRoleSource=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
+    '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`, ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`] : [])];
 }
 export function cleanAwsEnvironment(env) {
   const result = { ...env };
@@ -153,11 +134,10 @@ export async function credentialEnvironment(kind, env = process.env, purpose = '
   return { ...cleanAwsEnvironment(env), AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
 }
-export async function createRuntimeIo(selector, directory, env = process.env, record, { trustedInfraRoot = root, run = execute, assume = credentialEnvironment, purpose = 'operation' } = {}) {
+export async function createRuntimeIo(env = process.env, record, { run = execute, assume = credentialEnvironment, purpose = 'operation', directory = path.join(root, '.service-artifacts/selected') } = {}) {
   const credentials = new Map();
-  const check = async () => { validateOperationInputs(env); await loadCommittedSelection(selectionBinding(env, trustedInfraRoot)); };
   const roleEnv = async kind => {
-    await check();
+    validateOperationInputs(env);
     sessionPolicy(kind, env, purpose);
     const key = `${kind}:${purpose}`;
     if (!credentials.has(key) || Date.now() - credentials.get(key).at > 50 * 60_000) {
@@ -171,11 +151,6 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
     region: 'ap-east-1', now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
     async aws(args, awsRegion) {
       assertAwsAllowed(env, args, purpose);
-      if (args[0] === 'ecs' && args[1] === 'register-task-definition') {
-        const definition = parseJson(args[args.indexOf('--cli-input-json') + 1]);
-        if (definition.containerDefinitions?.length !== 1
-          || definition.containerDefinitions[0].image !== `${selector.image.repository_uri}@${selector.image.digest}`) throw new Error('Task registration must retain the selected immutable image');
-      }
       if (awsRegion) args = [...args, '--region', awsRegion];
       const explicitRegion = args.indexOf('--region');
       if (explicitRegion >= 0 && !['ap-east-1', 'us-east-1'].includes(args[explicitRegion + 1])) throw new Error('Unexpected operation region');
@@ -194,8 +169,6 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
     async oneShot(role, revision, argument = '', payload) {
       if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
       assertOneShotAllowed(env, role, argument, payload);
-      await check();
-      if (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha) throw new Error('Lifecycle selected image differs from deployed revision');
       const awsEnv = await roleEnv('runtime');
       let result;
       try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
@@ -215,10 +188,10 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       const actualContainer = task?.containers?.find(item => item.name === 'OneShot');
       const container = definition?.containerDefinitions?.find(item => item.name === 'OneShot');
       if (task?.lastStatus !== 'STOPPED' || task.taskDefinitionArn !== definitions[0] || actualContainer?.exitCode !== 0
-        || actualContainer.imageDigest !== selector.image.digest || container?.image !== `${selector.image.repository_uri}@${selector.image.digest}`) throw new Error('Actual one-shot image/result differs from selection');
+        || actualContainer.imageDigest !== revision.digest) throw new Error('Actual one-shot image/result differs from the deployed revision');
       if (role === 'lifecycle' && canonicalJson(container.command) !== canonicalJson(['node', 'dist/ops/beta-lifecycle.js', argument,
-        ...(payload === undefined ? [] : [payload])])) throw new Error('Actual lifecycle command differs from the selected action');
-      record?.events.push({ type: 'one-shot', role, action: argument, service_sha: selector.image.service_sha, image_digest: selector.image.digest,
+        ...(payload === undefined ? [] : [payload])])) throw new Error('Actual lifecycle command differs from the requested action');
+      record?.events.push({ type: 'one-shot', role, action: argument, service_sha: revision.commit, image_digest: revision.digest,
         task_arn: tasks[0], task_definition_arn: definitions[0], command_sha256: sha256(canonicalJson(container.command)),
         ...(payload === undefined ? {} : { payload_sha256: sha256(payload) }), result: 'stopped-success' });
       process.stdout.write(result.stdout); process.stderr.write(result.stderr);
@@ -231,34 +204,13 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
         return status;
       }
     },
-    async deploy(stack, revision) {
+    async deploy(stack) {
       if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
       assertDeployAllowed(env, stack);
-      await check();
-      const selected = stack === 'AnyWearWorkloadStack-beta' ? {
-        ...revision, parameters: selectBetaSizingParameters(revision.parameters, env),
-      } : revision;
-      if (stack === 'AnyWearWorkloadStack-beta' && betaSizingChangeRequested(env)
-        && (selected.digest !== selector.image.digest || selected.commit !== selector.image.service_sha)) {
-        throw new Error('Sizing changes must retain the selected Service image');
-      }
-      if (['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'].includes(stack)) {
-        const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
-        const fence = await assertCleanupCapabilityQuiescent(io, workload);
-        record?.events.push({ type: 'cleanup-capability-cessation', ...fence });
-      }
       const awsEnv = await roleEnv('deploy');
-      await run('npx', cdkDeploymentArguments(stack, selected, directory, env),
+      await run('npx', cdkDeploymentArguments(stack, directory, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       if (stack === 'AnyWearPlatformStack-beta') await enforceBetaPlatformLogRetention(io);
-      if (stack === 'AnyWearWorkloadStack-beta') {
-        const after = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', stack])).Stacks?.[0];
-        const observed = assertWorkloadParameterReadback(after, selected);
-        record?.events.push({ type: 'workload-parameter-readback', stack_name: stack,
-          stack_status: after.StackStatus, service_sha: observed.commit, image_digest: observed.digest,
-          beta_api_sizing_profile: observed.parameters.BetaApiSizingProfile,
-          beta_sizing_telemetry: observed.parameters.BetaSizingTelemetry });
-      }
       record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: true, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
     },
     recordRecovery(outcome) { if (record) recordRecovery(record, outcome); },
@@ -285,20 +237,17 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
         } catch { /* Wait for the reviewed existing endpoint to become ready. */ }
         await io.sleep(10_000);
       }
-      throw new Error('Public health failed to match selected image');
+      throw new Error('Public health failed to match the deployed image');
     },
   };
   return io;
 }
 export async function runOperation(env = process.env) {
-  validateOperationInputs(env);
-  const binding = selectionBinding(env); const selector = await loadCommittedSelection(binding);
-  const directory = path.join(root, '.service-artifacts/selected');
-  const record = createOperationRecord({ env, selector, stackManifest: parseJson(await readFile('deployment-evidence/stack-sources.json')) });
+  const inputs = validateOperationInputs(env);
+  const record = createOperationRecord({ env, release: inputs.service_release });
   try {
-  const verified = await verifySelection(binding, directory);
-  const io = await createRuntimeIo(selector, directory, env, record);
-  if ((await io.aws(['sts', 'get-caller-identity'])).Account !== '650880818323') throw new Error('Wrong runtime account');
+  const io = await createRuntimeIo(env, record);
+  if ((await io.aws(['sts', 'get-caller-identity'])).Account !== account) throw new Error('Wrong runtime account');
   for (const row of record.stack_manifest) {
     const template = (await io.aws(['cloudformation', 'get-template', '--stack-name', row.stack_name, '--template-stage', 'Original', '--region', row.region])).TemplateBody;
     record.original_stack_templates.push({ stack_name: row.stack_name, region: row.region, template_sha256: sha256(canonicalJson(typeof template === 'string' ? parseJson(template) : template)) });
@@ -317,61 +266,29 @@ export async function runOperation(env = process.env) {
     if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, 'requires_qualification=false\n');
     return;
   }
-  const prior = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
-  const priorRevision = workloadRevision(prior);
-  if (['deploy-workload', 'restore-release'].includes(env.INFRA_OPERATION)) {
-    retainedBetaSizingProfile(priorRevision.parameters);
-    retainedBetaSizingTelemetry(priorRevision.parameters);
-  }
-  record.original_runtime = { service_sha: priorRevision.commit, image_digest: priorRevision.digest };
-  const repository = selector.image.repository_uri.split('/').slice(1).join('/');
-  const images = await io.aws(['ecr', 'describe-images', '--repository-name', repository, '--image-ids', `imageDigest=${selector.image.digest}`]);
-  if (images.imageDetails?.length !== 1 || images.imageDetails[0].imageDigest !== selector.image.digest) throw new Error('Selected ECR digest unavailable');
   const operation = env.INFRA_OPERATION;
-  if (operation === 'suspend-admission') await runSuspendAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
-  else if (operation === 'resume-admission') await runResumeAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
-  else if (operation === 'restore-release') await runRestoreRelease({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
-  else if (Object.hasOwn(testerOperationActions, operation)) await runTesterAllowlist(testerOperationActions[operation], env.TESTER_EMAILS, io, selector);
-  else if (operation !== 'observe') {
+  if (operation === 'suspend-admission') await runSuspendAdmission({ io, infraSha: env.GITHUB_SHA, env });
+  else if (operation === 'resume-admission') await runResumeAdmission({ io, infraSha: env.GITHUB_SHA, env });
+  else if (operation === 'restore-release') await runRestoreRelease({ io, infraSha: env.GITHUB_SHA, env });
+  else if (Object.hasOwn(testerOperationActions, operation)) await runTesterAllowlist(testerOperationActions[operation], env.TESTER_EMAILS, io);
+  else if (operation === 'migrate') {
+    // A forward migration runs only against an admission mirror that proves
+    // closed admission. The bound closes an abandoned window on that surface, so
+    // this admits the ordinary after-expiry case and refuses an unprovable
+    // record until `suspend-admission` restores it. The migration runs on the
+    // revision the release slice reports, never on a locally selected image: Infra
+    // no longer chooses a Service release.
+    await assertMigrationAdmissionClosed(io);
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
     const revision = workloadRevision(workload);
-    // The retired `verify` operation no longer reaches this branch. `verify` is
-    // still a task family (`io.oneShot('verify', ...)` in deploy-workload,
-    // restore-release and the tester/admission operations), but not an operation.
-    if (operation === 'migrate') {
-      // A forward migration runs only against an admission mirror that proves
-      // closed admission. The bound closes an abandoned window on that surface, so
-      // this admits the ordinary after-expiry case and refuses an unprovable
-      // record until `suspend-admission` restores it.
-      await assertMigrationAdmissionClosed(io);
-      const selectedRevision = { ...revision, digest: selector.image.digest, commit: selector.image.service_sha };
-      await io.oneShot(operation, selectedRevision);
-    } else {
-      const [deployStack] = changedStackNames(operation);
-      if (operation === 'deploy-workload') {
-        selectBetaSizingParameters(revision.parameters, env);
-        if (betaSizingChangeRequested(env)
-          && (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha)) {
-          throw new Error('Sizing changes must retain the observed Service image');
-        }
-        // The candidate is verified against the current Platform before the
-        // selected image is rolled out. Beta is resident, so this always runs.
-        const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-        const outputs = Object.fromEntries((platform?.Outputs ?? []).map(item => [item.OutputKey, item.OutputValue]));
-        await runRuntimeVerification({ io, outputs, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
-        // Selecting an existing immutable previous release is compute rollback.
-        // This operation never invokes migrate and never down-migrates the DB.
-        revision.parameters.ServiceImageDigest = selector.image.digest; revision.parameters.ServiceCommitSha = selector.image.service_sha;
-      } else if (revision.digest !== selector.image.digest || revision.commit !== selector.image.service_sha) throw new Error('Platform/identity changes must retain the observed running image');
-      await io.deploy(deployStack, revision);
-      if (operation === 'deploy-workload') {
-        await io.aws(['ecs', 'wait', 'services-stable', '--cluster', 'beta-anywear', '--services', 'beta-anywear-api', 'beta-anywear-worker']);
-        const after = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks[0];
-        const url = after.Outputs.find(output => output.OutputKey === 'ApiBaseUrl')?.OutputValue;
-        await io.verifyHealth(url, { digest: selector.image.digest, commit: selector.image.service_sha });
-        await io.oneShot('verify', { digest: selector.image.digest, commit: selector.image.service_sha }, url);
-      }
-    }
+    record.observed_service_revision = { service_sha: revision.commit, image_digest: revision.digest };
+    await io.oneShot('migrate', revision);
+  } else if (operation !== 'observe') {
+    const [deployStack] = changedStackNames(operation);
+    // The stage base and the account-wide stacks take no release input; only the
+    // stage base consumes Service-built Lambda assets, and its deploy proves those
+    // bytes through the reviewed release identity before credentials.
+    await io.deploy(deployStack);
   }
   const finalStacks = {};
   for (const [key, name] of [['platform', 'AnyWearPlatformStack-beta'], ['workload', 'AnyWearWorkloadStack-beta']]) {
@@ -383,7 +300,10 @@ export async function runOperation(env = process.env) {
   ])) });
   assertResidentBeta(finalStacks.platform, finalStacks.workload);
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, 'beta_active=true\nrequires_qualification=true\n');
-  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}; committed selection ${env.SELECTION_FILE}@${env.SELECTION_SHA256}.\n`);
+  if (env.GITHUB_STEP_SUMMARY) {
+    const release = inputs.service_release ? ` Service release ${inputs.service_release.releaseTag}@${inputs.service_release.serviceCommit}.` : '';
+    await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}.${release}\n`);
+  }
   record.result = 'succeeded';
   } catch (error) { record.result = 'failed'; throw error; }
   finally { await writeFile('deployment-evidence/operation-record.json', canonicalJson(record)); }

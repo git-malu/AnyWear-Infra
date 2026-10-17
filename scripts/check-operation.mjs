@@ -2,8 +2,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateOperationInputs, selectionBinding } from './runtime-operation.mjs';
-import { loadCommittedSelection } from './artifact-consumer.mjs';
+import { validateOperationInputs } from './runtime-operation.mjs';
+import { validateReleaseInput } from './release-inputs.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
 import { platformStackName, platformStackStage, recoveryFailureMessage, recoveryViolations, synthStage } from './recovery-contract.mjs';
@@ -12,8 +12,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Database recovery targets are a deployment precondition, so a Platform
 // operation proves them from local source before anything requests credentials.
-// The immutable Service artifacts are not downloaded yet at this point; the
-// synthesis therefore uses the same local fixture inputs as the contract tests.
+// The sealed Service release is not downloaded in this job; the synthesis
+// therefore uses the local release-directory fixture. It is a scratch fixture for
+// stack-shape checks only and is never uploaded as deployable bytes.
 export async function assertDatabaseRecoveryPrecondition(env = process.env) {
   const stage = changedStackNames(env.INFRA_OPERATION).map(platformStackStage).find(Boolean);
   if (!stage) return;
@@ -36,5 +37,5 @@ export async function assertDatabaseRecoveryPrecondition(env = process.env) {
 }
 
 validateOperationInputs();
+validateReleaseInput();
 await assertDatabaseRecoveryPrecondition();
-await loadCommittedSelection(selectionBinding());

@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
 import { RECOVERY_TARGETS } from './recovery-contract.mjs';
-const cleanupMachineAuthSecretArn = 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cleanup_machine_auth';
-const cleanupMachineAuthPolicyArn = `${cleanupMachineAuthSecretArn}-??????`;
 
 export function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -133,161 +130,23 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
     // CDK analytics is diagnostic metadata rather than a cloud resource update.
     const telemetry = resource?.Type === 'AWS::CDK::Metadata'
       && difference.path === `/Resources/${id}/Properties/Analytics`;
-    // Issue #95 S1 is intentionally narrow: only the active Beta API service
-    // desired count and its autoscaling minimum may change from 2 to 1. Keep
-    // Worker scaling, Production/Dev and stopped-state templates covered by
-    // the normal exact comparison. S2 sizes are checked separately below.
-    const betaS1ReplicaReduction = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta'
-      && ((resource?.Type === 'AWS::ECS::Service'
-        && resource.Properties?.ServiceName === 'beta-anywear-api'
-        && difference.path === `/Resources/${id}/Properties/DesiredCount`
-        && difference.before === 2 && difference.after === 1)
-      || (resource?.Type === 'AWS::ApplicationAutoScaling::ScalableTarget'
-        && difference.path === `/Resources/${id}/Properties/MinCapacity`
-        && difference.before === 2 && difference.after === 1
-        && id.includes('ApiServiceTaskCountTarget')));
-    // The retained profile defaults to S1 and atomically selects S2. Require
-    // its complete declaration and exact paired expressions; other drift fails.
-    const same = (value, expected) => JSON.stringify(canonical(value)) === JSON.stringify(canonical(expected));
-    const profileParameter = { Type: 'String', Default: 's1', AllowedValues: ['s1', 's2-api'],
-      Description: 'Retained Beta API sizing profile; s2-api is an unqualified Issue #95 candidate' };
-    const profileCondition = { 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] };
-    const betaProfileScope = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta';
-    const profileDeclaration = same(after.Parameters?.BetaApiSizingProfile, profileParameter)
-      && same(after.Conditions?.BetaApiS2, profileCondition);
-    const betaMachineAuthScope = stage === 'beta' && stackName === 'AnyWearWorkloadStack-beta';
-    const policyRoleName = resource?.Properties?.Roles?.length === 1
-      ? before.Resources?.[resource.Properties.Roles[0]?.Ref]?.Properties?.RoleName : undefined;
-    const betaMachineAuthPolicy = betaMachineAuthScope
-      && ['beta-anywear-api-task', 'beta-anywear-api-execution'].includes(policyRoleName)
-      && difference.path === `/Resources/${id}/Properties/PolicyDocument/Statement`
-      && Array.isArray(difference.before) && Array.isArray(difference.after)
-      && difference.before.length === difference.after.length
-      && !JSON.stringify(difference.before).includes(cleanupMachineAuthPolicyArn)
-      && JSON.stringify(difference.after).split(cleanupMachineAuthPolicyArn).length - 1 === 1
-      && (() => {
-        const secretIndex = difference.before.findIndex((statement) => (
-          statement?.Effect === 'Allow'
-          && JSON.stringify(statement?.Action) === JSON.stringify(['secretsmanager:DescribeSecret', 'secretsmanager:GetSecretValue'])
-          && !Array.isArray(statement.Resource)
-        ));
-        if (secretIndex < 0) return false;
-        const afterStatement = difference.after[secretIndex];
-        if (!Array.isArray(afterStatement?.Resource)
-          || afterStatement.Resource.filter((value) => value === cleanupMachineAuthPolicyArn).length !== 1) return false;
-        const stripped = structuredClone(afterStatement);
-        stripped.Resource = stripped.Resource.filter((value) => value !== cleanupMachineAuthPolicyArn);
-        if (stripped.Resource.length === 1) stripped.Resource = stripped.Resource[0];
-        if (!same(stripped, difference.before[secretIndex])) return false;
-        return same(
-          difference.before.filter((_, index) => index !== secretIndex),
-          difference.after.filter((_, index) => index !== secretIndex),
-        );
-      })();
-    const apiTasks = Object.entries(after.Resources ?? {}).filter(([candidateId, candidate]) =>
-      candidate?.Type === 'AWS::ECS::TaskDefinition' && (candidate.Properties?.Family === 'beta-anywear-api'
-        || /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(candidateId)));
-    const profileSizePair = properties => same(properties?.Cpu, { 'Fn::If': ['BetaApiS2', '256', '512'] })
-      && same(properties?.Memory, { 'Fn::If': ['BetaApiS2', '512', '1024'] });
-    // A declaration-only change must not pass when active compute ignores it.
-    const profileBinding = apiTasks.length === 0 ? after.Outputs?.BetaActive?.Value === 'false'
-      && !Object.values(after.Resources ?? {}).some(candidate => candidate?.Type === 'AWS::ECS::Service'
-        && candidate.Properties?.ServiceName === 'beta-anywear-api')
-      : apiTasks.length === 1 && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(apiTasks[0][0])
-        && apiTasks[0][1].Properties?.Family === 'beta-anywear-api' && profileSizePair(apiTasks[0][1].Properties);
-    const betaSizingDeclaration = betaProfileScope && profileDeclaration && profileBinding && difference.before === undefined
-      && ((difference.path === '/Parameters/BetaApiSizingProfile' && same(difference.after, profileParameter))
-        || (difference.path === '/Conditions/BetaApiS2' && same(difference.after, profileCondition))
-        || (difference.path === '/Conditions' && same(difference.after, { BetaApiS2: profileCondition })));
-    const candidateResource = after.Resources?.[id];
-    const telemetryParameter = { Type: 'String', Default: 'false', AllowedValues: ['false', 'true'],
-      Description: 'Retained Beta API and Worker sizing telemetry; disabled by default' };
-    const telemetryDeclaration = betaProfileScope && same(after.Parameters?.BetaSizingTelemetry, telemetryParameter);
-    const betaTelemetryDeclaration = telemetryDeclaration && difference.before === undefined
-      && difference.path === '/Parameters/BetaSizingTelemetry' && same(difference.after, telemetryParameter);
-    const betaTelemetryEnvironment = telemetryDeclaration
-      && /^ComputeRuntime(Api|Worker)TaskDefinition[A-F0-9]{8}$/.test(id)
-      && resource?.Type === 'AWS::ECS::TaskDefinition' && candidateResource?.Type === resource.Type
-      && ['beta-anywear-api', 'beta-anywear-worker'].includes(resource.Properties?.Family)
-      && resource.Properties.Family === candidateResource.Properties?.Family
-      && difference.path === `/Resources/${id}/Properties/ContainerDefinitions`
-      && Array.isArray(difference.before) && difference.before.length === 1
-      && Array.isArray(difference.after) && difference.after.length === 1
-      && (() => {
-        const containers = structuredClone(difference.after);
-        const entries = containers[0].Environment;
-        if (!Array.isArray(entries)) return false;
-        const selected = entries.filter(entry => entry.Name === 'BETA_SIZING_TELEMETRY');
-        if (selected.length !== 1 || !same(selected[0], { Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } })) return false;
-        containers[0].Environment = entries.filter(entry => entry.Name !== 'BETA_SIZING_TELEMETRY');
-        return same(containers, difference.before);
-      })();
-    const betaMachineAuthContainer = betaMachineAuthScope
-      && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
-      && resource?.Type === 'AWS::ECS::TaskDefinition'
-      && candidateResource?.Type === 'AWS::ECS::TaskDefinition'
-      && resource.Properties?.Family === 'beta-anywear-api'
-      && candidateResource.Properties?.Family === 'beta-anywear-api'
-      && difference.path === `/Resources/${id}/Properties/ContainerDefinitions`
-      && Array.isArray(difference.before) && difference.before.length === 1
-      && Array.isArray(difference.after) && difference.after.length === 1
-      && (() => {
-        const containers = structuredClone(difference.after);
-        const api = containers[0];
-        const machineSecrets = api?.Secrets?.filter((secret) => (
-          secret?.Name === 'CLEANUP_MACHINE_AUTH_SECRET'
-          && secret?.ValueFrom === cleanupMachineAuthSecretArn
-        )) ?? [];
-        if (machineSecrets.length !== 1) return false;
-        api.Secrets = api.Secrets.filter((secret) => !(
-          secret?.Name === 'CLEANUP_MACHINE_AUTH_SECRET'
-          && secret?.ValueFrom === cleanupMachineAuthSecretArn
-        ));
-        const telemetry = api.Environment?.filter((entry) => entry?.Name === 'BETA_SIZING_TELEMETRY') ?? [];
-        if (telemetry.length > 0) {
-          if (telemetry.length !== 1 || !telemetryDeclaration
-            || !same(telemetry[0], { Name: 'BETA_SIZING_TELEMETRY', Value: { Ref: 'BetaSizingTelemetry' } })) return false;
-          api.Environment = api.Environment.filter((entry) => entry?.Name !== 'BETA_SIZING_TELEMETRY');
-        }
-        return same(containers, difference.before);
-      })();
-    const betaS2ApiSize = betaProfileScope && profileDeclaration
-      && /^ComputeRuntimeApiTaskDefinition[A-F0-9]{8}$/.test(id)
-      && resource?.Type === 'AWS::ECS::TaskDefinition'
-      && candidateResource?.Type === 'AWS::ECS::TaskDefinition'
-      && resource.Properties?.Family === 'beta-anywear-api'
-      && candidateResource.Properties?.Family === 'beta-anywear-api'
-      && resource.Properties.Cpu === '512' && resource.Properties.Memory === '1024'
-      && profileSizePair(candidateResource.Properties)
-      && ['Cpu', 'Memory'].some((property) => difference.path === `/Resources/${id}/Properties/${property}`);
-    // Issue #86 adds a deployment-owned cleanup operation. Its fixed task
-    // definitions, state machine, version and E2E policy are intentionally
-    // new resources; the cross-stack PublishOutput values are the reviewed
-    // bindings needed to wire those tasks to existing Beta resources.
-    const cleanupOperationResource = stage === 'beta' && phase !== 'legacy'
-      && difference.path.startsWith('/Resources/CleanupOperation');
-    const cleanupOperationOutput = stage === 'beta' && phase !== 'legacy'
-      && (difference.path.startsWith('/Outputs/CleanupOperation')
-        || difference.path.startsWith('/Outputs/PublishOutput'));
-    const cleanupExecutionPolicy = stage === 'beta' && phase !== 'legacy'
-      && difference.path.includes('/Resources/OneShotExecutionRoleDefaultPolicy')
-      && difference.path.endsWith('/Properties/PolicyDocument/Statement');
+    // The release slice left this repository in #158 step C. `PublishOutput*` is
+    // not a declared output: CDK's weak cross-stack reference feature emits it in
+    // the consumer's source stack, so it exists only while the slice is
+    // synthesized in the same app. Without that consumer the stage base emits no
+    // such output, and the recorded baseline (produced with the slice) keeps them.
+    // The removal is the slice's coupling leaving, not a stage-base change; the
+    // remaining sizing, telemetry, cleanup-operation and machine-auth allowances
+    // for the slice were deleted with it.
+    const releaseSlicePublishedOutput = difference.path.startsWith('/Outputs/PublishOutput')
+      && difference.after === undefined;
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
-      || recoveryDelta
-      || betaS1ReplicaReduction || betaS2ApiSize || betaSizingDeclaration
-      || betaTelemetryDeclaration || betaTelemetryEnvironment
-      || betaMachineAuthPolicy || betaMachineAuthContainer
-      || cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy) {
+      || recoveryDelta || releaseSlicePublishedOutput) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
           : recoveryDelta ? 'Issue #161 explicit database recovery targets'
-          : betaS1ReplicaReduction ? 'Issue #95 S1 Beta API replica reduction'
-            : betaS2ApiSize || betaSizingDeclaration ? 'Issue #95 retained Beta API size profile (S2 runtime unqualified)'
-              : betaTelemetryDeclaration || betaTelemetryEnvironment ? 'Issue #95 retained Beta sizing telemetry (disabled by default)'
-              : betaMachineAuthPolicy || betaMachineAuthContainer ? 'Issue #86 Beta API cleanup machine-auth secret binding'
-              : cleanupOperationResource || cleanupOperationOutput || cleanupExecutionPolicy
-              ? 'Issue #86 fixed Beta cleanup operation binding' : 'CDK diagnostic analytics' });
+            : 'Release-slice-only weak cross-stack output removed with the slice' });
     } else rejected.push(difference);
   }
   return { phase, stage, stackName, accepted: rejected.length === 0, allowed, rejected };

@@ -33,23 +33,23 @@ function ioFixture({ active = true, digest = selector.image.digest } = {}) {
     }
   }, recordAdmissionState(event) { events.push(structuredClone(event)); } };
 }
-test('Infra tester add merges exact emails and retains the running revision; inactive or unselected image performs no task', async () => {
+test('Infra tester add merges exact emails on the revision the release slice reports; inactive Beta performs no task', async () => {
   const io = ioFixture();
-  await runTesterAllowlist('add', '[" NEW@example.com ", "new@example.com"]', io, selector);
+  await runTesterAllowlist('add', '[" NEW@example.com ", "new@example.com"]', io);
   const lifecycle = io.calls.find(call => call[0] === 'lifecycle');
   assert.equal(lifecycle[2], 'set-testers');
   assert.equal(lifecycle[3], '["existing@example.com","new@example.com"]');
-  for (const options of [{ active: false }, { digest: `sha256:${'3'.repeat(64)}` }]) {
+  for (const options of [{ active: false }]) {
     const blocked = ioFixture(options);
-    await assert.rejects(runTesterAllowlist('set', '[]', blocked, selector));
+    await assert.rejects(runTesterAllowlist('set', '[]', blocked));
     assert.equal(blocked.calls.length, 0);
   }
-  await assert.rejects(runTesterAllowlist('cleanup', '[]', io, selector));
+  await assert.rejects(runTesterAllowlist('cleanup', '[]', io));
   for (const input of ['["*@example.com"]', '["@example.com"]', JSON.stringify(Array(51).fill('a@example.com'))]) assert.throws(() => normalizeTesterEmails(input));
 });
 test('tester operations record the admission read-back their evidence claim rests on, with admission unchanged', async () => {
   const io = ioFixture();
-  await runTesterAllowlist('add', '["new@example.com"]', io, selector);
+  await runTesterAllowlist('add', '["new@example.com"]', io);
   assert.deepEqual(io.events.map(event => [event.phase, event.result]), [['original', 'observed'], ['written', 'observed']]);
   // The mirror is self-describing, so the record shows the write changed no
   // admission state: no derived expiry, no window, the same recorded decision.

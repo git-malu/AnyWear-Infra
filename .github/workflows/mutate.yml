@@ -5,25 +5,16 @@ on:
     inputs:
       operation:
         type: choice
-        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-workload, restore-release, migrate, admission-status, add-testers, set-testers, suspend-admission, resume-admission]
+        options: [deploy-foundation, deploy-billing, deploy-platform, restore-release, migrate, admission-status, add-testers, set-testers, suspend-admission, resume-admission]
         required: true
-      selection_file:
-        description: Committed canonical selection in this Infra revision
-        default: selections/beta-baseline.json
+      service_release_tag:
+        description: Sealed Service release tag; required by deploy-platform and restore-release only
         type: string
-        required: true
-      selection_sha256:
-        description: Exact raw hash of the committed selection
+        default: ''
+      service_commit:
+        description: Service source commit the sealed release was built from; required with the tag
         type: string
-        required: true
-      stack_sources_file:
-        description: Reviewed per-stack producer source JSON path
-        type: string
-        required: true
-      stack_sources_sha256:
-        description: Exact raw hash of the reviewed stack source file
-        type: string
-        required: true
+        default: ''
       identity_phase:
         description: Identity phase; only deploy-* and restore-release may vary it
         type: choice
@@ -34,18 +25,6 @@ on:
         description: Retention protection; only deploy-* and restore-release may vary it
         type: boolean
         default: true
-        required: true
-      beta_api_sizing_profile:
-        description: Retain sizing or explicitly select S1/S2 on active Beta; only deploy-workload may change it
-        type: choice
-        options: [preserve, s1, s2-api]
-        default: preserve
-        required: true
-      beta_sizing_telemetry:
-        description: Retain telemetry or explicitly enable/disable on active Beta; only deploy-workload may change it
-        type: choice
-        options: [preserve, enable, disable]
-        default: preserve
         required: true
       tester_emails:
         description: Explicit email JSON array for add-testers or set-testers; otherwise []
@@ -76,18 +55,17 @@ env:
   # never open the gate.
   ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
   INFRA_OPERATION: ${{ inputs.operation }}
+  SERVICE_RELEASE_TAG: ${{ inputs.service_release_tag }}
+  SERVICE_COMMIT: ${{ inputs.service_commit }}
   TESTER_EMAILS: ${{ inputs.tester_emails }}
   WINDOW_MINUTES: ${{ inputs.window_minutes }}
   INFRA_IDENTITY_PHASE: ${{ inputs.identity_phase }}
   INFRA_RETENTION_PROTECTION: ${{ inputs.retention_protection }}
-  SELECTION_FILE: ${{ inputs.selection_file }}
-  SELECTION_SHA256: ${{ inputs.selection_sha256 }}
-  STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
-  STACK_SOURCES_SHA256: ${{ inputs.stack_sources_sha256 }}
   GH_TELEMETRY: disabled
 jobs:
-  # Reject a forbidden operation, a stale committed selection or unreviewed stack
-  # provenance before any job holds a token, an environment or an OIDC identity.
+  # Reject a forbidden operation, a missing or unexpected Service release identity
+  # and unreviewed context before any job holds a token, an environment or an OIDC
+  # identity.
   preflight:
     if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true'
     runs-on: ubuntu-latest
@@ -103,17 +81,13 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Validate operation family, committed source and stack provenance
+      - name: Validate operation family and reviewed Service release identity
         run: |
           mkdir -p deployment-evidence
           node scripts/check-operation.mjs
-          node scripts/check-stack-sources.mjs
-      - name: Check native release verification CLI capability
-        run: |
-          gh release verify --format json --help > /dev/null
-          gh release verify-asset --format json --help > /dev/null
-  # The only job that reads immutable Service inputs. It holds a read-only App
-  # token and never an OIDC identity or an environment.
+  # The only job that reads the sealed Service release. It holds a read-only App
+  # token (only when the operation takes a release) and never an OIDC identity or
+  # an environment.
   verify:
     needs: preflight
     runs-on: ubuntu-latest
@@ -128,8 +102,6 @@ jobs:
       - uses: ./.github/actions/verify-operation
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-          beta_api_sizing_profile: ${{ inputs.beta_api_sizing_profile }}
-          beta_sizing_telemetry: ${{ inputs.beta_sizing_telemetry }}
   # The only job that acquires AWS credentials. It is scheduled after `verify`
   # and binds the downloaded verified-inputs artifact to this dispatch before the
   # restricted session is requested.
@@ -151,16 +123,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Download verified inputs and verified artifact directory
+      - name: Download verified inputs and the sealed release directory
         uses: actions/download-artifact@v4
         with:
           name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: .
       - uses: ./.github/actions/deploy-operation
-        with:
-          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-          beta_api_sizing_profile: ${{ inputs.beta_api_sizing_profile }}
-          beta_sizing_telemetry: ${{ inputs.beta_sizing_telemetry }}
   # No environment, no OIDC, no write permission: validate and checksum exactly
   # what the credential job produced.
   record:

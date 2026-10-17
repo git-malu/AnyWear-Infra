@@ -7,23 +7,6 @@ on:
         type: choice
         options: [state, observe]
         required: true
-      selection_file:
-        description: Committed canonical selection in this Infra revision
-        default: selections/beta-baseline.json
-        type: string
-        required: true
-      selection_sha256:
-        description: Exact raw hash of the committed selection
-        type: string
-        required: true
-      stack_sources_file:
-        description: Reviewed per-stack producer source JSON path
-        type: string
-        required: true
-      stack_sources_sha256:
-        description: Exact raw hash of the reviewed stack source file
-        type: string
-        required: true
 permissions:
   contents: read
 concurrency:
@@ -48,14 +31,10 @@ env:
   TESTER_EMAILS: '[]'
   INFRA_IDENTITY_PHASE: retired
   INFRA_RETENTION_PROTECTION: 'true'
-  SELECTION_FILE: ${{ inputs.selection_file }}
-  SELECTION_SHA256: ${{ inputs.selection_sha256 }}
-  STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
-  STACK_SOURCES_SHA256: ${{ inputs.stack_sources_sha256 }}
   GH_TELEMETRY: disabled
 jobs:
-  # No credentials: reject a forbidden operation or stale committed source before
-  # either observation job can request an environment or an OIDC identity.
+  # No credentials: reject a forbidden operation before either observation job can
+  # request an environment or an OIDC identity.
   preflight:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -71,15 +50,10 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Validate operation family, committed source and stack provenance
+      - name: Validate operation family and reviewed inputs
         run: |
           mkdir -p deployment-evidence
           node scripts/check-operation.mjs
-          node scripts/check-stack-sources.mjs
-      - name: Check native release verification CLI capability
-        run: |
-          gh release verify --format json --help > /dev/null
-          gh release verify-asset --format json --help > /dev/null
   # Read-only state works with the stage switch closed: it runs no task, changes
   # nothing and emits no deployment record.
   state:
@@ -102,10 +76,10 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/deploy-operation
         with:
-          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
           verify_artifact: 'false'
-  # The accepted `anywear_infra_deployment` v2 producer. It runs the restricted
-  # artifact-verification task, so it stays behind the stage switch.
+  # The accepted `anywear_infra_deployment` v3 producer. It observes the stacks
+  # Infra still produces; the release slice is observed by AnyWear-Service's own
+  # release chain. It stays behind the stage switch.
   observe:
     needs: preflight
     if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true' && inputs.operation == 'observe'
@@ -128,8 +102,6 @@ jobs:
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
       - uses: ./.github/actions/deploy-operation
-        with:
-          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
   # No environment, no OIDC: validate and checksum exactly what the credential
   # job produced.
   record:

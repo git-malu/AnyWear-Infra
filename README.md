@@ -28,11 +28,12 @@ node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --bas
 
 [Source CI](.github/workflows/check.yml) runs these checks without private peer
 checkouts or cloud credentials. The matrix compares dev active, Beta active, Beta
-stopped and prod active across the three identity phases, including Foundation and
-Billing, against the preserved Service source templates. Fixture artifacts support
-source tests; deployments use verified sealed Service releases and reviewed
-canonical committed v2 selections. CI repeats all three phases with explicit
-retention protection and uploads `cdk.matrix/comparison.json` and
+stopped and prod active across the three identity phases against the preserved
+Service source templates for the stack set this app still synthesizes
+(Foundation, Platform, Billing). Fixture artifacts are a local stand-in for the
+stage base's Service-built Lambda inputs; deployments download the sealed Service
+release instead. CI repeats all three phases with explicit retention protection
+and uploads `cdk.matrix/comparison.json` and
 `cdk.protected.matrix/comparison.json` as `infra-source-matrix`.
 
 ## Stage contract
@@ -51,10 +52,8 @@ Platform resources; nothing reads another stack at deploy time.
 Two values have no Platform resource: `vlm_config_arn` and
 `cloudfront_prefix_list_id` are reviewed constants read from the live
 `AnyWearWorkloadStack-beta` parameters on 2026-10-18 (account `650880818323`,
-`ap-east-1`), recorded as identifiers only. A Platform deployment must assert the
-live Workload parameters still equal them before applying, so drift is caught
-instead of silently republished. Any other stage must pass explicit values and
-fails closed without them.
+`ap-east-1`), recorded as identifiers only. They are changed only in a reviewed
+diff. Any other stage must pass explicit values and fails closed without them.
 
 Foundation owns the two Service release-slice deployment identities:
 `beta-service-deploy-role` (GitHub OIDC `environment:beta`; CloudFormation change
@@ -65,8 +64,9 @@ Workload stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
 load-balancer-ingress and four task-role families). Neither role carries a
 managed policy or account-wide grants; the policy-inventory test pins both the
 allowed inventory and the absent VPC, Aurora, Cognito, wardrobe/client bucket,
-SQS configuration, ECR configuration and Foundation grants. The Workload stack
-itself still lives in this repository; not every release slice has moved.
+SQS configuration, ECR configuration and Foundation grants. The Workload stack's
+CDK source and deploy chain now live in AnyWear-Service (#158 step B); after step
+C nothing in this repository synthesizes, deploys or recovers it.
 
 ## Operations
 
@@ -78,38 +78,37 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | Entry | Trigger | Purpose |
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, native-CLI regression, live-Foundation comparison and both source matrices; no dispatch surface |
-| [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the accepted `anywear_infra_deployment` v2 producer; runs the artifact-verification task |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (11 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-workload`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` |
+| [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (10 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | CLI | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
-| [observe-deployment.mjs](scripts/observe-deployment.mjs) | CLI | Authenticate deployed templates, artifacts, configuration, schema and application identities |
+| [observe-deployment.mjs](scripts/observe-deployment.mjs) | CLI | Authenticate the deployed stage-base templates, Lambdas, queues, Client and stage-contract parameters |
 
 The `mutate.yml` menu is a superset of the retired per-family files. A dispatch
 surface is per workflow, so `identity_phase`, `retention_protection`,
-`window_minutes`, `tester_emails`, `beta_api_sizing_profile` and
-`beta_sizing_telemetry` are workflow-level inputs; `scripts/runtime-operation.mjs`
-enforces their per-operation scope in preflight, before any credential. Only a
-`deploy-*` operation or `restore-release` may vary identity phase and retention
-protection; every other operation must run the `retired` / `true` context. Only
-`add-testers` and `set-testers` accept a tester payload. Only `deploy-workload`
-may change sizing or telemetry. Only `resume-admission` reads `window_minutes`,
-with the same bounded 15–240 minute contract (default 60) as before. The
-standalone `verify` operation is retired; the `verify` **task family** remains an
-internal step of `deploy-workload`, `restore-release` and the tester/admission
-operations.
+`window_minutes`, `tester_emails`, `service_release_tag` and `service_commit` are
+workflow-level inputs; `scripts/runtime-operation.mjs` enforces their
+per-operation scope in preflight, before any credential. Only a `deploy-*`
+operation or `restore-release` may vary identity phase and retention protection;
+every other operation must run the `retired` / `true` context. Only
+`add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`
+and `restore-release` take a Service release identity. Only `resume-admission`
+reads `window_minutes`, with the same bounded 15–240 minute contract (default 60)
+as before. The standalone `verify` operation is retired, and the
+`verify`/`artifact-verify` task families left with the release slice; Infra no
+longer runs a release-verification task.
 
 `mutate.yml` is one credential-timing chain: `preflight` (no environment, no
-`id-token`, no App token) → `verify` (read-only App token; native release
-statement, publisher run, every asset digest, committed selection bytes and stack
-sources) → `deploy` (**the only job** with `environment: beta` and
-`id-token: write`, scheduled after `verify`) → `record` (no environment, no
-`id-token`, no `environment:`). `runtime.yml` keeps the same invariant:
+`id-token`, no App token) → `verify` (read-only release token only when the
+operation takes a Service release; downloads and hashes the sealed assets) →
+`deploy` (**the only job** with `environment: beta` and `id-token: write`,
+scheduled after `verify`) → `record` (no environment, no `id-token`, no
+`environment:`). `runtime.yml` keeps the same invariant:
 `preflight` holds no credentials, `state` and `observe` are the two credential
 jobs, and `record` holds none. `state` runs with the stage switch closed;
-`observe` stays behind it because it runs a task and produces the accepted
-deployment record.
+`observe` stays behind it because it produces the accepted deployment record.
 
 `state` and `observe` share `runtime.yml`, so the record family is derived from
 the **operation**, not the file: `observe` keeps family `runtime` (the accepted
@@ -119,14 +118,15 @@ never be stamped `anywear_infra_deployment`. `deploy-*`/`restore-release` keep
 `beta-admission`, so cross-repository record families stay stable. A
 `deploy-platform` run is still qualified only by a following fixed `runtime.yml`
 `observe` run at reviewed main; a mutate run uploads its own
-`anywear_infra_family_observation` record with its actual workflow path
+`anywear_infra_family_observation` v3 record with its actual workflow path
 (`mutate.yml`), which is not an accepted E2E deployment input.
 
-Every Beta entry requires exact reviewed main, protected `beta`, committed
-selection/hash and reviewed stack sources/hash. Complete native release and
-publisher-run verification happens before AWS credentials in both chains; the
-restricted STS sessions are operation-specific and the read-only session carries
-no ECS or PassRole permissions. Only mutation requires
+Every Beta entry requires exact reviewed main and protected `beta`; the two
+operations that consume Service-built Lambda assets also require the reviewed
+Service release tag and commit. The sealed release download and every-byte proof
+happen before AWS credentials in both chains; the restricted STS sessions are
+operation-specific and the read-only session carries no ECS or PassRole
+permissions. Only mutation requires
 `ENABLE_BETA_MUTATION=true`; read-only `state` remains available when it is
 closed. Repository-local Actions concurrency (`anywear-infra-runtime`, no
 cancellation) serializes Infra jobs; separate Client and E2E writers still require
@@ -187,11 +187,13 @@ carries the admission-mode migration order, its bounded failure mode and the res
 environment repair.
 
 Both manual entries share `anywear-infra-runtime` without cancellation.
-`runtime.yml` is the only workflow family whose run produces the legacy
-`anywear_infra_deployment` v2 accepted by E2E, and record type and family are
-derived from the dispatched operation; the standalone
-[observe-deployment.mjs](scripts/observe-deployment.mjs) CLI can also emit an
-accepted-shaped record from ambient environment variables without a workflow run.
+`runtime.yml` is the only workflow family whose run produces the accepted
+`anywear_infra_deployment` v3 record, and record type and family are derived from
+the dispatched operation. The record covers the stacks Infra still produces
+(Foundation, the Beta stage base, Billing), the stage-contract parameters the run
+read and a derived schema content hash; it contains no `selection`. Service
+produces `anywear_service_deployment` for `AnyWearWorkloadStack-beta` from the
+same generic contract, so neither producer can claim the other's stacks.
 Other operations emit `anywear_infra_family_observation` with their actual
 workflow path (`mutate.yml` for the absorbed families); this is not an accepted
 E2E deployment input. A `deploy-platform` run is therefore qualified only by a
@@ -234,12 +236,11 @@ from newer executor heads. Public registration remained intentionally skipped
 while intake was closed; the recorded provider timeout/retry case is a
 correctness observation, not a latency guarantee.
 
-Artifact verification loads the actual committed canonical v2 selection at an
-explicit trusted Infra root/full source pin and raw file hash. It checks the
-immutable release/tag/source, all five asset identities/sizes/digests/bytes and
-components, one complete native v0.1/v0.2 signed statement across six checks,
-and exact completed-success publisher identity before and after verification.
-Ordinary runtime performs these checks before AWS OIDC. Historical v1 inputs are
-rejected; publication ZIP/receipt/handshake ceremony is retired. See the
-[selection contract](docs/contracts/release-selection.md) and
-[direct verification procedure](docs/runbooks/cutover-and-recovery.md#direct-release-verification).
+The stage base's Service-built Lambda assets come from a reviewed Service release
+identity: `deploy-platform`/`restore-release` take `service_release_tag` and
+`service_commit`, download the sealed release's two Lambda bundles, runtime policy
+and manifest with a read-only token, prove each byte against the manifest, and
+only then reach AWS. There is no committed selection, no vendored Service parser
+and no cross-repository native-attestation path; publication ZIP/receipt/handshake
+ceremony stays retired. See the
+[direct release identity procedure](docs/runbooks/cutover-and-recovery.md#direct-release-identity).

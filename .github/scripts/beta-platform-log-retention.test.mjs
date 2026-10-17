@@ -137,5 +137,5 @@ test('standalone legacy log-retention adapter fails before cloud access even wit
   const execute = promisify(execFile);
   await assert.rejects(execute(process.execPath, ['.github/scripts/beta-platform-log-retention.mjs'], {
     env: { ...process.env, GITHUB_REF: 'refs/heads/main', ENABLE_BETA_MUTATION: 'true', AWS_REGION: 'ap-east-1' }, timeout: 10_000,
-  }), error => error.code === 1 && /Use scripts\/runtime-operation.mjs with the committed selection/.test(error.stderr));
+  }), error => error.code === 1 && /Use scripts\/runtime-operation.mjs through the reviewed deployment path/.test(error.stderr));
 });

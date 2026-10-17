@@ -9,10 +9,11 @@ export { normalizeTesterEmails } from './admission-state.mjs';
 // admission state. Only `resume-admission` is an operator-requestable opener, so
 // the operator flow for a window is `add-testers` (or `set-testers`) and then
 // `resume-admission`. The admission mirror is still read before and after the
-// selected lifecycle command, because the operation record claims that read-back
-// as its evidence and the mirror carries the bound that proves the write changed
-// nothing.
-export async function runTesterAllowlist(action, input, io, selector) {
+// deployed lifecycle command, because the operation record claims that read-back as
+// its evidence and the mirror carries the bound that proves the write changed
+// nothing. Tester operations act on the revision the release slice reports; they
+// never select or re-verify a Service release.
+export async function runTesterAllowlist(action, input, io) {
   if (!['status', 'add', 'set'].includes(action)) throw new Error('Unknown Infra tester action');
   let payload = normalizeTesterEmails(input);
   if (action === 'status' && payload !== '[]') throw new Error('Status does not accept emails');
@@ -24,10 +25,10 @@ export async function runTesterAllowlist(action, input, io, selector) {
   const outputs = values(platform); const publicOutputs = values(workload);
   if (outputs.BetaActive !== 'true' || publicOutputs.BetaActive !== 'true' || outputs.EcsClusterName !== 'beta-anywear') throw new Error('Active Beta required for tester operations');
   const revision = workloadRevision(workload);
-  if (revision.commit !== selector.image.service_sha || revision.digest !== selector.image.digest) throw new Error('Tester operation must retain the deployed selected image');
   await io.aws(['ecs', 'wait', 'services-stable', '--cluster', 'beta-anywear', '--services', 'beta-anywear-api', 'beta-anywear-worker']);
+  // The public endpoint must answer for the revision the slice reports before any
+  // admission write.
   await io.verifyHealth(publicOutputs.ApiBaseUrl, revision);
-  await io.oneShot('verify', revision, publicOutputs.ApiBaseUrl);
   if (action === 'add') {
     const existing = (await io.aws(['ssm', 'get-parameter', '--name', '/anywear/beta/tester_allowlist'])).Parameter?.Value;
     payload = normalizeTesterEmails(canonicalJson([...parseJson(normalizeTesterEmails(existing)), ...parseJson(payload)]));
@@ -44,12 +45,12 @@ export async function runTesterAllowlist(action, input, io, selector) {
     return;
   }
   // The operation record claims this admission read-back, so take it before and
-  // after the selected command instead of asserting the claim the record exists to
+  // after the deployed command instead of asserting the claim the record exists to
   // prove. The mirror is self-describing: the mode and its bound are both here, so
   // the record shows the write left admission exactly as it found it.
   const original = await observeAdmissionState(io);
   io.recordAdmissionState?.({ phase: 'original', state: original.state, result: original.result });
-  // The selected Service `set-testers` command owns the tester list and refuses
+  // The deployed Service `set-testers` command owns the tester list and refuses
   // while admission is not provably closed. It changes no admission state.
   await io.oneShot('lifecycle', revision, 'set-testers', payload);
   const written = await observeAdmissionState(io);

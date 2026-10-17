@@ -1,10 +1,13 @@
 # AnyWear Infra agent instructions
 
 This repository owns shared AWS infrastructure and environment operations after
-the verified #54 cutover. Infra is the sole operational Beta deployment queue;
-AnyWear-Service remains the application, migration, verification and immutable
-artifact publisher. Earlier Service-side bootstrap authority is historical
-evidence only and must not be relabeled as an Infra-produced deployment.
+the verified #54 cutover. It owns the account-wide Foundation and Billing stacks
+and the Beta stage base (`AnyWearPlatformStack-beta`) only. AnyWear-Service owns
+the release slice (`AnyWearWorkloadStack-beta`), its CDK source and its deploy
+chain; Infra no longer synthesizes, deploys or recovers that stack. AnyWear-Service
+remains the application, migration, verification and immutable artifact
+publisher. Earlier Service-side bootstrap authority is historical evidence only
+and must not be relabeled as an Infra-produced deployment.
 
 - Read the accepted ownership ADR and deployment contracts before modifying
   infrastructure. Keep proposed targets separate from observed implementation.
@@ -13,23 +16,19 @@ evidence only and must not be relabeled as an Infra-produced deployment.
 - Service owns application/Lambda/migration/verification source and immutable
   artifacts. Do not generate the shared API or read mutable peer `main` as a
   deployment input. Client publishes independently through deployed interfaces.
-- Commit one canonical v2 selection with full component source, release/asset
-  identities and hashes. Ordinary runtime verifies the immutable Service release,
-  direct tag/source, API sizes/digests, downloaded bytes and all components before
-  AWS credentials. Preserve one complete native v0.1/v0.2 signed statement across
-  release verification plus all five asset checks. Independently require exact
-  completed-success publisher repository/workflow/main/source/run/attempt and
-  both repository/head-repository owner identities before and after verification.
-  Keep Service's shared parser/fixture full pin and hashes in
-  `scripts/vendor/provenance.json`. Historical v1 records remain evidence only.
-- Pass explicit `trustedInfraRoot`, `expectedInfraSha`, relative `selectionFile`
-  and raw `selectionSha256`. Runtime uses exact reviewed main; E2E uses reviewed
-  `compatibility.infra` and its actual `.infra-source` checkout. Require trusted
-  Infra origin/full HEAD, clean tracked/untracked source, no replacement refs or
-  hidden-index masking, a regular tracked selection without path links, and bytes
-  equal to the committed canonical blob/hash. Vendored code is not a trust root.
-  No publication ZIP, candidate/receipt, issue URL, token or expiry ceremony is a
-  runtime prerequisite. Sanitized CLI children fix `GH_TELEMETRY=disabled`.
+- There is no committed selection and no cross-repository native-asset
+  verification path. `deploy-platform` and `restore-release` take one reviewed
+  Service release identity (`service_release_tag` + `service_commit`), download
+  that sealed release's Lambda bundles, runtime policy and manifest with a
+  read-only token, and prove each downloaded byte against the manifest before any
+  credential. No Service-built artifact is committed here. Every other operation
+  rejects a release identity.
+- Deployment records are v3 (`anywear_infra_deployment`): producer identity, the
+  exact stack set that producer owns, the stage-contract SSM parameters the run
+  read (name, version, value hash), the authenticated observation and a content
+  hash of the stage-contract schema surface. There is no `selection` member and
+  no pin to another repository's release. Service produces
+  `anywear_service_deployment` from the same generic contract.
 - Do not claim repository branch protection when the private plan cannot enforce
   it. The configured Beta environment restricts the branch to main. Apply the
   independently reviewed exact source/inputs and operational coordination
@@ -37,33 +36,41 @@ evidence only and must not be relabeled as an Infra-produced deployment.
 - Use `gh` for GitHub and `aws` for AWS. Verify account, profile and region before
   cloud commands. Run package/build commands only within this repository.
 - Before AWS mutations, verify protected main/workflow, explicit operation,
-  account/region, committed selection/hash, identity phase, retention protection,
-  reviewed stack source/hash and rollback inputs. Use one Infra runtime queue.
-  Enumerate conflicting Actions, local processes, CloudFormation operations and
-  ECS/helper tasks; timeout does not establish cessation. Repository concurrency
-  is not a cross-repository lock; migration rollout stays separately coordinated.
-- Beta is resident. Every protected deploy takes the active path and its postcondition
-  is both Beta stacks reporting `BetaActive=true`; no operation switches
-  `environmentRunning` or selects the dormant stopped template. A stack observed
-  inactive is an out-of-band invariant violation that fails closed in verification,
-  never a lifecycle state to maintain.
+  account/region, the reviewed Service release identity when the operation takes
+  one, identity phase, retention protection and rollback inputs. Use one Infra
+  runtime queue. Enumerate conflicting Actions, local processes, CloudFormation
+  operations and ECS/helper tasks; timeout does not establish cessation. Repository
+  concurrency is not a cross-repository lock; migration rollout stays separately
+  coordinated.
+- Beta is resident. Every protected Infra deploy takes the active path and its
+  postcondition is the stage base reporting `BetaActive=true`; no operation
+  switches `environmentRunning` or selects the dormant stopped template. The
+  release slice's activity is owned by AnyWear-Service; Infra reads it only to
+  prove it is terminal (never mid-deployment) before and after its own Platform
+  deploy. A stack observed inactive out of band fails closed in verification,
+  never as a lifecycle state to maintain.
 - Use the three bounded Beta entries in the [operations catalog](README.md#operations):
   `check.yml` is automatic; `runtime.yml` is the manual `state`/`observe` entry,
   where `state` is read-only with restricted STS credentials and works with
-  `ENABLE_BETA_MUTATION` closed, and `observe` is the task-mutating qualified
-  observation that remains the only accepted `anywear_infra_deployment` v2
-  producer for E2E compatibility; `mutate.yml` is the single manual mutation entry
+  `ENABLE_BETA_MUTATION` closed, and `observe` is the qualified observation that
+  remains the only accepted `anywear_infra_deployment` v3 producer for E2E
+  compatibility; `mutate.yml` is the single manual mutation entry
   and rejects cross-family or out-of-scope inputs before credentials. `production.yml`
   is `workflow_call`-only and is not an entry. Record family and record type derive
   from the operation, never from the hosting file. Preserve session restrictions for
-  final qualification, actual workflow record identity and the existing v2 E2E
-  producer boundary. Existing OIDC trust is repository/environment scoped, not
-  workflow scoped; source/session checks do not narrow inherited task-role or
-  downstream CDK authority.
+  final qualification, actual workflow record identity and the v3 E2E producer
+  boundary. Existing OIDC trust is repository/environment scoped, not workflow
+  scoped; source/session checks do not narrow inherited task-role or downstream
+  CDK authority.
   Initial `deployScope=foundation`
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
+- After #158 step C the only path that can deploy `AnyWearWorkloadStack-beta` is
+  AnyWear-Service's release chain. That path needs the deferred Foundation deploy
+  (the two Service deploy roles from step A) and Service's own
+  `ENABLE_BETA_MUTATION=true`; until that round no workload deploy may be
+  attempted, and no Infra entry may re-add one.
 - Every CLI scope requires explicit `legacyRoleSource=cdk|external`.
   `cdk` reproduces the Service source fixture; never use it as the live
   account plan. Foundation in account `650880818323`/`ap-east-1` owns only its
@@ -76,19 +83,19 @@ evidence only and must not be relabeled as an Infra-produced deployment.
   has transitive account-wide authority, not Beta resource isolation. Review
   effective bootstrap/inline/managed policies, including unmanaged
   `AnyWearBetaPipelineBaseline`, before retirement; synth alone cannot prove IAM.
-- The Beta stage base is published as SSM parameters under `/anywear/beta/` so a
+- The Beta stage base is published as SSM parameters under `/anywear/beta/` so the
   release slice can be deployed from a checkout that holds no Infra source. Two
   of those values are reviewed constants, not Platform resources: the VLM config
-  secret ARN and the AWS-managed CloudFront origin-facing prefix list id. Assert
-  the live `AnyWearWorkloadStack-beta` parameters still equal them before
-  deploying Platform, and change the constants only in a reviewed diff. Service
+  secret ARN and the AWS-managed CloudFront origin-facing prefix list id. Change
+  the constants only in a reviewed diff; the slice's own stack parameters are
+  Service's to assert. Service
   deploys through `beta-service-deploy-role` (CloudFormation change sets for
   `AnyWearWorkloadStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`)
   and `beta-service-deploy-cfn-role` (CloudFormation trust only, the Workload
   stack's resource families and its four task roles). Neither carries a managed
   policy or account-wide grants; the policy-inventory test keeps the absent
-  VPC/Aurora/Cognito/bucket/SQS/ECR/Foundation grants absent. The Workload stack
-  remains in this repository until a later reviewed step moves it.
+  VPC/Aurora/Cognito/bucket/SQS/ECR/Foundation grants absent. The roles, not this
+  repository, are now the Workload stack's deployment authority.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`

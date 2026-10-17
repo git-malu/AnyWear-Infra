@@ -1,22 +1,24 @@
 import { parseJson } from './json-contract.mjs';
 import { admissionWindowPayload } from './admission-window.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
-import { runtimeCommandBytes } from './runtime-command.mjs';
 import { normalizeTesterEmails } from './tester-allowlist.mjs';
+import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
 
-// One dispatch surface per deployable unit. `runtime.yml` keeps its path because
-// the accepted `anywear_infra_deployment` v2 record and its E2E consumer pin it as
-// the deployment-record producer; the remaining operations share `mutate.yml`.
+// One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
+// `state` entry and the accepted `anywear_infra_deployment` producer `observe`;
+// every mutation shares `mutate.yml`. The release slice is no longer an Infra
+// operation: AnyWear-Service deploys `AnyWearWorkloadStack-beta` from its own
+// release chain, so no entry here can deploy or recover it.
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['state', 'observe'],
-  '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload',
+  '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission'],
 });
 
-// A record's family is derived from the operation, not from the file that now
-// hosts several operations. Workflow paths were the family identity while each
-// operation had its own dispatch file; keeping the operation -> family mapping
-// preserves cross-repository record families, keeps `observe` as the accepted
+// A record's family is derived from the operation, not from the file that hosts
+// several operations. Workflow paths were the family identity while each operation
+// had its own dispatch file; keeping the operation -> family mapping preserves
+// cross-repository record families, keeps `observe` as the accepted
 // deployment-record producer, and keeps `state` from ever being stamped as one.
 export const operationFamilies = Object.freeze({
   state: 'beta-observe',
@@ -24,7 +26,6 @@ export const operationFamilies = Object.freeze({
   'deploy-foundation': 'beta-deploy',
   'deploy-billing': 'beta-deploy',
   'deploy-platform': 'beta-deploy',
-  'deploy-workload': 'beta-deploy',
   'restore-release': 'beta-deploy',
   migrate: 'beta-schema',
   'admission-status': 'beta-admission',
@@ -34,9 +35,27 @@ export const operationFamilies = Object.freeze({
   'resume-admission': 'beta-admission',
 });
 
-// Live entries that execute verification. Every other path is a dispatch surface
-// only: `check.yml` is automatic and `production.yml` is `workflow_call`-only.
+// Live entries that execute verification or deployment. Every other path is a
+// dispatch surface only: `check.yml` is automatic and `production.yml` is
+// `workflow_call`-only.
 export const qualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.yml', '.github/workflows/mutate.yml']);
+
+// The reviewed executor/source/account/region gate shared by the observation and
+// the admission/recovery drivers. It reads only repository identity and dispatch
+// metadata, so it runs before any AWS call.
+export function assertProtectedExecutor(infraSha, env = process.env) {
+  if (typeof infraSha !== 'string' || !/^[a-f0-9]{40}$/.test(infraSha)) throw new Error('Reviewed Infra source required');
+  if (env.GITHUB_SHA !== infraSha || env.GITHUB_REF !== 'refs/heads/main'
+    || env.AWS_ACCOUNT_ID !== account || env.AWS_REGION !== region) throw new Error('Protected executor/account/region/source required');
+  const paths = env.GITHUB_REPOSITORY === INFRA_REPOSITORY ? qualifiedWorkflowPaths
+    : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E' ? ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml'] : [];
+  if (!paths.some(file => env.GITHUB_WORKFLOW_REF === `${env.GITHUB_REPOSITORY}/${file}@refs/heads/main`)) {
+    throw new Error('Protected executor workflow required');
+  }
+  if (!Number.isSafeInteger(Number(env.GITHUB_RUN_ID)) || !Number.isSafeInteger(Number(env.GITHUB_RUN_ATTEMPT))) throw new Error('Executor run identity required');
+  return { repository: env.GITHUB_REPOSITORY, sha: infraSha, workflow_path: env.GITHUB_WORKFLOW_REF.split('/').slice(2).join('/').split('@')[0],
+    run_id: Number(env.GITHUB_RUN_ID), run_attempt: Number(env.GITHUB_RUN_ATTEMPT) };
+}
 
 export function operationBoundary(env) {
   const operation = env.INFRA_OPERATION;
@@ -51,6 +70,7 @@ const reads = {
   'cloudformation/get-template': 'cloudformation:GetTemplate',
   'cloudformation/list-stack-resources': 'cloudformation:ListStackResources',
   'ssm/get-parameter': 'ssm:GetParameter',
+  'ssm/get-parameters': 'ssm:GetParameters',
   'ecs/describe-services': 'ecs:DescribeServices', 'ecs/describe-tasks': 'ecs:DescribeTasks',
   'ecs/describe-task-definition': 'ecs:DescribeTaskDefinition', 'ecs/list-tasks': 'ecs:ListTasks',
   'ecr/describe-images': 'ecr:DescribeImages', 'ecr/batch-get-image': 'ecr:BatchGetImage',
@@ -60,10 +80,6 @@ const reads = {
   'cloudfront/get-distribution': 'cloudfront:GetDistribution',
 };
 const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'cloudformation/get-template', 'ssm/get-parameter'];
-const cleanupMachineArn = 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup';
-const cleanupExecutionArn = 'arn:aws:states:ap-east-1:650880818323:execution:beta-anywear-tester-cleanup:';
-const cleanupFenceRequired = (env, purpose) => purpose === 'operation'
-  && changedStackNames(env.INFRA_OPERATION).some(stack => ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta'].includes(stack));
 // One frozen evidence record per operation. `roles` is exactly what
 // `families(env, 'operation')` materializes for the operation's own session;
 // `qualified_by` names the run that qualifies the operation's mutation for E2E
@@ -74,7 +90,7 @@ const cleanupFenceRequired = (env, purpose) => purpose === 'operation'
 const evidenceEntry = (roles, qualified_by, evidence) => Object.freeze({ roles: Object.freeze(roles), qualified_by, evidence });
 export const operationEvidence = Object.freeze({
   observe: evidenceEntry([], 'self',
-    'This run emits the accepted anywear_infra_deployment v2 record for the observed active Beta.'),
+    'This run emits the accepted anywear_infra_deployment v3 record for the observed Foundation, Beta stage base and Billing. The release slice is observed by AnyWear-Service\'s release chain.'),
   state: evidenceEntry([], 'not-applicable',
     'Read-only: the operation record carries anywear_infra_state and claims no mutation.'),
   'deploy-foundation': evidenceEntry([], '.github/workflows/runtime.yml',
@@ -82,28 +98,23 @@ export const operationEvidence = Object.freeze({
   'deploy-billing': evidenceEntry([], '.github/workflows/runtime.yml',
     'The accepted record carries the billing stack Original template hash observed in us-east-1.'),
   'deploy-platform': evidenceEntry([], '.github/workflows/runtime.yml',
-    'A Platform change has no accepted evidence step of its own; only the following fixed observation records the reconciled stack.'),
-  'deploy-workload': evidenceEntry(['verify', 'artifact-verify'], '.github/workflows/runtime.yml',
-    'The accepted record observes the selected running image, ECS task identities and applied schema.'),
-  'restore-release': evidenceEntry(['verify', 'artifact-verify'], '.github/workflows/runtime.yml',
-    'Restoring both stacks active leaves the recovered tuple observable by the following fixed observation.'),
+    'The accepted record carries the stage-base Original template hash and the consumed stage-contract parameter versions and value hashes.'),
+  'restore-release': evidenceEntry([], '.github/workflows/runtime.yml',
+    'Restoring the stage base leaves the resident Beta invariant observable by the following fixed observation; the release slice is restored by AnyWear-Service.'),
   migrate: evidenceEntry(['migrate'], '.github/workflows/runtime.yml',
-    'The accepted record observes the applied schema through its own artifact-verification task.'),
-  'admission-status': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+    'The operation record carries the migrate task identity and its stopped-success result on the deployed Service image.'),
+  'admission-status': evidenceEntry(['lifecycle'], 'not-applicable',
     'Status only: it reads the admission mode, its bound and the tester list, and mutates nothing.'),
-  'add-testers': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+  'add-testers': evidenceEntry(['lifecycle'], 'not-applicable',
     'The accepted record does not observe admission state; the operation record admission read-back evidences it. The tester write changes no admission state and cannot open a window: its recorded mode and bound are the ones observed before the write.'),
-  'set-testers': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+  'set-testers': evidenceEntry(['lifecycle'], 'not-applicable',
     'The accepted record does not observe admission state; the operation record admission read-back evidences it. The tester write changes no admission state and cannot open a window: its recorded mode and bound are the ones observed before the write.'),
-  'suspend-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
+  'suspend-admission': evidenceEntry(['lifecycle'], 'not-applicable',
     'The accepted record does not observe admission state; the operation record lifecycle status and admission read-back evidence it.'),
-  'resume-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
+  'resume-admission': evidenceEntry(['lifecycle'], 'not-applicable',
     'The accepted record does not observe admission state; the operation record carries the requested window bound, the observed mirror with its own recorded bound, both admission phases and the lifecycle status read-back proving the recorded expiry. Its only extra lifecycle action is the recovery-only suspend a failed window issues to restore the recorded decision; no operator path can request it.'),
 });
-// `artifact-verify` is the verification task family registered by
-// `runRuntimeVerification`, never a one-shot helper role, so the one-shot guard
-// keeps its current allow-set.
-const oneShotRoles = operation => operationEvidence[operation].roles.filter(role => role !== 'artifact-verify');
+const oneShotRoles = operation => operationEvidence[operation].roles;
 // `resume` appears for exactly one operation. `resume-admission` also lists
 // `suspend`, and that entry is recovery-only: the driver may issue it solely on
 // its failed-window path, to restore the decision a failure would otherwise leave
@@ -147,7 +158,9 @@ export function families(env, purpose) {
   const boundary = operationBoundary(env);
   if (purpose === 'qualification') {
     if (boundary.readOnly) throw new Error('Read-only observation cannot qualify with tasks');
-    return ['artifact-verify'];
+    // Observation no longer runs a verification task: the immutable-release
+    // check that produced it moved to the Service release chain.
+    return [];
   }
   if (purpose !== 'operation') throw new Error('Unknown credential purpose');
   return boundary.readOnly ? [] : [...operationEvidence[env.INFRA_OPERATION].roles];
@@ -157,10 +170,6 @@ export function assertAwsAllowed(env, args, purpose = 'operation') {
   const key = `${args[0]}/${args[1]}`;
   const argument = flag => args[args.indexOf(flag) + 1];
   if (args.includes('--with-decryption')) throw new Error('Runtime parameter decryption is forbidden');
-  if (cleanupFenceRequired(env, purpose)
-    && (key === 'stepfunctions/list-executions' && argument('--state-machine-arn') === cleanupMachineArn
-      || key === 'stepfunctions/describe-execution'
-      && new RegExp(`^${cleanupExecutionArn}[A-Za-z0-9_-]{1,80}$`).test(argument('--execution-arn') ?? ''))) return;
   if (reads[key] && (!boundary.readOnly || stateReads.includes(key))) return;
   if (args[0] === 'ecs' && args[1] === 'wait') {
     const allowed = args[2] === 'tasks-stopped' || !boundary.readOnly && args[2] === 'services-stable';
@@ -169,19 +178,17 @@ export function assertAwsAllowed(env, args, purpose = 'operation') {
   const allowedFamilies = families(env, purpose);
   if (args[0] === 'ecs' && args[1] === 'register-task-definition') {
     const definition = parseJson(argument('--cli-input-json'));
-    const family = allowedFamilies.find(family => definition.family === `beta-anywear-${family}`);
-    const role = family === 'migrate' ? 'migration' : family === 'lifecycle' ? 'lifecycle' : 'verification';
+    const family = allowedFamilies.find(allowed => definition.family === `beta-anywear-${allowed}`);
+    const role = family === 'migrate' ? 'migration' : family === 'lifecycle' ? 'lifecycle' : undefined;
     const container = definition.containerDefinitions?.find(row => row.name === 'OneShot');
     const command = container?.command;
     if (family && definition.taskRoleArn === `arn:aws:iam::650880818323:role/beta-anywear-${role}-task`
       && definition.executionRoleArn === 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution'
       && command?.[0] === 'node') {
-      if (family === 'artifact-verify' && command[1] === '-e' && command.length === 3
-        && command[2] === runtimeCommandBytes().toString('utf8')) return;
       if (family === 'lifecycle' && command[1] === 'dist/ops/beta-lifecycle.js' && [3, 4].includes(command.length)) {
         assertOneShotAllowed(env, 'lifecycle', command[2], command[3]); return;
       }
-      if (['migrate', 'verify'].includes(family) && command[1] === `dist/${family}.js` && command.length === 2) return;
+      if (family === 'migrate' && command[1] === 'dist/migrate.js' && command.length === 2) return;
     }
   }
   if (args[0] === 'ecs' && ['run-task', 'deregister-task-definition'].includes(args[1])) {
@@ -193,7 +200,7 @@ export function assertAwsAllowed(env, args, purpose = 'operation') {
   throw new Error(`AWS action ${key} is forbidden for this operation`);
 }
 
-const arn = (service, suffix, region = 'ap-east-1') => `arn:aws:${service}:${region}:650880818323:${suffix}`;
+const arn = (service, suffix, awsRegion = 'ap-east-1') => `arn:aws:${service}:${awsRegion}:650880818323:${suffix}`;
 export function sessionPolicy(kind, env, purpose = 'operation') {
   const boundary = operationBoundary(env);
   const statement = (Action, Resource = '*', Condition) => ({ Effect: 'Allow', Action, Resource, ...(Condition ? { Condition } : {}) });
@@ -202,21 +209,17 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
     if (purpose !== 'operation' || !changedStackNames(env.INFRA_OPERATION).length) throw new Error('Deploy credentials are forbidden for this operation');
     const regions = env.INFRA_OPERATION === 'deploy-billing' ? ['us-east-1'] : ['ap-east-1'];
     statements = [statement(['sts:GetCallerIdentity', 'cloudformation:DescribeStacks', 'ssm:GetParameter', 'ec2:DescribeManagedPrefixLists']),
-      statement('sts:AssumeRole', regions.flatMap(region => ['deploy', 'file-publishing', 'lookup'].map(role =>
-        `arn:aws:iam::650880818323:role/cdk-hnb659fds-${role}-role-650880818323-${region}`))),
+      statement('sts:AssumeRole', regions.flatMap(roleRegion => ['deploy', 'file-publishing', 'lookup'].map(role =>
+        `arn:aws:iam::650880818323:role/cdk-hnb659fds-${role}-role-650880818323-${roleRegion}`))),
       statement('secretsmanager:GetSecretValue', arn('secretsmanager', 'secret:/anywear/beta/cloudfront_origin_header-*'))];
   } else if (kind === 'runtime') {
     const allowedFamilies = families(env, purpose);
-    statements = [statement((boundary.readOnly ? stateReads : Object.keys(reads)).map(key => reads[key]))];
-    if (cleanupFenceRequired(env, purpose)) {
-      statements.push(statement('states:ListExecutions', cleanupMachineArn),
-        statement('states:DescribeExecution', `${cleanupExecutionArn}*`));
-    }
+    statements = [statement((boundary.readOnly ? stateReads : Object.keys(reads)).map(read => reads[read]))];
     if (allowedFamilies.length) {
       const definitions = allowedFamilies.map(family => arn('ecs', `task-definition/beta-anywear-${family}:*`));
       statements.push(statement(['ecs:RegisterTaskDefinition', 'ecs:RunTask'], definitions),
         statement('ecs:DeregisterTaskDefinition'),
-        statement('iam:PassRole', [...new Set(allowedFamilies.map(family => family === 'migrate' ? 'migration' : family === 'lifecycle' ? 'lifecycle' : 'verification'))]
+        statement('iam:PassRole', [...new Set(allowedFamilies.map(family => family === 'migrate' ? 'migration' : 'lifecycle'))]
           .map(role => `arn:aws:iam::650880818323:role/beta-anywear-${role}-task`)
           .concat('arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution'),
         { StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } }));
