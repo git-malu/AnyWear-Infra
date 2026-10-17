@@ -28,6 +28,20 @@ runs:
         INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
         INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
       run: node scripts/check-verified-inputs.mjs
+    # A job that has no verify job of its own (read-only `state`) still has to
+    # produce the reviewed stack manifest the operation record is built from.
+    # This mirrors verify-operation's pre-credential block and runs before the App
+    # token, so no credential exists before verification.
+    - name: Validate committed source and stack provenance before any credential
+      if: inputs.verify_artifact == 'false'
+      shell: bash
+      env:
+        INFRA_BETA_API_SIZING_PROFILE: ${{ inputs.beta_api_sizing_profile }}
+        INFRA_BETA_SIZING_TELEMETRY: ${{ inputs.beta_sizing_telemetry }}
+      run: |
+        mkdir -p deployment-evidence
+        node scripts/check-operation.mjs
+        node scripts/check-stack-sources.mjs
     - name: Create read-only private artifact token
       id: app
       uses: actions/create-github-app-token@v3
