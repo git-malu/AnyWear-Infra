@@ -6,8 +6,8 @@ import path from 'node:path';
 import { readAdmissionState, assertClosedAdmission, assertOpenedAdmission, parseLifecycleStatus,
   classifyCloseKind, compareAdmissionDecision, runSuspendAdmission, runResumeAdmission, assertMigrationAdmissionClosed
 } from './admission-operation.mjs';
-import { ADMISSION_MODE_MAX_AHEAD_MS, admissionClosureProof, isAdmissionClosed, isAdmissionProvablyClosed,
-  parseAdmissionModeValue, resolveAdmissionDecision } from './admission-mode.mjs';
+import { ADMISSION_MODE_MAX_AHEAD_MS, admissionClosureProof, effectiveAdmissionBound, isAdmissionClosed,
+  isAdmissionProvablyClosed, parseAdmissionModeValue, resolveAdmissionDecision } from './admission-mode.mjs';
 import { ADMISSION_WINDOW_CLOCK_SKEW_MS, admissionWindowPayload } from './admission-window.mjs';
 import { assertOneShotAllowed } from './operation-boundaries.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
@@ -127,9 +127,11 @@ function mockIo(options = {}) {
     const storedMode = world.database.admission_mode;
     const storedExpiry = world.database.admission_window_expires_at ?? null;
     const effective = resolveAdmissionDecision(storedMode, storedExpiry, now());
+    // The status shape the delivered Service emits: the effective decision and its
+    // effective bound, the raw stored mode, and whether the two differ.
     const status = { admission_mode: effective.admission_mode,
-      ...(options.omitExpiry ? {} : { admission_window_expires_at: storedExpiry }),
-      stored_admission_mode: storedMode, stored_admission_window_expires_at: storedExpiry,
+      ...(options.omitExpiry ? {} : { admission_window_expires_at: effectiveAdmissionBound(effective) }),
+      admission_record: storedMode, database_record_differs: storedMode !== effective.admission_mode,
       tester_count: world.testers.length, database_policy_matches_ssm: true,
       tasks: 3, outbox: 2, outboxManualIntervention: 1, outboxOldestAgeMs: 10, outboxManualInterventionOldestAgeMs: null,
       outboxStatusCounts: { pending: 2 }, queues: { vto: { visible: 2, notVisible: 1, delayed: 0 }, tagging: { visible: 0, notVisible: 0, delayed: 0 } },
@@ -172,6 +174,12 @@ const CONFORMANCE = [
   ['{"mode":"closed","extra":1}', 'closed', 'extra-key', false, 'unproven'],
   ['{"mode":true}', 'closed', 'wrong-type', false, 'unproven'],
   ['not-json', 'closed', 'malformed', false, 'unproven'],
+  // The encoding is fixed: whitespace (and any other non-canonical spelling) is
+  // refused, matching the Service reader's `JSON.stringify(JSON.parse(value))`
+  // rule so the writer and every reader agree on one byte string per decision.
+  [' {"mode":"closed"}', 'closed', 'non-canonical', false, 'unproven'],
+  ['{"mode":"closed"} ', 'closed', 'non-canonical', false, 'unproven'],
+  ['{"mode":"closed", "expires_at":null}', 'closed', 'non-canonical', false, 'unproven'],
   // Lenient date parsing would accept every one of these as a live bound.
   ['{"mode":"testers","expires_at":"2026-01-02"}', 'closed', 'malformed-expiry', false, 'unproven'],
   ['{"mode":"testers","expires_at":"2026-02-30T00:00:00.000Z"}', 'closed', 'malformed-expiry', false, 'unproven'],
@@ -281,37 +289,39 @@ test('opened assertion requires the tester mode with the recorded membership unc
 });
 
 test('the effective decision and the raw stored record stay separate across an abandoned window', () => {
-  // After an unattended expiry the database still stores `testers` with a past
-  // bound while the mirror and every gate decide `closed`. The comparison reports
-  // both facts, so a status line cannot say "testers are admitted" about a closed
-  // environment and the raw disagreement is still visible.
-  const abandonedMirror = { admission_mode: 'closed', admission_window_expires_at: PAST, admission_mode_source: 'fail-closed',
+  // After an unattended expiry the database still stores `testers` while the
+  // effective decision and every gate say `closed`. The comparison reports the
+  // effective match, the Service's own raw-vs-effective flag and our raw-vs-mirror
+  // flag, so a status line cannot say "testers are admitted" about a closed
+  // environment and a disagreeing raw record is visible instead of reconciled.
+  const abandonedMirror = { admission_mode: 'closed', admission_window_expires_at: null, admission_mode_source: 'fail-closed',
     admission_mode_reason: 'expired', admission_recorded_mode: 'testers', admission_recorded_expires_at: PAST,
     tester_emails: originalTesters };
-  const abandonedStatus = { admission_mode: 'closed', admission_window_expires_at: PAST, stored_admission_mode: 'testers',
-    stored_admission_window_expires_at: PAST, tester_count: 2, database_policy_matches_ssm: true };
+  const abandonedStatus = { admission_mode: 'closed', admission_window_expires_at: null, admission_record: 'testers',
+    database_record_differs: true, tester_count: 2, database_policy_matches_ssm: true };
   const comparison = compareAdmissionDecision(abandonedStatus, abandonedMirror, NOW);
   assert.equal(comparison.effective_matches, true);
-  assert.equal(comparison.raw_records_disagree, false);
-  assert.equal(comparison.database.effective_admission_mode, 'closed');
-  assert.equal(comparison.database.stored_admission_mode, 'testers');
-  // A raw record that disagrees is called out rather than reconciled silently.
-  const drifted = compareAdmissionDecision({ ...abandonedStatus, stored_admission_mode: 'closed',
-    stored_admission_window_expires_at: null }, abandonedMirror, NOW);
+  assert.equal(comparison.database_record_differs, true);
+  assert.equal(comparison.mirror_record_differs, false);
+  assert.equal(comparison.database.admission_mode, 'closed');
+  assert.equal(comparison.database.admission_record, 'testers');
+  // A raw record that disagrees with the mirror is called out as well.
+  const drifted = compareAdmissionDecision({ ...abandonedStatus, admission_record: 'closed',
+    database_record_differs: false }, abandonedMirror, NOW);
   assert.equal(drifted.effective_matches, true);
-  assert.equal(drifted.raw_records_disagree, true);
-  // The status read uses the effective decision: a live stored window still reads
-  // open even when the surface reports a closed raw pair.
-  const live = resolveAdmissionDecision('testers', FUTURE, NOW);
-  assert.equal(live.admission_mode, 'testers');
-  assert.equal(compareAdmissionDecision({ ...abandonedStatus, admission_mode: 'testers', admission_window_expires_at: FUTURE,
-    stored_admission_mode: 'testers', stored_admission_window_expires_at: FUTURE }, abandonedMirror, NOW).effective_matches, false);
-  // Classification uses the stored pair, so an abandoned window is a recovery
-  // suspend even though the effective mode already reads closed.
-  assert.equal(classifyCloseKind(abandonedStatus, NOW), 'recovery');
-  assert.equal(classifyCloseKind({ ...abandonedStatus, stored_admission_mode: 'closed', stored_admission_window_expires_at: null }, NOW), 'already-closed');
-  assert.equal(classifyCloseKind({ ...abandonedStatus, admission_mode: 'testers', admission_window_expires_at: FUTURE,
-    stored_admission_mode: 'testers', stored_admission_window_expires_at: FUTURE }, NOW), 'ordinary');
+  assert.equal(drifted.mirror_record_differs, true);
+  // A live window never matches a closed mirror, whatever the raw word says.
+  assert.equal(compareAdmissionDecision({ ...abandonedStatus, admission_mode: 'testers',
+    admission_window_expires_at: FUTURE, admission_record: 'testers', database_record_differs: false },
+  abandonedMirror, NOW).effective_matches, false);
+  // Classification uses the raw word, so an abandoned window is a recovery
+  // suspend even though the effective decision already reads closed.
+  assert.equal(classifyCloseKind(abandonedStatus), 'recovery');
+  assert.equal(classifyCloseKind({ ...abandonedStatus, admission_record: 'closed', database_record_differs: false }), 'already-closed');
+  assert.equal(classifyCloseKind({ admission_mode: 'testers', admission_window_expires_at: FUTURE,
+    admission_record: 'testers', database_record_differs: false }), 'ordinary');
+  // The effective bound of a closed decision is null, never the recorded instant.
+  assert.equal(effectiveAdmissionBound(abandonedMirror), null);
 });
 
 test('suspend uses the selected pinned lifecycle image after real policy/schema verification and accepts diagnostic backlog', async () => {
@@ -347,18 +357,18 @@ test('suspend classifies what it ended from the stored database pair, not from t
     // A live window: the suspend ended it.
     { options: { now: NOW, mirror: windowRecord(FUTURE) }, closeKind: 'ordinary', priorExpiresAt: FUTURE },
     // The bound had already ended an expired window; this suspend restored the record.
-    { options: { now: NOW, mirror: windowRecord(PAST) }, closeKind: 'recovery', priorExpiresAt: PAST },
+    { options: { now: NOW, mirror: windowRecord(PAST) }, closeKind: 'recovery', priorExpiresAt: null },
     // An older Service carried no window at all: still a tester mode, no bound.
     { options: { now: NOW, mirror: closedMirror, database: { admission_mode: 'testers', admission_window_expires_at: null } },
       closeKind: 'recovery', priorExpiresAt: null },
     // An unparseable expiry cannot be proven live, so the bound ended it.
     { options: { now: NOW, mirror: closedMirror, database: { admission_mode: 'testers', admission_window_expires_at: 'not-an-instant' } },
-      closeKind: 'recovery', priorExpiresAt: 'not-an-instant' },
-    // The stored mode was already closed: the suspend changed nothing.
+      closeKind: 'recovery', priorExpiresAt: null },
+    // The row already stored `closed`: the suspend changed nothing.
     { options: { now: NOW, mirror: closedMirror }, closeKind: 'already-closed', priorExpiresAt: null },
-    // A future expiry alongside a closed stored mode is inconsistent: not a window.
+    // An inconsistent closed-with-bound row still reads closed: not a window.
     { options: { now: NOW, mirror: closedMirror, database: { admission_mode: 'closed', admission_window_expires_at: FUTURE } },
-      closeKind: 'already-closed', priorExpiresAt: FUTURE },
+      closeKind: 'already-closed', priorExpiresAt: null },
   ];
   for (const { options, closeKind, priorExpiresAt } of cases) {
     const io = mockIo(options); const result = await suspend(io);
@@ -370,10 +380,10 @@ test('suspend classifies what it ended from the stored database pair, not from t
     }
   }
   // The classifier itself is a pure function of the database status read.
-  assert.equal(classifyCloseKind({ admission_mode: 'closed', admission_window_expires_at: FUTURE }, NOW), 'already-closed');
-  assert.equal(classifyCloseKind({ admission_mode: 'testers', admission_window_expires_at: FUTURE }, NOW), 'ordinary');
-  for (const value of [PAST, null, undefined, 'malformed', 0, {}]) {
-    assert.equal(classifyCloseKind({ admission_mode: 'testers', admission_window_expires_at: value }, NOW), 'recovery');
+  assert.equal(classifyCloseKind({ admission_mode: 'closed', admission_record: 'closed' }), 'already-closed');
+  assert.equal(classifyCloseKind({ admission_mode: 'testers', admission_record: 'testers' }), 'ordinary');
+  for (const record of ['testers', 'closed', undefined]) {
+    assert.equal(classifyCloseKind({ admission_mode: 'closed', admission_record: record }), record === 'testers' ? 'recovery' : 'already-closed');
   }
 });
 
@@ -506,8 +516,6 @@ test('resume refuses before requesting a window when the Service cannot carry th
     { omitExpiry: true },
     // The effective database decision is still the tester mode: not the closed one.
     { database: { admission_mode: 'testers', admission_window_expires_at: FUTURE } },
-    // A live database window is still open.
-    { database: { admission_mode: 'closed', admission_window_expires_at: FUTURE } },
     // The database and the SSM mirror must agree.
     { status(value) { return { ...value, database_policy_matches_ssm: false }; } },
     // The mirror does not prove closure: a value that cannot prove it is repaired
@@ -666,20 +674,20 @@ test('a failure before the resume attempt records no recovery suspend', async ()
   assert.deepEqual(io.events.map(event => [event.phase, event.result]), [['failed', 'failed']]);
 });
 
-test('status parser accepts the mode vocabulary, the raw stored pair and optional diagnostics without a drain gate', () => {
-  const status = { admission_mode: 'closed', tester_count: 0, database_policy_matches_ssm: true };
+test('status parser accepts the effective decision, the raw stored record and optional diagnostics without a drain gate', () => {
+  const status = { admission_mode: 'closed', admission_record: 'closed', database_record_differs: false,
+    tester_count: 0, database_policy_matches_ssm: true };
   assert.equal(parseLifecycleStatus(status), status);
   // The window bound is interpreted by the admission driver, not by the status
   // parser, so an older Service without the field stays readable here.
   assert.equal(parseLifecycleStatus({ ...status, admission_window_expires_at: null }).admission_window_expires_at, null);
-  assert.equal(parseLifecycleStatus({ ...status, admission_window_expires_at: 'malformed' }).admission_window_expires_at, 'malformed');
-  assert.equal(parseLifecycleStatus({ ...status, admission_mode: 'testers' }).admission_mode, 'testers');
-  // The raw stored pair is reported separately from the effective decision.
-  assert.equal(parseLifecycleStatus({ ...status, stored_admission_mode: 'testers', stored_admission_window_expires_at: PAST }).stored_admission_mode, 'testers');
+  assert.equal(parseLifecycleStatus({ ...status, admission_window_expires_at: FUTURE }).admission_window_expires_at, FUTURE);
+  // The raw stored record is reported separately from the effective decision.
+  assert.equal(parseLifecycleStatus({ ...status, admission_record: 'testers', database_record_differs: true }).admission_record, 'testers');
   for (const value of [null, [], {}, { ...status, admission_mode: 'open' }, { ...status, admission_mode: true },
-    { ...status, stored_admission_mode: 'open' }, { ...status, stored_admission_mode: null },
+    { ...status, admission_record: 'open' }, { ...status, admission_record: undefined },
+    { ...status, database_record_differs: 'false' }, { ...status, database_policy_matches_ssm: undefined },
     { ...status, tester_count: 0.5 }, { ...status, tester_count: 51 }, { ...status, admission_window_expires_at: 5 },
-    { ...status, stored_admission_window_expires_at: 5 },
     { ...status, outboxOldestAgeMs: NaN }, { ...status, outboxStatusCounts: [] }, { ...status, dlqs: null }]) {
     assert.throws(() => parseLifecycleStatus(value));
   }

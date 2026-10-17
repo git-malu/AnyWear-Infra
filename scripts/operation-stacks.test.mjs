@@ -268,7 +268,8 @@ test('runtime status ignores shell JSON and binds actual stopped task definition
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/beta-admission.yml@refs/heads/main' });
   const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'c'.repeat(32)}`;
   const taskDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:9';
-  const actualStatus = { admission_mode: 'closed', admission_window_expires_at: null, tester_count: 4, database_policy_matches_ssm: false };
+  const actualStatus = { admission_mode: 'closed', admission_record: 'closed', database_record_differs: false,
+    admission_window_expires_at: null, tester_count: 4, database_policy_matches_ssm: false };
   const record = { events: [] };
   const io = await createRuntimeIo(selector, '/verified/assets', env, record, { trustedInfraRoot: root,
     async assume(kind) { assert.equal(kind, 'runtime'); return { ...env }; },

@@ -88,6 +88,9 @@ export function resolveAdmissionDecision(mode, expiresAt, now = Date.now()) {
   const at = parseAdmissionInstant(recordedExpiry);
   if (at === undefined) return resolution({ admission_recorded_mode: mode, admission_recorded_expires_at: UNPARSED, admission_mode_reason: 'malformed-expiry' });
   const ahead = at - now;
+  // A `testers` record the Service wrote is the recorded value even when its bound
+  // has ended; the *effective* decision and bound are what gate admission, so both
+  // resolve to closed/null while the record keeps what was written.
   if (ahead <= 0) return resolution({ ...recorded, admission_mode_reason: 'expired' });
   if (ahead > ADMISSION_MODE_MAX_AHEAD_MS) return resolution({ ...recorded, admission_mode_reason: 'beyond-bound' });
   return Object.freeze({ admission_mode: ADMISSION_MODE_TESTERS, admission_window_expires_at: recordedExpiry,
@@ -100,6 +103,12 @@ export function resolveAdmissionDecision(mode, expiresAt, now = Date.now()) {
 // `{"mode":"closed","mode":"testers",...}` would be readable as open by one
 // implementation and closed by another. Here a duplicated key is not a record at
 // all, and the value consequently cannot *prove* closure either.
+//
+// The encoding is also fixed: the value must be its own canonical JSON encoding,
+// the same `JSON.stringify(JSON.parse(value)) === value` rule the Service reader
+// applies. Whitespace, reordered-but-equivalent encodings and any other
+// non-canonical spelling are refused, so the writer and every reader agree on one
+// byte string per decision.
 export function parseAdmissionModeValue(value, now = Date.now()) {
   if (value === undefined || value === null) {
     return resolution({ admission_mode_reason: 'missing', admission_recorded_mode: MISSING });
@@ -107,6 +116,7 @@ export function parseAdmissionModeValue(value, now = Date.now()) {
   if (typeof value !== 'string') return resolution({ admission_mode_reason: 'wrong-type', admission_recorded_mode: UNPARSED });
   let record;
   try { record = parseJson(value); } catch { return resolution({ admission_mode_reason: 'malformed', admission_recorded_mode: UNPARSED }); }
+  if (JSON.stringify(record) !== value) return resolution({ admission_mode_reason: 'non-canonical', admission_recorded_mode: UNPARSED });
   if (!record || typeof record !== 'object' || Array.isArray(record)) {
     return resolution({ admission_mode_reason: 'malformed', admission_recorded_mode: UNPARSED });
   }
@@ -122,6 +132,13 @@ export function parseAdmissionModeValue(value, now = Date.now()) {
 
 // The decision, for callers that only need the effective mode.
 export const isAdmissionClosed = resolution => resolution?.admission_mode === ADMISSION_MODE_CLOSED;
+
+// The effective bound qualifies the effective decision only: a closed decision has
+// no live bound, which is exactly what the Service status reports
+// (`admission_window_expires_at` is null when closed). The recorded bound stays in
+// `admission_recorded_expires_at` as evidence and never masquerades as effective.
+export const effectiveAdmissionBound = resolution =>
+  (resolution?.admission_mode === ADMISSION_MODE_TESTERS ? resolution.admission_window_expires_at ?? null : null);
 
 // Closure something can act on. A valid closed record proves it, and so does an
 // expired tester window: both are the bound doing its job.

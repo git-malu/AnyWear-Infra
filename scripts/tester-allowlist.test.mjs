@@ -28,8 +28,8 @@ function ioFixture({ active = true, digest = selector.image.digest } = {}) {
     // `set-testers` replaces the exact list and changes no admission state.
     if (action === 'set-testers') testers = JSON.parse(payload);
     if (action === 'status') {
-      return { admission_mode: 'closed', admission_window_expires_at: null, stored_admission_mode: 'closed',
-        stored_admission_window_expires_at: null, tester_count: testers.length, database_policy_matches_ssm: true };
+      return { admission_mode: 'closed', admission_window_expires_at: null, admission_record: 'closed',
+        database_record_differs: false, tester_count: testers.length, database_policy_matches_ssm: true };
     }
   }, recordAdmissionState(event) { events.push(structuredClone(event)); } };
 }
@@ -75,9 +75,11 @@ test('admission status publishes the effective decision, the raw record and thei
   assert.equal(event.state.admission_mode, 'closed');
   assert.equal(event.state.admission_recorded_mode, 'closed');
   assert.equal(event.effective_matches, true);
-  assert.equal(event.raw_records_disagree, false);
-  assert.equal(event.database.effective_admission_mode, 'closed');
-  assert.equal(event.database.stored_admission_mode, 'closed');
+  assert.equal(event.database_record_differs, false);
+  assert.equal(event.mirror_record_differs, false);
+  assert.equal(event.database.admission_mode, 'closed');
+  assert.equal(event.database.admission_record, 'closed');
+  assert.equal(event.database.admission_window_expires_at, null);
   assert.equal(event.database.tester_count, 1);
   // A status read mutates nothing.
   assert.equal(io.calls.some(call => call[2] === 'set-testers'), false);

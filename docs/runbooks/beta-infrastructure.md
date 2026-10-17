@@ -448,20 +448,38 @@ admitted.
 ### Admission-mode status contract
 
 The Service lifecycle `status` object is the cross-repository read-back, and the
-Infra reader selects its log message by the contract field names. It must carry
-`admission_mode` (the effective decision every gate uses), `tester_count`,
-`database_policy_matches_ssm`, and — because the effective decision and the stored
-row differ after an abandoned window — the raw pair as
-`stored_admission_mode`/`stored_admission_window_expires_at` plus the recorded
-`admission_window_expires_at`. `admission-status` publishes the effective mode, the
-raw record from each surface and an `effective_matches`/`raw_records_disagree`
-pair, so a human is never shown "testers are admitted" about a closed environment
-and a disagreeing raw pair is visible instead of being reconciled silently. The
-SSM mirror uses the same vocabulary in its JSON record, so all three readers — the
-Infra status check, the Service transactional gate and the database-free Cognito
-edge — agree on one conformance list: `closed` and a live canonical `testers`
-record are the only accepted values, and everything else reads closed and proves
-nothing.
+Infra reader selects its log message by the contract field names. It carries
+`admission_mode` (the **effective** decision every gate uses), `admission_record`
+(the **raw stored** mode word), `database_record_differs` (boolean: the raw stored
+mode differs from the effective decision), `admission_window_expires_at` (the
+**effective** bound, null whenever the decision is closed), `tester_count` and
+`database_policy_matches_ssm` (which now means the effective decision and the
+tester list agree across the two surfaces), plus the existing drain state fields.
+The same vocabulary is used by the Service task audit (`policy.admission_mode`,
+`policy.admission_record`, `policy.database_record_differs`) and by E2E, which
+consumes `policy.admission_mode` as effective.
+
+Because the effective decision and the stored row differ after an abandoned
+window, `admission-status` publishes the effective mode, the raw record from each
+surface and both disagreement flags: the Service's `database_record_differs` and
+this comparison's `mirror_record_differs` (does the status's raw word equal the
+mirror's recorded word), beside `effective_matches`. A human is never shown
+"testers are admitted" about a closed environment, and a disagreeing raw record is
+visible instead of being reconciled silently. The Infra comparison is always
+effective-to-effective: `status.admission_mode` against the effective mode derived
+from the parameter, never against a stored word, so the pre-window and resume
+checks still work after an abandoned window.
+
+The parameter value encoding is fixed: `{"mode":"closed"}` and
+`{"mode":"testers","expires_at":"<ISO-8601 with milliseconds and Z>"}` are the only
+accepted shapes, and each must be its own canonical JSON encoding — the same
+`JSON.stringify(JSON.parse(value)) === value` rule the Service reader applies. The
+Infra reader additionally refuses duplicate keys outright (its strict parser), so a
+hand-edited value with a repeated `mode` is not a record for either the fence or
+the admission read. The conformance table in
+[`scripts/admission-operation.test.mjs`](../../scripts/admission-operation.test.mjs)
+lists the accepted and refused values in one place so all three repositories can be
+checked against the same list.
 
 For a source-only admission operation, the committed
 [runtime-only map](../../stack-sources/beta-runtime-only.json) retains all four
@@ -643,7 +661,13 @@ Service image:
 2. **`migrate`**: the forward-migration fence is satisfied by the
    CloudFormation-created `closed` value and by step 0's recorded tuple. The fence
    refuses an open window and every value that cannot *prove* closure, including a
-   single throttled read.
+   single throttled read. The Service migration `0021` adds the mode column with
+   default `closed` and *then* adds a check constraint requiring `testers` to carry
+   a bound and `closed` to carry none, so migrating a database that still holds a
+   live window fails the constraint **before** the rename commits, leaving the old
+   schema intact. That is why the documented `suspend-admission` predecessor is not
+   a formality: it is what makes the migration apply, and a failed attempt is a
+   fail-closed refusal rather than a half-migrated schema.
 3. **`deploy-workload`**: roll out the new API/worker image, which reads and writes
    the mode record and queries the renamed admission table.
 4. **`admission-status`**: read the new surface back and compare it with step 0's

@@ -10,7 +10,8 @@ const definition = { taskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task
 const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
   clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
   taskDefinitionArn: definition.taskDefinitionArn, lastStatus: 'STOPPED' };
-const status = { admission_mode: 'closed', admission_window_expires_at: null, tester_count: 4, database_policy_matches_ssm: true };
+const status = { admission_mode: 'closed', admission_record: 'closed', database_record_differs: false,
+  admission_window_expires_at: null, tester_count: 4, database_policy_matches_ssm: true };
 function logIo(messages) {
   const calls = [];
   return { calls, async aws(args) {
