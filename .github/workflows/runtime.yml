@@ -31,17 +31,23 @@ concurrency:
   cancel-in-progress: false
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
-  CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+  # Single-account constants, not environment configuration: `vars` resolves at
+  # repository scope here, and the credential-free `preflight` job has no
+  # `environment:` to resolve environment-scoped variables from. The scripts and
+  # validators already hard-code the same account and region.
+  AWS_ACCOUNT_ID: '650880818323'
+  AWS_REGION: 'ap-east-1'
+  CDK_DEFAULT_ACCOUNT: '650880818323'
+  CDK_DEFAULT_REGION: 'ap-east-1'
   BILLING_REGION: us-east-1
+  # The stage switch must stay repository-scoped: job-level `if` expressions are
+  # evaluated before any environment exists, so an environment-scoped value would
+  # never open the gate.
   ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
   INFRA_OPERATION: ${{ inputs.operation }}
   TESTER_EMAILS: '[]'
   INFRA_IDENTITY_PHASE: retired
   INFRA_RETENTION_PROTECTION: 'true'
-  INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
   SELECTION_FILE: ${{ inputs.selection_file }}
   SELECTION_SHA256: ${{ inputs.selection_sha256 }}
   STACK_SOURCES_FILE: ${{ inputs.stack_sources_file }}
@@ -85,6 +91,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # The runtime role ARN is an environment-scoped repository variable, so it
+    # resolves only in a job that declares `beta`. Nothing before it reads it.
+    env:
+      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -105,6 +115,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # The runtime role ARN is an environment-scoped repository variable, so it
+    # resolves only in a job that declares `beta`. Nothing before it reads it.
+    env:
+      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
     steps:
       - uses: actions/checkout@v4
         with:
