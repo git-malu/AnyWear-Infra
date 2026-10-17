@@ -13,7 +13,7 @@ import { parseWindowMinutes } from './admission-window.mjs';
 import { createOperationRecord, recordRecovery } from './operation-record.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
-import { runSuspendAdmission, runResumeAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
+import { runCloseAdmission, runOpenAdmission } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertCleanupCapabilityQuiescent } from './cleanup-capability-fence.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed } from './operation-boundaries.mjs';
@@ -23,13 +23,6 @@ import { validateBetaSizingInput, validateBetaTelemetryInput, retainedBetaSizing
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// The tester operations are named for their effect, so routing them is an
-// explicit table rather than a prefix rule: a renamed operation must be added here
-// or it runs nothing, instead of silently matching or silently falling through.
-export const testerOperationActions = Object.freeze({
-  'admission-status': 'status', 'add-testers': 'add', 'set-testers': 'set',
-});
-const admissionRecoveryOperations = ['suspend-admission', 'resume-admission', 'restore-release'];
 export function validateOperationInputs(env = process.env) {
   const boundary = operationBoundary(env);
   validateBetaSizingInput(env);
@@ -42,16 +35,16 @@ export function validateOperationInputs(env = process.env) {
   if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
   if (!HASH.test(env.SELECTION_SHA256 ?? '')) throw new Error('Explicit selection hash required');
   if (!/^selections\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(env.SELECTION_FILE ?? '')) throw new Error('Selection must be a reviewed repository file');
-  if (admissionRecoveryOperations.includes(env.INFRA_OPERATION)) {
+  if (['close-admission', 'open-admission', 'restore-release'].includes(env.INFRA_OPERATION)) {
     if (env.INFRA_IDENTITY_PHASE !== 'retired' || env.INFRA_RETENTION_PROTECTION !== 'true') throw new Error('Admission and release recovery require retired identity and protected retention');
     if (normalizeTesterEmails(env.TESTER_EMAILS) !== '[]') throw new Error('Admission and release recovery accept no tester mutation payload');
   }
   // An admission window is only bounded if the bound is a required input. The
   // shared parser is the same one that builds and checks the payload bytes.
-  if (env.INFRA_OPERATION === 'resume-admission') parseWindowMinutes(env.WINDOW_MINUTES);
-  if (Object.hasOwn(testerOperationActions, env.INFRA_OPERATION)) {
+  if (env.INFRA_OPERATION === 'open-admission') parseWindowMinutes(env.WINDOW_MINUTES);
+  if (env.INFRA_OPERATION.startsWith('tester-')) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
-    if (env.INFRA_OPERATION === 'admission-status' && payload !== '[]') throw new Error('Admission status accepts no mutation payload');
+    if (env.INFRA_OPERATION === 'tester-status' && payload !== '[]') throw new Error('Tester status accepts no mutation payload');
   }
   if (!boundary.workflow.endsWith('beta-admission.yml') && env.TESTER_EMAILS !== undefined && env.TESTER_EMAILS !== '[]') throw new Error('Tester payload belongs only to admission');
   // Cross-repository boundary, not a local preference: these names remain live
@@ -208,8 +201,8 @@ export async function createRuntimeIo(selector, directory, env = process.env, re
       if (role === 'lifecycle' && argument === 'status') {
         const status = await readLifecycleStatus(io, task, definition);
         record?.events.push({ type: 'lifecycle-status', task_arn: tasks[0], task_definition_arn: definitions[0],
-          status_sha256: sha256(canonicalJson(status)), admission_mode: status.admission_mode,
-          admission_window_expires_at: status.admission_window_expires_at, tester_count: status.tester_count,
+          status_sha256: sha256(canonicalJson(status)), intake_open: status.intake_open,
+          admission_suspended: status.admission_suspended, tester_count: status.tester_count,
           database_policy_matches_ssm: status.database_policy_matches_ssm });
         return status;
       }
@@ -316,19 +309,14 @@ export async function runOperation(env = process.env) {
       parameters: { ...priorRevision.parameters, ServiceImageDigest: selector.image.digest, ServiceCommitSha: selector.image.service_sha } };
     await runBetaLifecycle(operation, io, { selectedRevision });
   } else if (operation === 'stop') await runBetaLifecycle(operation, io);
-  else if (operation === 'suspend-admission') await runSuspendAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
-  else if (operation === 'resume-admission') await runResumeAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
+  else if (operation === 'close-admission') await runCloseAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
+  else if (operation === 'open-admission') await runOpenAdmission({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
   else if (operation === 'restore-release') await runRestoreRelease({ io, selector, manifest: verified.manifest, schema: verified.schema, infraSha: env.GITHUB_SHA, env });
-  else if (Object.hasOwn(testerOperationActions, operation)) await runTesterAllowlist(testerOperationActions[operation], env.TESTER_EMAILS, io, selector);
+  else if (operation.startsWith('tester-')) await runTesterAllowlist(operation.slice(7), env.TESTER_EMAILS, io, selector);
   else if (operation !== 'observe') {
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
     const revision = workloadRevision(workload);
     if (['migrate', 'verify'].includes(operation)) {
-      // A forward migration runs only against an admission mirror that proves
-      // closed admission. The bound closes an abandoned window on that surface, so
-      // this admits the ordinary after-expiry case and refuses an unprovable
-      // record until `suspend-admission` restores it.
-      if (operation === 'migrate') await assertMigrationAdmissionClosed(io);
       const selectedRevision = { ...revision, digest: selector.image.digest, commit: selector.image.service_sha };
       await io.oneShot(operation, selectedRevision);
     } else {

@@ -10,7 +10,7 @@ export const workflowOperations = Object.freeze({
   '.github/workflows/beta-lifecycle.yml': ['start', 'stop'],
   '.github/workflows/beta-deploy.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-workload', 'restore-release'],
   '.github/workflows/beta-schema.yml': ['migrate', 'verify'],
-  '.github/workflows/beta-admission.yml': ['admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission'],
+  '.github/workflows/beta-admission.yml': ['tester-status', 'tester-add', 'tester-replace', 'close-admission', 'open-admission'],
 });
 export const qualifiedWorkflowPaths = Object.keys(workflowOperations).filter(file => !file.endsWith('beta-observe.yml'));
 export function operationBoundary(env) {
@@ -69,42 +69,42 @@ export const operationEvidence = Object.freeze({
     'The accepted record observes the applied schema through its own artifact-verification task.'),
   verify: evidenceEntry(['verify'], 'not-applicable',
     'Verification, not mutation: it asserts the observed runtime and writes nothing.'),
-  'admission-status': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
-    'Status only: it reads the admission mode, its bound and the tester list, and mutates nothing.'),
-  'add-testers': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record admission read-back evidences it. The tester write changes no admission state and cannot open a window: its recorded mode and bound are the ones observed before the write.'),
-  'set-testers': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record admission read-back evidences it. The tester write changes no admission state and cannot open a window: its recorded mode and bound are the ones observed before the write.'),
-  'suspend-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record lifecycle status and admission read-back evidence it.'),
-  'resume-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record carries the requested window bound, the observed mirror with its own recorded bound, both admission phases and the lifecycle status read-back proving the recorded expiry. Its only extra lifecycle action is the recovery-only suspend a failed window issues to restore the recorded decision; no operator path can request it.'),
+  'tester-status': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+    'Status only: it reads admission state and mutates nothing.'),
+  'tester-add': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+    'The accepted record does not observe admission state; the operation record admission readback evidences it, including the window its configure-testers side effect opens, labeled as derived from the Service default because this operation may not run open or status.'),
+  'tester-replace': evidenceEntry(['verify', 'lifecycle'], 'not-applicable',
+    'The accepted record does not observe admission state; the operation record admission readback evidences it, including the window its configure-testers side effect opens, labeled as derived from the Service default because this operation may not run open or status.'),
+  'close-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
+    'The accepted record does not observe admission state; the operation record lifecycle status and admission readback evidence it.'),
+  'open-admission': evidenceEntry(['lifecycle', 'artifact-verify'], 'not-applicable',
+    'The accepted record does not observe admission state; the operation record carries the requested window bound, both admission phases and the lifecycle status read-back proving the recorded expiry. Its only extra lifecycle action is the recovery-only close a failed window issues to restore the recorded tuple; no operator path can request it.'),
 });
 // `artifact-verify` is the verification task family registered by
 // `runRuntimeVerification`, never a one-shot helper role, so the one-shot guard
 // keeps its current allow-set.
 const oneShotRoles = operation => operationEvidence[operation].roles.filter(role => role !== 'artifact-verify');
-// `resume` appears for exactly one operation. `resume-admission` also lists
-// `suspend`, and that entry is recovery-only: the driver may issue it solely on
-// its failed-window path, to restore the decision a failure would otherwise leave
-// open. No operator input can request it, and it is the same pinned suspend task
-// `suspend-admission` runs. Every other entry listing `resume`, or listing a
-// payload-bearing action other than `set-testers` and `resume`, would be a new
-// admission direction that this table is the place to review.
-export const lifecycleActions = operation => ({ start: ['suspend'], stop: ['suspend', 'drain'],
-  'admission-status': ['status'], 'add-testers': ['set-testers', 'status'], 'set-testers': ['set-testers', 'status'],
-  'suspend-admission': ['suspend', 'status'], 'resume-admission': ['resume', 'status', 'suspend'] }[operation] ?? []);
-const payloadActions = ['set-testers', 'resume'];
-// Only `resume-admission` may send a lifecycle `resume` payload, and it must be
-// the exact byte string the driver builds from the reviewed dispatch input. The
+// `open` appears for exactly one operation. `open-admission` also lists `close`,
+// and that entry is recovery-only: the driver may issue it solely on its
+// failed-window path, to restore the tuple a failure would otherwise leave open.
+// No operator input can request it, and it is the same pinned close task
+// `close-admission` runs. Every other entry listing `open`, or listing a
+// payload-bearing action other than `configure-testers` and `open`, would be a
+// new admission direction that this table is the place to review.
+export const lifecycleActions = operation => ({ start: ['close'], stop: ['close', 'drain'],
+  'tester-status': ['status'], 'tester-add': ['configure-testers'], 'tester-replace': ['configure-testers'],
+  'close-admission': ['close', 'status'], 'open-admission': ['open', 'status', 'close'] }[operation] ?? []);
+const payloadActions = ['configure-testers', 'open'];
+// Only `open-admission` may send a lifecycle `open` payload, and it must be the
+// exact byte string the driver builds from the reviewed dispatch input. The
 // builder is shared with the driver, so a payload and its check cannot drift.
 function assertAdmissionWindowPayload(env, payload) {
-  if (env.INFRA_OPERATION !== 'resume-admission') throw new Error('Lifecycle resume is reserved to resume-admission');
-  if (payload === undefined) throw new Error('Lifecycle resume requires the bounded window payload');
+  if (env.INFRA_OPERATION !== 'open-admission') throw new Error('Lifecycle open is reserved to open-admission');
+  if (payload === undefined) throw new Error('Lifecycle open requires the bounded window payload');
   let expected;
   try { expected = admissionWindowPayload(env); }
-  catch (error) { throw new Error('Lifecycle resume requires an in-range window_minutes dispatch input', { cause: error }); }
-  if (payload !== expected) throw new Error('Lifecycle resume payload differs from the dispatch input');
+  catch (error) { throw new Error('Lifecycle open requires an in-range window_minutes dispatch input', { cause: error }); }
+  if (payload !== expected) throw new Error('Lifecycle open payload differs from the dispatch input');
 }
 export function assertOneShotAllowed(env, role, action = '', payload) {
   operationBoundary(env);
@@ -112,12 +112,12 @@ export function assertOneShotAllowed(env, role, action = '', payload) {
     || role === 'lifecycle' && !lifecycleActions(env.INFRA_OPERATION).includes(action)
     || role !== 'lifecycle' && payload !== undefined
     || role === 'lifecycle' && !payloadActions.includes(action) && payload !== undefined) throw new Error('One-shot role/action is forbidden for this operation');
-  if (role === 'lifecycle' && action === 'set-testers') {
+  if (role === 'lifecycle' && action === 'configure-testers') {
     if (payload !== normalizeTesterEmails(payload)) throw new Error('Tester helper requires canonical normalized payload');
-    if (env.INFRA_OPERATION === 'set-testers' && payload !== normalizeTesterEmails(env.TESTER_EMAILS)) throw new Error('Tester replacement differs from explicit dispatch input');
+    if (env.INFRA_OPERATION === 'tester-replace' && payload !== normalizeTesterEmails(env.TESTER_EMAILS)) throw new Error('Tester replacement differs from explicit dispatch input');
     if (parseJson(normalizeTesterEmails(env.TESTER_EMAILS)).some(email => !parseJson(payload).includes(email))) throw new Error('Tester addition omits explicit dispatch input');
   }
-  if (role === 'lifecycle' && action === 'resume') assertAdmissionWindowPayload(env, payload);
+  if (role === 'lifecycle' && action === 'open') assertAdmissionWindowPayload(env, payload);
 }
 export function assertDeployAllowed(env, stack) {
   operationBoundary(env);
