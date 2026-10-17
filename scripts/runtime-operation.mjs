@@ -335,12 +335,15 @@ export async function runOperation(env = process.env) {
   else if (operation !== 'observe') {
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
     const revision = workloadRevision(workload);
-    if (['migrate', 'verify'].includes(operation)) {
+    // The retired `verify` operation no longer reaches this branch. `verify` is
+    // still a task family (`io.oneShot('verify', ...)` in deploy-workload,
+    // restore-release and the tester/admission operations), but not an operation.
+    if (operation === 'migrate') {
       // A forward migration runs only against an admission mirror that proves
       // closed admission. The bound closes an abandoned window on that surface, so
       // this admits the ordinary after-expiry case and refuses an unprovable
       // record until `suspend-admission` restores it.
-      if (operation === 'migrate') await assertMigrationAdmissionClosed(io);
+      await assertMigrationAdmissionClosed(io);
       const selectedRevision = { ...revision, digest: selector.image.digest, commit: selector.image.service_sha };
       await io.oneShot(operation, selectedRevision);
     } else {
