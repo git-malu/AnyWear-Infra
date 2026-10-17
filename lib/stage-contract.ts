@@ -1,5 +1,11 @@
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
+import {
+  STAGE_CONTRACT_PARAMETERS,
+  STAGE_CONTRACT_READ_PARAMETERS,
+  STAGE_CONTRACT_STAGE,
+  stageParameters,
+} from '@git-malu/stage-contracts';
 import type { PlatformStack } from './platform-stack';
 
 // The stage base is published as plain SSM parameters so a release slice can be
@@ -50,7 +56,9 @@ export class StageContract extends Construct {
     super(scope, id);
     const platform = props.platform;
     const stage = platform.stageName;
-    if (stage !== 'beta') throw new Error('The stage contract is published for the Beta stage only in this change');
+    if (stage !== STAGE_CONTRACT_STAGE) {
+      throw new Error(`The stage contract is published for the ${STAGE_CONTRACT_STAGE} stage only in this change`);
+    }
     const inputs = stageContractInputs(stage, props.inputs);
     if (!VLM_CONFIG_ARN.test(inputs.vlmConfigArn)) {
       throw new Error('Stage contract requires an explicit Secrets Manager ARN for vlm_config_arn');
@@ -80,16 +88,21 @@ export class StageContract extends Construct {
     // the existing `PrivateSubnetIds` output (`environmentRunning ? private
     // : isolated`) instead of publishing an empty list.
     const privateSubnets = vpc.privateSubnets.length ? vpc.privateSubnets : vpc.isolatedSubnets;
-    const string = (parameterName: string, value: string, detail: string) => this.parameters.push(
-      new ssm.StringParameter(this, constructId(parameterName), {
-        parameterName: `${path}${parameterName}`, stringValue: value, description: describe(detail),
-      }),
-    );
-    const stringList = (parameterName: string, value: string[], detail: string) => this.parameters.push(
-      new ssm.StringListParameter(this, constructId(parameterName), {
-        parameterName: `${path}${parameterName}`, stringListValue: value, description: describe(detail),
-      }),
-    );
+    const publishedKinds = new Map<string, 'String' | 'List'>();
+    const string = (parameterName: string, value: string, detail: string) => {
+      const publishedName = `${path}${parameterName}`;
+      publishedKinds.set(publishedName, 'String');
+      this.parameters.push(new ssm.StringParameter(this, constructId(parameterName), {
+        parameterName: publishedName, stringValue: value, description: describe(detail),
+      }));
+    };
+    const stringList = (parameterName: string, value: string[], detail: string) => {
+      const publishedName = `${path}${parameterName}`;
+      publishedKinds.set(publishedName, 'List');
+      this.parameters.push(new ssm.StringListParameter(this, constructId(parameterName), {
+        parameterName: publishedName, stringListValue: value, description: describe(detail),
+      }));
+    };
 
     string('vpc_id', vpc.vpcId, 'shared Beta VPC id');
     stringList('public_subnet_ids', vpc.publicSubnets.map((subnet) => subnet.subnetId),
@@ -153,9 +166,21 @@ export class StageContract extends Construct {
       string('cleanup_task_role_arn', cleanupTaskRole.roleArn,
         'dedicated cleanup task role ARN, published only while the identity phase creates it');
     }
-    const expectedParameters = cleanupTaskRole ? 35 : 34;
-    if (this.parameters.length !== expectedParameters) {
-      throw new Error(`Stage contract must publish ${expectedParameters} new parameters, got ${this.parameters.length}`);
+    // The versioned `@git-malu/stage-contracts` package is the single source of
+    // the published surface. Drift here is a stage-contract change that must
+    // update the package (and the Service consumer pin), never a local edit.
+    const expectedNames = cleanupTaskRole ? STAGE_CONTRACT_READ_PARAMETERS : STAGE_CONTRACT_PARAMETERS;
+    const publishedNames = [...publishedKinds.keys()].sort();
+    const unexpectedName = publishedNames.find((name, index) => name !== expectedNames[index]);
+    if (publishedNames.length !== expectedNames.length || unexpectedName !== undefined) {
+      throw new Error(`Stage contract parameters differ from @git-malu/stage-contracts: expected ${expectedNames.length}, got ${publishedNames.length}`
+        + (unexpectedName ? ` (first difference ${unexpectedName})` : ''));
+    }
+    const expectedKinds = new Map(stageParameters().map(definition => [definition.parameter, definition.kind]));
+    for (const [publishedName, kind] of publishedKinds) {
+      if (expectedKinds.get(publishedName) !== kind) {
+        throw new Error(`Stage contract parameter ${publishedName} differs from the reviewed ${expectedKinds.get(publishedName) ?? 'absent'} value kind`);
+      }
     }
   }
 }

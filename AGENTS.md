@@ -29,6 +29,12 @@ and must not be relabeled as an Infra-produced deployment.
   hash of the stage-contract schema surface. There is no `selection` member and
   no pin to another repository's release. Service produces
   `anywear_service_deployment` from the same generic contract.
+- The versioned `@git-malu/stage-contracts` package
+  (`packages/stage-contracts/`) is the single source of the stage-contract
+  names/kinds, stack identities, v3 Service record validators and Foundation
+  service-role naming. `npm run check` runs its tests. Change it only with a
+  version bump and the matching `stage-contracts-v<version>` tag; Service pins the
+  packed tarball, never a mutable branch.
 - Do not claim repository branch protection when the private plan cannot enforce
   it. The configured Beta environment restricts the branch to main. Apply the
   independently reviewed exact source/inputs and operational coordination

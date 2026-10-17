@@ -1,15 +1,48 @@
-import { canonicalJson, contentHash, exact, matches, integer, SHA, HASH, DIGEST } from './json-contract.mjs';
+import {
+  DEPLOYMENT_INPUT_FIELDS,
+  DEPLOYMENT_PRODUCER_FIELDS,
+  DEPLOYMENT_RECORD_MEMBERS,
+  DEPLOYMENT_STACK_FIELDS,
+  INFRA_REPOSITORY,
+  SERVICE_DEPLOYMENT_RECORD_SCHEMA,
+  SERVICE_ECS_IDENTITY_FIELDS,
+  SERVICE_OBSERVED_FIELDS,
+  SERVICE_REPOSITORY,
+  SERVICE_WORKLOAD_STACK,
+  stageContractSchemaHash,
+  stableTaskDefinition,
+  taskDefinitionContentHash,
+  validateServiceDeploymentRecord,
+  validateStageInputs,
+} from '@git-malu/stage-contracts';
+import { canonicalJson, exact, matches, integer, SHA, HASH } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 
-export const INFRA_REPOSITORY = 'git-malu/AnyWear-Infra';
-export const SERVICE_REPOSITORY = 'git-malu/AnyWear-Service';
+// The Service record schema, its field lists, the stage-contract validators and
+// the task-definition identity are the versioned package's exports. This module
+// re-exports them and keeps the Infra-only record schema, producer/stack
+// validation and observation helpers.
+export {
+  DEPLOYMENT_INPUT_FIELDS,
+  DEPLOYMENT_PRODUCER_FIELDS,
+  DEPLOYMENT_RECORD_MEMBERS,
+  DEPLOYMENT_STACK_FIELDS,
+  INFRA_REPOSITORY,
+  SERVICE_DEPLOYMENT_RECORD_SCHEMA,
+  SERVICE_ECS_IDENTITY_FIELDS,
+  SERVICE_OBSERVED_FIELDS,
+  SERVICE_REPOSITORY,
+  SERVICE_WORKLOAD_STACK,
+  stageContractSchemaHash,
+  stableTaskDefinition,
+  taskDefinitionContentHash,
+  validateServiceDeploymentRecord,
+  validateStageInputs,
+};
+
 export const account = '650880818323';
 export const region = 'ap-east-1';
 const INFRA_WORKFLOWS = Object.freeze(['.github/workflows/runtime.yml', '.github/workflows/mutate.yml']);
-// The Service release chain deploys the release slice. Its record is validated by
-// the same generic v3 core but lists exactly the one stack it produces.
-export const SERVICE_WORKLOAD_STACK = Object.freeze({ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1',
-  workflow_path: '.github/workflows/service-artifacts.yml' });
 const equal = (actual, expected, label) => {
   if (canonicalJson(actual) !== canonicalJson(expected)) throw new Error(`${label} differs from reviewed deployment`);
 };
@@ -37,17 +70,7 @@ const equal = (actual, expected, label) => {
 //
 // A record may not list a stack its own producer did not produce, so forcing one
 // producer's stacks into the other's record is a validation failure, not a merge.
-export const DEPLOYMENT_RECORD_MEMBERS = Object.freeze(['schema_version', 'record_type', 'producer', 'stacks', 'inputs', 'observed', 'schema']);
-export const DEPLOYMENT_PRODUCER_FIELDS = Object.freeze(['repository', 'sha', 'workflow_path', 'workflow_ref', 'run_id', 'run_attempt']);
-export const DEPLOYMENT_STACK_FIELDS = Object.freeze(['name', 'region', 'producer_repository', 'producer_sha', 'template_sha256']);
-export const DEPLOYMENT_INPUT_FIELDS = Object.freeze(['parameter', 'version', 'value_sha256']);
 export const INFRA_OBSERVED_FIELDS = Object.freeze(['lambdas', 'queue_config_sha256', 'client_sha', 'endpoints']);
-export const SERVICE_OBSERVED_FIELDS = Object.freeze(['service_sha', 'image_digest', 'ecs', 'endpoints']);
-// A task definition revision is CloudFormation bookkeeping, not identity: the same
-// image/environment/roles/command re-registers as a new revision and must not fail.
-// The ARN is recorded as evidence only; equality is the image digest plus the
-// normalized task-definition content hash below.
-export const SERVICE_ECS_IDENTITY_FIELDS = Object.freeze(['service_arn', 'task_definition_arn', 'task_definition_sha256', 'image_digest']);
 
 export const DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
   schema_version: 3,
@@ -59,46 +82,6 @@ export const DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
   observed: INFRA_OBSERVED_FIELDS,
   stacks: Object.freeze(configuredStacks.map(stack => Object.freeze({ name: stack.stack_name, region: stack.region }))),
 });
-
-export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
-  schema_version: 3,
-  record_type: 'anywear_service_deployment',
-  members: DEPLOYMENT_RECORD_MEMBERS,
-  producer: DEPLOYMENT_PRODUCER_FIELDS,
-  stack: DEPLOYMENT_STACK_FIELDS,
-  input: DEPLOYMENT_INPUT_FIELDS,
-  observed: SERVICE_OBSERVED_FIELDS,
-  stacks: Object.freeze([Object.freeze({ name: SERVICE_WORKLOAD_STACK.name, region: SERVICE_WORKLOAD_STACK.region })]),
-});
-
-// `inputs[]` is the stage-contract surface this record's run read from SSM, with
-// each parameter's version and value hash. It may be empty: a producer that reads
-// no stage-contract parameter records `[]` and the schema hash is the content hash
-// of the empty list. Infra reads the 34 stage-contract parameters every Beta
-// phase publishes, plus the phase-dependent `cleanup_task_role_arn` when the
-// deployed identity phase creates that role; the stage base is their producer,
-// and the read is what evidences the surface the release slice consumes. The
-// Service record lists the same contract plus the four reused stage values it
-// consumes at deploy time.
-export function validateStageInputs(rows) {
-  if (!Array.isArray(rows) || rows.length > 64) throw new Error('Invalid stage contract inputs');
-  let previous;
-  for (const row of rows) {
-    exact(row, DEPLOYMENT_INPUT_FIELDS, 'stage contract input');
-    matches(row.parameter, /^\/anywear\/[a-z]+\/[a-z0-9_]+$/, 'stage contract parameter');
-    matches(row.version, /^[1-9][0-9]*$/, 'stage contract parameter version');
-    matches(row.value_sha256, HASH, 'stage contract value hash');
-    if (previous !== undefined && !(previous < row.parameter)) throw new Error('Stage contract inputs must be sorted and unique');
-    previous = row.parameter;
-  }
-  return rows;
-}
-
-// The schema member is derived from the recorded inputs, so a reader can
-// recompute it instead of trusting a cross-repository pin.
-export function stageContractSchemaHash(rows) {
-  return contentHash(validateStageInputs(rows).map(({ parameter, version }) => ({ parameter, version })));
-}
 
 export function validateDeploymentProducer(producer, { repositories = [INFRA_REPOSITORY, SERVICE_REPOSITORY], workflowPaths } = {}) {
   exact(producer, DEPLOYMENT_PRODUCER_FIELDS, 'deployment producer');
@@ -155,50 +138,6 @@ export function validateInfraObserved(observed) {
   return observed;
 }
 
-// The release slice's observed tuple: its two ECS services, the deployed image
-// digest/source and the public API endpoint. Lambdas, queues and the Client belong
-// to the stage base and are observed in the Infra record.
-export function validateServiceObserved(observed) {
-  exact(observed, SERVICE_OBSERVED_FIELDS, 'workload observed tuple');
-  matches(observed.service_sha, SHA, 'observed Service'); matches(observed.image_digest, DIGEST, 'observed image');
-  exact(observed.ecs, ['api', 'worker'], 'ECS identities');
-  for (const [purpose, identity] of Object.entries(observed.ecs)) {
-    exact(identity, SERVICE_ECS_IDENTITY_FIELDS, `ECS ${purpose} identity`);
-    matches(identity.service_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}$`), `ECS ${purpose} service ARN`);
-    // Evidence only. Re-registering the same task definition produces a new
-    // revision number; identity is the content hash and the image digest.
-    matches(identity.task_definition_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:[1-9][0-9]*$`), `ECS ${purpose} task definition ARN`);
-    matches(identity.task_definition_sha256, HASH, `ECS ${purpose} task definition content hash`);
-    matches(identity.image_digest, DIGEST, `ECS ${purpose} image digest`);
-    if (identity.image_digest !== observed.image_digest) throw new Error(`ECS ${purpose} image_digest differs from the deployed image`);
-  }
-  exact(observed.endpoints, ['api'], 'endpoints');
-  matches(observed.endpoints.api, /^https:\/\/[a-z0-9]+\.cloudfront\.net$/, 'CloudFront endpoint');
-  return observed;
-}
-
-// The normalized task definition whose content hash identifies a deployed ECS
-// service. It changes with image, environment, roles, command and sizing, never
-// with the revision number alone.
-export function stableTaskDefinition(definition) {
-  if (!definition || typeof definition !== 'object') throw new Error('Task definition observation unavailable');
-  const container = definition.containerDefinitions?.length === 1 ? definition.containerDefinitions[0] : undefined;
-  if (!container || typeof container.image !== 'string' || !container.image || !Array.isArray(container.environment)) {
-    throw new Error('Single-container task definition required');
-  }
-  const environment = container.environment.map(entry => {
-    if (typeof entry?.name !== 'string' || typeof entry?.value !== 'string') throw new Error('Task definition environment unavailable');
-    return { name: entry.name, value: entry.value };
-  }).sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-  return { family: definition.family, taskRoleArn: definition.taskRoleArn, executionRoleArn: definition.executionRoleArn,
-    networkMode: definition.networkMode, cpu: definition.cpu, memory: definition.memory,
-    container: { name: container.name, image: container.image, command: container.command ?? [], environment } };
-}
-
-export function taskDefinitionContentHash(definition) {
-  return contentHash(stableTaskDefinition(definition));
-}
-
 // Authenticated observation body of the stage base. It covers exactly the stacks
 // and resources Infra still produces.
 export function validateSnapshot(snapshot) {
@@ -226,13 +165,6 @@ export function validateInfraDeploymentRecord(record) {
   validateRecordBase(record, DEPLOYMENT_RECORD_SCHEMA);
   validateDeploymentProducer(record.producer, { repositories: [INFRA_REPOSITORY], workflowPaths: INFRA_WORKFLOWS });
   validateInfraObserved(record.observed);
-  return record;
-}
-
-export function validateServiceDeploymentRecord(record) {
-  validateRecordBase(record, SERVICE_DEPLOYMENT_RECORD_SCHEMA);
-  validateDeploymentProducer(record.producer, { repositories: [SERVICE_REPOSITORY], workflowPaths: [SERVICE_WORKLOAD_STACK.workflow_path] });
-  validateServiceObserved(record.observed);
   return record;
 }
 

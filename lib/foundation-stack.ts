@@ -1,6 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import {
+  serviceDeployCfnRoleName,
+  serviceDeployRoleName,
+  serviceTrustSubject,
+} from '@git-malu/stage-contracts';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
 import { readLegacyRoleSource, type LegacyRoleSource } from './legacy-role-source';
 
@@ -136,10 +141,22 @@ export class FoundationStack extends cdk.Stack {
     // and operates only the Workload stack's resource families. Neither role
     // carries a managed policy, `iam:*`, `*` or any VPC/Aurora/Cognito/SQS
     // configuration/ECR configuration/Foundation grant.
-    const serviceDeploy = createRole('BetaServiceDeployRole', 'service-deploy',
-      betaSubject('AnyWear-Service', 1158460323));
+    // The versioned `@git-malu/stage-contracts` package owns the per-service role
+    // naming and the immutable OIDC subject. The construct IDs and the resulting
+    // template stay unchanged.
+    const serviceDeploy = new iam.Role(this, 'BetaServiceDeployRole', {
+      roleName: serviceDeployRoleName('service'),
+      assumedBy: new iam.WebIdentityPrincipal(githubProvider.openIdConnectProviderArn, {
+        StringEquals: {
+          'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+          'token.actions.githubusercontent.com:sub': serviceTrustSubject({
+            repository: 'AnyWear-Service', repositoryId: 1158460323, environment: 'beta',
+          }),
+        },
+      }),
+    });
     const serviceCfn = new iam.Role(this, 'BetaServiceDeployCfnRole', {
-      roleName: 'beta-service-deploy-cfn-role',
+      roleName: serviceDeployCfnRoleName('service'),
       assumedBy: new iam.ServicePrincipal('cloudformation.amazonaws.com'),
     });
     const slashArn = (service: string, resource: string, resourceName: string, region = this.region,

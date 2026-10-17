@@ -1,62 +1,28 @@
 import { sha256 } from './json-contract.mjs';
+import {
+  STAGE_CONTRACT_STAGE,
+  STAGE_CONTRACT_PARAMETERS,
+  STAGE_CONTRACT_CONDITIONAL_PARAMETERS,
+  STAGE_CONTRACT_READ_PARAMETERS,
+} from '@git-malu/stage-contracts';
 
-// The exact `/anywear/beta/...` stage-contract surface published by
-// `lib/stage-contract.ts`: 34 names exist in every identity phase and variant,
-// and `cleanup_task_role_arn` exists only while the phase creates the cleanup
-// task role (`identityPhase !== 'legacy'`). The deployment record names each
-// consumed parameter with its SSM parameter version and the sha256 of its value,
-// so a deployment is auditable without a committed cross-repository pin.
+// The exact `/anywear/beta/...` stage-contract surface is exported by the
+// versioned `@git-malu/stage-contracts` package: 34 names exist in every identity
+// phase and variant, and `cleanup_task_role_arn` exists only while the phase
+// creates the cleanup task role (`identityPhase !== 'legacy'`). The deployment
+// record names each consumed parameter with its SSM parameter version and the
+// sha256 of its value, so a deployment is auditable without a committed
+// cross-repository pin.
 //
-// This is a runtime-script mirror of the CDK construct because the workflow runs
-// these scripts before (and without) compiling TypeScript. The shape is pinned by a
-// contract test that compares this list with the synthesized Platform baseline.
-export const STAGE_CONTRACT_STAGE = 'beta';
-export const STAGE_CONTRACT_PARAMETERS = Object.freeze([
-  'api_security_group_id',
-  'auto_tagging_dlq_name',
-  'auto_tagging_dlq_url',
-  'auto_tagging_queue_arn',
-  'auto_tagging_queue_name',
-  'auto_tagging_queue_url',
-  'cloudfront_prefix_list_id',
-  'database_host',
-  'database_port',
-  'database_secret_arn',
-  'ecs_cluster_arn',
-  'ecs_cluster_name',
-  'isolated_subnet_ids',
-  'load_balancer_security_group_id',
-  'one_shot_execution_role_arn',
-  'one_shot_log_group_arn',
-  'one_shot_log_group_name',
-  'one_shot_security_group_id',
-  'operations_topic_arn',
-  'private_subnet_ids',
-  'public_subnet_ids',
-  's3_bucket_arn',
-  'service_repository_arn',
-  'service_repository_name',
-  'service_repository_uri',
-  'verification_task_role_arn',
-  'vlm_config_arn',
-  'vpc_id',
-  'vto_dlq_name',
-  'vto_dlq_url',
-  'vto_queue_arn',
-  'vto_queue_name',
-  'vto_queue_url',
-  'worker_security_group_id',
-].map(name => `/anywear/${STAGE_CONTRACT_STAGE}/${name}`).sort());
-
-// Published only outside `identityPhase=legacy`, because the role those names
-// point at is created only outside it. A reader accepts their absence and never
-// accepts a missing unconditional name.
-export const STAGE_CONTRACT_CONDITIONAL_PARAMETERS = Object.freeze([
-  `/anywear/${STAGE_CONTRACT_STAGE}/cleanup_task_role_arn`,
-].sort());
-
-export const STAGE_CONTRACT_READ_PARAMETERS = Object.freeze([
-  ...STAGE_CONTRACT_PARAMETERS, ...STAGE_CONTRACT_CONDITIONAL_PARAMETERS].sort());
+// This script adds only the runtime read: the workflow runs it before (and
+// without) compiling TypeScript, so it imports the package directly and wraps
+// the names in bounded `ssm get-parameters` batches.
+export {
+  STAGE_CONTRACT_STAGE,
+  STAGE_CONTRACT_PARAMETERS,
+  STAGE_CONTRACT_CONDITIONAL_PARAMETERS,
+  STAGE_CONTRACT_READ_PARAMETERS,
+};
 
 // `ssm get-parameters` accepts at most 10 names per request, so the surface is
 // read in deterministic batches instead of one oversized call.

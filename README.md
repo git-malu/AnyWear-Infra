@@ -3,11 +3,11 @@
 Private repository for AnyWear's shared AWS CDK application and infrastructure
 operations. Extraction is tracked in [AnyWear #54](https://github.com/git-malu/AnyWear/issues/54).
 
-This repository contains the CDK app, source checks and reviewed Beta operation
-entry point. The verified #54 cutover assigns Infra the sole operational Beta
-deployment queue. AnyWear-Service remains the application, migration,
-verification and immutable artifact publisher; source delivery alone does not
-establish AWS deployment or runtime acceptance.
+This repository contains the CDK app, a versioned constructs package, source
+checks and reviewed Beta operation entry point. The verified #54 cutover assigns
+Infra the sole operational Beta deployment queue. AnyWear-Service remains the
+application, migration, verification and immutable artifact publisher; source
+delivery alone does not establish AWS deployment or runtime acceptance.
 
 The accepted [ownership ADR](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/ADR/0021-shared-infrastructure-repository.md)
 assigns shared infrastructure to Infra, immutable application artifacts to Service,
@@ -84,6 +84,20 @@ configuration, SQS configuration, ECR configuration, Foundation and other-stack
 grants. The Workload stack's
 CDK source and deploy chain now live in AnyWear-Service (#158 step B); after step
 C nothing in this repository synthesizes, deploys or recovers it.
+
+### Versioned `@git-malu/stage-contracts`
+
+[`packages/stage-contracts/`](packages/stage-contracts/README.md) is the
+dependency-free, versioned source of the stage-contract names/kinds, the stack
+identities, the v3 `anywear_service_deployment` validators and the Foundation
+service-role naming. It is `@git-malu/stage-contracts` `0.1.0`, tagged
+`stage-contracts-v0.1.0`, and packed with `npm pack`; AnyWear-Service pins the
+tarball (for example under `infra/vendor/`) instead of a mutable branch or a
+registry credential in its deploy job. Publishing is the separate tag-triggered
+[publish workflow](.github/workflows/publish-stage-contracts.yml)
+(`packages: write`, `GITHUB_TOKEN`). `lib/stage-contract.ts` and the runtime
+record scripts consume or re-export the package, and `npm run check` runs its
+tests.
 
 ## Operations
 
