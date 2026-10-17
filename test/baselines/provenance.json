@@ -32,12 +32,12 @@
     "dev-active/AnyWearPlatformStack-dev.template.json": "6f19d62816a3a45ac30b977d6b0057af4630c074593b9bd60e325086575adb16",
     "beta-active/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "beta-active/AnyWearPlatformStack-beta.template.json": "76764a045f2c46c06d14c9dee1ef945a51828467d75664cf81be1f7cc9e035a2",
+    "beta-active/AnyWearPlatformStack-beta.template.json": "48753def392762bffa70f877640d328eaa151b6f35046f400cde48fb2d58513d",
     "beta-stopped/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-stopped/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "beta-stopped/AnyWearPlatformStack-beta.template.json": "d1204c7b29f15798566428e72f549e3d95cf81bce0b3a506de57a8c3184a8b32",
+    "beta-stopped/AnyWearPlatformStack-beta.template.json": "14944065b09e70286a49b0491b6a2a89e5e971865ef34528a56cb07f92e5ae08",
     "prod-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "prod-active/AnyWearPlatformStack-prod.template.json": "22daf452aeb0d0a084d212ca8bcdd85a4ff651a3683d885be52db6b29f30fc1c"
+    "prod-active/AnyWearPlatformStack-prod.template.json": "30253c0d7f383cb6f75646cfe7390cfbb4fb6ddd325acd04278751be52299b32"
   },
   "platform_baseline": {
     "re-recorded_from": "AnyWear-Infra final source synth (#158 step C extension)",
