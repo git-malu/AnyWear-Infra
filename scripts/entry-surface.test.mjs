@@ -25,7 +25,7 @@ const credentialJobs = workflow => Object.entries(workflow.jobs ?? {})
   .filter(([, job]) => declaresEnvironment(job) || holdsIdToken(job)).map(([jobName]) => jobName);
 
 const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', 'deploy-platform', 'restore-release',
-  'migrate', 'admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission']);
+  'migrate', 'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission']);
 
 test('the workflow directory is exactly the three Beta entries plus the callable and publication files', async () => {
   // GitHub accepts both `.yml` and `.yaml`; the census must see either extension,

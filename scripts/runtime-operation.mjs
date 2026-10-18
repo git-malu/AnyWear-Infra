@@ -7,12 +7,11 @@ import { parseJson, sha256, canonicalJson, HASH, SHA } from './json-contract.mjs
 import { workloadRevision } from './workload-revision.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
-import { parseWindowMinutes } from './admission-window.mjs';
 import { createOperationRecord, recordRecovery } from './operation-record.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
-import { runSuspendAdmission, runResumeAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
+import { runCloseAdmission, runOpenAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertTerminalReleaseSlice, releaseSliceStackName } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
@@ -27,7 +26,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const testerOperationActions = Object.freeze({
   'admission-status': 'status', 'add-testers': 'add', 'set-testers': 'set',
 });
-const admissionRecoveryOperations = ['suspend-admission', 'resume-admission', 'restore-release'];
+const admissionRecoveryOperations = ['close-admission', 'open-admission', 'restore-release'];
 // A dispatch surface is a workflow, not an operation. These inputs now exist on
 // every operation of their entry, so their per-operation scope is enforced here
 // (before credentials) instead of by the file that carries them.
@@ -54,10 +53,6 @@ export function validateOperationInputs(env = process.env) {
   if (admissionRecoveryOperations.includes(operation)) {
     if (normalizeTesterEmails(env.TESTER_EMAILS) !== '[]') throw new Error('Admission and release recovery accept no tester mutation payload');
   }
-  // An admission window is only bounded if the bound is a required input. The
-  // shared parser is the same one that builds and checks the payload bytes. The
-  // window contract is unchanged: only `resume-admission` reads the bound.
-  if (operation === 'resume-admission') parseWindowMinutes(env.WINDOW_MINUTES);
   if (Object.hasOwn(testerOperationActions, operation)) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
     if (operation === 'admission-status' && payload !== '[]') throw new Error('Admission status accepts no mutation payload');
@@ -215,7 +210,7 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
         const status = await readLifecycleStatus(io, task, definition);
         record?.events.push({ type: 'lifecycle-status', task_arn: tasks[0], task_definition_arn: definitions[0],
           status_sha256: sha256(canonicalJson(status)), admission_mode: status.admission_mode,
-          admission_window_expires_at: status.admission_window_expires_at, tester_count: status.tester_count,
+          admission_record: status.admission_record, tester_count: status.tester_count,
           database_policy_matches_ssm: status.database_policy_matches_ssm });
         return status;
       }
@@ -238,6 +233,9 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
         tester_emails_sha256: Array.isArray(tester_emails) ? sha256(canonicalJson(tester_emails)) : 'unavailable' } });
     },
     recordRestoreStage(event) { record?.events.push({ type: 'restore-stage', ...event }); },
+    // The post-open proof is recorded exactly as the admission driver built and
+    // asserted it: one event that says open, no bound, both surfaces agree.
+    recordAdmissionOpenProof(proof) { record?.events.push(proof); },
     recordRestoreState(observed) { record?.events.push({ type: 'restore-state', ...observed }); },
     recordBetaSizingState(observed) { record?.events.push({ type: 'beta-sizing-state', ...observed }); },
     async http(url) {
@@ -283,17 +281,17 @@ export async function runOperation(env = process.env) {
     return;
   }
   const operation = env.INFRA_OPERATION;
-  if (operation === 'suspend-admission') await runSuspendAdmission({ io, infraSha: env.GITHUB_SHA, env });
-  else if (operation === 'resume-admission') await runResumeAdmission({ io, infraSha: env.GITHUB_SHA, env });
+  if (operation === 'close-admission') await runCloseAdmission({ io, infraSha: env.GITHUB_SHA, env });
+  else if (operation === 'open-admission') await runOpenAdmission({ io, infraSha: env.GITHUB_SHA, env });
   else if (operation === 'restore-release') await runRestoreRelease({ io, infraSha: env.GITHUB_SHA, env });
   else if (Object.hasOwn(testerOperationActions, operation)) await runTesterAllowlist(testerOperationActions[operation], env.TESTER_EMAILS, io);
   else if (operation === 'migrate') {
     // A forward migration runs only against an admission mirror that proves
-    // closed admission. The bound closes an abandoned window on that surface, so
-    // this admits the ordinary after-expiry case and refuses an unprovable
-    // record until `suspend-admission` restores it. The migration runs on the
-    // revision the release slice reports, never on a locally selected image: Infra
-    // no longer chooses a Service release.
+    // closed admission. Nothing closes on its own any more, so a stale `testers`
+    // record must be closed explicitly with `close-admission` before this fence
+    // admits; an unprovable record is refused until that happens. The migration
+    // runs on the revision the release slice reports, never on a locally selected
+    // image: Infra no longer chooses a Service release.
     await assertMigrationAdmissionClosed(io);
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
     const revision = workloadRevision(workload);

@@ -141,9 +141,9 @@ export class PlatformStack extends cdk.Stack {
     if (stage === 'beta') {
       // CloudFormation creates fail-closed defaults. Lifecycle operations own
       // runtime values, so deploys never include the current tester list. The
-      // admission decision is one JSON record that carries its own bound, so a
-      // reader enforces the expiry instead of remembering it, and an abandoned
-      // window closes itself on this surface with no writer and no deployment.
+      // admission decision is one mode word with no bound, so opening admits until
+      // an explicit close and nothing closes itself; the tester list is a separate
+      // parameter that opening never changes.
       for (const [id, name, value] of [
         ['AdmissionMode', 'admission_mode', '{"mode":"closed"}'],
         ['TesterAllowlist', 'tester_allowlist', '[]'],

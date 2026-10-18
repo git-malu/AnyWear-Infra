@@ -83,8 +83,9 @@ Environment configuration supplies account `650880818323`, region `ap-east-1`,
 `INFRA_RUNTIME_ROLE_ARN=arn:aws:iam::650880818323:role/beta-infra-runtime-role` and
 the activation gate. `deploy-platform` and `restore-release` supply `service_release_tag` and
 `service_commit`; every other operation rejects those inputs. Operation,
-identity/retention, tester and admission-window inputs are exposed only by the
-relevant family in the [entry-point table](#entry-points). Deployment records are
+identity/retention and tester inputs are exposed only by the
+relevant family in the [entry-point table](#entry-points). Admission takes no
+bound input: lifecycle `resume` is invoked with no payload. Deployment records are
 v3 (`anywear_infra_deployment`) with a producer identity, the configured stack
 set, the stage-contract parameters read (name, version, value hash), the
 authenticated observation and a derived schema content hash.
@@ -134,7 +135,7 @@ or authorization to deploy.
 ## Entry points
 
 Infra exposes three entries and two manual dispatch surfaces. `check.yml` is
-automatic; `runtime.yml` (`state`, `observe`) and `mutate.yml` (the eleven
+automatic; `runtime.yml` (`state`, `observe`) and `mutate.yml` (the ten
 mutation operations) are the only manual dispatch surfaces; `production.yml` is
 `workflow_call`-only and not an entry. Both manual entries use exact reviewed
 main, the `beta` environment and shared non-cancelling queue
@@ -156,7 +157,7 @@ gates.
 | --- | --- | --- |
 | [check.yml](../../.github/workflows/check.yml) | none (PR / push main) | Source checks only; no dispatch surface |
 | [runtime.yml](../../.github/workflows/runtime.yml) | `state`, `observe` | `state`: CFN and SSM read-only session, no tasks/PassRole/deploy role or schema assertion, works with the switch closed. `observe`: qualified observation of the stacks Infra produces; the accepted `anywear_infra_deployment` v3 producer |
-| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `suspend-admission`, `resume-admission` | Chain: `preflight` → `verify` → `deploy` (only job with `environment: beta` and `id-token: write`) → `record` (no credentials). Explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks; `deploy-platform` is qualified only by a following fixed `runtime.yml` `observe` |
+| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission` | Chain: `preflight` → `verify` → `deploy` (only job with `environment: beta` and `id-token: write`) → `record` (no credentials). Explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks; `deploy-platform` is qualified only by a following fixed `runtime.yml` `observe` |
 | [production.yml](../../.github/workflows/production.yml) | none (`workflow_call` only) | Future Production scaffold; source-disabled pre-AWS blocker; not an entry |
 
 `deploy-platform` and `restore-release` require the reviewed Service release tag
@@ -164,7 +165,7 @@ and source commit; every other operation rejects them.
 Because one dispatch surface now hosts several operations, the per-operation
 input scope is enforced in `scripts/runtime-operation.mjs` preflight rather than
 by file presence: the tester payload belongs only to `add-testers`/`set-testers`,
-`window_minutes` is read only by `resume-admission`, and identity
+admission accepts no bound input, and identity
 phase/retention protection may vary only for `deploy-*`/`restore-release` (every
 other operation runs `retired`/`true`). Sizing/telemetry are no longer inputs:
 they belong to Service's release chain.
@@ -200,10 +201,10 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
 | `observe` | Collect authenticated active-Beta deployment evidence by launching a verification task; not AWS read-only |
 | `state` | Record Platform/Workload status/activity and sanitized SSM admission state; no DB/schema/policy qualification |
-| `admission-status` | Read the admission mode, its bound, the tester list and the database status through the selected existing Service lifecycle command. The record publishes the effective decision every gate uses, the raw record each surface stores and whether those raw records disagree |
-| `add-testers`, `set-testers` | Update the exact normalized tester list using the selected lifecycle `set-testers` command, which refuses while admission is not provably closed. The write changes no admission state and cannot open a window: no admission operation may run `resume`, and the record's admission read-back shows the mode and bound unchanged. Request a window with `resume-admission` afterwards |
-| `resume-admission` | Verify the deployed selected image/schema, refuse before resuming unless the selected Service reports the recorded window bound and the database and mirror both prove effective closure, then open the tester lane for the explicit `window_minutes` bound (15–240, default 60) and prove the recorded expiry through the lifecycle status read-back; the tester list is unchanged, and a failure after the resume attempt suspends back to the recorded decision. Its only extra lifecycle action is that recovery-only `suspend`: reachable from the failed-window path alone, with no operator input that can request it |
-| `suspend-admission` | Verify the deployed selected image/schema, suspend admission through its pinned lifecycle command, then prove effective DB/SSM agreement and preserve the observed tester list; keep both stacks active. Records whether it ended a live window (`ordinary`) or one the bound had already ended (`recovery`) from the database's stored pair |
+| `admission-status` | Read the admission mode, the record's key set, the tester list and the database status through the selected existing Service lifecycle command. The record publishes the effective decision every gate uses, the recorded mode each surface stores and whether those raw records disagree |
+| `add-testers`, `set-testers` | Update the exact normalized tester list using the selected lifecycle `set-testers` command, which refuses while admission is not provably closed. The write changes no admission state and cannot open admission: no admission operation may run `resume` except `open-admission`, and the record's admission read-back shows the mode and key set unchanged. Open admission separately with `open-admission` |
+| `open-admission` | Refuse before resuming unless the selected Service's status proves effective closure and DB/SSM agreement, the database decision is closed and the mirror holds a `closed` record; then resume with **no payload**, re-read SSM and require the database status to report `testers`, matching policy and **no** `admission_window_expires_at` field. Records `admission-open-proof` (mode, source, tester count/hash, SSM record key set, database status field absence, SSM/DB agreement). The tester list is unchanged. Its only extra lifecycle action is the recovery-only `suspend` a failed open issues; no operator input can request it |
+| `close-admission` | Close admission through its pinned lifecycle `suspend`, then prove effective DB/SSM agreement and preserve the observed tester list; keep both stacks active. Records whether it ended an open admission (`ordinary`) or one already closed (`already-closed`) from the database status |
 
 A dispatch uses explicit inputs, for example:
 
@@ -216,9 +217,9 @@ gh workflow run mutate.yml --repo git-malu/AnyWear-Infra --ref main \
 For state-only observation dispatch `runtime.yml` with `operation=state`; it works
 with the stage switch closed. For mutation select `mutate.yml` and its operation,
 adding identity/retention only for `deploy-*`/`restore-release`, tester payload
-only for `add-testers`/`set-testers`, the release identity only for
-`deploy-platform`/`restore-release`, and `window_minutes` only for
-`resume-admission` (15–240, default 60). `observe` is dispatched through
+only for `add-testers`/`set-testers`, and the release identity only for
+`deploy-platform`/`restore-release`. Admission takes no additional input.
+`observe` is dispatched through
 `runtime.yml`; the workflow path that produces the accepted deployment record does
 not change. Initial role bootstrap uses the
 [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
@@ -280,8 +281,7 @@ telemetry-off restoration.
 
 ## Tester and cleanup ownership
 
-Admission dispatch alone supplies `tester_emails` as a JSON string, and
-`resume-admission` additionally supplies `window_minutes` as a number. Input
+Admission dispatch alone supplies `tester_emails` as a JSON string. Input
 normalization occurs before credentials; operation evidence records the effective
 normalized payload hash for the explicit action. `admission-status` requires the
 empty array `[]`. Add/set use exact normalized email addresses, at most 50
@@ -289,77 +289,76 @@ users and the bounded SSM payload size. Their operation evidence records the
 effective payload hash.
 The tester write is exactly that: `set-testers` replaces the list and changes no
 admission state, and the Service command refuses while admission is not provably
-closed. **A tester write cannot open admission and has no default window**; the
-operator flow for a window is `add-testers` (optional) and then
-`resume-admission`. An empty tester payload is not proof of closed admission
-either. `admission-status` publishes the effective mode every gate uses, the raw
-record each surface stores and whether those raw records disagree — after an
-abandoned window the database still stores `testers` with a past bound while
-admission is closed, and one boolean cannot say both things.
+closed. **A tester write cannot open admission, and no operation supplies a bound**;
+the operator flow is `add-testers` (optional) and then
+`open-admission`. An empty tester payload is not proof of closed admission
+either. `admission-status` publishes the effective mode every gate uses, the
+recorded mode each surface stores and whether those raw records disagree.
 
-## Bounded admission windows
+## Admission open and close
 
-`resume-admission` is the only operation an operator can request that opens
+`open-admission` is the only operation an operator can request that opens
 admission, and the only operation whose one-shot authority lists the lifecycle
-`resume` action. It requests a window through the same reviewed
-`mutate.yml` entry point: dispatch `operation=resume-admission` with
-`window_minutes` between 15 and 240 (default 60). That requestable bound is what
-the dispatch input, the one-shot payload guard and the writer all carry, so a
-window cannot be longer than the dispatch asked for and cannot be requested by any
-other route.
+`resume` action. It takes no payload: the Service has no bound to write, so the
+`mutate.yml` dispatch, the one-shot guard and the lifecycle command carry none.
 
-Three values are easy to confuse, so read them as one statement:
+Opening and closing are the whole lifecycle:
 
-- **requestable:** `window_minutes` is a required integer from 15 to 240. 241 is
-  refused at the dispatch input and again at the one-shot payload guard.
-- **written:** the Service writes `now + window_minutes`, the same bound, so the
-  recorded expiry can never be longer than the request.
-- **read:** the Service gate grants a **named one-minute clock-skew tolerance** on
-  top of the written bound, because the writer (the one-shot lifecycle container)
-  and the reader (the API/worker task) are separate clocks; a window written at
-  exactly 240 minutes must not read closed. The reader therefore treats a record
-  as live while it is present, canonical, strictly in the future and no further
-  ahead than 240 minutes plus that one minute. Missing, malformed, duplicated-key,
-  non-canonical, unknown-mode, extra-key, wrong-type, a `testers` record without a
-  canonical bound, a record carrying an explicit `null` bound, a `closed` record
-  carrying an instant, past and beyond that tolerance all read as
-  closed. The tolerance never widens what can be requested.
+- **closed:** `{"mode":"closed"}`. `close-admission` runs the pinned lifecycle
+  `suspend` and records `close_kind=ordinary` when the database reported
+  `testers`, or `already-closed` when it already reported `closed`. The
+  classification is read from the database status, never from the SSM mirror.
+- **testers:** `{"mode":"testers"}`. `open-admission` runs the pinned lifecycle
+  `resume` and records the post-open proof. The tester list is untouched, so no
+  non-tester is admitted.
 
-The driver's post-resume status read-back refuses a recorded expiry outside
-`window_minutes + one minute`, so the operation record cannot claim a longer window
-than was requested even if the writer erred.
+**Nothing closes on its own.** There is no bound, no expiry and no time-based
+backstop in the parameter, the reader or the writer. Open admission ends only when
+`close-admission` writes `closed`, so an interrupted or failed `open-admission`
+after its resume attempt leaves admission **open** and the operator recovery is
+`close-admission` followed by an `admission-status` read-back. The failed-open path
+issues one recovery-only `suspend` and records `close_kind=failed-open`, but that
+covers only a run still executing: there is no self-healing, and a run interrupted
+mid-flight can stay open until an explicit close.
 
-The window is the tester lane: the list does not change and no non-tester is
-admitted. **The window ends at its bound without anyone acting.** Ending the window
-is the bound's job; restoring the recorded decision — including the SSM mirror of
-it — is a separate `suspend-admission` dispatch. That operation restores the
-recorded decision and records whether it ended a live window (`ordinary`) or one
-the bound had already ended (`recovery`); it also classifies `already-closed` when
-the stored mode was already `closed`. The classification is read from the database
-status pair, never from the SSM mirror.
+The post-open read-back is also the executable proof that the deployed Service has
+no window semantics: it requires `admission_mode=testers`, matching
+`database_policy_matches_ssm`, and the **absence** of
+`admission_window_expires_at`. A Service image from before this batch still reports
+that field, so `open-admission` refuses it — naming the still-reported removed
+window field — instead of reading a null as "no bound". The operation record then
+carries one `admission-open-proof` event:
 
-**The mirror now carries its own bound, so an abandoned window closes itself on
-both surfaces.** After an unattended expiry `/anywear/beta/admission_mode` reads
-`closed` because the recorded instant is past, with no writer, no grant and no
-deployment. The database row remains authoritative for transactional decisions and
-still stores `testers` with that past bound; `admission-status` reports the
-effective decision and the raw record separately for exactly that reason. A later
-window does not require the stale mirror to be rewritten first, because the mirror
-already reads closed; `suspend-admission` is still the operation that restores a
-mirror whose value cannot prove closure at all.
+```json
+{
+  "type": "admission-open-proof",
+  "schema_version": 1,
+  "observed_at": "<ISO-8601>",
+  "mode": "testers",
+  "mode_source": "record",
+  "no_bound": true,
+  "tester_count": 2,
+  "tester_emails_sha256": "<sha256 of the canonical tester list>",
+  "surfaces_agree": true,
+  "ssm": { "parameter": "/anywear/beta/admission_mode", "recorded_mode": "testers",
+    "record_keys": ["mode"], "expires_at_present": false },
+  "database": { "lifecycle_status_mode": "testers", "lifecycle_status_record": "testers",
+    "lifecycle_status_reports_expires_at": false, "database_policy_matches_ssm": true,
+    "tester_count": 2, "lifecycle_status_sha256": "<sha256 of the status>" }
+}
+```
 
-A window that fails after the resume attempt suspends itself before failing: the
-operation issues the same pinned `suspend`, re-asserts the recorded decision and
-records `close_kind=failed-window`. If that recovery suspend cannot restore the
-decision, the run fails with an aggregate error naming the observed unsafe state
-instead of reporting a clean failure.
+`no_bound` is true only when the SSM record key set is exactly `["mode"]` and the
+database status omits the removed field; `surfaces_agree` is true only when the
+status reports the same mode, the same tester count and
+`database_policy_matches_ssm=true`. Both must be true or the operation fails, so a
+reader of the record sees "open, no bound, both surfaces agree" without reading
+logs.
 
-`suspend` is the only lifecycle action `resume-admission` carries beyond `resume`
-and `status`, and it is **recovery-only**: the driver reaches it solely from that
-failed-window path, no operator input can request it, and it is the same pinned
-suspend task `suspend-admission` runs. The permission sits in the reviewed
-one-shot table next to the operation rather than in a hidden bypass, and
-`suspend-admission` keeps the only other `suspend` entry.
+`close-admission` keeps the only other `suspend` entry in the reviewed one-shot
+table. The `suspend` that `open-admission` may also run is **recovery-only**: the
+driver reaches it solely from the failed-open path, no operator input can request
+it, and it is the same pinned task `close-admission` runs.
 
 After cutover, Service's `beta-testers` entry point retains application-data
 `cleanup` only. Infra owns status/add/replace. `beta-service-data-role` can run
@@ -453,48 +452,41 @@ task cessation and inspection of retained orphan machines outside the stack.
 
 ## Admission closure and coherent release recovery
 
-Both `suspend-admission`/`resume-admission` and `restore-release` require
+Both `close-admission`/`open-admission` and `restore-release` require
 `identity_phase=retired`, `retention_protection=true` source context. Admission
-fixes this context; deploy recovery requires the explicit inputs. `suspend-admission`
-and `resume-admission` accept only `tester_emails=[]`, and `resume-admission` also
-requires the explicit `window_minutes` bound in 15–240; deployment does not expose
-either payload. Here `[]` means no tester mutation
+fixes this context; deploy recovery requires the explicit inputs. The admission
+operations accept only `tester_emails=[]`; deployment does not expose that payload.
+Here `[]` means no tester mutation
 payload; it says nothing about the current SSM allowlist. Preserve the complete
 observed membership and closed admission after any temporary
-qualification policy window. Suspending admission does not drain existing backlog.
+qualification policy window. Closing admission does not drain existing backlog.
 
-`suspend-admission` requires stable active Platform/Workload and the selected image
+`close-admission` requires stable active Platform/Workload and the selected image
 already deployed. It verifies that image's actual policy, journal and applied
 schema, runs its pinned lifecycle `suspend`, then reads both SSM parameters — the
 admission mode record and the tester allowlist. Its pinned lifecycle `status` must
 prove the effective mode closed, the tester count and
 `database_policy_matches_ssm=true`; the classification of what it ended comes from
-the stored raw pair. Status evidence comes from the authenticated
+the stored database mode. Status evidence comes from the authenticated
 stopped task's actual definition and exact CloudWatch log stream, with bounded
 pagination and matching complete scans. Missing, malformed or duplicate status
 fails. Final SSM readback must prove closure and preserve the original tester
 membership. No CFN, service scaling, migration, drain or implicit admission
 reopening occurs.
 
-`resume-admission` requires the same stable active Platform/Workload, the selected
+`open-admission` requires the same stable active Platform/Workload, the selected
 image already deployed, `identity_phase=retired` and `retention_protection=true`.
 It reads a lifecycle `status` **before** resuming and refuses unless that status
-carries the `admission_window_expires_at` field, reports the effective mode
-closed, `database_policy_matches_ssm=true` and no live window, and unless the SSM
-mirror can prove closed admission (a closed record, or a tester window its own
-bound already ended). That read is the executable fence against a selected Service
-revision that cannot carry or enforce a bound, so it fails before any `resume` task
-runs. The operation then resumes with the exact bounded payload, re-reads SSM, and
-requires the resumed lifecycle status to report the tester mode, a matching
-database policy and an expiry between now and the requested bound plus one minute
-of clock skew. Its admission record carries the requested `window_minutes`, the
-accepted `admission_window_expires_at`, both admission phases and the lifecycle
-status hash. That one-minute tolerance exists only because the writer and the
-reader are separate containers; it is not requestable. `suspend` is the operation's
-only extra lifecycle action, and it is recovery-only: the driver issues it solely
-on the failed-window path to restore the recorded decision, and no operator input
-can request it. No CFN, service scaling or migration occurs, and no non-tester is
-admitted.
+reports the effective mode closed and `database_policy_matches_ssm=true`, and
+unless the SSM mirror holds a `closed` record. That read is the executable fence
+against opening from a surface that disagrees with itself. The operation then
+resumes with **no payload**, re-reads SSM, and requires the post-open status to
+report the tester mode, a matching database policy and the absence of the removed
+`admission_window_expires_at` field. Its record carries both admission phases, the
+lifecycle status hash and one `admission-open-proof` event. `suspend` is the
+operation's only extra lifecycle action, and it is recovery-only: the driver issues
+it solely on the failed-open path, and no operator input can request it. No CFN,
+service scaling or migration occurs, and no non-tester is admitted.
 
 ### Admission-mode status contract
 
@@ -502,32 +494,38 @@ The Service lifecycle `status` object is the cross-repository read-back, and the
 Infra reader selects its log message by the contract field names. It carries
 `admission_mode` (the **effective** decision every gate uses), `admission_record`
 (the **raw stored** mode word), `database_record_differs` (boolean: the raw stored
-mode differs from the effective decision), `admission_window_expires_at` (the
-**effective** bound, null whenever the decision is closed), `tester_count` and
-`database_policy_matches_ssm` (which now means the effective decision and the
-tester list agree across the two surfaces), plus the existing drain state fields.
+mode differs from the effective decision), `tester_count` and
+`database_policy_matches_ssm` (the effective decision and the tester list agree
+across the two surfaces), plus the existing drain state fields. The Service status
+no longer emits `admission_window_expires_at`: the field is omitted, not null.
 The same vocabulary is used by the Service task audit (`policy.admission_mode`,
 `policy.admission_record`, `policy.database_record_differs`) and by E2E, which
 consumes `policy.admission_mode` as effective.
 
-Because the effective decision and the stored row differ after an abandoned
-window, `admission-status` publishes the effective mode, the raw record from each
-surface and both disagreement flags: the Service's `database_record_differs` and
-this comparison's `mirror_record_differs` (does the status's raw word equal the
-mirror's recorded word), beside `effective_matches`. A human is never shown
-"testers are admitted" about a closed environment, and a disagreeing raw record is
+During a rollout, `status` may be read from a Service image deployed before this
+batch. That image still emits `admission_window_expires_at`, so the status parser
+**tolerates** its presence when it is a string or null, and the status selector
+identifies the line by `admission_mode` and `admission_record` alone. The post-open
+read-back is where absence becomes mandatory: `open-admission` refuses a status
+that still carries the field, because the running Service has not dropped window
+semantics yet. That refusal — not a null value — is the executable proof.
+
+Because each surface stores its own mode word, `admission-status` publishes the
+effective mode, the raw record from each surface and both disagreement flags: the
+Service's `database_record_differs` and this comparison's `mirror_record_differs`
+(does the status's raw word equal the mirror's recorded word), beside
+`effective_matches`. A human is never shown "testers are admitted" about a closed
+environment, and a disagreeing raw record is
 visible instead of being reconciled silently. The Infra comparison is always
-effective-to-effective: `status.admission_mode` against the effective mode derived
-from the parameter, never against a stored word, so the pre-window and resume
-checks still work after an abandoned window.
+effective-to-effective: `status.admission_mode` against the mode derived
+from the parameter, never against a stored word.
 
 The parameter value encoding is fixed: `{"mode":"closed"}` and
-`{"mode":"testers","expires_at":"<ISO-8601 with milliseconds and Z>"}` are the only
-accepted shapes, and each must be its own canonical JSON encoding — the same
-`JSON.stringify(JSON.parse(value)) === value` rule the Service reader applies. The
-bound is present exactly when the record is `testers`: an explicit `null` bound
-(`{"mode":"closed","expires_at":null}`) is a contradiction, not an absent bound,
-and is refused with its own reason. The
+`{"mode":"testers"}` are the only
+accepted shapes, each exactly one `mode` key and its own canonical JSON encoding —
+the same `JSON.stringify(JSON.parse(value)) === value` rule the Service reader
+applies. Any extra key, including the removed `expires_at` in any spelling, is
+refused with its reason and with the observed key list kept as evidence. The
 Infra reader additionally refuses duplicate keys outright (its strict parser), so a
 hand-edited value with a repeated `mode` is not a record for either the fence or
 the admission read. The conformance table in
@@ -546,7 +544,7 @@ Foundation remains Infra `88679b61630bc2344258cafb0d35b4d0b02e3a0d` and Billing
 remains Service `58444ebe15a0ea08ca8f0c8aa91d0ba8a7bfb759`.
 Its current executor can be newer without relabeling unchanged stack producers.
 If actual producers change, review a new exact map before use. New admission/
-recovery operations (`suspend-admission`, `resume-admission`, `restore-release`) reject
+recovery operations (`close-admission`, `open-admission`, `restore-release`) reject
 `@executor` on any untouched stack.
 
 > **Historical evidence.** The historical restore sequence below and the
@@ -702,7 +700,7 @@ Service image:
 
 0. **With the previous Infra revision**, dispatch its admission-status operation
    (named `tester-status` there) and require the effective decision closed; record
-   the observed mode, bound and tester list. That recorded tuple is the pre-state
+   the observed mode and tester list. That recorded tuple is the pre-state
    the later equality proof compares against. Dispatch it with the deployed tuple's
    selection, `selections/beta-cleanup-150-148-5d16543.json` (Service `5d16543`,
    release `415612529`, schema 19).
@@ -717,12 +715,13 @@ Service image:
    `deploy-platform` must retain the observed running image.
 2. **`migrate`**: the forward-migration fence is satisfied by the
    CloudFormation-created `closed` value and by step 0's recorded tuple. The fence
-   refuses an open window and every value that cannot *prove* closure, including a
+   refuses open admission and every value that cannot *prove* closure, including a
    single throttled read. The Service migration `0021` adds the mode column with
-   default `closed` and *then* adds a check constraint requiring `testers` to carry
-   a bound and `closed` to carry none, so migrating a database that still holds a
-   live window fails the constraint **before** the rename commits, leaving the old
-   schema intact. That is why the documented `suspend-admission` predecessor is not
+   default `closed` and *then* added a check constraint requiring `testers` to carry
+   a bound and `closed` to carry none — the constraint this batch's Service
+   migration drops again — so migrating a database that still held a live window
+   failed the constraint **before** the rename committed, leaving the old
+   schema intact. That is why the documented `close-admission` predecessor is not
    a formality: it is what makes the migration apply, and a failed attempt is a
    fail-closed refusal rather than a half-migrated schema.
 
@@ -799,8 +798,8 @@ record — and splitting step 5's resource deletion from its grant deletion.
 Deleting the old parameters before the new *workload* image runs is what this
 revision does, and it is safe only because steps 0 and 2 already guarantee closure:
 step 0 recorded the environment closed, the new record was created
-`{"mode":"closed"}`, and the migration's constraint refuses a live window. Nothing
-is left open by the collapse.
+`{"mode":"closed"}`, and the then-current migration constraint refused a live
+window. Nothing is left open by the collapse.
 
 **The cost is a maintenance window.** Between that Platform deploy and
 `deploy-workload`, no admission operation can run: they require the selected
@@ -824,17 +823,16 @@ old image queries the renamed table and fails with a missing-relation error, so 
 task is admitted but nothing reports "closed", and a sign-up can pass the
 SSM-backed Cognito edge and then dead-end at provisioning. Step 0 is what keeps
 that gap fail-closed: it guarantees the old mirror read closed before the change,
-and the new mode record was born closed. A window requested inside the gap fails
-closed — `resume-admission` refuses because the database status does not prove an
-effective closed decision, or because the selected image cannot report the bound —
-and recovery is roll-forward, because `deploy-workload` already refuses an image the
+and the new mode record was born closed. An open requested inside the gap fails
+closed — `open-admission` refuses because the database status does not prove an
+effective closed decision — and recovery is roll-forward, because `deploy-workload`
+already refuses an image the
 applied schema cannot support, so the pair cannot be reversed by accident.
 
 **The standalone `migrate` fence.** `migrate` reads `/anywear/beta/admission_mode`
 — already in the runtime read set, so it adds no grant and no CDK change — and
-answers `closed`, `open` or `unproven`; only `closed` (a valid closed record, or a
-tester window its own bound already ended) is accepted. The consequence is stated
-rather than hidden: after an unattended expiry the record's own bound reads closed,
-so the fence admits the migration, while a mirror restored to a bare word or any
-other value that cannot prove closure makes it refuse. `suspend-admission` restores
-that record — it is already the documented predecessor of any window.
+answers `closed`, `open` or `unproven`; only `closed` (a valid
+`{"mode":"closed"}` record) is accepted. There is no expiry that admits the
+migration on its own: a stale `testers` record reads `open` and must be closed
+explicitly with `close-admission`, while a mirror restored to a bare word or any
+other value that cannot prove closure makes the fence refuse.

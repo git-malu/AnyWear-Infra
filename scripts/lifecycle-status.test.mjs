@@ -10,8 +10,12 @@ const definition = { taskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task
 const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
   clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
   taskDefinitionArn: definition.taskDefinitionArn, lastStatus: 'STOPPED' };
+// The mode-only status contract. The removed window field must be tolerated in
+// every spelling an old Service image can emit while a rollout is in progress.
 const status = { admission_mode: 'closed', admission_record: 'closed', database_record_differs: false,
-  admission_window_expires_at: null, tester_count: 4, database_policy_matches_ssm: true };
+  tester_count: 4, database_policy_matches_ssm: true };
+const statusWithNull = { ...status, admission_window_expires_at: null };
+const statusWithInstant = { ...status, admission_window_expires_at: '2026-01-01T00:00:00.000Z' };
 function logIo(messages) {
   const calls = [];
   return { calls, async aws(args) {
@@ -28,12 +32,20 @@ test('lifecycle status reads only the actual stopped task log stream, across com
   assert.ok(io.calls.every(args => args[0] === 'logs' && args[1] === 'get-log-events'));
 });
 
+test('the status selector tolerates the removed window field in any form', async () => {
+  for (const value of [status, statusWithNull, statusWithInstant]) {
+    assert.deepEqual(await readLifecycleStatus(logIo([JSON.stringify(value)]), task, definition), value);
+  }
+});
+
 test('missing, duplicate, malformed and incomplete status logs fail closed', async () => {
   for (const messages of [[], [JSON.stringify(status), JSON.stringify(status)],
-    ['{"admission_mode":"closed","admission_window_expires_at":null'],
-    // The Service→Infra contract moved with the mode: the old field names are not
-    // status evidence any more, so a stale message must not be selected silently.
+    // An apparent status that cannot be parsed fails closed rather than being
+    // skipped: both contract keys appear before the truncation.
+    ['{"admission_mode":"closed","admission_record":"closed","admission_window_expires_at":null'],
+    // The old field names are not status evidence any more.
     ['{"intake_open":false,"admission_suspended":true}'],
+    // A mode without the raw record is not the status contract either.
     ['{"admission_mode":"closed"}']]) {
     await assert.rejects(readLifecycleStatus(logIo(messages), task, definition));
   }

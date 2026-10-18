@@ -68,7 +68,7 @@ test('restore refuses a non-terminal release slice before deploying the stage ba
 test('restore refuses a non-terminal stage base, an open admission or a non-beta cluster before any deploy', async () => {
   const cause = pattern => error => { assert.match(error.cause?.message ?? error.message, pattern); return true; };
   await assert.rejects(runRestoreRelease({ io: mockIo({ platformStatus: 'UPDATE_IN_PROGRESS' }), infraSha, env }), cause(/stable AnyWearPlatformStack-beta/));
-  await assert.rejects(runRestoreRelease({ io: mockIo({ mirror: { mode: 'testers', expires_at: new Date(Date.now() + 30 * 60_000).toISOString() } }), infraSha, env }),
+  await assert.rejects(runRestoreRelease({ io: mockIo({ mirror: { mode: 'testers' } }), infraSha, env }),
     cause(/not proven closed/));
   const otherCluster = { ...platformOutputs(), EcsClusterName: 'other' };
   await assert.rejects(runRestoreRelease({ io: mockIo({ platform: otherCluster }), infraSha, env }), cause(/restricted to beta-anywear/));

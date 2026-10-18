@@ -63,7 +63,11 @@ and must not be relabeled as an Infra-produced deployment.
   remains the only accepted `anywear_infra_deployment` v3 producer for E2E
   compatibility; `mutate.yml` is the single manual mutation entry
   and rejects cross-family or out-of-scope inputs before credentials. `production.yml`
-  is `workflow_call`-only and is not an entry. Record family and record type derive
+  is `workflow_call`-only and is not an entry. The five admission operations are
+  `admission-status`, `add-testers`, `set-testers`, `open-admission` and
+  `close-admission`; admission is one mode record with no window or expiry,
+  `open-admission` takes no payload, and `close-admission` is the only thing that
+  closes. Record family and record type derive
   from the operation, never from the hosting file. Preserve session restrictions for
   final qualification, actual workflow record identity and the v3 E2E producer
   boundary. Existing OIDC trust is repository/environment scoped, not workflow
@@ -73,11 +77,14 @@ and must not be relabeled as an Infra-produced deployment.
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
-- After #158 step C the only path that can deploy `AnyWearWorkloadStack-beta` is
-  AnyWear-Service's release chain. That path needs the deferred Foundation deploy
-  (the two Service deploy roles from step A) and Service's own
-  `ENABLE_BETA_MUTATION=true`; until that round no workload deploy may be
-  attempted, and no Infra entry may re-add one.
+- After #158 step C the only path that deploys `AnyWearWorkloadStack-beta` is
+  AnyWear-Service's release chain, and that capability is installed. The deferred
+  Foundation round has happened, so its two Service deploy roles from step A exist
+  and Service's own `ENABLE_BETA_MUTATION=true` can act: Service run 39137577023
+  ("Service release: deploy", `workflow_dispatch`, success, created
+  2026-10-18T14:47:35Z) deployed the Service-owned Workload release slice, and
+  Infra `deploy-foundation` runs succeeded on 2026-10-18 at 12:48:21Z, 12:22:55Z,
+  11:02:38Z and 07:33:47Z. No Infra entry may deploy, verify or recover that slice.
 - Every CLI scope requires explicit `legacyRoleSource=cdk|external`.
   `cdk` reproduces the Service source fixture; never use it as the live
   account plan. Foundation in account `650880818323`/`ap-east-1` owns only its

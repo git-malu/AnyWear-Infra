@@ -4,15 +4,16 @@ import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-s
 
 const unavailable = value => (value === undefined ? 'unavailable' : value);
 
-// The admission mirror is self-describing: the mode, its bound and where the
-// decision came from are all observed fields, so a fail-closed read never looks
-// like an observed closure.
+// The admission mirror is self-describing: the mode, its recorded key set and
+// where the decision came from are all observed fields, so a fail-closed read
+// never looks like an observed closure. There is no bound field to report.
 function admissionEvidence(admission) {
   const testers = admission?.tester_emails;
   return { admission_mode: unavailable(admission?.admission_mode),
-    admission_window_expires_at: unavailable(admission?.admission_window_expires_at),
     admission_mode_source: unavailable(admission?.admission_mode_source),
     admission_mode_reason: unavailable(admission?.admission_mode_reason),
+    admission_recorded_mode: unavailable(admission?.admission_recorded_mode),
+    admission_recorded_keys: unavailable(admission?.admission_recorded_keys),
     tester_count: Array.isArray(testers) ? testers.length : 'unavailable',
     tester_emails_sha256: Array.isArray(testers) ? sha256(canonicalJson(testers)) : 'unavailable' };
 }

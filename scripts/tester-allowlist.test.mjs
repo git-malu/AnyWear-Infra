@@ -28,7 +28,7 @@ function ioFixture({ active = true, digest = selector.image.digest } = {}) {
     // `set-testers` replaces the exact list and changes no admission state.
     if (action === 'set-testers') testers = JSON.parse(payload);
     if (action === 'status') {
-      return { admission_mode: 'closed', admission_window_expires_at: null, admission_record: 'closed',
+      return { admission_mode: 'closed', admission_record: 'closed',
         database_record_differs: false, tester_count: testers.length, database_policy_matches_ssm: true };
     }
   }, recordAdmissionState(event) { events.push(structuredClone(event)); } };
@@ -52,11 +52,12 @@ test('tester operations record the admission read-back their evidence claim rest
   await runTesterAllowlist('add', '["new@example.com"]', io);
   assert.deepEqual(io.events.map(event => [event.phase, event.result]), [['original', 'observed'], ['written', 'observed']]);
   // The mirror is self-describing, so the record shows the write changed no
-  // admission state: no derived expiry, no window, the same recorded decision.
+  // admission state: the same mode, the same recorded key set, no reportable bound.
   for (const event of io.events) {
     assert.equal(event.state.admission_mode, 'closed');
-    assert.equal(event.state.admission_window_expires_at, null);
+    assert.deepEqual(event.state.admission_recorded_keys, ['mode']);
     assert.equal(Object.hasOwn(event, 'window_minutes'), false);
+    assert.equal(Object.hasOwn(event.state, 'admission_window_expires_at'), false);
     assert.equal(Object.hasOwn(event, 'admission_window_source'), false);
     assert.equal(Object.hasOwn(event, 'lifecycle_status_sha256'), false);
   }
@@ -79,7 +80,7 @@ test('admission status publishes the effective decision, the raw record and thei
   assert.equal(event.mirror_record_differs, false);
   assert.equal(event.database.admission_mode, 'closed');
   assert.equal(event.database.admission_record, 'closed');
-  assert.equal(event.database.admission_window_expires_at, null);
+  assert.equal(Object.hasOwn(event.database, 'admission_window_expires_at'), false);
   assert.equal(event.database.tester_count, 1);
   // A status read mutates nothing.
   assert.equal(io.calls.some(call => call[2] === 'set-testers'), false);
