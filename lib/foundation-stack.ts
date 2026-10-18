@@ -436,13 +436,19 @@ export class FoundationStack extends cdk.Stack {
       // values with this execution role while it re-renders the four policies that
       // reference them (`ComputeRuntime/{Api,Worker}ExecutionRole/DefaultPolicy`
       // and the two task-role policies), so the role needs the log-group read
-      // action. It is granted on exactly the Workload's two log groups, in the
-      // `:*` log-group ARN form that DescribeLogGroups scopes resource policies
-      // against; the lifecycle/retention statement above keeps its own ARNs.
+      // action. IAM evaluates `logs:DescribeLogGroups` in its list form: CloudTrail
+      // shows the evaluated resource
+      // `arn:aws:logs:ap-east-1:650880818323:log-group::log-stream:`, which no
+      // named log-group ARN can match. The single grant is therefore
+      // `Resource: "*"`, constrained by its one action; the lifecycle/retention
+      // statement above keeps its own named ARNs. The explicit `Sid` keeps the
+      // policy minimizer from folding this wildcard read into the ELBv2
+      // `Describe*` statement above, so the grant stays one single-action
+      // statement the inventory test can constrain.
       serviceCfn.addToPolicy(new iam.PolicyStatement({
+        sid: 'DescribeWorkloadLogGroups',
         actions: ['logs:DescribeLogGroups'],
-        resources: [`${logGroup(`/anywear/beta/${unique('api')}`)}:*`,
-          `${logGroup(`/anywear/beta/${unique('worker')}`)}:*`],
+        resources: ['*'],
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',

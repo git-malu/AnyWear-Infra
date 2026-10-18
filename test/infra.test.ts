@@ -1067,16 +1067,25 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(cfn.some((statement) => statement.NotAction !== undefined || statement.NotResource !== undefined)).toBe(false);
     // Positive: CloudFormation resolves the Workload stack's two
     // `AWS::Logs::LogGroup` `Arn` values with this role while it re-renders the
-    // four policies that reference them, so the log-group read action is allowed
-    // on exactly those two ARNs in the `:*` log-group ARN form.
+    // four policies that reference them, so the role needs the log-group read.
+    // IAM evaluates `logs:DescribeLogGroups` in its list form -- CloudTrail
+    // records the evaluated resource as
+    // `arn:aws:logs:ap-east-1:650880818323:log-group::log-stream:` -- which no
+    // named log-group ARN can match. The role therefore has exactly one such
+    // grant, on the wildcard resource, with exactly this one action.
     const describeLogGroups = normalized(cfn).filter((statement) => [statement.Action].flat()
       .includes('logs:DescribeLogGroups'));
     expect(describeLogGroups).toHaveLength(1);
     expect(describeLogGroups[0]).toEqual({
-      Action: 'logs:DescribeLogGroups', Effect: 'Allow',
-      Resource: ['arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api:*',
-        'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*'],
+      Action: 'logs:DescribeLogGroups', Effect: 'Allow', Resource: '*', Sid: 'DescribeWorkloadLogGroups',
     });
+    // The wildcard is the only DescribeLogGroups statement: the same read is not
+    // also carried in a named-resource form, and no other statement names a
+    // log group (the lifecycle/retention statement is the only one left).
+    expect(cfn.filter((statement) => [statement.Action].flat().includes('logs:DescribeLogGroups')))
+      .toHaveLength(1);
+    expect(cfn.filter((statement) => JSON.stringify(statement.Resource).includes('log-group:')))
+      .toHaveLength(1);
     // The existing lifecycle/retention statement is unchanged: four actions on
     // the two log-group ARNs without the `:*` suffix.
     expect(normalized(cfn)).toContainEqual({
@@ -1085,22 +1094,27 @@ describe('Explicit infrastructure identity cutover', () => {
       Resource: ['arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
         'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker'],
     });
-    // Negative: the role stays read-only on logs. No log read API other than the
-    // ARN resolution CFN needs, no log/stream writes, no filters, tags or KMS
-    // binding, and no logs action outside this reviewed set on either role.
+    // Negative: the CFN role's complete logs action set is exactly the lifecycle
+    // four preserved above plus the one list-form read; every log content
+    // read/write/delete/filter/tag/KMS action is absent, and the deployment role
+    // holds no logs action at all.
     const allowedLogsActions = ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy',
       'logs:DescribeLogGroups', 'logs:PutRetentionPolicy'];
-    for (const statements of [deploy, cfn]) {
-      const logsActions = actions(statements).filter((action) => action.startsWith('logs:'));
-      expect(logsActions.filter((action) => !allowedLogsActions.includes(action))).toEqual([]);
-      for (const action of ['logs:FilterLogEvents', 'logs:GetLogEvents', 'logs:PutLogEvents', 'logs:CreateLogStream',
-        'logs:DeleteLogStream', 'logs:PutSubscriptionFilter', 'logs:PutMetricFilter', 'logs:TagResource',
-        'logs:UntagResource', 'logs:AssociateKmsKey', 'logs:DisassociateKmsKey', 'logs:PutDataProtectionPolicy']) {
-        expect(logsActions).not.toContain(action);
-      }
+    const cfnLogsActions = [...new Set(actions(cfn).filter((action) => action.startsWith('logs:')))].sort();
+    expect(cfnLogsActions).toEqual(allowedLogsActions);
+    expect(actions(deploy).filter((action) => action.startsWith('logs:'))).toEqual([]);
+    for (const action of ['logs:FilterLogEvents', 'logs:GetLogEvents', 'logs:PutLogEvents', 'logs:CreateLogStream',
+      'logs:DeleteLogStream', 'logs:PutSubscriptionFilter', 'logs:PutMetricFilter', 'logs:TagResource',
+      'logs:UntagResource', 'logs:AssociateKmsKey', 'logs:DisassociateKmsKey', 'logs:PutDataProtectionPolicy',
+      'logs:DeleteMetricFilter', 'logs:DeleteSubscriptionFilter', 'logs:GetLogRecord', 'logs:DescribeLogStreams',
+      'logs:DescribeMetricFilters', 'logs:DescribeSubscriptionFilters', 'logs:GetLogGroupFields',
+      'logs:StartQuery', 'logs:StopQuery', 'logs:GetQueryResults', 'logs:CreateExportTask', 'logs:CancelExportTask',
+      'logs:DescribeExportTasks', 'logs:PutResourcePolicy', 'logs:DeleteResourcePolicy',
+      'logs:PutDestination', 'logs:DeleteDestination', 'logs:PutLogGroupDeletionProtection']) {
+      expect(cfnLogsActions).not.toContain(action);
     }
-    // Exactly one statement was added for the ARN resolution; the lifecycle
-    // statement keeps its own grants.
+    // Exactly two statements carry logs actions: the unchanged lifecycle/
+    // retention statement and the single wildcard DescribeLogGroups statement.
     expect(cfn.filter((statement) => [statement.Action].flat()
       .some((action: string) => action.startsWith('logs:')))).toHaveLength(2);
     const taskRoleArns = ['task', 'execution'].flatMap((purpose) => ['api', 'worker'].map((service) => (
@@ -1136,9 +1150,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*',
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:targetgroup/beta-anywear-api/*',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
-      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api:*',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
-      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
       'arn:aws:s3:::anywearworkloadstack-beta-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
