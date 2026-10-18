@@ -432,6 +432,18 @@ export class FoundationStack extends cdk.Stack {
         actions: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy'],
         resources: [logGroup(`/anywear/beta/${unique('api')}`), logGroup(`/anywear/beta/${unique('worker')}`)],
       }));
+      // CloudFormation resolves the Workload stack's `AWS::Logs::LogGroup` `Arn`
+      // values with this execution role while it re-renders the four policies that
+      // reference them (`ComputeRuntime/{Api,Worker}ExecutionRole/DefaultPolicy`
+      // and the two task-role policies), so the role needs the log-group read
+      // action. It is granted on exactly the Workload's two log groups, in the
+      // `:*` log-group ARN form that DescribeLogGroups scopes resource policies
+      // against; the lifecycle/retention statement above keeps its own ARNs.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['logs:DescribeLogGroups'],
+        resources: [`${logGroup(`/anywear/beta/${unique('api')}`)}:*`,
+          `${logGroup(`/anywear/beta/${unique('worker')}`)}:*`],
+      }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',
           's3:PutBucketPolicy', 's3:DeleteBucketPolicy', 's3:PutBucketPublicAccessBlock',
