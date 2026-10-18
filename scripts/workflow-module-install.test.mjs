@@ -44,7 +44,9 @@ const installOrderExemptions = Object.freeze([
 ]);
 
 async function loadWorkflows() {
-  const files = (await readdir(workflowDirectory)).filter(file => file.endsWith('.yml')).sort();
+  // GitHub accepts both `.yml` and `.yaml`; scan either extension so a `.yaml`
+  // workflow cannot escape the module-install rule.
+  const files = (await readdir(workflowDirectory)).filter(file => /\.ya?ml$/.test(file)).sort();
   return Promise.all(files.map(async file => ({
     file,
     workflow: yaml.load(await readFile(new URL(file, workflowDirectory), 'utf8')),
