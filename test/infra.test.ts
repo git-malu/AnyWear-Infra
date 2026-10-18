@@ -5,6 +5,7 @@ import { BillingStack } from '../lib/billing-stack';
 import { FoundationStack } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
 import { stageContractInputs } from '../lib/stage-contract';
+import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '@git-malu/stage-contracts';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import workloadExtensionResources from './fixtures/workload-extension-resources.json';
 import workloadBakeReads from './fixtures/workload-bake-reads.json';
@@ -1464,7 +1465,8 @@ describe('Explicit infrastructure identity cutover', () => {
     // entry here. Each entry must have exactly one grant, in the API's resource
     // form, inside the reviewed target.
     const reads = (workloadBakeReads as any).reads as Array<{
-      call: string; action: string; grant: string; target: string; resources: string[]; condition?: unknown;
+      call: string; action: string; grant: string; target: string; resources: string[];
+      condition?: unknown; attributes?: string[]; namespaces?: string[];
     }>;
     expect(reads).toHaveLength(6);
     expect(new Set(reads.map((read) => read.call)).size).toBe(6);
@@ -1493,6 +1495,16 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(new Set([matching[0].Resource].flat().map(render)))
         .toEqual(new Set(read.resources));
       expect(matching[0].Condition).toEqual(read.condition);
+      if (read.attributes !== undefined) {
+        // The SQS read names only the three live-valid depth attributes; the
+        // age is the AWS/SQS CloudWatch metric, not a GetQueueAttributes name.
+        expect(read.attributes).toEqual([...DEPLOYMENT_SQS_DEPTH_ATTRIBUTES]);
+        expect(read.attributes).not.toContain('ApproximateAgeOfOldestMessage');
+        expect(read.attributes).not.toContain('ApproximateNumberOfMessagesVisible');
+      }
+      if (read.namespaces !== undefined) {
+        expect(read.namespaces).toEqual(['AWS/ApplicationELB', 'AWS/SQS']);
+      }
     }
     // Only the CloudFormation stack-resource read predates #162; the other five
     // grants are part of this extension.

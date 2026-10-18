@@ -104,6 +104,9 @@ export declare const DEPLOYMENT_GATE_PROBE_FIELDS: readonly string[];
 /** The fixed, ordered names of the six baked signals. */
 export declare const DEPLOYMENT_GATE_SIGNAL_NAMES: readonly string[];
 
+/** The three GetQueueAttributes names the live SQS API accepts for depth. */
+export declare const DEPLOYMENT_SQS_DEPTH_ATTRIBUTES: readonly string[];
+
 /** The one stage-free threshold table, keyed by signal name. */
 export declare const DEPLOYMENT_GATE_THRESHOLDS: Readonly<Record<string, Readonly<Record<string, number>>>>;
 
