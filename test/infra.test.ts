@@ -6,6 +6,7 @@ import { FoundationStack } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
 import { stageContractInputs } from '../lib/stage-contract';
 import runtimePolicies from './fixtures/runtime-policy.json';
+import workloadExtensionResources from './fixtures/workload-extension-resources.json';
 import * as path from 'node:path';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
@@ -1103,7 +1104,8 @@ describe('Explicit infrastructure identity cutover', () => {
       'iam:AttachRolePolicy', 'iam:CreateRole', 'iam:DeleteRole', 'iam:DeleteRolePolicy', 'iam:DetachRolePolicy',
       'iam:GetRole', 'iam:GetRolePolicy', 'iam:ListAttachedRolePolicies', 'iam:ListRolePolicies',
       'iam:PassRole', 'iam:PutRolePolicy',
-      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy', 'logs:PutRetentionPolicy',
+      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteMetricFilter', 'logs:DeleteRetentionPolicy',
+      'logs:DescribeMetricFilters', 'logs:PutMetricFilter', 'logs:PutRetentionPolicy',
       's3:CreateBucket', 's3:DeleteBucket', 's3:DeleteBucketPolicy', 's3:DeleteBucketPublicAccessBlock',
       's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
       's3:PutBucketPublicAccessBlock',
@@ -1146,6 +1148,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:targetgroup/beta-anywear-api/*',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
       'arn:aws:s3:::anywearworkloadstack-beta-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
@@ -1257,6 +1260,62 @@ describe('Explicit infrastructure identity cutover', () => {
         }
       }
     }
+  });
+
+  /**
+   * The actions CloudFormation's handlers need to create, update, read and
+   * delete each resource type the #162 Workload extension adds. The execution
+   * role, not the deploy role, applies these resources. The fixture lists the
+   * exact recorded extension resources: adding a resource type to that fixture
+   * without extending this table fails the test, and the Service-side
+   * `extension-grants` test fails when the recorded extension adds a type this
+   * table does not cover.
+   */
+  const WORKLOAD_EXTENSION_ACTIONS: Record<string, string[]> = {
+    'AWS::CloudWatch::Alarm': ['cloudwatch:PutMetricAlarm', 'cloudwatch:DescribeAlarms', 'cloudwatch:DeleteAlarms'],
+    'AWS::Logs::MetricFilter': ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter'],
+  };
+
+  it('grants the CloudFormation execution role every action the #162 extension resource types need', () => {
+    const recordedTypes = [...new Set(workloadExtensionResources.resources.map((resource) => resource.type))].sort();
+    expect(recordedTypes).toEqual(Object.keys(WORKLOAD_EXTENSION_ACTIONS).sort());
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-cfn-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const granted = new Set(statements.flatMap((statement) => [statement.Action].flat()));
+    for (const [type, required] of Object.entries(WORKLOAD_EXTENSION_ACTIONS)) {
+      for (const action of required) {
+        expect({ type, action, granted: granted.has(action) }).toEqual({ type, action, granted: true });
+      }
+    }
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    // The metric-filter grant is worker-log-group-only; no filter exists on the
+    // api log group, so its grant is not repeated there.
+    const filterStatements = statements.filter((statement) => [statement.Action].flat().includes('logs:PutMetricFilter'));
+    expect(filterStatements).toHaveLength(1);
+    expect([filterStatements[0].Resource].flat().map(render)).toEqual([
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
+    ]);
+    const alarmStatements = statements.filter((statement) => [statement.Action].flat().includes('cloudwatch:PutMetricAlarm'));
+    expect(alarmStatements).toHaveLength(1);
+    expect([alarmStatements[0].Resource].flat().map(render)).toEqual([
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
+    ]);
   });
 
   it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {

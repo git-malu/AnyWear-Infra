@@ -467,6 +467,14 @@ export class FoundationStack extends cdk.Stack {
         actions: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy'],
         resources: [logGroup(`/anywear/beta/${unique('api')}`), logGroup(`/anywear/beta/${unique('worker')}`)],
       }));
+      // The #162 worker outbox metric filter is an `AWS::Logs::MetricFilter` the
+      // Workload template creates. CloudFormation's Logs handler needs the full
+      // create/update/read/delete action set on that log group; no filter exists
+      // on the api log group, so its grant is not repeated here.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter'],
+        resources: [logGroup(`/anywear/beta/${unique('worker')}:*`)],
+      }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',
           's3:PutBucketPolicy', 's3:DeleteBucketPolicy', 's3:PutBucketPublicAccessBlock',
