@@ -1427,6 +1427,53 @@ describe('Explicit infrastructure identity cutover', () => {
     for (const record of ['/anywear/beta/infra_selection', '/anywear/beta/infra_deployment']) {
       expect(JSON.stringify(runtimePuts.map((grant) => grant.Resource))).not.toContain(record);
     }
+    // Round 15: the observe path's first exercise of the stage-contract SSM
+    // surface. The Workload conversion made the release slice read every value
+    // under `/anywear/beta/`, so the runtime principal alone gets the prefix
+    // read on top of the nine pre-contract named reads. Pin the effective
+    // authorization (the CDK CLI merges statements with equal actions, so
+    // statement packing is not the contract): exactly the two read actions,
+    // exactly the prefix plus the nine names, the unchanged nine-name surface
+    // on the deploy/e2e neighbours, and the whole write/delete/version
+    // negative inventory.
+    const resolvePolicyArn = (value: any): any => {
+      if (Array.isArray(value)) return value.map(resolvePolicyArn);
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => resolvePolicyArn(part)).join(separator);
+      }
+      if (value?.Ref === 'AWS::Partition') return 'aws';
+      if (value?.Ref === 'AWS::Region') return 'ap-east-1';
+      if (value?.Ref === 'AWS::AccountId') return '650880818323';
+      return value;
+    };
+    const preContractParameters = ['cognito_user_pool_id', 'cognito_client_id', 'aws_region', 's3_bucket_name',
+      'qweather_api_host', 'admission_mode', 'tester_allowlist', 'infra_selection', 'infra_deployment']
+      .map((parameter) => `arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/${parameter}`).sort();
+    const stageContractPrefix = 'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*';
+    const ssmInventory = (name: string) => {
+      const statements = grantsFor(template, name)
+        .filter((grant) => [grant.Action].flat().some((action) => action.startsWith('ssm:')));
+      expect(statements.length).toBeGreaterThan(0);
+      for (const grant of statements) expect(grant.Effect).toBe('Allow');
+      const actions = [...new Set(statements.flatMap((grant) => [grant.Action].flat()))].sort();
+      const resources = statements.flatMap((grant) => [grant.Resource].flat().map(resolvePolicyArn)).sort();
+      return { actions, resources };
+    };
+    expect(ssmInventory('infra-runtime')).toEqual({
+      actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+      resources: [...preContractParameters, stageContractPrefix].sort(),
+    });
+    for (const name of ['infra-deploy', 'e2e-qualification']) {
+      expect(ssmInventory(name)).toEqual({
+        actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+        resources: preContractParameters,
+      });
+    }
+    for (const forbidden of ['ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:DeleteParameters',
+      'ssm:PutParameterVersion', 'ssm:GetParametersByPath', 'ssm:DescribeParameters', 'ssm:*']) {
+      expect(actionsFor(template, 'infra-runtime')).not.toContain(forbidden);
+    }
     const passRoles = grantsFor(template, 'e2e-qualification').find((grant) => [grant.Action].flat().includes('iam:PassRole'));
     expect([passRoles.Resource].flat()).toHaveLength(2);
     for (const forbidden of ['MigrationTaskRole', 'LifecycleTaskRole', 'CleanupTaskRole']) expect(JSON.stringify(passRoles)).not.toContain(forbidden);
