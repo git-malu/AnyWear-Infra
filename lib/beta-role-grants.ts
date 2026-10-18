@@ -38,6 +38,18 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   const getParameters = (principal: iam.IRole, names: string[]) => principal.addToPrincipalPolicy(
     new iam.PolicyStatement({ actions: ['ssm:GetParameter', 'ssm:GetParameters'], resources: parameters(names) }),
   );
+  // The Beta stage contract is published as one `/anywear/beta/` prefix. The
+  // observe path records every value under it (the Workload conversion replaced
+  // the Platform stack-output reads with the contract), so the runtime principal
+  // alone gets the prefix read. It is the same two read actions as the named
+  // reads above, and no write, delete or version mutation is added here or
+  // anywhere else.
+  const getStageContractParameters = (principal: iam.IRole) => principal.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+      resources: [arn('ssm', 'parameter', 'anywear/beta/*')],
+    }),
+  );
   const taskDefinition = (family: string) => arn('ecs', 'task-definition', `beta-anywear-${family}:*`);
   const services = ['api', 'worker'].map((name) => arn('ecs', 'service', `beta-anywear/beta-anywear-${name}`));
   const tasks = arn('ecs', 'task', 'beta-anywear/*');
@@ -131,6 +143,9 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
         p.vtoDeadLetterQueue.queueArn, p.autoTaggingDeadLetterQueue.queueArn],
     }));
   }
+  // The observation read surface is the whole stage-contract prefix, not only
+  // the nine pre-contract names the deployment/qualification path still reads.
+  getStageContractParameters(runtime);
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'], conditions: regional,
   }));

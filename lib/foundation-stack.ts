@@ -348,6 +348,19 @@ export class FoundationStack extends cdk.Stack {
         slashArn('ecs', 'service', `beta-anywear/beta-anywear-${unique(purpose)}`)));
       const taskRoles = ['api', 'worker'].flatMap((purpose) => ['task', 'execution'].map((kind) => (
         slashArn('iam', 'role', `beta-anywear-${unique(purpose)}-${kind}`, '', this.account))));
+      // AnyWear-Service's Workload template creates this role for its
+      // CleanupOperation StateMachine. It is Workload-owned but is not one of the
+      // four compute task/execution roles: it has no managed policy and is never
+      // an ECS `PassRole` target, so only the role-management statement lists it.
+      const cleanupOperationRole = slashArn('iam', 'role', 'beta-anywear-tester-cleanup-operation', '', this.account);
+      // The same Workload template also creates the CleanupOperation state
+      // machine. The account holds exactly one state machine
+      // (`beta-anywear-tester-cleanup`), so this unqualified ARN identifies it
+      // unambiguously.
+      const cleanupStateMachine = this.formatArn({
+        service: 'states', resource: 'stateMachine', resourceName: 'beta-anywear-tester-cleanup',
+        arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+      });
       const taskExecutionPolicy = slashArn('iam', 'policy', 'service-role/AmazonECSTaskExecutionRolePolicy', '', 'aws');
       const scalableTargets = slashArn('application-autoscaling', 'scalable-target', '*');
       const scalingPolicies = slashArn('application-autoscaling', 'scaling-policy', '*');
@@ -481,6 +494,41 @@ export class FoundationStack extends cdk.Stack {
         actions: ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter'],
         resources: [logGroup(`/anywear/beta/${unique('worker')}`)],
       }));
+      // CloudFormation resolves the Workload stack's `AWS::Logs::LogGroup` `Arn`
+      // values with this execution role while it re-renders the four policies that
+      // reference them (`ComputeRuntime/{Api,Worker}ExecutionRole/DefaultPolicy`
+      // and the two task-role policies), so the role needs the log-group read
+      // action. IAM evaluates `logs:DescribeLogGroups` in its list form: CloudTrail
+      // shows the evaluated resource
+      // `arn:aws:logs:ap-east-1:650880818323:log-group::log-stream:`, which no
+      // named log-group ARN can match. The single grant is therefore
+      // `Resource: "*"`, constrained by its one action; the lifecycle/retention
+      // statement above keeps its own named ARNs. The explicit `Sid` keeps the
+      // policy minimizer from folding this wildcard read into the ELBv2
+      // `Describe*` statement above, so the grant stays one single-action
+      // statement the inventory test can constrain.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        sid: 'DescribeWorkloadLogGroups',
+        actions: ['logs:DescribeLogGroups'],
+        resources: ['*'],
+      }));
+      // Issue #158 round 13: CloudFormation resolves the Workload template's
+      // `AWS::StepFunctions::StateMachineVersion` ARN with this execution role,
+      // so the role must read the CleanupOperation state machine that owns the
+      // version. Step Functions authorizes version and alias operations on the
+      // state machine's unqualified ARN, not on a version-suffixed ARN:
+      // `statemachineversion` is not a resource type for either action, and
+      // `ListStateMachineVersions` exposes no `states:StateMachineQualifier`
+      // condition key (that key scopes only the actions the version/alias
+      // authorization guide lists). The single
+      // `stateMachine:beta-anywear-tester-cleanup` ARN therefore authorizes both
+      // reads, so no `:1`-style resource form is added. Both actions are
+      // read-only: no start/stop, execution/history read, publish or `states:*`
+      // grant joins them.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['states:DescribeStateMachine', 'states:ListStateMachineVersions'],
+        resources: [cleanupStateMachine],
+      }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',
           's3:PutBucketPolicy', 's3:DeleteBucketPolicy', 's3:PutBucketPublicAccessBlock',
@@ -491,10 +539,15 @@ export class FoundationStack extends cdk.Stack {
         actions: ['ec2:AuthorizeSecurityGroupIngress', 'ec2:RevokeSecurityGroupIngress'],
         resources: [loadBalancerSecurityGroups], conditions: loadBalancerSecurityGroupTags,
       }));
+      // Issue #158 round 12: CloudFormation reads the Workload template's
+      // CleanupOperation StateMachine role with `iam:GetRole`, so this existing
+      // role-management statement now covers five roles. No action is added and
+      // the attach/detach and pass-role statements below stay on the four compute
+      // task/execution roles.
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:PutRolePolicy', 'iam:DeleteRolePolicy',
           'iam:GetRolePolicy', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies'],
-        resources: taskRoles,
+        resources: [...taskRoles, cleanupOperationRole],
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['iam:AttachRolePolicy', 'iam:DetachRolePolicy'], resources: taskRoles,

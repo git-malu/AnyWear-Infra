@@ -104,13 +104,13 @@ describe('Foundation reviewed service set (CDK context)', () => {
     expect(comparison.original_resource_count).toBe(4);
     expect(comparison.candidate_resource_count).toBe(16);
     expect(comparison.added).toHaveLength(12);
-    // sha256 of the normalized candidate including the #162 reviewed extension to
-    // the Service deploy and CloudFormation roles (read-only bake grants on both
-    // worker log-group forms, colon-form CloudWatch alarm ARNs and the worker
-    // metric-filter grants). The comparison normalizes only the declared CDK
-    // diagnostic metadata.
+    // sha256 of the normalized live candidate including the #162 extension on top
+    // of the #158 rounds (read-only bake grants on both worker log-group forms,
+    // colon-form CloudWatch alarm ARNs, worker metric-filter grants, and main's
+    // DescribeLogGroups/Step Functions/CleanupOperation-role grants). The
+    // comparison normalizes only the declared CDK diagnostic metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('0690886d8320eab18236de9a49cbb975dbd21976720dee2c83aa310ee2386030');
+      .toBe('44fe32f50f4a3ba6232c0ea5842d5f56157e9876669046aef3f3bb3afe0242bd');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();
