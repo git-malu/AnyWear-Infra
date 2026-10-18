@@ -7,6 +7,7 @@ import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack'
 import { stageContractInputs } from '../lib/stage-contract';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import workloadExtensionResources from './fixtures/workload-extension-resources.json';
+import workloadBakeReads from './fixtures/workload-bake-reads.json';
 import * as path from 'node:path';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
@@ -1321,7 +1322,17 @@ describe('Explicit infrastructure identity cutover', () => {
     ]);
   });
 
-  it('grants every #162 deploy-role bake read on the API resource form inside its target', () => {
+  it('grants every declared bake AWS call on the API resource form inside its target', () => {
+    // The table is the Infra half of the bake-read contract. The Service half
+    // (infra/test/bake-reads.test.mjs in AnyWear-Service) derives the same call
+    // set from scripts/bake-gate.mjs and fails when a call is added without an
+    // entry here. Each entry must have exactly one grant, in the API's resource
+    // form, inside the reviewed target.
+    const reads = (workloadBakeReads as any).reads as Array<{
+      call: string; action: string; grant: string; target: string; resources: string[]; condition?: unknown;
+    }>;
+    expect(reads).toHaveLength(6);
+    expect(new Set(reads.map((read) => read.call)).size).toBe(6);
     const env = { account: '650880818323', region: 'ap-east-1' };
     const app = new cdk.App();
     const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
@@ -1341,42 +1352,18 @@ describe('Explicit infrastructure identity cutover', () => {
       }
       return JSON.stringify(value);
     };
-    const forAction = (action: string): string[] => {
-      const matching = statements.filter((statement) => [statement.Action].flat().includes(action));
+    for (const read of reads) {
+      const matching = statements.filter((statement) => [statement.Action].flat().includes(read.action));
       expect(matching).toHaveLength(1);
-      return [matching[0].Resource].flat().map(render);
-    };
-    // The five #162 bake reads. Each resource must be the form the authorized API
-    // uses and stay inside the reviewed target; a granted read in another form is
-    // a missing permission at deploy time, not a broader grant.
-    const metrics = statements.filter((statement) => [statement.Action].flat().includes('cloudwatch:GetMetricStatistics'));
-    expect(metrics).toHaveLength(1);
-    expect([metrics[0].Resource].flat().map(render)).toEqual(['*']);
-    expect(metrics[0].Condition).toEqual({ StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } });
-    expect(forAction('cloudwatch:DescribeAlarms'))
-      .toEqual(['arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*']);
-    expect(new Set(forAction('ecs:DescribeServices'))).toEqual(new Set([
-      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
-      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
-    ]));
-    expect(new Set(forAction('sqs:GetQueueAttributes'))).toEqual(new Set([
-      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging',
-      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq',
-      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto',
-      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq',
-    ]));
-    // FilterLogEvents authorizes on the plain log-group ARN per the CloudWatch
-    // Logs identity-policy docs, while the pre-existing E2E grant exercised the
-    // stream-suffixed form. Both worker-log-group forms are granted; any other
-    // log group or a malformed form fails.
-    const filterResources = forAction('logs:FilterLogEvents');
-    expect(new Set(filterResources)).toEqual(new Set([
-      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
-      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
-    ]));
-    for (const resource of filterResources) {
-      expect(resource).toMatch(/^arn:aws:logs:ap-east-1:650880818323:log-group:\/anywear\/beta\/worker(?::\*)?$/);
+      expect(new Set([matching[0].Resource].flat().map(render)))
+        .toEqual(new Set(read.resources));
+      expect(matching[0].Condition).toEqual(read.condition);
     }
+    // Only the CloudFormation stack-resource read predates #162; the other five
+    // grants are part of this extension.
+    expect(reads.filter((read) => read.grant === '#162')).toHaveLength(5);
+    expect(reads.filter((read) => read.grant === 'pre-existing').map((read) => read.call))
+      .toEqual(['cloudformation:list-stack-resources']);
   });
 
   it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {
