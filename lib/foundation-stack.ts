@@ -340,6 +340,11 @@ export class FoundationStack extends cdk.Stack {
         slashArn('ecs', 'service', `beta-anywear/beta-anywear-${unique(purpose)}`)));
       const taskRoles = ['api', 'worker'].flatMap((purpose) => ['task', 'execution'].map((kind) => (
         slashArn('iam', 'role', `beta-anywear-${unique(purpose)}-${kind}`, '', this.account))));
+      // AnyWear-Service's Workload template creates this role for its
+      // CleanupOperation StateMachine. It is Workload-owned but is not one of the
+      // four compute task/execution roles: it has no managed policy and is never
+      // an ECS `PassRole` target, so only the role-management statement lists it.
+      const cleanupOperationRole = slashArn('iam', 'role', 'beta-anywear-tester-cleanup-operation', '', this.account);
       const taskExecutionPolicy = slashArn('iam', 'policy', 'service-role/AmazonECSTaskExecutionRolePolicy', '', 'aws');
       const scalableTargets = slashArn('application-autoscaling', 'scalable-target', '*');
       const scalingPolicies = slashArn('application-autoscaling', 'scaling-policy', '*');
@@ -460,10 +465,15 @@ export class FoundationStack extends cdk.Stack {
         actions: ['ec2:AuthorizeSecurityGroupIngress', 'ec2:RevokeSecurityGroupIngress'],
         resources: [loadBalancerSecurityGroups], conditions: loadBalancerSecurityGroupTags,
       }));
+      // Issue #158 round 12: CloudFormation reads the Workload template's
+      // CleanupOperation StateMachine role with `iam:GetRole`, so this existing
+      // role-management statement now covers five roles. No action is added and
+      // the attach/detach and pass-role statements below stay on the four compute
+      // task/execution roles.
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:PutRolePolicy', 'iam:DeleteRolePolicy',
           'iam:GetRolePolicy', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies'],
-        resources: taskRoles,
+        resources: [...taskRoles, cleanupOperationRole],
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['iam:AttachRolePolicy', 'iam:DetachRolePolicy'], resources: taskRoles,

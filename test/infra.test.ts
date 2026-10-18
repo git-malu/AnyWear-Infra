@@ -1119,14 +1119,33 @@ describe('Explicit infrastructure identity cutover', () => {
       .some((action: string) => action.startsWith('logs:')))).toHaveLength(2);
     const taskRoleArns = ['task', 'execution'].flatMap((purpose) => ['api', 'worker'].map((service) => (
       `arn:aws:iam::650880818323:role/beta-anywear-${service}-${purpose}`))).sort();
+    // Issue #158 round 12: the Workload template also creates the CleanupOperation
+    // StateMachine role. CloudFormation reads it with `iam:GetRole`, so it joins
+    // only the role-management statement's resources; it is not a compute
+    // task/execution role, so `iam:PassRole` and the attach/detach statement keep
+    // exactly the four task-role ARNs.
+    const cleanupOperationRoleArn = 'arn:aws:iam::650880818323:role/beta-anywear-tester-cleanup-operation';
+    const workloadRoleArns = [...taskRoleArns, cleanupOperationRoleArn].sort();
     const iamPassRole = cfn.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
     expect(iamPassRole).toHaveLength(1);
     expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf).sort()).toEqual(taskRoleArns);
     expect(iamPassRole[0].Condition).toEqual({ StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } });
     const attachPolicy = cfn.filter((statement) => [statement.Action].flat().includes('iam:AttachRolePolicy'));
     expect(attachPolicy).toHaveLength(1);
+    expect(([attachPolicy[0].Resource].flat() as any[]).map(resourceOf).sort()).toEqual(taskRoleArns);
     expect(resourceOf(attachPolicy[0].Condition.ArnEquals['iam:PolicyARN']))
       .toBe('arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy');
+    const roleManagement = cfn.filter((statement) => [statement.Action].flat().includes('iam:CreateRole'));
+    expect(roleManagement).toHaveLength(1);
+    expect(([roleManagement[0].Resource].flat() as any[]).map(resourceOf).sort()).toEqual(workloadRoleArns);
+    // No action is added by the round-12 resource extension: the statement keeps
+    // exactly its eight role read/manage actions, its unconditional form and no
+    // wildcard resource.
+    expect([roleManagement[0].Action].flat().sort()).toEqual(['iam:CreateRole', 'iam:DeleteRole',
+      'iam:DeleteRolePolicy', 'iam:GetRole', 'iam:GetRolePolicy', 'iam:ListAttachedRolePolicies',
+      'iam:ListRolePolicies', 'iam:PutRolePolicy']);
+    expect(roleManagement[0].Condition).toBeUndefined();
+    expect(([roleManagement[0].Resource].flat() as any[]).map(resourceOf)).not.toContain('*');
     const ec2Ingress = cfn.filter((statement) => [statement.Action].flat().includes('ec2:AuthorizeSecurityGroupIngress'));
     expect(ec2Ingress).toHaveLength(1);
     expect(ec2Ingress[0].Condition).toEqual({ StringEquals: {
@@ -1154,7 +1173,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:s3:::anywearworkloadstack-beta-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
-      ...taskRoleArns,
+      ...workloadRoleArns,
       '*',
     ]));
 
@@ -1184,11 +1203,22 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(serialized).not.toContain('github-actions-pipeline-role');
       for (const resource of resourcesOf(statements)) {
         if (resource.startsWith('arn:aws:iam::')) {
-          expect(taskRoleArns).toContain(resource);
+          expect(workloadRoleArns).toContain(resource);
         }
       }
       expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
         && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
+    }
+    // The CloudFormation role carries exactly three IAM statements, and every IAM
+    // resource is one of the five Workload-created role ARNs: the round-12
+    // extension adds no wildcard, policy, user or group resource.
+    const iamStatements = cfn.filter((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('iam:')));
+    expect(iamStatements).toHaveLength(3);
+    for (const statement of iamStatements) {
+      for (const resource of ([statement.Resource].flat() as any[]).map(resourceOf)) {
+        expect(resource).toMatch(/^arn:aws:iam::650880818323:role\/beta-anywear-[a-z0-9-]+$/);
+      }
     }
     // The only object write either role holds is the template asset in the
     // dedicated CDK assets bucket; no other bucket, bucket configuration or
