@@ -3,6 +3,37 @@
   "record_type": "anywear_workload_cfn_actions",
   "source_repository": "git-malu/AnyWear-Service",
   "source_note": "Every resource type in the synthesized roles-added AnyWearWorkloadStack-beta template, with the CloudFormation-execution-role actions its handler needs for the recorded properties (create/update/read/delete). The recorded template has 20 types: the manager's list named AWS::CDK::Metadata, which the template does not contain, and omitted AWS::Logs::MetricFilter, which it does; this table follows the template. Actions that the service authorization table cannot scope to a resource are listed in wildcard_actions. This table must be updated when AnyWear-Service adds or removes a Workload resource type.",
+  "resource_coverage": {
+    "source_note": "Concrete resources the synthesized roles-added template names or references. The coverage test proves the granted statement for each family includes these exact resources, not merely that the action exists somewhere. The Workload template declares no SQS queue resources; the ECS task definitions read queue URLs from the stage-contract SSM parameters at runtime, so queues is empty and the CFN role needs no sqs: action.",
+    "iam_policy_target_roles": [
+      "arn:aws:iam::650880818323:role/beta-anywear-api-task",
+      "arn:aws:iam::650880818323:role/beta-anywear-api-execution",
+      "arn:aws:iam::650880818323:role/beta-anywear-worker-task",
+      "arn:aws:iam::650880818323:role/beta-anywear-worker-execution",
+      "arn:aws:iam::650880818323:role/beta-anywear-tester-cleanup-operation",
+      "arn:aws:iam::650880818323:role/beta-e2e-qualification-role",
+      "arn:aws:iam::650880818323:role/beta-infra-runtime-role"
+    ],
+    "task_definition_families": [
+      "arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:*",
+      "arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:*",
+      "arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup:*",
+      "arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-verify:*"
+    ],
+    "ecs_services": [
+      "arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api",
+      "arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker"
+    ],
+    "log_groups": [
+      "arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api",
+      "arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker"
+    ],
+    "metric_filter_log_group": "arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker",
+    "state_machines": [
+      "arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup"
+    ],
+    "queues": []
+  },
   "resource_types": [
     {
       "type": "AWS::ApplicationAutoScaling::ScalableTarget",

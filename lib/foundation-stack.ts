@@ -365,6 +365,12 @@ export class FoundationStack extends cdk.Stack {
       // four compute task/execution roles: it has no managed policy and is never
       // an ECS `PassRole` target, so only the role-management statement lists it.
       const cleanupOperationRole = slashArn('iam', 'role', 'beta-anywear-tester-cleanup-operation', '', this.account);
+      // The Workload template also attaches/updates inline policies on two
+      // Foundation-managed roles it does not create. CloudFormation only needs
+      // the inline-policy actions on these exact roles; create/delete/read of the
+      // roles themselves stays outside this execution role.
+      const externalInlinePolicyRoles = ['beta-e2e-qualification-role', 'beta-infra-runtime-role'].map((roleName) => (
+        slashArn('iam', 'role', roleName, '', this.account)));
       // The same Workload template also creates the CleanupOperation state
       // machine. The account holds exactly one state machine
       // (`beta-anywear-tester-cleanup`), so this unqualified ARN identifies it
@@ -569,6 +575,14 @@ export class FoundationStack extends cdk.Stack {
         actions: ['iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:PutRolePolicy', 'iam:DeleteRolePolicy',
           'iam:GetRolePolicy', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies'],
         resources: [...taskRoles, cleanupOperationRole],
+      }));
+      // The Workload template's E2E qualification and Infra runtime policies are
+      // attached to Foundation-managed roles. The state-machine version changes
+      // rewrite those inline policies, so the execution role needs exactly the
+      // three inline-policy actions on those two concrete roles.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy'],
+        resources: externalInlinePolicyRoles,
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['iam:AttachRolePolicy', 'iam:DetachRolePolicy'], resources: taskRoles,
