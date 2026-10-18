@@ -496,7 +496,7 @@ Infra reader selects its log message by the contract field names. It carries
 (the **raw stored** mode word), `database_record_differs` (boolean: the raw stored
 mode differs from the effective decision), `tester_count` and
 `database_policy_matches_ssm` (the effective decision and the tester list agree
-across the two surfaces), plus the existing drain state fields. The Service status
+across the two surfaces), plus the backlog/diagnostic fields. The Service status
 no longer emits `admission_window_expires_at`: the field is omitted, not null.
 The same vocabulary is used by the Service task audit (`policy.admission_mode`,
 `policy.admission_record`, `policy.database_record_differs`) and by E2E, which
