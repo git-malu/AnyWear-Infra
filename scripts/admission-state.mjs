@@ -1,5 +1,5 @@
 import { canonicalJson, parseJson } from './json-contract.mjs';
-import { ADMISSION_MODE_PARAMETER, admissionClock, isAdmissionProvablyClosed, parseAdmissionModeValue } from './admission-mode.mjs';
+import { ADMISSION_MODE_PARAMETER, isAdmissionProvablyClosed, parseAdmissionModeValue } from './admission-mode.mjs';
 
 // The tester allowlist is itself an admission parameter, so its canonical form
 // lives here with the rest of the admission state. `tester-allowlist.mjs`
@@ -15,17 +15,18 @@ export function normalizeTesterEmails(bytes) {
   return payload;
 }
 
-// One mode parameter and the tester allowlist. The mode value carries its own
-// bound, so there is no second admission boolean to disagree with it.
+// One mode record and the tester allowlist. The record is one key with one of two
+// mode words and carries no bound, so there is no second admission value — and no
+// clock — to disagree with it. Opening never changes the tester list.
 export const admissionParameterNames = Object.freeze({
   admission_mode: ADMISSION_MODE_PARAMETER,
   tester_emails: '/anywear/beta/tester_allowlist',
 });
 
 export function unavailableAdmissionState() {
-  return { admission_mode: 'unavailable', admission_window_expires_at: 'unavailable',
-    admission_mode_source: 'unavailable', admission_mode_reason: 'unavailable',
-    admission_recorded_mode: 'unavailable', admission_recorded_expires_at: 'unavailable', tester_emails: 'unavailable' };
+  return { admission_mode: 'unavailable', admission_mode_source: 'unavailable',
+    admission_mode_reason: 'unavailable', admission_recorded_mode: 'unavailable',
+    admission_recorded_keys: 'unavailable', tester_emails: 'unavailable' };
 }
 
 export function canonicalTesterList(value) {
@@ -33,21 +34,21 @@ export function canonicalTesterList(value) {
 }
 
 export async function readAdmissionState(io) {
-  const now = admissionClock(io);
   const entries = Object.entries(admissionParameterNames);
   // Read every field even when another read fails, so failure evidence preserves
   // the actual known values without converting missing/malformed values to false.
-  // A mode value that is present but cannot prove a live window is not a failed
-  // read: the shared parser resolves it closed, fail-closed, with its reason kept.
+  // A mode value that is present but cannot prove closure is not a failed read:
+  // the shared parser resolves it closed, fail-closed, with its reason kept.
   const reads = await Promise.allSettled(entries.map(async ([key, name]) => {
     const parameter = (await io.aws(['ssm', 'get-parameter', '--name', name])).Parameter;
     if (parameter?.Name !== undefined && parameter.Name !== name) throw new Error('Unexpected admission parameter identity');
     if (key === 'tester_emails') return parseJson(normalizeTesterEmails(parameter?.Value));
-    return parseAdmissionModeValue(parameter?.Value, now);
+    return parseAdmissionModeValue(parameter?.Value);
   }));
   const state = unavailableAdmissionState();
-  // `admissionParameterNames` is ordered: the mode record contributes four named
-  // fields, and the tester list contributes its normalized array.
+  // `admissionParameterNames` is ordered: the mode record contributes its named
+  // fields and observed key list, and the tester list contributes its normalized
+  // array.
   if (reads[0].status === 'fulfilled') Object.assign(state, reads[0].value);
   if (reads[1].status === 'fulfilled') state.tester_emails = reads[1].value;
   if (reads.some(read => read.status === 'rejected')) {
@@ -69,20 +70,13 @@ export async function observeAdmissionState(io) {
   }
 }
 
-// Closure that a mutating fence can act on. It refuses an unreadable mirror and
-// a mirror whose value cannot prove closure, while accepting the closed record
-// `suspend-admission` writes and the bound that ended a window on its own.
+// Closure that a mutating fence can act on. It refuses an unreadable mirror and a
+// mirror whose value cannot prove closure; only a `closed` record this repository
+// wrote proves it. Nothing closes on its own, so there is no elapsed-time case to
+// accept.
 export function assertProvableAdmissionClosure(state, message) {
   if (!isAdmissionProvablyClosed(state)) {
     throw new Error(`${message}: ${state?.admission_mode ?? 'unavailable'} (${state?.admission_mode_reason ?? 'unreadable'})`);
   }
   return state;
-}
-
-// The stored raw record, separate from the effective decision, so a caller can
-// say "the database still stores testers with a past bound, and admission is
-// closed" without collapsing the two facts into one boolean.
-export function recordedAdmissionPair(state) {
-  return { admission_recorded_mode: state?.admission_recorded_mode ?? 'unavailable',
-    admission_recorded_expires_at: state?.admission_recorded_expires_at ?? 'unavailable' };
 }

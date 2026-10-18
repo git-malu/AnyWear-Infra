@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { workflowOperations, operationBoundary, operationEvidence, families, assertOneShotAllowed,
+import { workflowOperations, operationFamilies, operationBoundary, operationEvidence, families, assertOneShotAllowed,
   assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor } from './operation-boundaries.mjs';
 
 const infraSha = '5'.repeat(40);
@@ -9,12 +9,14 @@ const env = (operation, overrides = {}) => {
   return { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
     GITHUB_RUN_ID: '11', GITHUB_RUN_ATTEMPT: '1', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
     GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/.github/workflows/${workflow}.yml@refs/heads/main`,
-    INFRA_OPERATION: operation, TESTER_EMAILS: '[]', WINDOW_MINUTES: '60', ...overrides };
+    INFRA_OPERATION: operation, TESTER_EMAILS: '[]', ...overrides };
 };
 
 test('the workflow map and family derivation cover every operation', () => {
   assert.deepEqual(Object.keys(workflowOperations).sort(), ['.github/workflows/mutate.yml', '.github/workflows/runtime.yml']);
   assert.deepEqual(workflowOperations['.github/workflows/runtime.yml'], ['state', 'observe']);
+  assert.deepEqual(workflowOperations['.github/workflows/mutate.yml'], ['deploy-foundation', 'deploy-billing', 'deploy-platform',
+    'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission']);
   assert.ok(!workflowOperations['.github/workflows/mutate.yml'].includes('deploy-workload'));
   for (const operation of Object.values(workflowOperations).flat()) {
     const boundary = operationBoundary(env(operation));
@@ -22,7 +24,10 @@ test('the workflow map and family derivation cover every operation', () => {
     assert.equal(boundary.readOnly, operation === 'state');
     assert.ok(operationEvidence[operation], `evidence entry required for ${operation}`);
   }
+  for (const operation of ['open-admission', 'close-admission']) assert.equal(operationFamilies[operation], 'beta-admission');
   assert.throws(() => operationBoundary(env('deploy-workload')), /forbidden for this workflow family/);
+  assert.throws(() => operationBoundary(env('suspend-admission')), /forbidden for this workflow family/);
+  assert.throws(() => operationBoundary(env('resume-admission')), /forbidden for this workflow family/);
   assert.throws(() => operationBoundary(env('state', { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main' })));
 });
 
@@ -31,8 +36,8 @@ test('one-shot roles are exactly the release-slice drivers that remain', () => {
   assert.deepEqual(operationEvidence['deploy-platform'].roles, []);
   assert.deepEqual(operationEvidence['restore-release'].roles, []);
   assert.deepEqual(operationEvidence.migrate.roles, ['migrate']);
-  assert.deepEqual(operationEvidence['suspend-admission'].roles, ['lifecycle']);
-  assert.deepEqual(operationEvidence['resume-admission'].roles, ['lifecycle']);
+  assert.deepEqual(operationEvidence['close-admission'].roles, ['lifecycle']);
+  assert.deepEqual(operationEvidence['open-admission'].roles, ['lifecycle']);
   assert.deepEqual(families(env('observe'), 'qualification'), []);
   assert.deepEqual(families(env('migrate'), 'operation'), ['migrate']);
   assert.deepEqual(families(env('state'), 'operation'), []);
@@ -41,8 +46,11 @@ test('one-shot roles are exactly the release-slice drivers that remain', () => {
 
 test('one-shot guards admit only the reviewed role/action pairs', () => {
   assertOneShotAllowed(env('migrate'), 'migrate');
-  assertOneShotAllowed(env('suspend-admission'), 'lifecycle', 'status');
-  assertOneShotAllowed(env('suspend-admission'), 'lifecycle', 'suspend');
+  assertOneShotAllowed(env('close-admission'), 'lifecycle', 'status');
+  assertOneShotAllowed(env('close-admission'), 'lifecycle', 'suspend');
+  assertOneShotAllowed(env('open-admission'), 'lifecycle', 'status');
+  assertOneShotAllowed(env('open-admission'), 'lifecycle', 'resume');
+  assertOneShotAllowed(env('open-admission'), 'lifecycle', 'suspend');
   assert.throws(() => assertOneShotAllowed(env('deploy-platform'), 'lifecycle', 'status'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('migrate'), 'verify'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('migrate'), 'artifact-verify'), /forbidden/);
@@ -50,8 +58,11 @@ test('one-shot guards admit only the reviewed role/action pairs', () => {
   assert.throws(() => assertOneShotAllowed(env('add-testers'), 'lifecycle', 'supply'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('add-testers'), 'lifecycle', 'set-testers', '["b@example.com","a@example.com"]'), /canonical/);
   assertOneShotAllowed(env('set-testers', { TESTER_EMAILS: '["e@example.com"]' }), 'lifecycle', 'set-testers', '["e@example.com"]');
-  assert.throws(() => assertOneShotAllowed(env('resume-admission'), 'lifecycle', 'resume', '{"window_minutes":30}'), /differs from the dispatch input/);
-  assertOneShotAllowed(env('resume-admission'), 'lifecycle', 'resume', '{"window_minutes":60}');
+  // Lifecycle `resume` is payload-free: any payload at all is refused, and the
+  // operation itself carries no window input.
+  assert.throws(() => assertOneShotAllowed(env('open-admission'), 'lifecycle', 'resume', '{"window_minutes":60}'), /takes no payload/);
+  assert.throws(() => assertOneShotAllowed(env('open-admission'), 'lifecycle', 'resume', '[]'), /takes no payload/);
+  assert.throws(() => assertOneShotAllowed(env('open-admission'), 'lifecycle', 'set-testers', '[]'), /forbidden/);
 });
 
 test('deploy authority is limited to the configured stack set', () => {
@@ -72,7 +83,7 @@ test('AWS allow-list keeps reads, one-shots and retention updates scoped', () =>
   const lifecycle = { family: 'beta-anywear-lifecycle', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
     containerDefinitions: [{ name: 'OneShot', command: ['node', 'dist/ops/beta-lifecycle.js', 'status'] }] };
-  assertAwsAllowed(env('suspend-admission'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]);
+  assertAwsAllowed(env('close-admission'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]);
   assert.throws(() => assertAwsAllowed(env('deploy-platform'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]), /forbidden/);
   assertAwsAllowed(env('deploy-platform'), ['logs', 'put-retention-policy']);
   assert.throws(() => assertAwsAllowed(env('migrate'), ['logs', 'put-retention-policy']), /forbidden/);

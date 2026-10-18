@@ -232,10 +232,22 @@ candidate release. (The former `deploy-workload` path no longer exists in Infra.
 `restore-release` checks the resident invariant before
 CFN, reads the release slice terminal before and after its own deploy, and
 redeploys only the stage base active; its only activation
-precondition is closed admission, with stable stack status required for the
+precondition is a provably closed admission record (`{"mode":"closed"}`), with
+stable stack status required for the
 CloudFormation mutation itself. Failures preserve observed state and require an
 explicitly reviewed recovery; no automatic sibling deploy, revert or admission
 reopening occurs.
+
+Admission is mode-only after #159: `/anywear/beta/admission_mode` is
+`{"mode":"closed"}` or `{"mode":"testers"}`, with no window or expiry.
+`open-admission` opens the tester lane with a payload-free lifecycle `resume` and
+records one `admission-open-proof` event (mode, source, tester count and hash, SSM
+record key set, database status field absence, SSM/DB agreement);
+`close-admission` is the only thing that closes. Removing the window removed
+automatic closure, so an interrupted or failed open leaves admission open until an
+explicit `close-admission` and an `admission-status` read-back; no recovery step
+here and no scheduled task closes it. Verify closed admission from that record
+before any restore dispatch.
 
 Current dispatches use `mutate.yml` for maintenance and `restore-release`. Beta is
 resident, so no operation stops or starts it and no inactive deployment path remains.

@@ -5,7 +5,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [deploy-foundation, deploy-billing, deploy-platform, restore-release, migrate, admission-status, add-testers, set-testers, suspend-admission, resume-admission]
+        options: [deploy-foundation, deploy-billing, deploy-platform, restore-release, migrate, admission-status, add-testers, set-testers, open-admission, close-admission]
         required: true
       service_release_tag:
         description: Sealed Service release tag; required by deploy-platform and restore-release only
@@ -30,10 +30,6 @@ on:
         description: Explicit email JSON array for add-testers or set-testers; otherwise []
         type: string
         default: '[]'
-      window_minutes:
-        description: Admission window bound in minutes, 15-240; used only by resume-admission
-        type: number
-        default: 60
 permissions:
   contents: read
 concurrency:
@@ -58,7 +54,6 @@ env:
   SERVICE_RELEASE_TAG: ${{ inputs.service_release_tag }}
   SERVICE_COMMIT: ${{ inputs.service_commit }}
   TESTER_EMAILS: ${{ inputs.tester_emails }}
-  WINDOW_MINUTES: ${{ inputs.window_minutes }}
   INFRA_IDENTITY_PHASE: ${{ inputs.identity_phase }}
   INFRA_RETENTION_PROTECTION: ${{ inputs.retention_protection }}
   GH_TELEMETRY: disabled

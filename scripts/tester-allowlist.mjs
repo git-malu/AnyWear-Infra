@@ -6,11 +6,11 @@ import { compareAdmissionDecision, parseLifecycleStatus } from './admission-oper
 export { normalizeTesterEmails } from './admission-state.mjs';
 
 // A tester write is a tester write: it replaces the exact list and changes no
-// admission state. Only `resume-admission` is an operator-requestable opener, so
-// the operator flow for a window is `add-testers` (or `set-testers`) and then
-// `resume-admission`. The admission mirror is still read before and after the
-// deployed lifecycle command, because the operation record claims that read-back as
-// its evidence and the mirror carries the bound that proves the write changed
+// admission state. Only `open-admission` is an operator-requestable opener, so the
+// operator flow is `add-testers` (or `set-testers`) and then `open-admission`. The
+// admission mirror is still read before and after the deployed lifecycle command,
+// because the operation record claims that read-back as its evidence and the
+// mirror carries the mode and its recorded key set, which prove the write changed
 // nothing. Tester operations act on the revision the release slice reports; they
 // never select or re-verify a Service release.
 export async function runTesterAllowlist(action, input, io) {
@@ -36,8 +36,7 @@ export async function runTesterAllowlist(action, input, io) {
   if (action === 'status') {
     // `admission-status` publishes the effective decision, the raw record each
     // surface stores and whether those raw records disagree. One boolean cannot
-    // carry both jobs: after an abandoned window the database still stores
-    // `testers` with a past bound while every gate decides `closed`.
+    // carry both jobs, and there is no bound to report.
     const status = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
     const observed = await observeAdmissionState(io);
     const comparison = compareAdmissionDecision(status, observed.state, io.now?.() ?? Date.now());
@@ -46,8 +45,8 @@ export async function runTesterAllowlist(action, input, io) {
   }
   // The operation record claims this admission read-back, so take it before and
   // after the deployed command instead of asserting the claim the record exists to
-  // prove. The mirror is self-describing: the mode and its bound are both here, so
-  // the record shows the write left admission exactly as it found it.
+  // prove. The mirror is self-describing: the mode and its recorded key set are
+  // both here, so the record shows the write left admission exactly as it found it.
   const original = await observeAdmissionState(io);
   io.recordAdmissionState?.({ phase: 'original', state: original.state, result: original.result });
   // The deployed Service `set-testers` command owns the tester list and refuses

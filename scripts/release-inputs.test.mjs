@@ -23,7 +23,7 @@ const serviceCommit = '1'.repeat(40);
 const releaseOperations = ['deploy-platform', 'restore-release'];
 const selectedDirectory = path.join(root, '.service-artifacts', 'selected');
 const otherOperations = ['deploy-foundation', 'deploy-billing', 'migrate', 'admission-status', 'add-testers',
-  'set-testers', 'suspend-admission', 'resume-admission', 'observe', 'state', 'verify', 'deploy-workload'];
+  'set-testers', 'open-admission', 'close-admission', 'observe', 'state', 'verify', 'deploy-workload'];
 
 const releaseEnv = (operation) => ({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag,
   SERVICE_COMMIT: serviceCommit });

@@ -58,8 +58,10 @@ function assertInterface(actual, original) {
 }
 
 function redactedAdmission(state) {
-  return { admission_mode: state.admission_mode, admission_window_expires_at: state.admission_window_expires_at,
+  return { admission_mode: state.admission_mode,
     admission_mode_source: state.admission_mode_source,
+    admission_recorded_mode: state.admission_recorded_mode,
+    admission_recorded_keys: state.admission_recorded_keys,
     tester_count: state.tester_emails.length, tester_allowlist_sha256: sha256(canonicalJson(state.tester_emails)) };
 }
 
@@ -80,10 +82,12 @@ async function failureReadback(io, stage) {
   let admission;
   try { admission = await readAdmissionState(io); }
   catch (error) { admission = error.observedAdmissionState; }
-  for (const key of ['admission_mode', 'admission_window_expires_at']) {
+  for (const key of ['admission_mode', 'admission_recorded_mode']) {
     const value = admission?.[key];
     observed[key] = typeof value === 'string' || value === null ? value : 'unavailable';
   }
+  observed.admission_recorded_keys = Array.isArray(admission?.admission_recorded_keys)
+    ? admission.admission_recorded_keys : 'unavailable';
   observed.tester_count = Array.isArray(admission?.tester_emails) ? admission.tester_emails.length : 'unavailable';
   observed.tester_allowlist_sha256 = Array.isArray(admission?.tester_emails) ? sha256(canonicalJson(admission.tester_emails)) : 'unavailable';
   return observed;

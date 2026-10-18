@@ -1,8 +1,6 @@
-import { canonicalJson, contentHash } from './json-contract.mjs';
-import { ADMISSION_WINDOW_CLOCK_SKEW_MS, admissionWindowPayload, parseWindowMinutes } from './admission-window.mjs';
+import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
+import { ADMISSION_MODE_PARAMETER, ADMISSION_MODE_CLOSED, ADMISSION_MODE_TESTERS, admissionClock, describeAdmissionMode } from './admission-mode.mjs';
 import { canonicalTesterList, observeAdmissionState, readAdmissionState, assertProvableAdmissionClosure } from './admission-state.mjs';
-import { ADMISSION_MODE_CLOSED, ADMISSION_MODE_TESTERS, admissionClock, describeAdmissionMode,
-  effectiveAdmissionBound, parseAdmissionInstant, sameAdmissionInstant } from './admission-mode.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
 
@@ -28,21 +26,21 @@ function assertActiveBeta(platform, workload, purpose) {
 }
 
 // Closure is the mode's own decision, and it must be a decision the record can
-// prove: `closed` observed, or a tester window its own bound already ended. An
-// unreadable or malformed value reads closed for admission, but it is not proof,
-// so a mutating admission operation refuses it instead of trusting it.
+// prove: a `closed` record this repository wrote. An unreadable or malformed value
+// reads closed for admission, but it is not proof, so a mutating admission
+// operation refuses it instead of trusting it.
 export function assertClosedAdmission(state, original) {
   assertProvableAdmissionClosure(state, 'Beta admission is not proven closed');
   if (testerList(state.tester_emails) !== testerList(original?.tester_emails)) throw new Error('Beta tester list changed during admission closure');
   return state;
 }
 
-// The open mirror of the closed assertion: a window is the tester lane, so the
-// recorded membership does not change. The bound was already proven live and in
-// range by the parser that produced `state`.
+// The open mirror of the closed assertion: opening is the tester lane, so the
+// recorded membership does not change. There is no bound to prove; the mode word
+// in the record is the whole decision.
 export function assertOpenedAdmission(state, original) {
-  if (state?.admission_mode !== ADMISSION_MODE_TESTERS) throw new Error('Beta admission is not proven open');
-  if (testerList(state.tester_emails) !== testerList(original?.tester_emails)) throw new Error('Beta tester list changed during the admission window');
+  if (state?.admission_mode !== ADMISSION_MODE_TESTERS || state?.admission_mode_source !== 'record') throw new Error('Beta admission is not proven open');
+  if (testerList(state.tester_emails) !== testerList(original?.tester_emails)) throw new Error('Beta tester list changed during the admission open');
   return state;
 }
 
@@ -60,12 +58,13 @@ export function parseLifecycleStatus(value) {
   if (value.tester_count > 50) throw new Error('Invalid lifecycle tester count');
   // `admission_mode` is the effective decision every gate uses; `admission_record`
   // is the raw stored mode and `database_record_differs` says whether they differ.
-  // After an abandoned window the row still stores `testers` while admission is
-  // closed, and one field cannot say both things. The bound is effective too: it is
-  // null whenever the effective decision is closed.
+  // Both surfaces are mode-only now, so the removed window field is not required.
+  // It is still tolerated while a Service image deployed before this batch is
+  // serving `status` during a rollout, but it is never read as a decision and the
+  // open path refuses a status that still carries it.
   if (Object.hasOwn(value, 'admission_window_expires_at') && value.admission_window_expires_at !== null
     && typeof value.admission_window_expires_at !== 'string') throw new Error('Invalid lifecycle admission_window_expires_at');
-  // Backlog is diagnostic evidence, not an admission-suspend/drain requirement.
+  // Backlog is diagnostic evidence, not an admission-close/drain requirement.
   for (const key of ['tasks', 'outbox', 'outboxManualIntervention']) if (Object.hasOwn(value, key)) count(value[key], key);
   for (const key of ['outboxOldestAgeMs', 'outboxManualInterventionOldestAgeMs']) {
     if (Object.hasOwn(value, key) && value[key] !== null
@@ -88,27 +87,27 @@ export function parseLifecycleStatus(value) {
   return value;
 }
 
-// The status read-back and the SSM mirror must describe the same *effective*
-// decision. `admission_mode` is the effective decision every gate uses and
-// `admission_window_expires_at` is the effective bound (null when closed), so the
-// comparison is effective-to-effective and never against a raw stored word. The
-// raw record is published beside it: `database_record_differs` from the Service
-// and `mirror_record_differs` from this comparison, because an abandoned window
-// keeps the row at `testers` while both surfaces decide `closed`. The pre-window
-// and resume pre-checks key off this effective comparison, so they still work
-// after an abandoned window.
+// The deployed Service no longer has window semantics, and its status no longer
+// emits the removed field. A status image deployed before this batch still emits
+// it, so its presence is the executable evidence that the running Service is old.
+export const lifecycleStatusReportsExpiry = status => Object.hasOwn(status ?? {}, 'admission_window_expires_at');
+
+// The status read-back and the SSM mirror must describe the same *effective* mode.
+// `admission_mode` is the effective decision every gate uses, so the comparison is
+// effective-to-effective and never against a raw stored word. The raw record is
+// published beside it: `database_record_differs` from the Service and
+// `mirror_record_differs` from this comparison, because each surface can store its
+// own word while both decide the same mode. There is no bound to compare.
 export function compareAdmissionDecision(status, state, now = Date.now()) {
-  const stateBound = effectiveAdmissionBound(state);
   const unavailable = state?.admission_mode === 'unavailable';
   const effectiveMatches = status.database_policy_matches_ssm === true
     && status.admission_mode === state?.admission_mode
-    && sameAdmissionInstant(status.admission_window_expires_at ?? null, stateBound)
     && status.tester_count === (Array.isArray(state?.tester_emails) ? state.tester_emails.length : -1);
   return { effective_matches: effectiveMatches,
     database_record_differs: status.database_record_differs,
     mirror_record_differs: unavailable ? 'unavailable' : status.admission_record !== state?.admission_recorded_mode,
     observed_at: new Date(now).toISOString(),
-    database: { admission_mode: status.admission_mode, admission_window_expires_at: status.admission_window_expires_at ?? null,
+    database: { admission_mode: status.admission_mode,
       admission_record: status.admission_record, database_record_differs: status.database_record_differs,
       tester_count: status.tester_count, database_policy_matches_ssm: status.database_policy_matches_ssm } };
 }
@@ -118,87 +117,47 @@ function assertStatusMatchesAdmission(status, state, now = Date.now()) {
   const decision = comparison.database;
   if (decision.database_policy_matches_ssm !== true) throw new Error('Lifecycle DB/SSM admission readback mismatch');
   if (decision.admission_mode !== state.admission_mode) throw new Error('Lifecycle DB/SSM admission readback mismatch');
-  if (!sameAdmissionInstant(decision.admission_window_expires_at, effectiveAdmissionBound(state))) {
-    throw new Error('Lifecycle DB/SSM admission window bound mismatch');
-  }
   if (decision.tester_count !== state.tester_emails.length) throw new Error('Lifecycle DB/SSM admission readback mismatch');
   return comparison;
 }
 
-// The recorded window bound is a canonical ISO-8601 instant, or null. Anything
-// else is unproven rather than a usable expiry, so every reader treats it as such.
-export function parseWindowExpiry(value) {
-  const at = parseAdmissionInstant(value);
-  if (at === undefined) throw new Error('Admission window expiry is not a canonical ISO-8601 instant');
-  return at;
-}
-
-function observedExpiry(status) {
-  // The status reports the effective bound: null whenever the decision is closed.
-  const value = status?.admission_window_expires_at;
-  if (value === undefined || value === null) return null;
-  return typeof value === 'string' ? value : 'malformed';
-}
-
-// `suspend-admission` classifies what it ended from the database status read,
-// never from the SSM mirror, which the bound may already have closed.
-// The effective decision is `closed` both for an already-closed environment and
-// for an abandoned window, so the raw stored mode is what distinguishes them:
-// - ordinary: the effective decision is `testers`; a live window was ended.
-// - recovery: the effective decision is `closed` but the row still stores
-//   `testers`; the bound had already ended that window, so this suspend restored
-//   the record.
-// - already-closed: the effective decision is `closed` and the row stores
-//   `closed`; suspending changed nothing.
+// `close-admission` classifies what it ended from the database status read, never
+// from the SSM mirror. Both surfaces are mode-only, so the mode word is enough:
+// - ordinary: the effective decision is `testers`; an open admission was closed.
+// - already-closed: the effective decision is `closed`; suspending changed nothing.
 export function classifyCloseKind(status) {
-  if (status?.admission_mode === ADMISSION_MODE_TESTERS) return 'ordinary';
-  if (status?.admission_record === ADMISSION_MODE_TESTERS) return 'recovery';
-  return 'already-closed';
+  return status?.admission_mode === ADMISSION_MODE_TESTERS ? 'ordinary' : 'already-closed';
 }
 
-// The pre-window fence. The bound field's presence is the executable proof that
-// the selected Service revision can carry and enforce a bound; without it the
-// window would be a remembered one. The *effective* database decision must
-// already be closed, so the fence still admits a resume after an abandoned
-// window, whose row stores `testers` while the decision is closed.
-function assertClosedWindowStatus(status, now = Date.now()) {
-  if (!Object.hasOwn(status, 'admission_window_expires_at')) {
-    throw new Error('Selected Service cannot report the admission window bound; refresh the pinned Service revision before resuming admission');
-  }
-  if (status.admission_mode !== ADMISSION_MODE_CLOSED) throw new Error('Admission must be provably closed before an admission window resumes');
-  if (status.database_policy_matches_ssm !== true) throw new Error('Admission database/SSM policy must agree before an admission window');
-  // The effective bound is null when closed; a non-null value must have ended.
-  if (status.admission_window_expires_at === null) return;
-  let at;
-  try { at = parseWindowExpiry(status.admission_window_expires_at); }
-  catch (error) { throw new Error('Admission closure cannot be proven from a non-null admission window expiry', { cause: error }); }
-  if (at > now) throw new Error('A live admission window must be closed before another window resumes');
+// The pre-open fence. It needs the effective database decision provably closed and
+// the database policy to agree with SSM, so a resume never lifts suspension from a
+// surface that disagrees with itself. The removed window field may still be
+// present on a Service image from before this batch; this fence deliberately does
+// not depend on it, because the post-open read-back is what proves the deployed
+// Service no longer reports it.
+function assertClosedAdmissionStatus(status) {
+  if (status.admission_mode !== ADMISSION_MODE_CLOSED) throw new Error('Admission must be provably closed before admission opens');
+  if (status.database_policy_matches_ssm !== true) throw new Error('Admission database/SSM policy must agree before admission opens');
 }
 
-// The post-resume read-back. The record may never claim a longer window than the
-// dispatch requested, so the observed expiry must be inside the requested bound.
-// `ADMISSION_WINDOW_CLOCK_SKEW_MS` is the same allowance the Service read applies,
-// for the same reason: the writer (the one-shot lifecycle container) and the
-// reader have independent clocks. It is not applied to the dispatch bound.
-function assertOpenWindowStatus(status, windowMinutes, now) {
+// The post-open read-back, and the executable proof that the running Service has no
+// window semantics: the removed field must be absent, not null. A Service image
+// from before this batch is refused here rather than silently treated as open.
+export function assertOpenAdmissionStatus(status) {
   if (status.admission_mode !== ADMISSION_MODE_TESTERS || status.database_policy_matches_ssm !== true) {
     throw new Error('Lifecycle database admission is not proven open');
   }
-  if (!Object.hasOwn(status, 'admission_window_expires_at') || status.admission_window_expires_at === null) {
-    throw new Error('Opened lifecycle status carries no admission window expiry');
+  if (lifecycleStatusReportsExpiry(status)) {
+    throw new Error('Deployed Service still reports the removed admission window field; deploy the Service revision without window semantics before opening admission');
   }
-  const remaining = parseWindowExpiry(status.admission_window_expires_at) - now;
-  if (remaining <= 0 || remaining > windowMinutes * 60_000 + ADMISSION_WINDOW_CLOCK_SKEW_MS) {
-    throw new Error('Observed admission window expiry is outside the requested bound');
-  }
-  return status.admission_window_expires_at;
+  return status;
 }
 
 const clock = admissionClock;
 const describeAdmission = state => `${describeAdmissionMode(state)}, `
   + `tester_count=${Array.isArray(state?.tester_emails) ? state.tester_emails.length : 'unavailable'}`;
 
-export async function runSuspendAdmission({ io, infraSha, env = process.env }) {
+export async function runCloseAdmission({ io, infraSha, env = process.env }) {
   // Source rejection must precede any authenticated activity or lifecycle task.
   assertAdmissionExecutor(env);
   assertProtectedExecutor(infraSha, env);
@@ -206,19 +165,18 @@ export async function runSuspendAdmission({ io, infraSha, env = process.env }) {
   try {
     const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
-    const outputs = assertActiveBeta(platform, workload, 'suspend admission');
+    assertActiveBeta(platform, workload, 'close admission');
     revision = workloadRevision(workload);
     const original = await readAdmissionState(io);
     io.recordAdmissionState?.({ phase: 'original', state: original, result: 'observed' });
-    // Read the database admission state before suspending so the operation
-    // records whether it ended a live window or one the bound had already ended.
+    // Read the database admission state before closing so the operation records
+    // whether it ended an open admission.
     prior = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
     const closeKind = classifyCloseKind(prior);
-    const priorExpiresAt = observedExpiry(prior);
     suspendAttempted = true;
     await io.oneShot('lifecycle', revision, 'suspend');
     const state = await readAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'suspended', state, result: 'observed', close_kind: closeKind, prior_expires_at: priorExpiresAt });
+    io.recordAdmissionState?.({ phase: 'closed', state, result: 'observed', close_kind: closeKind });
     assertClosedAdmission(state, original);
     const status = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
     assertStatusMatchesAdmission(status, state, clock(io));
@@ -227,81 +185,121 @@ export async function runSuspendAdmission({ io, infraSha, env = process.env }) {
     const finalState = await readAdmissionState(io);
     assertClosedAdmission(finalState, original);
     assertStatusMatchesAdmission(status, finalState, clock(io));
-    io.recordAdmissionState?.({ phase: 'suspended', state: finalState, result: 'verified', close_kind: closeKind,
-      prior_expires_at: priorExpiresAt, lifecycle_status_sha256: contentHash(status) });
-    return { original, state: finalState, status, close_kind: closeKind, prior_expires_at: priorExpiresAt };
+    io.recordAdmissionState?.({ phase: 'closed', state: finalState, result: 'verified', close_kind: closeKind,
+      lifecycle_status_sha256: contentHash(status) });
+    return { original, state: finalState, status, close_kind: closeKind };
   } catch (error) {
     const { state } = await observeAdmissionState(io);
     io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed',
-      ...(suspendAttempted && prior ? { close_kind: classifyCloseKind(prior), prior_expires_at: observedExpiry(prior) } : {}) });
-    throw new Error('Beta admission suspension failed; preserve observed state for explicit recovery', { cause: error });
+      ...(suspendAttempted && prior ? { close_kind: classifyCloseKind(prior) } : {}) });
+    throw new Error('Beta admission close failed; preserve observed state for explicit recovery', { cause: error });
   }
 }
 
-export async function runResumeAdmission({ io, infraSha, env = process.env }) {
+// The post-open proof: one first-class event that says "open, no bound, both
+// surfaces agree" without reading logs. It is evidence, not a substitute for the
+// assertions above; both computed claims must be true or the operation fails.
+function admissionOpenProof({ state, status, observedAt }) {
+  const testers = state.tester_emails;
+  const testerCount = Array.isArray(testers) ? testers.length : -1;
+  const recordKeys = state.admission_recorded_keys;
+  const reportsExpiry = lifecycleStatusReportsExpiry(status);
+  const keyListAbsent = Array.isArray(recordKeys) && recordKeys.length === 1 && recordKeys[0] === 'mode';
+  return {
+    type: 'admission-open-proof',
+    schema_version: 1,
+    observed_at: observedAt,
+    mode: ADMISSION_MODE_TESTERS,
+    mode_source: state.admission_mode_source,
+    no_bound: keyListAbsent && reportsExpiry === false,
+    tester_count: testerCount,
+    tester_emails_sha256: sha256(canonicalJson(testers)),
+    surfaces_agree: status.database_policy_matches_ssm === true
+      && status.admission_mode === state.admission_mode
+      && status.tester_count === testerCount,
+    ssm: {
+      parameter: ADMISSION_MODE_PARAMETER,
+      recorded_mode: state.admission_recorded_mode,
+      record_keys: recordKeys,
+      expires_at_present: Array.isArray(recordKeys) ? recordKeys.includes('expires_at') : 'unavailable',
+    },
+    database: {
+      lifecycle_status_mode: status.admission_mode,
+      lifecycle_status_record: status.admission_record,
+      lifecycle_status_reports_expires_at: reportsExpiry,
+      database_policy_matches_ssm: status.database_policy_matches_ssm,
+      tester_count: status.tester_count,
+      lifecycle_status_sha256: contentHash(status),
+    },
+  };
+}
+
+export async function runOpenAdmission({ io, infraSha, env = process.env }) {
   // Source rejection must precede any authenticated activity or lifecycle task.
   assertAdmissionExecutor(env);
   assertProtectedExecutor(infraSha, env);
-  const windowMinutes = parseWindowMinutes(env.WINDOW_MINUTES);
-  const payload = admissionWindowPayload(env);
   let revision; let original; let requested = false;
   try {
     const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
     const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
-    const outputs = assertActiveBeta(platform, workload, 'resume admission');
+    assertActiveBeta(platform, workload, 'open admission');
     revision = workloadRevision(workload);
-    // Refuse before resuming when the selected Service cannot report the recorded
-    // expiry, or when the database decision is not provably closed.
-    assertClosedWindowStatus(parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status')), clock(io));
+    // Refuse before resuming unless the database decision is provably closed and
+    // the database policy agrees with the mirror.
+    assertClosedAdmissionStatus(parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status')));
     original = await readAdmissionState(io);
     io.recordAdmissionState?.({ phase: 'original', state: original, result: 'observed' });
-    // The mirror carries its own bound, so it reads closed after an unattended
-    // expiry without anyone acting. Requiring it to prove closure is what makes
-    // `resume-admission` refuse to open from a record it cannot trust; a mirror
-    // restored to a value that cannot prove closure is repaired by
-    // `suspend-admission`, the documented predecessor of any window.
-    assertProvableAdmissionClosure(original, 'Admission mirror does not prove closed admission before a window resumes');
+    // The mirror has no bound, so it reads `testers` until an explicit close writes
+    // `closed`. Requiring the record to prove closure is what makes opening refuse
+    // from a value it cannot trust; such a record is repaired by `close-admission`.
+    assertProvableAdmissionClosure(original, 'Admission mirror does not prove closed admission before admission opens');
     requested = true;
-    await io.oneShot('lifecycle', revision, 'resume', payload);
+    // Lifecycle `resume` takes no payload: the Service has no bound to write.
+    await io.oneShot('lifecycle', revision, 'resume');
     const state = await readAdmissionState(io);
     assertOpenedAdmission(state, original);
     const status = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
-    const admissionWindowExpiresAt = assertOpenWindowStatus(status, windowMinutes, clock(io));
+    assertOpenAdmissionStatus(status);
     assertStatusMatchesAdmission(status, state, clock(io));
-    io.recordAdmissionState?.({ phase: 'resumed', state, result: 'observed', window_minutes: windowMinutes,
-      admission_window_expires_at: admissionWindowExpiresAt });
+    io.recordAdmissionState?.({ phase: 'opened', state, result: 'observed' });
+    // Re-read SSM after the status task so the proof binds one version of both
+    // surfaces instead of accepting a value that changed during the status read.
     const finalState = await readAdmissionState(io);
     assertOpenedAdmission(finalState, original);
     assertStatusMatchesAdmission(status, finalState, clock(io));
-    io.recordAdmissionState?.({ phase: 'verified', state: finalState, result: 'verified', window_minutes: windowMinutes,
-      admission_window_expires_at: admissionWindowExpiresAt, lifecycle_status_sha256: contentHash(status) });
-    return { original, state: finalState, status, window_minutes: windowMinutes,
-      admission_window_expires_at: admissionWindowExpiresAt };
+    const proof = admissionOpenProof({ state: finalState, status, observedAt: new Date(clock(io)).toISOString() });
+    if (proof.no_bound !== true || proof.surfaces_agree !== true) {
+      throw new Error(`Admission open proof failed: no_bound=${proof.no_bound}, surfaces_agree=${proof.surfaces_agree}`);
+    }
+    io.recordAdmissionOpenProof?.(proof);
+    io.recordAdmissionState?.({ phase: 'verified', state: finalState, result: 'verified',
+      lifecycle_status_sha256: contentHash(status) });
+    return { original, state: finalState, status, proof };
   } catch (error) {
-    // Nothing before the resume attempt can have lifted suspension, so those
-    // failures record the observed state and never issue a suspension of their own.
+    // Nothing before the resume attempt can have opened admission, so those
+    // failures record the observed state and never issue a close of their own.
     if (!requested) {
       const { state } = await observeAdmissionState(io);
       io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed' });
-      throw new Error('Beta admission window failed before it was requested; preserve observed state for explicit recovery', { cause: error });
+      throw new Error('Beta admission open failed before it was requested; preserve observed state for explicit recovery', { cause: error });
     }
-    // The window may be open. Close it back to the recorded decision before
-    // throwing; the record names the suspension as the failed-window recovery it is.
+    // Admission may be open. Close it back to the recorded decision before
+    // throwing; the record names the close as the failed-open recovery it is.
     let closeError;
     try {
       await io.oneShot('lifecycle', revision, 'suspend');
       const closed = await readAdmissionState(io);
       assertClosedAdmission(closed, original);
-      io.recordAdmissionState?.({ phase: 'suspended', state: closed, result: 'observed', close_kind: 'failed-window' });
+      io.recordAdmissionState?.({ phase: 'closed', state: closed, result: 'observed', close_kind: 'failed-open' });
     } catch (recoveryError) { closeError = recoveryError; }
     const { state } = await observeAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed', close_kind: 'failed-window' });
+    io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed', close_kind: 'failed-open' });
     if (closeError) {
       throw new AggregateError([error, closeError],
-        `Beta admission window failed and its recovery suspension did not restore the recorded decision; observed admission may be open: ${describeAdmission(state)}`,
+        `Beta admission open failed and its recovery close did not restore the recorded decision; observed admission may be open: ${describeAdmission(state)}`,
         { cause: error });
     }
-    throw new Error('Beta admission window failed and was suspended back to the recorded decision; preserve observed state for explicit recovery',
+    throw new Error('Beta admission open failed and was closed back to the recorded decision; with no automatic closure an interrupted open can stay open until an explicit close-admission',
       { cause: error });
   }
 }
