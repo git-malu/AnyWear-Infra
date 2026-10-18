@@ -28,7 +28,9 @@ const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', '
   'migrate', 'admission-status', 'add-testers', 'set-testers', 'suspend-admission', 'resume-admission']);
 
 test('the workflow directory is exactly the three Beta entries plus the callable and publication files', async () => {
-  const files = (await readdir(workflowDirectory)).filter(file => file.endsWith('.yml')).sort();
+  // GitHub accepts both `.yml` and `.yaml`; the census must see either extension,
+  // or a `.yaml` entry would be invisible to every assertion below.
+  const files = (await readdir(workflowDirectory)).filter(file => /\.ya?ml$/.test(file)).sort();
   assert.deepEqual(files, ['check.yml', 'mutate.yml', 'production.yml', 'publish-stage-contracts.yml', 'runtime.yml']);
   const workflows = Object.fromEntries(await Promise.all(files.map(async file => [file, await loadWorkflow(file)])));
 
@@ -162,7 +164,8 @@ test('AnyWear-E2E has exactly one reviewed executor workflow', async () => {
   for (const retired of ['.github/workflows/integration.yml', '.github/workflows/other.yml']) {
     assert.throws(() => assertProtectedExecutor('5'.repeat(40), e2e(retired)), /workflow required/, retired);
   }
-  // The file the retired path named does not exist on disk.
-  const files = (await readdir(workflowDirectory)).filter(file => file.endsWith('.yml'));
+  // The file the retired path named does not exist on disk. Both workflow
+  // extensions are enumerated so a `.yaml` file cannot hide the retired name.
+  const files = (await readdir(workflowDirectory)).filter(file => /\.ya?ml$/.test(file));
   assert.equal(files.includes('integration.yml'), false);
 });
