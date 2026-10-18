@@ -40,6 +40,11 @@ export const operationFamilies = Object.freeze({
 // `workflow_call`-only.
 export const qualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.yml', '.github/workflows/mutate.yml']);
 
+// AnyWear-E2E executes exactly one reviewed workflow. `integration.yml` was
+// retired with the E2E consolidation; adding another path here would admit a
+// second, unreviewed E2E producer without a reviewed executor.
+export const e2eExecutorPaths = Object.freeze(['.github/workflows/beta-qualification.yml']);
+
 // The reviewed executor/source/account/region gate shared by the observation and
 // the admission/recovery drivers. It reads only repository identity and dispatch
 // metadata, so it runs before any AWS call.
@@ -48,8 +53,7 @@ export function assertProtectedExecutor(infraSha, env = process.env) {
   if (typeof env.GITHUB_SHA !== 'string' || !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA) || env.GITHUB_REF !== 'refs/heads/main'
     || env.AWS_ACCOUNT_ID !== account || env.AWS_REGION !== region) throw new Error('Protected executor/account/region/source required');
   const paths = env.GITHUB_REPOSITORY === INFRA_REPOSITORY ? qualifiedWorkflowPaths
-    : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E'
-      ? ['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml'] : [];
+    : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E' ? e2eExecutorPaths : [];
   if (!paths.some(file => env.GITHUB_WORKFLOW_REF === `${env.GITHUB_REPOSITORY}/${file}@refs/heads/main`)) {
     throw new Error('Protected executor workflow required');
   }
