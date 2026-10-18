@@ -1807,13 +1807,14 @@ describe('Explicit infrastructure identity cutover', () => {
     }
     // Round 15: the observe path's first exercise of the stage-contract SSM
     // surface. The Workload conversion made the release slice read every value
-    // under `/anywear/beta/`, so the runtime principal alone gets the prefix
-    // read on top of the nine pre-contract named reads. Pin the effective
-    // authorization (the CDK CLI merges statements with equal actions, so
-    // statement packing is not the contract): exactly the two read actions,
-    // exactly the prefix plus the nine names, the unchanged nine-name surface
-    // on the deploy/e2e neighbours, and the whole write/delete/version
-    // negative inventory.
+    // under `/anywear/beta/`, and the E2E qualification observer validates every
+    // value under the prefix against the platform record, so the runtime and E2E
+    // principals both get the prefix read on top of the nine pre-contract named
+    // reads. Pin the effective authorization (the CDK CLI merges statements with
+    // equal actions, so statement packing is not the contract): exactly the two
+    // read actions, exactly the prefix plus the nine names on both prefix readers,
+    // the unchanged nine-name surface on the deploy neighbour, and the whole
+    // write/delete/version negative inventory.
     const resolvePolicyArn = (value: any): any => {
       if (Array.isArray(value)) return value.map(resolvePolicyArn);
       if (value?.['Fn::Join']) {
@@ -1842,15 +1843,21 @@ describe('Explicit infrastructure identity cutover', () => {
       actions: ['ssm:GetParameter', 'ssm:GetParameters'],
       resources: [...preContractParameters, stageContractPrefix].sort(),
     });
-    for (const name of ['infra-deploy', 'e2e-qualification']) {
-      expect(ssmInventory(name)).toEqual({
-        actions: ['ssm:GetParameter', 'ssm:GetParameters'],
-        resources: preContractParameters,
-      });
-    }
-    for (const forbidden of ['ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:DeleteParameters',
-      'ssm:PutParameterVersion', 'ssm:GetParametersByPath', 'ssm:DescribeParameters', 'ssm:*']) {
-      expect(actionsFor(template, 'infra-runtime')).not.toContain(forbidden);
+    // The E2E qualification observer reads the same stage-contract prefix the
+    // runtime observer does; removing or widening either prefix grant fails here.
+    expect(ssmInventory('e2e-qualification')).toEqual({
+      actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+      resources: [...preContractParameters, stageContractPrefix].sort(),
+    });
+    expect(ssmInventory('infra-deploy')).toEqual({
+      actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+      resources: preContractParameters,
+    });
+    for (const name of ['infra-runtime', 'e2e-qualification']) {
+      for (const forbidden of ['ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:DeleteParameters',
+        'ssm:PutParameterVersion', 'ssm:GetParametersByPath', 'ssm:DescribeParameters', 'ssm:*']) {
+        expect(actionsFor(template, name)).not.toContain(forbidden);
+      }
     }
     const passRoles = grantsFor(template, 'e2e-qualification').find((grant) => [grant.Action].flat().includes('iam:PassRole'));
     expect([passRoles.Resource].flat()).toHaveLength(2);
