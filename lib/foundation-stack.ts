@@ -342,12 +342,24 @@ export class FoundationStack extends cdk.Stack {
         actions: ['s3:ListBucket', 's3:GetBucketLocation'], resources: [cdkAssetsBucket],
       }));
 
-      const taskDefinitions = ['api', 'worker'].map((purpose) => (
-        slashArn('ecs', 'task-definition', `beta-anywear-${unique(purpose)}:*`)));
+      // The Workload template registers four task-definition families: the two
+      // compute families plus the CleanupOperation one-shot families, which carry
+      // the Service image and are therefore updated by every image-changing
+      // deploy.
+      const taskDefinitions = [...['api', 'worker'].map((purpose) => (
+        slashArn('ecs', 'task-definition', `beta-anywear-${unique(purpose)}:*`))),
+      ...['cleanup', 'cleanup-verify'].map((purpose) => (
+        slashArn('ecs', 'task-definition', `beta-anywear-${purpose}:*`)))];
       const workloadServices = ['api', 'worker'].map((purpose) => (
         slashArn('ecs', 'service', `beta-anywear/beta-anywear-${unique(purpose)}`)));
       const taskRoles = ['api', 'worker'].flatMap((purpose) => ['task', 'execution'].map((kind) => (
         slashArn('iam', 'role', `beta-anywear-${unique(purpose)}-${kind}`, '', this.account))));
+      // The one-shot cleanup/verification task definitions also pass three
+      // Workload-owned task roles to ECS. They are not CloudFormation-managed
+      // here (the Workload template owns them), so only `iam:PassRole` names them.
+      const cleanupTaskRoles = ['beta-anywear-tester-cleanup-task', 'beta-anywear-verification-task',
+        'beta-anywear-one-shot-execution'].map((roleName) => (
+        slashArn('iam', 'role', roleName, '', this.account)));
       // AnyWear-Service's Workload template creates this role for its
       // CleanupOperation StateMachine. It is Workload-owned but is not one of the
       // four compute task/execution roles: it has no managed policy and is never
@@ -554,7 +566,7 @@ export class FoundationStack extends cdk.Stack {
         conditions: { ArnEquals: { 'iam:PolicyARN': taskExecutionPolicy } },
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
-        actions: ['iam:PassRole'], resources: taskRoles,
+        actions: ['iam:PassRole'], resources: [...taskRoles, ...cleanupTaskRoles],
         conditions: { StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } },
       }));
       // This read-only producer-stack grant existed for the pre-#158-step-D weak

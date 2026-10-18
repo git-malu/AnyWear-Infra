@@ -110,7 +110,7 @@ describe('Foundation reviewed service set (CDK context)', () => {
     // DescribeLogGroups/Step Functions/CleanupOperation-role grants). The
     // comparison normalizes only the declared CDK diagnostic metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('44fe32f50f4a3ba6232c0ea5842d5f56157e9876669046aef3f3bb3afe0242bd');
+      .toBe('572368c7592c23f3d340a3be945cfbc9ead4b991af41777246c7313fc1cd0650');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();
