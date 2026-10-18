@@ -41,7 +41,7 @@ function serviceRecord({ revision = 12, digest = imageDigest } = {}) {
     stacks: [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Service',
       producer_sha: serviceSha, template_sha256: '5'.repeat(64) }],
     inputs,
-    observed: { service_sha: serviceSha, image_digest: digest,
+    observed: { service_sha: serviceSha, image_digest: digest, minimum_client_version: 0,
       ecs: { api: { service_arn: 'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
         task_definition_arn: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:${revision}`,
         task_definition_sha256: taskDefinitionContentHash(taskDefinition), image_digest: digest },
@@ -108,6 +108,21 @@ test('a content or image identity change fails and names the field', () => {
   const changedContent = serviceRecord();
   changedContent.observed.ecs.api.task_definition_sha256 = 'not-a-content-hash';
   assert.throws(() => validateServiceDeploymentRecord(changedContent), /Invalid ECS api task definition content hash/);
+});
+
+test('the Service observation requires a non-negative safe integer minimum client version', () => {
+  const missing = serviceRecord();
+  delete missing.observed.minimum_client_version;
+  assert.throws(() => validateDeploymentRecord(missing), /Invalid workload observed tuple fields/);
+  const negative = serviceRecord();
+  negative.observed.minimum_client_version = -1;
+  assert.throws(() => validateServiceDeploymentRecord(negative), /Invalid observed minimum client version/);
+  const fractional = serviceRecord();
+  fractional.observed.minimum_client_version = 1.5;
+  assert.throws(() => validateServiceDeploymentRecord(fractional), /Invalid observed minimum client version/);
+  const raised = serviceRecord();
+  raised.observed.minimum_client_version = 3;
+  assert.deepEqual(validateServiceDeploymentRecord(raised), raised);
 });
 
 test('stableTaskDefinition normalizes environment order and rejects drift in content', () => {
