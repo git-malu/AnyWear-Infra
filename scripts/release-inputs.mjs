@@ -60,9 +60,12 @@ export async function downloadReleaseInputs({ releaseTag, serviceCommit, directo
   await mkdir(directory, { recursive: true });
   const env = { ...process.env, GH_TOKEN: token, GH_TELEMETRY: 'disabled' };
   const view = parseJson((await run('gh', ['release', 'view', releaseTag, '--repo', SERVICE_REPOSITORY,
-    '--json', 'id,tagName,isDraft,assets'], { env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
-  exact(view, ['id', 'tagName', 'isDraft', 'assets'], 'sealed Service release');
-  integer(view.id, 'release ID');
+    '--json', 'databaseId,tagName,isDraft,assets'], { env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
+  // `gh release view --json id` returns the GraphQL node ID (`RE_...`), not the
+  // numeric release identity the record contract requires, so the numeric
+  // `databaseId` is requested and used instead.
+  exact(view, ['databaseId', 'tagName', 'isDraft', 'assets'], 'sealed Service release');
+  integer(view.databaseId, 'release ID');
   if (view.isDraft !== false || view.tagName !== releaseTag) throw new Error('Reviewed Service release is not the sealed published release');
   const published = new Map((view.assets ?? []).map(asset => [asset.name, asset]));
   for (const name of RELEASE_ASSETS) {
@@ -93,7 +96,7 @@ export async function downloadReleaseInputs({ releaseTag, serviceCommit, directo
   // before the deploy job binds and deploys them.
   loadLocalArtifactInputs(directory);
   const record = releaseInputsRecord({ assets: hashes,
-    release: { id: view.id, tag: releaseTag, sourceSha: serviceCommit, imageDigest: image.digest } });
+    release: { id: view.databaseId, tag: releaseTag, sourceSha: serviceCommit, imageDigest: image.digest } });
   await writeFile(path.join(directory, 'release-inputs.json'), canonicalJson(record));
   return record;
 }
