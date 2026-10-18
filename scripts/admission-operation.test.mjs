@@ -160,7 +160,7 @@ test('suspend classifies what it ended from the stored database pair, not from t
 test('source and active-Beta mismatches prevent every suspend before any lifecycle task', async () => {
   for (const extra of [{ infraSha: '6'.repeat(40) }, { env: { ...env, GITHUB_REF: 'refs/heads/other' } },
     { env: { ...env, AWS_ACCOUNT_ID: '1' } },
-    { env: { ...env, GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/integration.yml@refs/heads/main' } }]) {
+    { env: { ...env, GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/retired-executor.yml@refs/heads/main' } }]) {
     const io = mockIo(); await assert.rejects(suspend(io, extra)); assert.equal(io.calls.length, 0);
   }
   for (const options of [{ platformActive: 'false' }, { workloadActive: 'false' }, { platformActive: 'unknown' },
