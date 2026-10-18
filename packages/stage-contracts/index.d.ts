@@ -83,11 +83,29 @@ export declare const DEPLOYMENT_STACK_FIELDS: readonly string[];
 /** The exact `inputs[]` fields of a v3 deployment record. */
 export declare const DEPLOYMENT_INPUT_FIELDS: readonly string[];
 
-/** The exact `observed` fields of a Service v3 deployment record. */
+/** The exact `observed` fields of a v4 Service deployment record. */
 export declare const SERVICE_OBSERVED_FIELDS: readonly string[];
+
+/** One ECS service identity recorded in the Service observation. */
+export interface ServiceEcsIdentity {
+  readonly service_arn: string;
+  readonly task_definition_arn: string;
+  readonly task_definition_sha256: string;
+  readonly image_digest: string;
+}
 
 /** The exact fields of one ECS service identity in the Service observation. */
 export declare const SERVICE_ECS_IDENTITY_FIELDS: readonly string[];
+
+/** The required `observed` tuple of a v4 Service deployment record. */
+export interface ServiceObserved {
+  readonly service_sha: string;
+  readonly image_digest: string;
+  /** The minimum Client version floor the observed Service enforces. */
+  readonly minimum_client_version: number;
+  readonly ecs: { readonly api: ServiceEcsIdentity; readonly worker: ServiceEcsIdentity };
+  readonly endpoints: { readonly api: string };
+}
 
 /** The exact top-level members of the v4 Service deployment record. */
 export declare const SERVICE_DEPLOYMENT_RECORD_MEMBERS: readonly string[];

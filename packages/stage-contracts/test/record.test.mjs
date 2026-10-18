@@ -5,6 +5,7 @@ import {
   DEPLOYMENT_RECORD_MEMBERS,
   SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   SERVICE_ECS_IDENTITY_FIELDS,
+  SERVICE_OBSERVED_FIELDS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
   SERVICE_REPOSITORY,
   SERVICE_WORKLOAD_STACK,
@@ -72,6 +73,7 @@ function serviceRecord() {
     observed: {
       service_sha: serviceSha,
       image_digest: imageDigest,
+      minimum_client_version: 0,
       ecs: {
         api: {
           service_arn: 'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
@@ -105,6 +107,9 @@ test('a complete Service v4 record validates, lists only the Workload stack and 
   assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type, 'anywear_service_deployment');
   assert.deepEqual([...SERVICE_ECS_IDENTITY_FIELDS],
     ['service_arn', 'task_definition_arn', 'task_definition_sha256', 'image_digest']);
+  assert.deepEqual([...SERVICE_OBSERVED_FIELDS].sort(),
+    ['ecs', 'endpoints', 'image_digest', 'minimum_client_version', 'service_sha']);
+  assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.observed, SERVICE_OBSERVED_FIELDS);
   assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.members, SERVICE_DEPLOYMENT_RECORD_MEMBERS);
 });
 
@@ -170,6 +175,29 @@ test('the Service observation pins the two ECS identities and the image digest',
   assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
     record.observed.endpoints = { api: endpoint, extra: endpoint };
   })), /Invalid endpoints fields/);
+});
+
+test('the Service observation requires a non-negative safe integer minimum client version', () => {
+  const base = serviceRecord();
+  const withChange = change => {
+    const record = structuredClone(base);
+    change(record);
+    return record;
+  };
+  // 0 is the expand-stage floor: a pre-header Client stays accepted.
+  assert.equal(validateServiceDeploymentRecord(base).observed.minimum_client_version, 0);
+  for (const [label, value] of [['missing', undefined], ['negative', -1], ['fractional', 1.5],
+    ['string', '1'], ['unsafe integer', Number.MAX_SAFE_INTEGER + 1], ['NaN', Number.NaN]]) {
+    const record = withChange(candidate => {
+      if (value === undefined) delete candidate.observed.minimum_client_version;
+      else candidate.observed.minimum_client_version = value;
+    });
+    assert.throws(() => validateServiceDeploymentRecord(record),
+      value === undefined ? /Invalid workload observed tuple fields/ : /Invalid observed minimum client version/,
+      label);
+  }
+  const raised = withChange(record => { record.observed.minimum_client_version = 7; });
+  assert.deepEqual(validateServiceDeploymentRecord(raised), raised);
 });
 
 test('the record gate must pass and stay bound to the observed Service and image', () => {

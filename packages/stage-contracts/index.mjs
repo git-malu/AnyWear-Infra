@@ -234,7 +234,8 @@ export const DEPLOYMENT_PRODUCER_FIELDS = Object.freeze(
 export const DEPLOYMENT_STACK_FIELDS = Object.freeze(
   ['name', 'region', 'producer_repository', 'producer_sha', 'template_sha256']);
 export const DEPLOYMENT_INPUT_FIELDS = Object.freeze(['parameter', 'version', 'value_sha256']);
-export const SERVICE_OBSERVED_FIELDS = Object.freeze(['service_sha', 'image_digest', 'ecs', 'endpoints']);
+export const SERVICE_OBSERVED_FIELDS = Object.freeze(
+  ['service_sha', 'image_digest', 'minimum_client_version', 'ecs', 'endpoints']);
 // A task definition revision is CloudFormation bookkeeping, not identity: the same
 // image/environment/roles/command re-registers as a new revision and must not fail.
 // The ARN is recorded as evidence only; equality is the image digest plus the
@@ -731,11 +732,15 @@ function validateSchemaMember(record) {
 }
 
 // The release slice's observed tuple: its two ECS services, the deployed image
-// digest/source and the public API endpoint.
+// digest/source, the minimum Client version floor the deployed Service enforces
+// and the public API endpoint.
 function validateServiceObserved(observed) {
   exact(observed, SERVICE_OBSERVED_FIELDS, 'workload observed tuple');
   matches(observed.service_sha, SHA, 'observed Service');
   matches(observed.image_digest, DIGEST, 'observed image');
+  // The floor is read back from the deployed Service, never defaulted at record
+  // production: a producer that did not read it cannot write a record.
+  integer(observed.minimum_client_version, 'observed minimum client version', 0);
   exact(observed.ecs, ['api', 'worker'], 'ECS identities');
   for (const [purpose, identity] of Object.entries(observed.ecs)) {
     exact(identity, SERVICE_ECS_IDENTITY_FIELDS, `ECS ${purpose} identity`);

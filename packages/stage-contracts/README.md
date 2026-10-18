@@ -7,8 +7,8 @@ record and bake-gate validators, and the Foundation service-role naming helpers.
 | | |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.2.1` |
-| Tag | `stage-contracts-v0.2.1` (a post-merge publication step; `0.1.0` is the last tagged release) |
+| Version | `0.2.2` |
+| Tag | `stage-contracts-v0.2.2` (a post-merge publication step; `0.1.0` is the last tagged release) |
 | Registry | GitHub Packages (`https://npm.pkg.github.com`) |
 | Runtime | Node.js 24+, plain ESM (`.mjs`) with `.d.ts`; no build step, no runtime dependency |
 
@@ -30,10 +30,14 @@ record and bake-gate validators, and the Foundation service-role naming helpers.
   `SERVICE_WORKLOAD_STACK`.
 - **Service record v4** — `DEPLOYMENT_RECORD_MEMBERS` (the seven-member v3 core
   Infra still produces), `SERVICE_DEPLOYMENT_RECORD_MEMBERS` (the same core plus
-  the required `gate`), `SERVICE_DEPLOYMENT_RECORD_SCHEMA`,
-  `SERVICE_ECS_IDENTITY_FIELDS`, `stableTaskDefinition`,
-  `taskDefinitionContentHash`, `validateServiceDeploymentRecord`. All pure: no
-  AWS, network, filesystem or clock.
+  the required `gate`), `SERVICE_DEPLOYMENT_RECORD_SCHEMA`, the required
+  `SERVICE_OBSERVED_FIELDS` tuple (`service_sha`, `image_digest`,
+  `minimum_client_version`, `ecs`, `endpoints`), `SERVICE_ECS_IDENTITY_FIELDS`,
+  `stableTaskDefinition`, `taskDefinitionContentHash`,
+  `validateServiceDeploymentRecord`. `minimum_client_version` is a required
+  non-negative safe integer: it is the minimum Client version floor the observed
+  Service enforces, read back from the deployed Service instead of being defaulted
+  by the record producer. All pure: no AWS, network, filesystem or clock.
 - **Deployment bake gate** — `DEPLOYMENT_GATE_SIGNAL_NAMES` (the six fixed
   names, in order), `DEPLOYMENT_GATE_THRESHOLDS` and
   `DEPLOYMENT_GATE_COMPARISONS` (one stage-free table), `deploymentAlarmNames`
@@ -61,14 +65,14 @@ The conditional `cleanup_task_role_arn` definition is included in
 
 ```sh
 npm test    # node --test test/*.test.mjs
-npm pack    # git-malu-stage-contracts-0.2.1.tgz
+npm pack    # git-malu-stage-contracts-0.2.2.tgz
 ```
 
 ## Publishing
 
 Publishing is a separate, tag-triggered workflow
 (`.github/workflows/publish-stage-contracts.yml`) with `packages: write`. Pushing
-the annotated tag `stage-contracts-v0.2.1` runs the package tests, asserts the
+the annotated tag `stage-contracts-v0.2.2` runs the package tests, asserts the
 tag equals `stage-contracts-v<package version>`, and publishes with
 `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` to
 `https://npm.pkg.github.com`. It holds no AWS credential and no deployment
@@ -85,9 +89,9 @@ AnyWear-Service pins the packed artifact, not a mutable branch and not a registr
 credential in the deploy job:
 
 1. Commit the tarball (for example
-   `git-malu-stage-contracts-0.2.1.tgz`) under `infra/vendor/`.
+   `git-malu-stage-contracts-0.2.2.tgz`) under `infra/vendor/`.
 2. Pin it in `infra/package.json`:
-   `"@git-malu/stage-contracts": "file:vendor/git-malu-stage-contracts-0.2.1.tgz"`.
+   `"@git-malu/stage-contracts": "file:vendor/git-malu-stage-contracts-0.2.2.tgz"`.
 3. Install with the workspace's usual frozen-lockfile command.
 
 The tarball is built by `npm pack` in this directory; its sha256 and file list are
