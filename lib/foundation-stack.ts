@@ -473,7 +473,7 @@ export class FoundationStack extends cdk.Stack {
       // on the api log group, so its grant is not repeated here.
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter'],
-        resources: [logGroup(`/anywear/beta/${unique('worker')}:*`)],
+        resources: [logGroup(`/anywear/beta/${unique('worker')}`)],
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',

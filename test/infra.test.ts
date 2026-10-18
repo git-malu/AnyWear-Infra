@@ -1148,7 +1148,6 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:targetgroup/beta-anywear-api/*',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
-      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
       'arn:aws:s3:::anywearworkloadstack-beta-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
@@ -1304,12 +1303,14 @@ describe('Explicit infrastructure identity cutover', () => {
       }
       return JSON.stringify(value);
     };
-    // The metric-filter grant is worker-log-group-only; no filter exists on the
-    // api log group, so its grant is not repeated there.
+    // The metric-filter grant is worker-log-group-only and uses the log-group
+    // resource ARN (no `:*` suffix: the CloudWatch Logs metric-filter APIs
+    // authorize on the log-group resource type, not the log-stream one). No
+    // filter exists on the api log group, so its grant is not repeated there.
     const filterStatements = statements.filter((statement) => [statement.Action].flat().includes('logs:PutMetricFilter'));
     expect(filterStatements).toHaveLength(1);
     expect([filterStatements[0].Resource].flat().map(render)).toEqual([
-      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
     ]);
     const alarmStatements = statements.filter((statement) => [statement.Action].flat().includes('cloudwatch:PutMetricAlarm'));
     expect(alarmStatements).toHaveLength(1);

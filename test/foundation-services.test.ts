@@ -109,7 +109,7 @@ describe('Foundation reviewed service set (CDK context)', () => {
     // colon-form CloudWatch alarm ARNs and the worker metric-filter grants). The
     // comparison normalizes only the declared CDK diagnostic metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('38406ef99da93591276b291dc0bcde9599fa24f4797e73c9d7f7e3d4f19c0209');
+      .toBe('8324a6c4ae405d9a89301680f0854c183b51c0a11281fc0e21d371535905066a');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();
