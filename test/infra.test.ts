@@ -1021,7 +1021,8 @@ describe('Explicit infrastructure identity cutover', () => {
     ]));
     expect(normalized(deploy)).toContainEqual({
       Action: 'logs:FilterLogEvents', Effect: 'Allow',
-      Resource: 'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
+      Resource: ['arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+        'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*'],
     });
     // The drill's one-off DLQ write is never a standing grant.
     expect(actions(deploy)).not.toEqual(expect.arrayContaining(['sqs:SendMessage']));
@@ -1064,6 +1065,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
       'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto',
       'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq',
@@ -1317,6 +1319,64 @@ describe('Explicit infrastructure identity cutover', () => {
     expect([alarmStatements[0].Resource].flat().map(render)).toEqual([
       'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
     ]);
+  });
+
+  it('grants every #162 deploy-role bake read on the API resource form inside its target', () => {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    const forAction = (action: string): string[] => {
+      const matching = statements.filter((statement) => [statement.Action].flat().includes(action));
+      expect(matching).toHaveLength(1);
+      return [matching[0].Resource].flat().map(render);
+    };
+    // The five #162 bake reads. Each resource must be the form the authorized API
+    // uses and stay inside the reviewed target; a granted read in another form is
+    // a missing permission at deploy time, not a broader grant.
+    const metrics = statements.filter((statement) => [statement.Action].flat().includes('cloudwatch:GetMetricStatistics'));
+    expect(metrics).toHaveLength(1);
+    expect([metrics[0].Resource].flat().map(render)).toEqual(['*']);
+    expect(metrics[0].Condition).toEqual({ StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } });
+    expect(forAction('cloudwatch:DescribeAlarms'))
+      .toEqual(['arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*']);
+    expect(new Set(forAction('ecs:DescribeServices'))).toEqual(new Set([
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+    ]));
+    expect(new Set(forAction('sqs:GetQueueAttributes'))).toEqual(new Set([
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq',
+    ]));
+    // FilterLogEvents authorizes on the plain log-group ARN per the CloudWatch
+    // Logs identity-policy docs, while the pre-existing E2E grant exercised the
+    // stream-suffixed form. Both worker-log-group forms are granted; any other
+    // log group or a malformed form fails.
+    const filterResources = forAction('logs:FilterLogEvents');
+    expect(new Set(filterResources)).toEqual(new Set([
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
+    ]));
+    for (const resource of filterResources) {
+      expect(resource).toMatch(/^arn:aws:logs:ap-east-1:650880818323:log-group:\/anywear\/beta\/worker(?::\*)?$/);
+    }
   });
 
   it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {

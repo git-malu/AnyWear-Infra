@@ -400,8 +400,14 @@ export class FoundationStack extends cdk.Stack {
         resources: Object.values(deploymentQueueNames('beta'))
           .map((queueName) => this.formatArn({ service: 'sqs', resource: queueName })),
       }));
+      // FilterLogEvents is documented as a log-group-level action (plain
+      // log-group ARN), but the pre-existing E2E role's exercised grant uses the
+      // stream-suffixed form. Grant both worker-log-group forms rather than bet
+      // the deployment on which resource form the API authorizes on; nothing
+      // outside the worker log group is included.
       serviceDeploy.addToPolicy(new iam.PolicyStatement({
-        actions: ['logs:FilterLogEvents'], resources: [logGroup('/anywear/beta/worker:*')],
+        actions: ['logs:FilterLogEvents'],
+        resources: [logGroup('/anywear/beta/worker'), logGroup('/anywear/beta/worker:*')],
       }));
 
       serviceCfn.addToPolicy(new iam.PolicyStatement({
