@@ -40,10 +40,11 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   );
   // The Beta stage contract is published as one `/anywear/beta/` prefix. The
   // observe path records every value under it (the Workload conversion replaced
-  // the Platform stack-output reads with the contract), so the runtime principal
-  // alone gets the prefix read. It is the same two read actions as the named
-  // reads above, and no write, delete or version mutation is added here or
-  // anywhere else.
+  // the Platform stack-output reads with the contract), and the E2E qualification
+  // observer validates every value under the prefix against the platform record.
+  // The runtime and E2E principals therefore get the prefix read: it is the same
+  // two read actions as the named reads above, and no write, delete or version
+  // mutation is added here or anywhere else.
   const getStageContractParameters = (principal: iam.IRole) => principal.addToPrincipalPolicy(
     new iam.PolicyStatement({
       actions: ['ssm:GetParameter', 'ssm:GetParameters'],
@@ -145,7 +146,10 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   }
   // The observation read surface is the whole stage-contract prefix, not only
   // the nine pre-contract names the deployment/qualification path still reads.
+  // The E2E qualification role runs the same observer against the platform
+  // record, so it needs the same prefix read as the runtime principal.
   getStageContractParameters(runtime);
+  getStageContractParameters(e2e);
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'], conditions: regional,
   }));

@@ -49,7 +49,7 @@ function sealedRelease(fixture, { tamper } = {}) {
     assert.equal(command, 'gh');
     assert.equal(options.env.GH_TOKEN, 'read-only-token');
     if (args[0] === 'release' && args[1] === 'view') {
-      return { stdout: JSON.stringify({ id: 407218593, tagName: releaseTag, isDraft: false,
+      return { stdout: JSON.stringify({ databaseId: 407218593, tagName: releaseTag, isDraft: false,
         assets: RELEASE_ASSETS.map((name) => ({ name, state: 'uploaded', size: 1024 })) }) };
     }
     if (args[0] === 'release' && args[1] === 'download') {
@@ -145,6 +145,37 @@ test('deploy-platform still downloads the same sealed assets', async () => {
   for (const name of RELEASE_ASSETS) {
     assert.ok((await readFile(path.join(selected, name))).length > 0, name);
   }
+});
+
+test('reads the numeric release databaseId, not the GraphQL node id', async () => {
+  const fixture = await temporary('infra-release-fixture-');
+  await createTestInputs(fixture);
+  const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
+  const { calls, run } = sealedRelease(fixture);
+  const record = await runVerifyInputs({ env: releaseEnv('deploy-platform'), run, token: 'read-only-token',
+    directory: selected });
+  // The record contract requires a numeric ID, which `gh` exposes as databaseId.
+  const viewCall = calls[0][1];
+  assert.deepEqual(viewCall.slice(viewCall.indexOf('--json'), viewCall.indexOf('--json') + 2),
+    ['--json', 'databaseId,tagName,isDraft,assets']);
+  assert.equal(record.release.id, 407218593);
+  assert.equal(Number.isSafeInteger(record.release.id), true);
+
+  // A release view that only carries the GraphQL node ID (`RE_...`) fails closed
+  // before any download: it cannot state the numeric release identity.
+  let downloaded = false;
+  const nodeIdOnly = async (command, args) => {
+    assert.equal(command, 'gh');
+    if (args[0] === 'release' && args[1] === 'view') {
+      return { stdout: JSON.stringify({ id: 'RE_kwDORQyzo84Y1D8V', tagName: releaseTag, isDraft: false,
+        assets: RELEASE_ASSETS.map((name) => ({ name, state: 'uploaded', size: 1024 })) }) };
+    }
+    downloaded = true;
+    throw new Error('the release must not download without a numeric ID');
+  };
+  await assert.rejects(runVerifyInputs({ env: releaseEnv('deploy-platform'), run: nodeIdOnly,
+    token: 'read-only-token', directory: selected }), /Invalid sealed Service release fields/);
+  assert.equal(downloaded, false);
 });
 
 test('restore-release fails closed on a missing identity, a missing token or tampered bytes', async () => {
