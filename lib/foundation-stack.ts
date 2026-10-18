@@ -345,6 +345,14 @@ export class FoundationStack extends cdk.Stack {
       // four compute task/execution roles: it has no managed policy and is never
       // an ECS `PassRole` target, so only the role-management statement lists it.
       const cleanupOperationRole = slashArn('iam', 'role', 'beta-anywear-tester-cleanup-operation', '', this.account);
+      // The same Workload template also creates the CleanupOperation state
+      // machine. The account holds exactly one state machine
+      // (`beta-anywear-tester-cleanup`), so this unqualified ARN identifies it
+      // unambiguously.
+      const cleanupStateMachine = this.formatArn({
+        service: 'states', resource: 'stateMachine', resourceName: 'beta-anywear-tester-cleanup',
+        arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+      });
       const taskExecutionPolicy = slashArn('iam', 'policy', 'service-role/AmazonECSTaskExecutionRolePolicy', '', 'aws');
       const scalableTargets = slashArn('application-autoscaling', 'scalable-target', '*');
       const scalingPolicies = slashArn('application-autoscaling', 'scaling-policy', '*');
@@ -454,6 +462,23 @@ export class FoundationStack extends cdk.Stack {
         sid: 'DescribeWorkloadLogGroups',
         actions: ['logs:DescribeLogGroups'],
         resources: ['*'],
+      }));
+      // Issue #158 round 13: CloudFormation resolves the Workload template's
+      // `AWS::StepFunctions::StateMachineVersion` ARN with this execution role,
+      // so the role must read the CleanupOperation state machine that owns the
+      // version. Step Functions authorizes version and alias operations on the
+      // state machine's unqualified ARN, not on a version-suffixed ARN:
+      // `statemachineversion` is not a resource type for either action, and
+      // `ListStateMachineVersions` exposes no `states:StateMachineQualifier`
+      // condition key (that key scopes only the actions the version/alias
+      // authorization guide lists). The single
+      // `stateMachine:beta-anywear-tester-cleanup` ARN therefore authorizes both
+      // reads, so no `:1`-style resource form is added. Both actions are
+      // read-only: no start/stop, execution/history read, publish or `states:*`
+      // grant joins them.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['states:DescribeStateMachine', 'states:ListStateMachineVersions'],
+        resources: [cleanupStateMachine],
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',

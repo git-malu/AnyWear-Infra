@@ -11,9 +11,9 @@
   "original_capture_sha256": "df6c26b35fdb58ec435ff2cd655cee42f31f9d08557545bbd7cf4e2778069b22",
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
-  "dedicated_source_sha": "81ae6a8015839c08a52be6d70c244c65a24e1d70",
-  "dedicated_candidate_canonical_sha256": "f0324d41332e4616456e7b0ab03f5c984c476e1da9fc449c68cbc423f5f4665e",
-  "dedicated_additions_sha256": "b34122a63e3e34567c7fff49b2107c7af8a6c8d42897eee781465b7f5899f3bc",
+  "dedicated_source_sha": "ad6db398863a9dafcc29246ebf49e4fe59199ba1",
+  "dedicated_candidate_canonical_sha256": "03bd275290cd9b2771050bbe3de33e9fae5ca7b16b183c53ac45261ef02ee629",
+  "dedicated_additions_sha256": "5726d993e2fa506ecf96d07925b2197f1eab7a826ea16d02735b159a3a6a307f",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",

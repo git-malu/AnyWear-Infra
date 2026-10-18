@@ -103,10 +103,10 @@ describe('Foundation reviewed service set (CDK context)', () => {
     expect(comparison.candidate_resource_count).toBe(16);
     expect(comparison.added).toHaveLength(12);
     // sha256 of the normalized live candidate; the comparison normalizes only
-    // the declared CDK diagnostic metadata. Re-recorded when the round-12
-    // role-management statement added the CleanupOperation StateMachine role.
+    // the declared CDK diagnostic metadata. Re-recorded when the round-13
+    // CloudFormation role statement added the two Step Functions reads.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('7403639ef0cf0db13cb192b2d217b62bbd8240193dd3d573dd1786fe50581af0');
+      .toBe('8df488bb3c7f31fd2af8714f87edbf25b4f6e70b044cccf72e68e7adf22e55c5');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();
