@@ -11,8 +11,8 @@
   "original_capture_sha256": "df6c26b35fdb58ec435ff2cd655cee42f31f9d08557545bbd7cf4e2778069b22",
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
-  "dedicated_source_sha": "af142f6ec033502f62a381172fbba1b648f2b7f0",
-  "dedicated_candidate_canonical_sha256": "58c57366f62ac3ec4eab66a46b565c5a29d633753c7600971d326a87aa807bb9",
+  "dedicated_source_sha": "683a3da7381928719ae08ab3e8c8497537ce4d55",
+  "dedicated_candidate_canonical_sha256": "8168b97a306fc47341fff287cccfe93d47391b0a6c88570f26540124252981cf",
   "dedicated_additions_sha256": "242a0e3d6153c61020dcda78743098effb84c9c077a421923f514287ab55cac0",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
