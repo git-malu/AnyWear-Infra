@@ -9,6 +9,7 @@ import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '@git-malu/stage-contracts';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import workloadExtensionResources from './fixtures/workload-extension-resources.json';
 import workloadBakeReads from './fixtures/workload-bake-reads.json';
+import workloadCfnActions from './fixtures/workload-cfn-actions.json';
 import * as path from 'node:path';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
@@ -1114,9 +1115,11 @@ describe('Explicit infrastructure identity cutover', () => {
       's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
       's3:PutBucketPublicAccessBlock',
       'ssm:GetParameter', 'ssm:GetParameters',
-      'states:DescribeStateMachine', 'states:ListStateMachineVersions',
+      'states:CreateStateMachine', 'states:DeleteStateMachine', 'states:DeleteStateMachineVersion',
+      'states:DescribeStateMachine', 'states:ListStateMachineVersions', 'states:PublishStateMachineVersion',
+      'states:UpdateStateMachine',
     ].sort();
-    expect(actions(cfn)).toEqual(expectedCfnActions);
+    expect([...new Set(actions(cfn))].sort()).toEqual(expectedCfnActions);
     expect(cfn.every((statement) => statement.Effect === 'Allow')).toBe(true);
     expect(cfn.some((statement) => statement.NotAction !== undefined || statement.NotResource !== undefined)).toBe(false);
     // Positive: CloudFormation resolves the Workload stack's two
@@ -1186,35 +1189,36 @@ describe('Explicit infrastructure identity cutover', () => {
     // worker metric-filter statement.
     expect(cfn.filter((statement) => [statement.Action].flat()
       .some((action: string) => action.startsWith('logs:')))).toHaveLength(3);
-    // Issue #158 round 13: CloudFormation resolves the Workload template's
-    // `AWS::StepFunctions::StateMachineVersion` ARN with this execution role, so
-    // the role reads the CleanupOperation state machine. The account holds
-    // exactly one state machine (`beta-anywear-tester-cleanup`), and Step
-    // Functions authorizes version reads on the unqualified state-machine ARN,
-    // so the statement keeps that single ARN and exactly the two read actions.
+    // Issue #158 round 13 / #162 D8: CloudFormation manages the Workload
+    // template's CleanupOperation state machine and its StateMachineVersion.
+    // Update/delete/version actions are authorized on the unqualified
+    // state-machine ARN; CreateStateMachine has no resource type in the Step
+    // Functions service authorization table, so it is the one service-level
+    // action on `*`.
     const stateMachineArn = 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup';
-    const stateMachineRead = normalized(cfn).filter((statement) => [statement.Action].flat()
-      .includes('states:DescribeStateMachine'));
-    expect(stateMachineRead).toHaveLength(1);
-    expect(stateMachineRead[0]).toEqual({
-      Action: ['states:DescribeStateMachine', 'states:ListStateMachineVersions'],
-      Effect: 'Allow',
-      Resource: stateMachineArn,
+    const stateActions = ['states:DeleteStateMachine', 'states:DeleteStateMachineVersion',
+      'states:DescribeStateMachine', 'states:ListStateMachineVersions', 'states:PublishStateMachineVersion',
+      'states:UpdateStateMachine'];
+    const stateMachineStatement = normalized(cfn).filter((statement) => [statement.Action].flat()
+      .includes('states:UpdateStateMachine'));
+    expect(stateMachineStatement).toHaveLength(1);
+    expect([...stateMachineStatement[0].Action].sort()).toEqual([...stateActions].sort());
+    expect(stateMachineStatement[0].Resource).toBe(stateMachineArn);
+    const stateCreate = normalized(cfn).filter((statement) => [statement.Action].flat()
+      .includes('states:CreateStateMachine'));
+    expect(stateCreate).toHaveLength(1);
+    expect(stateCreate[0]).toEqual({
+      Action: 'states:CreateStateMachine', Effect: 'Allow', Resource: '*',
     });
-    // No write, execution or version-publication action joins the statement, and
-    // the only resource is the one state-machine ARN above (no `*`, no
-    // version-suffixed or execution ARN). The two read actions are the CFN
-    // role's complete states surface; the OIDC deploy role holds none.
     expect(cfn.filter((statement) => [statement.Action].flat()
-      .some((action: string) => action.startsWith('states:')))).toHaveLength(1);
+      .some((action: string) => action.startsWith('states:')))).toHaveLength(2);
     expect([...new Set(actions(cfn).filter((action) => action.startsWith('states:')))].sort())
-      .toEqual(['states:DescribeStateMachine', 'states:ListStateMachineVersions']);
+      .toEqual([...stateActions, 'states:CreateStateMachine'].sort());
     for (const action of ['states:StartExecution', 'states:StartSyncExecution', 'states:StopExecution',
       'states:RedriveExecution', 'states:DescribeExecution', 'states:DescribeStateMachineForExecution',
       'states:GetExecutionHistory', 'states:ListExecutions', 'states:ListMapRuns', 'states:DescribeMapRun',
       'states:ListActivities', 'states:DescribeActivity', 'states:GetActivityTask',
-      'states:CreateStateMachine', 'states:UpdateStateMachine', 'states:DeleteStateMachine',
-      'states:PublishStateMachineVersion', 'states:DeleteStateMachineVersion', 'states:ListStateMachines',
+      'states:ListStateMachines',
       'states:CreateStateMachineAlias', 'states:UpdateStateMachineAlias', 'states:DeleteStateMachineAlias',
       'states:ListStateMachineAliases', 'states:ListTagsForResource', 'states:TagResource', 'states:UntagResource',
       'states:TestState', 'states:RevealSecrets', 'states:InvokeHTTPEndpoint', 'states:SendTaskSuccess',
@@ -1234,11 +1238,17 @@ describe('Explicit infrastructure identity cutover', () => {
     const cleanupTaskRoleArns = ['beta-anywear-tester-cleanup-task', 'beta-anywear-verification-task',
       'beta-anywear-one-shot-execution'].map((roleName) => `arn:aws:iam::650880818323:role/${roleName}`).sort();
     const iamPassRole = cfn.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
-    expect(iamPassRole).toHaveLength(1);
-    expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf).sort())
+    expect(iamPassRole).toHaveLength(2);
+    const ecsPassRole = iamPassRole.find((statement) =>
+      statement.Condition?.StringEquals?.['iam:PassedToService'] === 'ecs-tasks.amazonaws.com');
+    expect(ecsPassRole).toBeDefined();
+    expect(([ecsPassRole!.Resource].flat() as any[]).map(resourceOf).sort())
       .toEqual([...taskRoleArns, ...cleanupTaskRoleArns].sort());
-    expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf)).not.toContain(cleanupOperationRoleArn);
-    expect(iamPassRole[0].Condition).toEqual({ StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } });
+    expect(([ecsPassRole!.Resource].flat() as any[]).map(resourceOf)).not.toContain(cleanupOperationRoleArn);
+    const statesPassRole = iamPassRole.find((statement) =>
+      statement.Condition?.StringEquals?.['iam:PassedToService'] === 'states.amazonaws.com');
+    expect(statesPassRole).toBeDefined();
+    expect(([statesPassRole!.Resource].flat() as any[]).map(resourceOf)).toEqual([cleanupOperationRoleArn]);
     const attachPolicy = cfn.filter((statement) => [statement.Action].flat().includes('iam:AttachRolePolicy'));
     expect(attachPolicy).toHaveLength(1);
     expect(([attachPolicy[0].Resource].flat() as any[]).map(resourceOf).sort()).toEqual(taskRoleArns);
@@ -1325,13 +1335,13 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
         && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
     }
-    // The CloudFormation role carries exactly three IAM statements, and every IAM
-    // resource is one of the eight Workload-owned role ARNs (four compute, the
-    // cleanup-operation state-machine role and the three one-shot task roles):
-    // the extensions add no wildcard, policy, user or group resource.
+    // The CloudFormation role carries exactly four IAM statements (role
+    // management, attach/detach, ECS PassRole, states PassRole), and every IAM
+    // resource is one of the eight Workload-owned role ARNs: the extensions add
+    // no wildcard, policy, user or group resource.
     const iamStatements = cfn.filter((statement) => [statement.Action].flat()
       .some((action: string) => action.startsWith('iam:')));
-    expect(iamStatements).toHaveLength(3);
+    expect(iamStatements).toHaveLength(4);
     for (const statement of iamStatements) {
       for (const resource of ([statement.Resource].flat() as any[]).map(resourceOf)) {
         expect(resource).toMatch(/^arn:aws:iam::650880818323:role\/beta-anywear-[a-z0-9-]+$/);
@@ -1519,6 +1529,57 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(reads.filter((read) => read.grant === '#162')).toHaveLength(5);
     expect(reads.filter((read) => read.grant === 'pre-existing').map((read) => read.call))
       .toEqual(['cloudformation:list-stack-resources']);
+  });
+
+  it('grants every CFN action the full Workload resource-type table requires', () => {
+    // The table is derived from the synthesized roles-added Workload template.
+    // The recorded template has 20 types: MetricFilter is present and CDK
+    // Metadata is not, despite the prose list naming the latter and omitting the
+    // former. A type added to the Workload template must be added here (and its
+    // handler actions granted) before the deploy can create it.
+    const table = (workloadCfnActions as any).resource_types as Array<{
+      type: string; actions: string[]; wildcard_actions?: string[];
+    }>;
+    expect(table).toHaveLength(20);
+    const types = table.map((entry) => entry.type);
+    expect(new Set(types).size).toBe(types.length);
+    expect(types).toContain('AWS::Logs::MetricFilter');
+    expect(types).not.toContain('AWS::CDK::Metadata');
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-cfn-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    const granted = new Set(statements.flatMap((statement) => [statement.Action].flat()));
+    for (const entry of table) {
+      expect(entry.actions.length).toBeGreaterThan(0);
+      expect(new Set(entry.actions).size).toBe(entry.actions.length);
+      for (const action of entry.actions) {
+        expect(granted.has(action)).toBe(true);
+        const matching = statements.filter((statement) => [statement.Action].flat().includes(action));
+        expect(matching.length).toBeGreaterThan(0);
+        const resourcesForAction = matching.flatMap((statement) => [statement.Resource].flat().map(render));
+        if ((entry.wildcard_actions ?? []).includes(action)) {
+          expect(resourcesForAction).toContain('*');
+        } else {
+          expect(resourcesForAction).not.toContain('*');
+        }
+      }
+    }
   });
 
   it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {

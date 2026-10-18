@@ -11,9 +11,9 @@
   "original_capture_sha256": "df6c26b35fdb58ec435ff2cd655cee42f31f9d08557545bbd7cf4e2778069b22",
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
-  "dedicated_source_sha": "17da5daac02e9613cb64f444603d5026a2d557d5",
-  "dedicated_candidate_canonical_sha256": "aec4109fa71f6c1137e11eecd35090e4d8c43489af4db00744a7e4cde0ef3def",
-  "dedicated_additions_sha256": "4e9c078973f53f5a390e1ed3cd40478970a2d91fc3538bcda8f6e64cc37d55f9",
+  "dedicated_source_sha": "dba74504d74c16cf660f12c4ee2997459c6a5ad5",
+  "dedicated_candidate_canonical_sha256": "8ec301337c63955e32a8b591c852fc751554a0bcc083dd4b4cdbe8f1e1aedf1c",
+  "dedicated_additions_sha256": "d23d373c64862ee390f36dde976309d09b4eb1888dc6ae5e91bbbe109c9912a0",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -44,6 +44,13 @@
       "source_branch": "issue/162-stage-contracts-gate",
       "scope": "CleanupOperation task-definition and iam:PassRole grants on the Service CloudFormation execution role",
       "detail": "The Workload template registers beta-anywear-cleanup and beta-anywear-cleanup-verify task definitions alongside api/worker; the CFN execution role's task-definition statement adds those two family ARNs. The three one-shot task roles beta-anywear-tester-cleanup-task, beta-anywear-verification-task and beta-anywear-one-shot-execution are added to iam:PassRole only (they are Workload-owned, not created/deleted by this role). No wildcard, no other role and no new action."
+    },
+    {
+      "issue": 162,
+      "recorded_at": "2026-10-18",
+      "source_branch": "issue/162-workload-cfn-sweep",
+      "scope": "CleanupOperation StateMachine update/version and states PassRole grants on the Service CloudFormation execution role",
+      "detail": "The Workload state machine definition changes with the task definitions, so the CFN role needs states:UpdateStateMachine; create/delete and version publish/delete cover replacement, and CreateStateMachine is the one service-level action on * because Step Functions defines no resource type for it. iam:PassRole for the Workload-owned beta-anywear-tester-cleanup-operation role is constrained to states.amazonaws.com. No other role, action or wildcard."
     }
   ]
 }

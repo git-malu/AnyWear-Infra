@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "record_type": "anywear_workload_cfn_actions",
+  "source_repository": "git-malu/AnyWear-Service",
+  "source_note": "Every resource type in the synthesized roles-added AnyWearWorkloadStack-beta template, with the CloudFormation-execution-role actions its handler needs for the recorded properties (create/update/read/delete). The recorded template has 20 types: the manager's list named AWS::CDK::Metadata, which the template does not contain, and omitted AWS::Logs::MetricFilter, which it does; this table follows the template. Actions that the service authorization table cannot scope to a resource are listed in wildcard_actions. This table must be updated when AnyWear-Service adds or removes a Workload resource type.",
+  "resource_types": [
+    {
+      "type": "AWS::ApplicationAutoScaling::ScalableTarget",
+      "actions": ["application-autoscaling:RegisterScalableTarget", "application-autoscaling:DeregisterScalableTarget", "application-autoscaling:DescribeScalableTargets"]
+    },
+    {
+      "type": "AWS::ApplicationAutoScaling::ScalingPolicy",
+      "actions": ["application-autoscaling:PutScalingPolicy", "application-autoscaling:DeleteScalingPolicy", "application-autoscaling:DescribeScalingPolicies"]
+    },
+    {
+      "type": "AWS::CloudFront::Distribution",
+      "actions": ["cloudfront:CreateDistribution", "cloudfront:UpdateDistribution", "cloudfront:DeleteDistribution", "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig"]
+    },
+    {
+      "type": "AWS::CloudFront::Function",
+      "actions": ["cloudfront:CreateFunction", "cloudfront:UpdateFunction", "cloudfront:DeleteFunction", "cloudfront:DescribeFunction", "cloudfront:GetFunction", "cloudfront:PublishFunction"]
+    },
+    {
+      "type": "AWS::CloudWatch::Alarm",
+      "actions": ["cloudwatch:PutMetricAlarm", "cloudwatch:DescribeAlarms", "cloudwatch:DeleteAlarms"]
+    },
+    {
+      "type": "AWS::EC2::SecurityGroupIngress",
+      "actions": ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"]
+    },
+    {
+      "type": "AWS::ECS::Service",
+      "actions": ["ecs:CreateService", "ecs:UpdateService", "ecs:DeleteService", "ecs:DescribeServices"]
+    },
+    {
+      "type": "AWS::ECS::TaskDefinition",
+      "actions": ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:DeregisterTaskDefinition"]
+    },
+    {
+      "type": "AWS::ElasticLoadBalancingV2::Listener",
+      "actions": ["elasticloadbalancing:CreateListener", "elasticloadbalancing:DeleteListener", "elasticloadbalancing:ModifyListener", "elasticloadbalancing:DescribeListeners"],
+      "wildcard_actions": ["elasticloadbalancing:DescribeListeners"]
+    },
+    {
+      "type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "actions": ["elasticloadbalancing:CreateRule", "elasticloadbalancing:DeleteRule", "elasticloadbalancing:ModifyRule", "elasticloadbalancing:DescribeRules"],
+      "wildcard_actions": ["elasticloadbalancing:DescribeRules"]
+    },
+    {
+      "type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "actions": ["elasticloadbalancing:CreateLoadBalancer", "elasticloadbalancing:DeleteLoadBalancer", "elasticloadbalancing:ModifyLoadBalancerAttributes", "elasticloadbalancing:SetSecurityGroups", "elasticloadbalancing:SetSubnets", "elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeLoadBalancerAttributes"],
+      "wildcard_actions": ["elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeLoadBalancerAttributes"]
+    },
+    {
+      "type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "actions": ["elasticloadbalancing:CreateTargetGroup", "elasticloadbalancing:DeleteTargetGroup", "elasticloadbalancing:ModifyTargetGroup", "elasticloadbalancing:ModifyTargetGroupAttributes", "elasticloadbalancing:DescribeTargetGroups", "elasticloadbalancing:DescribeTargetGroupAttributes"],
+      "wildcard_actions": ["elasticloadbalancing:DescribeTargetGroups", "elasticloadbalancing:DescribeTargetGroupAttributes"]
+    },
+    {
+      "type": "AWS::IAM::Policy",
+      "actions": ["iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:GetRolePolicy", "iam:ListRolePolicies"]
+    },
+    {
+      "type": "AWS::IAM::Role",
+      "actions": ["iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:AttachRolePolicy", "iam:DetachRolePolicy"]
+    },
+    {
+      "type": "AWS::Logs::LogGroup",
+      "actions": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy", "logs:DescribeLogGroups"],
+      "wildcard_actions": ["logs:DescribeLogGroups"]
+    },
+    {
+      "type": "AWS::Logs::MetricFilter",
+      "actions": ["logs:PutMetricFilter", "logs:DescribeMetricFilters", "logs:DeleteMetricFilter"]
+    },
+    {
+      "type": "AWS::S3::Bucket",
+      "actions": ["s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock", "s3:DeleteBucketPublicAccessBlock"]
+    },
+    {
+      "type": "AWS::S3::BucketPolicy",
+      "actions": ["s3:PutBucketPolicy", "s3:GetBucketPolicy", "s3:DeleteBucketPolicy"]
+    },
+    {
+      "type": "AWS::StepFunctions::StateMachine",
+      "actions": ["states:CreateStateMachine", "states:UpdateStateMachine", "states:DeleteStateMachine", "states:DescribeStateMachine", "states:ListStateMachineVersions", "iam:PassRole"],
+      "wildcard_actions": ["states:CreateStateMachine"],
+      "resource_note": "CreateStateMachine has no resource type in the Step Functions service authorization table; update/delete/read are on the unqualified state-machine ARN. iam:PassRole is the Workload-owned cleanup-operation role with the states.amazonaws.com condition."
+    },
+    {
+      "type": "AWS::StepFunctions::StateMachineVersion",
+      "actions": ["states:PublishStateMachineVersion", "states:DeleteStateMachineVersion", "states:DescribeStateMachine", "states:ListStateMachineVersions"],
+      "resource_note": "Version actions authorize on the unqualified state-machine ARN; no version-suffixed resource or qualifier condition is needed."
+    }
+  ]
+}
