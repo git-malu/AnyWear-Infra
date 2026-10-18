@@ -87,11 +87,13 @@ const policiesFor = (template: any, role: any): any[] => {
 };
 
 describe('Foundation reviewed service set (CDK context)', () => {
-  it('keeps the default context byte-identical to the pre-change Foundation template', () => {
+  it('keeps the default context equal to the reviewed live Foundation plus reviewed additions', () => {
     const { directory, template } = synthesizeDefaultWithCli();
     // The committed live-Foundation provenance and the round-3 comparison pin the
     // default candidate: four original resources plus exactly the twelve reviewed
-    // additions, and the normalized content hash recorded before this change.
+    // additions. Issue #162 extends the Service deploy role's reviewed additions
+    // with the read-only bake-gate grants, so the normalized hash moves with that
+    // deliberate, fixture-recorded delta.
     // Run the same comparison script CI runs rather than a second implementation.
     const reportPath = path.join(outputDirectory('infra-foundation-report-'), 'comparison.json');
     execFileSync(process.execPath, [path.join(root, 'scripts', 'compare-live-foundation.mjs'),
@@ -102,11 +104,13 @@ describe('Foundation reviewed service set (CDK context)', () => {
     expect(comparison.original_resource_count).toBe(4);
     expect(comparison.candidate_resource_count).toBe(16);
     expect(comparison.added).toHaveLength(12);
-    // sha256 of the normalized live candidate; the comparison normalizes only
-    // the declared CDK diagnostic metadata. Re-recorded when the round-13
-    // CloudFormation role statement added the two Step Functions reads.
+    // sha256 of the normalized live candidate including the #162 extension on top
+    // of the #158 rounds (read-only bake grants on both worker log-group forms,
+    // colon-form CloudWatch alarm ARNs, worker metric-filter grants, and main's
+    // DescribeLogGroups/Step Functions/CleanupOperation-role grants). The
+    // comparison normalizes only the declared CDK diagnostic metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('8df488bb3c7f31fd2af8714f87edbf25b4f6e70b044cccf72e68e7adf22e55c5');
+      .toBe('44fe32f50f4a3ba6232c0ea5842d5f56157e9876669046aef3f3bb3afe0242bd');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();

@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import {
+  deploymentQueueNames,
   serviceDeployCfnRoleName,
   serviceDeployRoleName,
   serviceTrustSubject,
@@ -275,6 +276,13 @@ export class FoundationStack extends cdk.Stack {
         account = this.account) => this.formatArn({
         service, resource, resourceName, region, account, arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
       });
+      // A colon-resource ARN such as `arn:aws:cloudwatch:<region>:<account>:alarm:<name>`.
+      // CloudWatch alarm ARNs are `alarm:<AlarmName>`, never `alarm/<AlarmName>`; the
+      // slash form matches no resource and turns every read into AccessDenied.
+      const colonArn = (service: string, resource: string, resourceName: string, region = this.region,
+        account = this.account) => this.formatArn({
+        service, resource, resourceName, region, account, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+      });
       const stackArn = (stackName: string) => slashArn('cloudformation', 'stack', `${stackName}/*`);
       const cloudformationStack = stackArn(workloadStack);
       // Change sets carry their own ARN; executing one still requires the target
@@ -362,7 +370,7 @@ export class FoundationStack extends cdk.Stack {
       const listenerRule = slashArn('elasticloadbalancing', 'listener-rule', `app/beta-anywear-${unique('api')}/*`);
       const distribution = slashArn('cloudfront', 'distribution', '*', '', this.account);
       const cloudFrontFunction = slashArn('cloudfront', 'function', '*', '', this.account);
-      const alarms = slashArn('cloudwatch', 'alarm', `beta-anywear-${unique('*')}`);
+      const alarms = colonArn('cloudwatch', 'alarm', `beta-anywear-${unique('*')}`);
       const logGroup = (name: string) => this.formatArn({
         service: 'logs', resource: 'log-group', resourceName: name, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
       });
@@ -381,6 +389,39 @@ export class FoundationStack extends cdk.Stack {
         },
       };
       const betaParameters = slashArn('ssm', 'parameter', 'anywear/beta/*');
+
+      // Issue #162: the deploy job's own bake reads the six named signals live
+      // after the stack is stable and before it writes the deployment record.
+      // The bake runs in the deploy job's OIDC session, so these read-only
+      // grants belong to the Service deploy role, not the CloudFormation
+      // execution role: the CloudWatch metric reads, the nine deployed bake and
+      // SQS alarm entities, this service's two ECS services, the four
+      // stage-base queues and the worker log group. No SQS send/receive grant is
+      // added: the controlled-fault drill uses a one-off operator credential.
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['cloudwatch:GetMetricStatistics'],
+        resources: ['*'], conditions: { StringEquals: { 'aws:RequestedRegion': this.region } },
+      }));
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['cloudwatch:DescribeAlarms'], resources: [alarms],
+      }));
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['ecs:DescribeServices'], resources: workloadServices,
+      }));
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['sqs:GetQueueAttributes'],
+        resources: Object.values(deploymentQueueNames('beta'))
+          .map((queueName) => this.formatArn({ service: 'sqs', resource: queueName })),
+      }));
+      // FilterLogEvents is documented as a log-group-level action (plain
+      // log-group ARN), but the pre-existing E2E role's exercised grant uses the
+      // stream-suffixed form. Grant both worker-log-group forms rather than bet
+      // the deployment on which resource form the API authorizes on; nothing
+      // outside the worker log group is included.
+      serviceDeploy.addToPolicy(new iam.PolicyStatement({
+        actions: ['logs:FilterLogEvents'],
+        resources: [logGroup('/anywear/beta/worker'), logGroup('/anywear/beta/worker:*')],
+      }));
 
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['ecs:RegisterTaskDefinition', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition'],
@@ -444,6 +485,14 @@ export class FoundationStack extends cdk.Stack {
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy'],
         resources: [logGroup(`/anywear/beta/${unique('api')}`), logGroup(`/anywear/beta/${unique('worker')}`)],
+      }));
+      // The #162 worker outbox metric filter is an `AWS::Logs::MetricFilter` the
+      // Workload template creates. CloudFormation's Logs handler needs the full
+      // create/update/read/delete action set on that log group; no filter exists
+      // on the api log group, so its grant is not repeated here.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter'],
+        resources: [logGroup(`/anywear/beta/${unique('worker')}`)],
       }));
       // CloudFormation resolves the Workload stack's `AWS::Logs::LogGroup` `Arn`
       // values with this execution role while it re-renders the four policies that

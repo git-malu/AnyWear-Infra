@@ -1,7 +1,9 @@
 // Type declarations for @git-malu/stage-contracts.
 //
 // The package is plain ESM JavaScript; these declarations are the consumer-facing
-// contract. No build step and no runtime dependencies.
+// contract. The Service deployment record is v4 (the v3 core plus the required
+// 600-second bake gate); Infra's `anywear_infra_deployment` stays v3 and never
+// produces a gate. No build step and no runtime dependencies.
 
 /** The CloudFormation value kind a stage parameter needs. */
 export type StageInputKind = 'String' | 'List';
@@ -69,7 +71,7 @@ export interface ServiceWorkloadStack {
 
 export declare const SERVICE_WORKLOAD_STACK: ServiceWorkloadStack;
 
-/** The exact top-level members of a v3 deployment record. */
+/** The exact top-level members of a v3 deployment record core (Infra owns this shape). */
 export declare const DEPLOYMENT_RECORD_MEMBERS: readonly string[];
 
 /** The exact `producer` fields of a v3 deployment record. */
@@ -87,15 +89,127 @@ export declare const SERVICE_OBSERVED_FIELDS: readonly string[];
 /** The exact fields of one ECS service identity in the Service observation. */
 export declare const SERVICE_ECS_IDENTITY_FIELDS: readonly string[];
 
-/** The complete v3 `anywear_service_deployment` schema surface. */
+/** The exact top-level members of the v4 Service deployment record. */
+export declare const SERVICE_DEPLOYMENT_RECORD_MEMBERS: readonly string[];
+
+/** The exact fields of the required `gate` block. */
+export declare const DEPLOYMENT_GATE_FIELDS: readonly string[];
+
+/** The exact fields of one gate signal. */
+export declare const DEPLOYMENT_GATE_SIGNAL_FIELDS: readonly string[];
+
+/** The exact fields of the gate's probe budget. */
+export declare const DEPLOYMENT_GATE_PROBE_FIELDS: readonly string[];
+
+/** The fixed, ordered names of the six baked signals. */
+export declare const DEPLOYMENT_GATE_SIGNAL_NAMES: readonly string[];
+
+/** The one stage-free threshold table, keyed by signal name. */
+export declare const DEPLOYMENT_GATE_THRESHOLDS: Readonly<Record<string, Readonly<Record<string, number>>>>;
+
+/** The fixed comparison string of each signal, keyed by signal name. */
+export declare const DEPLOYMENT_GATE_COMPARISONS: Readonly<Record<string, string>>;
+
+/** The gate window: exactly 600 seconds. */
+export declare const DEPLOYMENT_GATE_DURATION_SECONDS: 600;
+
+/** Probe cadence: one `GET /readyz` every 15 seconds. */
+export declare const DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS: 15;
+
+/** Minimum probes and the ALB `RequestCount` floor for a usable 5xx denominator. */
+export declare const DEPLOYMENT_GATE_REQUEST_FLOOR: 30;
+
+/** The probe budget of a 600-second window. */
+export declare const DEPLOYMENT_GATE_MAX_PROBES: 40;
+
+/** `passed` is the only gate result a deployment record may carry. */
+export declare const DEPLOYMENT_GATE_RESULTS: readonly string[];
+
+/** Signal states; any state other than `not-breaching` fails the gate. */
+export declare const DEPLOYMENT_GATE_STATES: readonly string[];
+
+/** Observed alarm states recorded alongside each signal. */
+export declare const DEPLOYMENT_GATE_ALARM_STATES: readonly string[];
+
+/** The gate name included in every Service record's producer block (not used directly). */
+export declare const DEPLOYMENT_GATE_NAME_SUFFIX: 'anywear-deployment-bake';
+
+/** `deploymentBakeName('beta')` -> `beta-anywear-deployment-bake`. */
+export declare function deploymentBakeName(stage: string): string;
+
+/** The stage encoded in `AnyWearWorkloadStack-<stage>`. */
+export declare function workloadStageFromStack(stackName: string): string;
+
+/** The deployed alarm names for one signal, for example `beta-anywear-alb-5xx`. */
+export declare function deploymentAlarmName(stage: string, signalName: string): readonly string[];
+
+/** The six signals' deployed alarm names, keyed by signal name. */
+export declare function deploymentAlarmNames(stage: string): Readonly<Record<string, readonly string[]>>;
+
+/** The stage-base queues the bake reads, keyed by purpose. */
+export declare function deploymentQueueNames(stage: string): {
+  readonly vto: string;
+  readonly vto_dlq: string;
+  readonly auto_tagging: string;
+  readonly auto_tagging_dlq: string;
+};
+
+/** One observed alarm state recorded next to its signal. */
+export interface DeploymentGateAlarm {
+  readonly name: string;
+  readonly state: 'OK' | 'ALARM' | 'INSUFFICIENT_DATA';
+}
+
+/** The exact read identity of one signal data source. */
+export interface DeploymentGateRead {
+  readonly source: 'cloudwatch' | 'ecs' | 'sqs' | 'logs';
+  readonly [field: string]: unknown;
+}
+
+/** One baked signal with its threshold, comparison, alarms, reads and exceptions. */
+export interface DeploymentGateSignal {
+  readonly name: string;
+  readonly state: 'not-breaching' | 'breaching' | 'insufficient';
+  readonly value: Readonly<Record<string, unknown>>;
+  readonly threshold: Readonly<Record<string, number>>;
+  readonly comparison: string;
+  readonly alarms: readonly DeploymentGateAlarm[];
+  readonly reads: readonly DeploymentGateRead[];
+  readonly exceptions: readonly string[];
+}
+
+/** The passed 600-second six-signal bake gate. */
+export interface DeploymentGate {
+  readonly name: string;
+  readonly result: 'passed';
+  readonly started_at: string;
+  readonly ended_at: string;
+  readonly duration_seconds: 600;
+  readonly service_sha: string;
+  readonly image_digest: string;
+  readonly probe: {
+    readonly interval_seconds: 15;
+    readonly probes_sent: number;
+    readonly request_floor: 30;
+  };
+  readonly signals: readonly DeploymentGateSignal[];
+}
+
+/** Validate one passed deployment gate block for a stage. */
+export declare function validateDeploymentGate(gate: unknown, stage: string): DeploymentGate;
+
+/** The complete v4 `anywear_service_deployment` schema surface. */
 export interface ServiceDeploymentRecordSchema {
-  readonly schema_version: 3;
+  readonly schema_version: 4;
   readonly record_type: 'anywear_service_deployment';
   readonly members: readonly string[];
   readonly producer: readonly string[];
   readonly stack: readonly string[];
   readonly input: readonly string[];
   readonly observed: readonly string[];
+  readonly gate: readonly string[];
+  readonly signal: readonly string[];
+  readonly signals: readonly string[];
   readonly stacks: readonly { readonly name: string; readonly region: string }[];
 }
 
@@ -124,7 +238,8 @@ export declare function stableTaskDefinition(definition: unknown): StableTaskDef
 export declare function taskDefinitionContentHash(definition: unknown): string;
 
 /**
- * Validate one v3 `anywear_service_deployment` record. Returns the input record
+ * Validate one v4 `anywear_service_deployment` record, including its required
+ * `gate` block bound to the observed Service/image. Returns the input record
  * unchanged when it is valid.
  */
 export declare function validateServiceDeploymentRecord<T>(record: T): T;

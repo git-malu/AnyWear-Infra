@@ -1,43 +1,81 @@
 import {
+  DEPLOYMENT_GATE_ALARM_STATES,
+  DEPLOYMENT_GATE_COMPARISONS,
+  DEPLOYMENT_GATE_DURATION_SECONDS,
+  DEPLOYMENT_GATE_FIELDS,
+  DEPLOYMENT_GATE_MAX_PROBES,
+  DEPLOYMENT_GATE_PROBE_FIELDS,
+  DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS,
+  DEPLOYMENT_GATE_REQUEST_FLOOR,
+  DEPLOYMENT_GATE_RESULTS,
+  DEPLOYMENT_GATE_SIGNAL_FIELDS,
+  DEPLOYMENT_GATE_SIGNAL_NAMES,
+  DEPLOYMENT_GATE_STATES,
+  DEPLOYMENT_GATE_THRESHOLDS,
   DEPLOYMENT_INPUT_FIELDS,
   DEPLOYMENT_PRODUCER_FIELDS,
   DEPLOYMENT_RECORD_MEMBERS,
   DEPLOYMENT_STACK_FIELDS,
   INFRA_REPOSITORY,
+  SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_OBSERVED_FIELDS,
   SERVICE_REPOSITORY,
   SERVICE_WORKLOAD_STACK,
+  deploymentAlarmName,
+  deploymentAlarmNames,
+  deploymentBakeName,
   stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
+  validateDeploymentGate,
   validateServiceDeploymentRecord,
   validateStageInputs,
+  workloadStageFromStack,
 } from '@git-malu/stage-contracts';
 import { canonicalJson, exact, matches, integer, SHA, HASH } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 
-// The Service record schema, its field lists, the stage-contract validators and
-// the task-definition identity are the versioned package's exports. This module
-// re-exports them and keeps the Infra-only record schema, producer/stack
-// validation and observation helpers.
+// The Service record schema, its field lists, the stage-contract validators, the
+// v4 bake-gate constants/validator and the task-definition identity are the
+// versioned package's exports. This module re-exports them and keeps the
+// Infra-only record schema, producer/stack validation and observation helpers.
 export {
+  DEPLOYMENT_GATE_ALARM_STATES,
+  DEPLOYMENT_GATE_COMPARISONS,
+  DEPLOYMENT_GATE_DURATION_SECONDS,
+  DEPLOYMENT_GATE_FIELDS,
+  DEPLOYMENT_GATE_MAX_PROBES,
+  DEPLOYMENT_GATE_PROBE_FIELDS,
+  DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS,
+  DEPLOYMENT_GATE_REQUEST_FLOOR,
+  DEPLOYMENT_GATE_RESULTS,
+  DEPLOYMENT_GATE_SIGNAL_FIELDS,
+  DEPLOYMENT_GATE_SIGNAL_NAMES,
+  DEPLOYMENT_GATE_STATES,
+  DEPLOYMENT_GATE_THRESHOLDS,
   DEPLOYMENT_INPUT_FIELDS,
   DEPLOYMENT_PRODUCER_FIELDS,
   DEPLOYMENT_RECORD_MEMBERS,
   DEPLOYMENT_STACK_FIELDS,
   INFRA_REPOSITORY,
+  SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_OBSERVED_FIELDS,
   SERVICE_REPOSITORY,
   SERVICE_WORKLOAD_STACK,
+  deploymentAlarmName,
+  deploymentAlarmNames,
+  deploymentBakeName,
   stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
+  validateDeploymentGate,
   validateServiceDeploymentRecord,
   validateStageInputs,
+  workloadStageFromStack,
 };
 
 export const account = '650880818323';

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   DEPLOYMENT_RECORD_MEMBERS,
+  SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
   SERVICE_REPOSITORY,
@@ -12,6 +13,7 @@ import {
   taskDefinitionContentHash,
   validateServiceDeploymentRecord,
 } from '../index.mjs';
+import { IMAGE_DIGEST, SERVICE_SHA, gateBlock } from './gate-fixture.mjs';
 
 const canonical = value => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -22,8 +24,8 @@ const canonical = value => {
   return JSON.stringify(value);
 };
 const sha256 = value => createHash('sha256').update(value).digest('hex');
-const serviceSha = 'b'.repeat(40);
-const imageDigest = `sha256:${'c'.repeat(64)}`;
+const serviceSha = SERVICE_SHA;
+const imageDigest = IMAGE_DIGEST;
 const endpoint = 'https://d111111abcdef8.cloudfront.net';
 const inputs = [
   { parameter: '/anywear/beta/public_subnet_ids', version: '2', value_sha256: 'a'.repeat(64) },
@@ -49,7 +51,7 @@ const workerDefinition = { ...apiDefinition, family: 'beta-anywear-worker',
 
 function serviceRecord() {
   return {
-    schema_version: 3,
+    schema_version: 4,
     record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
     producer: {
       repository: SERVICE_REPOSITORY,
@@ -87,19 +89,23 @@ function serviceRecord() {
       endpoints: { api: endpoint },
     },
     schema: { content_sha256: stageContractSchemaHash(inputs) },
+    gate: gateBlock(),
   };
 }
 
-test('a complete Service v3 record validates and lists only the Workload stack', () => {
+test('a complete Service v4 record validates, lists only the Workload stack and requires the gate', () => {
   const record = serviceRecord();
   assert.deepEqual(validateServiceDeploymentRecord(record), record);
-  assert.deepEqual([...DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
+  assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
+  assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(),
+    [...DEPLOYMENT_RECORD_MEMBERS, 'gate'].sort());
   assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks,
     [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1' }]);
-  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 3);
+  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 4);
   assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type, 'anywear_service_deployment');
   assert.deepEqual([...SERVICE_ECS_IDENTITY_FIELDS],
     ['service_arn', 'task_definition_arn', 'task_definition_sha256', 'image_digest']);
+  assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.members, SERVICE_DEPLOYMENT_RECORD_MEMBERS);
 });
 
 test('the Service record fails closed on producer, stack and schema drift', () => {
@@ -164,6 +170,33 @@ test('the Service observation pins the two ECS identities and the image digest',
   assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
     record.observed.endpoints = { api: endpoint, extra: endpoint };
   })), /Invalid endpoints fields/);
+});
+
+test('the record gate must pass and stay bound to the observed Service and image', () => {
+  const base = serviceRecord();
+  const withChange = change => {
+    const record = structuredClone(base);
+    change(record);
+    return record;
+  };
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => { delete record.gate; })),
+    /Invalid deployment record fields/);
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
+    record.gate.service_sha = 'f'.repeat(40);
+  })), /Deployment gate Service differs from the observed Service/);
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
+    record.gate.image_digest = `sha256:${'9'.repeat(64)}`;
+  })), /Deployment gate image differs from the observed image/);
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
+    record.gate.result = 'failed';
+  })), /Deployment gate did not pass/);
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
+    record.gate.signals[4].value.vto_depth = 1;
+  })), /Deployment gate signal sqs_dlq_depth is breaching/);
+  // A pre-gate v3 Service record is a historical shape, not a live input.
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
+    record.schema_version = 3;
+  })), /Unknown anywear_service_deployment schema/);
 });
 
 test('stableTaskDefinition is the normalized content identity, not the revision', () => {

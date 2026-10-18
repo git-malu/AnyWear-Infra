@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "record_type": "anywear_workload_bake_reads",
+  "source_repository": "git-malu/AnyWear-Service",
+  "source_path": "infra/scripts/bake-gate.mjs",
+  "source_note": "Every AWS CLI call the 600-second bake runs and the deploy-role grant that covers it. AnyWear-Service's infra/test/bake-reads.test.mjs derives this set from the bake source and fails when a call is added without an entry; this table is the Infra half that proves each entry has exactly one grant in the API's resource form inside its target.",
+  "reads": [
+    {
+      "call": "cloudformation:list-stack-resources",
+      "action": "cloudformation:*",
+      "grant": "pre-existing",
+      "target": "the deployed AnyWearWorkloadStack-beta only",
+      "resources": ["arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*"]
+    },
+    {
+      "call": "cloudwatch:get-metric-statistics",
+      "action": "cloudwatch:GetMetricStatistics",
+      "grant": "#162",
+      "target": "all CloudWatch metrics, region-bound to ap-east-1",
+      "resources": ["*"],
+      "condition": { "StringEquals": { "aws:RequestedRegion": "ap-east-1" } }
+    },
+    {
+      "call": "cloudwatch:describe-alarms",
+      "action": "cloudwatch:DescribeAlarms",
+      "grant": "#162",
+      "target": "the beta-anywear-* deployed alarm set, in colon ARN form",
+      "resources": ["arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*"]
+    },
+    {
+      "call": "ecs:describe-services",
+      "action": "ecs:DescribeServices",
+      "grant": "#162",
+      "target": "the api and worker services only",
+      "resources": [
+        "arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api",
+        "arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker"
+      ]
+    },
+    {
+      "call": "sqs:get-queue-attributes",
+      "action": "sqs:GetQueueAttributes",
+      "grant": "#162",
+      "target": "the four stage-base queues only",
+      "resources": [
+        "arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging",
+        "arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq",
+        "arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto",
+        "arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq"
+      ]
+    },
+    {
+      "call": "logs:filter-log-events",
+      "action": "logs:FilterLogEvents",
+      "grant": "#162",
+      "target": "the worker log group only, in both documented and exercised resource forms",
+      "resources": [
+        "arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker",
+        "arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*"
+      ]
+    }
+  ]
+}

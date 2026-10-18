@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { contentHash } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 import {
-  DEPLOYMENT_RECORD_MEMBERS, SERVICE_DEPLOYMENT_RECORD_SCHEMA, SERVICE_ECS_IDENTITY_FIELDS,
+  DEPLOYMENT_RECORD_MEMBERS, SERVICE_DEPLOYMENT_RECORD_MEMBERS, SERVICE_DEPLOYMENT_RECORD_SCHEMA,
+  SERVICE_ECS_IDENTITY_FIELDS, validateDeploymentGate,
   stageContractSchemaHash, taskDefinitionContentHash, stableTaskDefinition,
   validateDeploymentRecord, validateInfraDeploymentRecord, validateServiceDeploymentRecord,
 } from './deployment-contract.mjs';
+import { gateBlock } from '../packages/stage-contracts/test/gate-fixture.mjs';
 
 const infraSha = 'a'.repeat(40); const serviceSha = 'b'.repeat(40);
 const imageDigest = `sha256:${'c'.repeat(64)}`;
@@ -34,7 +36,7 @@ function serviceRecord({ revision = 12, digest = imageDigest } = {}) {
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-api-execution', networkMode: 'awsvpc', cpu: '512', memory: '1024',
     containerDefinitions: [{ name: 'ApiContainer', image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@${imageDigest}`,
       command: ['node', 'dist/index.js'], environment: [{ name: 'B', value: '2' }, { name: 'A', value: '1' }] }] };
-  return { schema_version: 3, record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
+  return { schema_version: 4, record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
     producer: producer('git-malu/AnyWear-Service', '.github/workflows/service-artifacts.yml'),
     stacks: [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Service',
       producer_sha: serviceSha, template_sha256: '5'.repeat(64) }],
@@ -48,7 +50,8 @@ function serviceRecord({ revision = 12, digest = imageDigest } = {}) {
         task_definition_sha256: taskDefinitionContentHash({ ...taskDefinition, family: 'beta-anywear-worker',
           taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-worker-task' }), image_digest: digest } },
       endpoints: { api: endpoint } },
-    schema: { content_sha256: stageContractSchemaHash(inputs) } };
+    schema: { content_sha256: stageContractSchemaHash(inputs) },
+    gate: gateBlock() };
 }
 
 test('a complete Infra v3 record validates', () => {
@@ -58,11 +61,15 @@ test('a complete Infra v3 record validates', () => {
   assert.deepEqual([...DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
 });
 
-test('a complete Service v3 record validates and lists only the workload stack', () => {
+test('a complete Service v4 record validates, lists only the workload stack and carries the gate', () => {
   const record = serviceRecord();
   assert.deepEqual(validateServiceDeploymentRecord(record), record);
   assert.deepEqual(validateDeploymentRecord(record), record);
   assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks, [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1' }]);
+  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 4);
+  assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
+  assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), [...DEPLOYMENT_RECORD_MEMBERS, 'gate'].sort());
+  assert.deepEqual(validateDeploymentGate(record.gate, 'beta'), record.gate);
 });
 
 test('both record types reject an extra or missing member', () => {
@@ -74,9 +81,10 @@ test('both record types reject an extra or missing member', () => {
     const wrongProducer = structuredClone(build()); wrongProducer.producer.repository = 'git-malu/AnyWear-Client';
     assert.throws(() => validateDeploymentRecord(wrongProducer));
   }
-  // A record may not borrow the other producer's stacks.
+  // A record may not borrow the other producer's stacks; the v4 Service record
+  // additionally requires the gate member, so the member set is refused first.
   const crossed = infraRecord(); crossed.record_type = SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type;
-  assert.throws(() => validateServiceDeploymentRecord(crossed), /exactly its producer's stacks/);
+  assert.throws(() => validateServiceDeploymentRecord(crossed), /Invalid deployment record fields/);
 });
 
 test('the Service producer may not carry an Infra stack or workflow', () => {

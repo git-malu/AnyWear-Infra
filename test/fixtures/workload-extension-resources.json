@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "record_type": "anywear_workload_extension_resources",
+  "source_repository": "git-malu/AnyWear-Service",
+  "source_note": "The five resources issue #162 adds to AnyWearWorkloadStack-beta, recorded from AnyWear-Service infra/test/baselines-ssm/provenance.json's alarm_extension and the recorded beta-active baseline. Any new type here must also be added to WORKLOAD_EXTENSION_ACTIONS and to the CloudFormation execution role's grants; the Service-side extension-grants test fails when the recorded extension adds a type the map does not cover.",
+  "resources": [
+    { "logical_id": "ComputeRuntimeAlb5xxAlarm3A2E5E3F", "type": "AWS::CloudWatch::Alarm" },
+    { "logical_id": "ComputeRuntimeApiP95LatencyAlarm4C92F930", "type": "AWS::CloudWatch::Alarm" },
+    { "logical_id": "ComputeRuntimeEcsRunningNotDesiredAlarm547C84B2", "type": "AWS::CloudWatch::Alarm" },
+    { "logical_id": "ComputeRuntimeOutboxOldestAgeAlarm3F5E8F76", "type": "AWS::CloudWatch::Alarm" },
+    { "logical_id": "ComputeRuntimeWorkerOutboxMetricFilterD1E82153", "type": "AWS::Logs::MetricFilter" }
+  ]
+}

@@ -6,6 +6,8 @@ import { FoundationStack } from '../lib/foundation-stack';
 import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
 import { stageContractInputs } from '../lib/stage-contract';
 import runtimePolicies from './fixtures/runtime-policy.json';
+import workloadExtensionResources from './fixtures/workload-extension-resources.json';
+import workloadBakeReads from './fixtures/workload-bake-reads.json';
 import * as path from 'node:path';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
@@ -990,6 +992,42 @@ describe('Explicit infrastructure identity cutover', () => {
       Resource: 'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
     });
 
+    // Positive: the deploy job's own 600-second bake (#162) reads the six named
+    // signals live as this OIDC principal, so the read-only grants are here and
+    // not on the CloudFormation execution role.
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudwatch:GetMetricStatistics', Effect: 'Allow', Resource: '*',
+      Condition: { StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } },
+    });
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'cloudwatch:DescribeAlarms', Effect: 'Allow',
+      Resource: 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
+    });
+    expect(normalized(deploy)).toContainEqual(expect.objectContaining({
+      Action: 'ecs:DescribeServices', Effect: 'Allow',
+    }));
+    const ecsRead = deploy.filter((statement) => statement.Action === 'ecs:DescribeServices');
+    expect(ecsRead).toHaveLength(1);
+    expect(new Set(([ecsRead[0].Resource].flat()).map(resourceOf))).toEqual(new Set([
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+    ]));
+    const sqsRead = deploy.filter((statement) => statement.Action === 'sqs:GetQueueAttributes');
+    expect(sqsRead).toHaveLength(1);
+    expect(new Set(([sqsRead[0].Resource].flat()).map(resourceOf))).toEqual(new Set([
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq',
+    ]));
+    expect(normalized(deploy)).toContainEqual({
+      Action: 'logs:FilterLogEvents', Effect: 'Allow',
+      Resource: ['arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+        'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*'],
+    });
+    // The drill's one-off DLQ write is never a standing grant.
+    expect(actions(deploy)).not.toEqual(expect.arrayContaining(['sqs:SendMessage']));
+
     // Positive: the CLI's own-credentials path from #158 round 3 is limited to
     // the bootstrap version read and the dedicated CDK assets bucket object.
     expect(normalized(deploy)).toContainEqual({
@@ -1006,12 +1044,14 @@ describe('Explicit infrastructure identity cutover', () => {
     });
 
     // Negative: no wildcard, managed or administrative authority, and no
-    // resource outside the reviewed Workload-stack surface.
+    // resource outside the reviewed Workload-stack and bake-read surface.
     expect(actions(deploy)).toEqual([
       'cloudformation:*', 'cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet',
-      'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks', 'ecr:DescribeImages', 'iam:PassRole',
-      's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject', 'ssm:GetParameter',
-      'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
+      'cloudformation:DescribeChangeSet', 'cloudformation:DescribeStacks',
+      'cloudwatch:DescribeAlarms', 'cloudwatch:GetMetricStatistics',
+      'ecr:DescribeImages', 'ecs:DescribeServices', 'iam:PassRole', 'logs:FilterLogEvents',
+      's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject', 'sqs:GetQueueAttributes',
+      'ssm:GetParameter', 'ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath',
     ]);
     expect(deploy.every((statement) => statement.Effect === 'Allow')).toBe(true);
     expect(resourcesOf(deploy)).toEqual(new Set([
@@ -1023,7 +1063,19 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1',
       'arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/*',
       'arn:aws:ecr:ap-east-1:650880818323:repository/beta-anywear-service',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
+      'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-vto-dlq',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging',
+      'arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq',
       JSON.stringify({ 'Fn::GetAtt': ['BetaServiceDeployCfnRoleB6333451', 'Arn'] }),
+      // The region-bound cloudwatch:GetMetricStatistics read has no narrower
+      // resource scope; every other bake grant names a deployed resource.
+      '*',
     ]));
 
     // Positive: the CloudFormation execution role covers exactly the Workload
@@ -1055,8 +1107,8 @@ describe('Explicit infrastructure identity cutover', () => {
       'iam:AttachRolePolicy', 'iam:CreateRole', 'iam:DeleteRole', 'iam:DeleteRolePolicy', 'iam:DetachRolePolicy',
       'iam:GetRole', 'iam:GetRolePolicy', 'iam:ListAttachedRolePolicies', 'iam:ListRolePolicies',
       'iam:PassRole', 'iam:PutRolePolicy',
-      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy', 'logs:DescribeLogGroups',
-      'logs:PutRetentionPolicy',
+      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteMetricFilter', 'logs:DeleteRetentionPolicy',
+      'logs:DescribeLogGroups', 'logs:DescribeMetricFilters', 'logs:PutMetricFilter', 'logs:PutRetentionPolicy',
       's3:CreateBucket', 's3:DeleteBucket', 's3:DeleteBucketPolicy', 's3:DeleteBucketPublicAccessBlock',
       's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
       's3:PutBucketPublicAccessBlock',
@@ -1085,8 +1137,16 @@ describe('Explicit infrastructure identity cutover', () => {
     // log group (the lifecycle/retention statement is the only one left).
     expect(cfn.filter((statement) => [statement.Action].flat().includes('logs:DescribeLogGroups')))
       .toHaveLength(1);
+    // Two statements name a log group: the lifecycle/retention statement and the
+    // #162 worker metric-filter statement. The DescribeLogGroups wildcard names no
+    // log group.
     expect(cfn.filter((statement) => JSON.stringify(statement.Resource).includes('log-group:')))
-      .toHaveLength(1);
+      .toHaveLength(2);
+    expect(normalized(cfn)).toContainEqual({
+      Action: ['logs:DeleteMetricFilter', 'logs:DescribeMetricFilters', 'logs:PutMetricFilter'],
+      Effect: 'Allow',
+      Resource: 'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+    });
     // The existing lifecycle/retention statement is unchanged: four actions on
     // the two log-group ARNs without the `:*` suffix.
     expect(normalized(cfn)).toContainEqual({
@@ -1099,25 +1159,32 @@ describe('Explicit infrastructure identity cutover', () => {
     // four preserved above plus the one list-form read; every log content
     // read/write/delete/filter/tag/KMS action is absent, and the deployment role
     // holds no logs action at all.
-    const allowedLogsActions = ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy',
-      'logs:DescribeLogGroups', 'logs:PutRetentionPolicy'];
+    const allowedLogsActions = ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteMetricFilter',
+      'logs:DeleteRetentionPolicy', 'logs:DescribeLogGroups', 'logs:DescribeMetricFilters',
+      'logs:PutMetricFilter', 'logs:PutRetentionPolicy'];
     const cfnLogsActions = [...new Set(actions(cfn).filter((action) => action.startsWith('logs:')))].sort();
     expect(cfnLogsActions).toEqual(allowedLogsActions);
-    expect(actions(deploy).filter((action) => action.startsWith('logs:'))).toEqual([]);
+    // The deploy role's only log read is the #162 bake's FilterLogEvents; the
+    // metric-filter writes belong to the CloudFormation execution role.
+    expect(actions(deploy).filter((action) => action.startsWith('logs:'))).toEqual(['logs:FilterLogEvents']);
+    for (const action of ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter']) {
+      expect(actions(deploy)).not.toContain(action);
+    }
     for (const action of ['logs:FilterLogEvents', 'logs:GetLogEvents', 'logs:PutLogEvents', 'logs:CreateLogStream',
-      'logs:DeleteLogStream', 'logs:PutSubscriptionFilter', 'logs:PutMetricFilter', 'logs:TagResource',
+      'logs:DeleteLogStream', 'logs:PutSubscriptionFilter', 'logs:TagResource',
       'logs:UntagResource', 'logs:AssociateKmsKey', 'logs:DisassociateKmsKey', 'logs:PutDataProtectionPolicy',
-      'logs:DeleteMetricFilter', 'logs:DeleteSubscriptionFilter', 'logs:GetLogRecord', 'logs:DescribeLogStreams',
-      'logs:DescribeMetricFilters', 'logs:DescribeSubscriptionFilters', 'logs:GetLogGroupFields',
+      'logs:DeleteSubscriptionFilter', 'logs:GetLogRecord', 'logs:DescribeLogStreams',
+      'logs:DescribeSubscriptionFilters', 'logs:GetLogGroupFields',
       'logs:StartQuery', 'logs:StopQuery', 'logs:GetQueryResults', 'logs:CreateExportTask', 'logs:CancelExportTask',
       'logs:DescribeExportTasks', 'logs:PutResourcePolicy', 'logs:DeleteResourcePolicy',
       'logs:PutDestination', 'logs:DeleteDestination', 'logs:PutLogGroupDeletionProtection']) {
       expect(cfnLogsActions).not.toContain(action);
     }
-    // Exactly two statements carry logs actions: the unchanged lifecycle/
-    // retention statement and the single wildcard DescribeLogGroups statement.
+    // Exactly three statements carry logs actions: the lifecycle/retention
+    // statement, the single wildcard DescribeLogGroups statement and the #162
+    // worker metric-filter statement.
     expect(cfn.filter((statement) => [statement.Action].flat()
-      .some((action: string) => action.startsWith('logs:')))).toHaveLength(2);
+      .some((action: string) => action.startsWith('logs:')))).toHaveLength(3);
     // Issue #158 round 13: CloudFormation resolves the Workload template's
     // `AWS::StepFunctions::StateMachineVersion` ARN with this execution role, so
     // the role reads the CleanupOperation state machine. The account holds
@@ -1195,7 +1262,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
       'arn:aws:cloudfront::650880818323:distribution/*',
       'arn:aws:cloudfront::650880818323:function/*',
-      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm/beta-anywear-*',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
       'arn:aws:ec2:ap-east-1:650880818323:security-group/*',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
@@ -1216,14 +1283,15 @@ describe('Explicit infrastructure identity cutover', () => {
     ]));
 
     // The acceptance criterion: neither role can modify the VPC, Aurora,
-    // Cognito, the wardrobe/client buckets, SQS or ECR configuration, or the
-    // Foundation stack and its existing roles.
+    // Cognito, the wardrobe/client buckets, SQS configuration or ECR
+    // configuration, or the Foundation stack and its existing roles. The only
+    // SQS grant is the deploy job's read-only bake read of the four stage queues.
     for (const [roleName, statements] of [['beta-service-deploy-role', deploy],
       ['beta-service-deploy-cfn-role', cfn]] as const) {
       const allActions = actions(statements);
       const serialized = JSON.stringify(statements);
       expect(allActions).not.toContain('*');
-      for (const forbidden of ['rds:', 'cognito-idp:', 'sqs:', 'secretsmanager:', 'kms:',
+      for (const forbidden of ['rds:', 'cognito-idp:', 'secretsmanager:', 'kms:',
         's3:DeleteObject', 's3:PutBucketAcl', 's3:PutObjectAcl',
         'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
         'ecr:CreateRepository', 'ec2:CreateVpc', 'ec2:DeleteVpc', 'ec2:ModifyVpcAttribute',
@@ -1233,6 +1301,8 @@ describe('Explicit infrastructure identity cutover', () => {
         'iam:AttachUserPolicy', 'iam:CreateUser', 'iam:UpdateAssumeRolePolicy']) {
         expect(allActions.some((action) => action.startsWith(forbidden))).toBe(false);
       }
+      expect(allActions.filter((action) => action.startsWith('sqs:')))
+        .toEqual(roleName === 'beta-service-deploy-role' ? ['sqs:GetQueueAttributes'] : []);
       expect(serialized).not.toContain('AdministratorAccess');
       expect(serialized).not.toContain('AnyWearFoundationStack');
       expect(serialized).not.toContain('AnyWearWardrobeBucket');
@@ -1282,6 +1352,153 @@ describe('Explicit infrastructure identity cutover', () => {
       .toEqual(['cloudformation:DescribeStacks']);
     expect(resourceOf(cfn.filter((statement) => [statement.Action].flat().includes('cloudformation:DescribeStacks'))[0]
       .Resource)).toBe('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*');
+  });
+
+  // Regression for the #162 Testing failure: a CloudWatch alarm ARN is
+  // `arn:aws:cloudwatch:<region>:<account>:alarm:<AlarmName>`. A slash resource
+  // form (`...:alarm/<AlarmName>`) matches no alarm, so `DescribeAlarms` in the
+  // bake and the CloudFormation role's alarm writes were both AccessDenied. The
+  // fail-closed gate then reported all six signals insufficient and no v4 record
+  // could exist. This test pins the canonical colon form for both roles.
+  it('scopes CloudWatch alarm ARNs with the colon resource form', () => {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = foundation.Resources as Record<string, any>;
+    const roleId = (roleName: string): string => Object.entries(resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === roleName))![0];
+    const statementsFor = (roleName: string): any[] => (Object.values(resources) as any[])
+      .filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === roleId(roleName)))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    const canonical = 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*';
+    for (const [roleName, action] of [['beta-service-deploy-role', 'cloudwatch:DescribeAlarms'],
+      ['beta-service-deploy-cfn-role', 'cloudwatch:PutMetricAlarm']] as const) {
+      const matching = statementsFor(roleName).filter((statement) => [statement.Action].flat().includes(action));
+      expect(matching).toHaveLength(1);
+      expect([matching[0].Resource].flat().map(render)).toEqual([canonical]);
+    }
+    for (const roleName of ['beta-service-deploy-role', 'beta-service-deploy-cfn-role']) {
+      for (const statement of statementsFor(roleName)) {
+        if (![statement.Action].flat().some((action: string) => action.startsWith('cloudwatch:'))) continue;
+        for (const resource of [statement.Resource].flat().map(render)) {
+          expect(resource).not.toContain(':alarm/');
+          if (resource !== '*') expect(resource).toMatch(/^arn:aws:cloudwatch:ap-east-1:650880818323:alarm:[A-Za-z0-9_*?.-]+$/);
+        }
+      }
+    }
+  });
+
+  /**
+   * The actions CloudFormation's handlers need to create, update, read and
+   * delete each resource type the #162 Workload extension adds. The execution
+   * role, not the deploy role, applies these resources. The fixture lists the
+   * exact recorded extension resources: adding a resource type to that fixture
+   * without extending this table fails the test, and the Service-side
+   * `extension-grants` test fails when the recorded extension adds a type this
+   * table does not cover.
+   */
+  const WORKLOAD_EXTENSION_ACTIONS: Record<string, string[]> = {
+    'AWS::CloudWatch::Alarm': ['cloudwatch:PutMetricAlarm', 'cloudwatch:DescribeAlarms', 'cloudwatch:DeleteAlarms'],
+    'AWS::Logs::MetricFilter': ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter'],
+  };
+
+  it('grants the CloudFormation execution role every action the #162 extension resource types need', () => {
+    const recordedTypes = [...new Set(workloadExtensionResources.resources.map((resource) => resource.type))].sort();
+    expect(recordedTypes).toEqual(Object.keys(WORKLOAD_EXTENSION_ACTIONS).sort());
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-cfn-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const granted = new Set(statements.flatMap((statement) => [statement.Action].flat()));
+    for (const [type, required] of Object.entries(WORKLOAD_EXTENSION_ACTIONS)) {
+      for (const action of required) {
+        expect({ type, action, granted: granted.has(action) }).toEqual({ type, action, granted: true });
+      }
+    }
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    // The metric-filter grant is worker-log-group-only and uses the log-group
+    // resource ARN (no `:*` suffix: the CloudWatch Logs metric-filter APIs
+    // authorize on the log-group resource type, not the log-stream one). No
+    // filter exists on the api log group, so its grant is not repeated there.
+    const filterStatements = statements.filter((statement) => [statement.Action].flat().includes('logs:PutMetricFilter'));
+    expect(filterStatements).toHaveLength(1);
+    expect([filterStatements[0].Resource].flat().map(render)).toEqual([
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+    ]);
+    const alarmStatements = statements.filter((statement) => [statement.Action].flat().includes('cloudwatch:PutMetricAlarm'));
+    expect(alarmStatements).toHaveLength(1);
+    expect([alarmStatements[0].Resource].flat().map(render)).toEqual([
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
+    ]);
+  });
+
+  it('grants every declared bake AWS call on the API resource form inside its target', () => {
+    // The table is the Infra half of the bake-read contract. The Service half
+    // (infra/test/bake-reads.test.mjs in AnyWear-Service) derives the same call
+    // set from scripts/bake-gate.mjs and fails when a call is added without an
+    // entry here. Each entry must have exactly one grant, in the API's resource
+    // form, inside the reviewed target.
+    const reads = (workloadBakeReads as any).reads as Array<{
+      call: string; action: string; grant: string; target: string; resources: string[]; condition?: unknown;
+    }>;
+    expect(reads).toHaveLength(6);
+    expect(new Set(reads.map((read) => read.call)).size).toBe(6);
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    for (const read of reads) {
+      const matching = statements.filter((statement) => [statement.Action].flat().includes(read.action));
+      expect(matching).toHaveLength(1);
+      expect(new Set([matching[0].Resource].flat().map(render)))
+        .toEqual(new Set(read.resources));
+      expect(matching[0].Condition).toEqual(read.condition);
+    }
+    // Only the CloudFormation stack-resource read predates #162; the other five
+    // grants are part of this extension.
+    expect(reads.filter((read) => read.grant === '#162')).toHaveLength(5);
+    expect(reads.filter((read) => read.grant === 'pre-existing').map((read) => read.call))
+      .toEqual(['cloudformation:list-stack-resources']);
   });
 
   it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {
