@@ -1061,6 +1061,7 @@ describe('Explicit infrastructure identity cutover', () => {
       's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
       's3:PutBucketPublicAccessBlock',
       'ssm:GetParameter', 'ssm:GetParameters',
+      'states:DescribeStateMachine', 'states:ListStateMachineVersions',
     ].sort();
     expect(actions(cfn)).toEqual(expectedCfnActions);
     expect(cfn.every((statement) => statement.Effect === 'Allow')).toBe(true);
@@ -1117,6 +1118,42 @@ describe('Explicit infrastructure identity cutover', () => {
     // retention statement and the single wildcard DescribeLogGroups statement.
     expect(cfn.filter((statement) => [statement.Action].flat()
       .some((action: string) => action.startsWith('logs:')))).toHaveLength(2);
+    // Issue #158 round 13: CloudFormation resolves the Workload template's
+    // `AWS::StepFunctions::StateMachineVersion` ARN with this execution role, so
+    // the role reads the CleanupOperation state machine. The account holds
+    // exactly one state machine (`beta-anywear-tester-cleanup`), and Step
+    // Functions authorizes version reads on the unqualified state-machine ARN,
+    // so the statement keeps that single ARN and exactly the two read actions.
+    const stateMachineArn = 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup';
+    const stateMachineRead = normalized(cfn).filter((statement) => [statement.Action].flat()
+      .includes('states:DescribeStateMachine'));
+    expect(stateMachineRead).toHaveLength(1);
+    expect(stateMachineRead[0]).toEqual({
+      Action: ['states:DescribeStateMachine', 'states:ListStateMachineVersions'],
+      Effect: 'Allow',
+      Resource: stateMachineArn,
+    });
+    // No write, execution or version-publication action joins the statement, and
+    // the only resource is the one state-machine ARN above (no `*`, no
+    // version-suffixed or execution ARN). The two read actions are the CFN
+    // role's complete states surface; the OIDC deploy role holds none.
+    expect(cfn.filter((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('states:')))).toHaveLength(1);
+    expect([...new Set(actions(cfn).filter((action) => action.startsWith('states:')))].sort())
+      .toEqual(['states:DescribeStateMachine', 'states:ListStateMachineVersions']);
+    for (const action of ['states:StartExecution', 'states:StartSyncExecution', 'states:StopExecution',
+      'states:RedriveExecution', 'states:DescribeExecution', 'states:DescribeStateMachineForExecution',
+      'states:GetExecutionHistory', 'states:ListExecutions', 'states:ListMapRuns', 'states:DescribeMapRun',
+      'states:ListActivities', 'states:DescribeActivity', 'states:GetActivityTask',
+      'states:CreateStateMachine', 'states:UpdateStateMachine', 'states:DeleteStateMachine',
+      'states:PublishStateMachineVersion', 'states:DeleteStateMachineVersion', 'states:ListStateMachines',
+      'states:CreateStateMachineAlias', 'states:UpdateStateMachineAlias', 'states:DeleteStateMachineAlias',
+      'states:ListStateMachineAliases', 'states:ListTagsForResource', 'states:TagResource', 'states:UntagResource',
+      'states:TestState', 'states:RevealSecrets', 'states:InvokeHTTPEndpoint', 'states:SendTaskSuccess',
+      'states:SendTaskFailure', 'states:SendTaskHeartbeat', 'states:ValidateStateMachineDefinition', 'states:*']) {
+      expect(actions(cfn)).not.toContain(action);
+    }
+    expect(actions(deploy).filter((action) => action.startsWith('states:'))).toEqual([]);
     const taskRoleArns = ['task', 'execution'].flatMap((purpose) => ['api', 'worker'].map((service) => (
       `arn:aws:iam::650880818323:role/beta-anywear-${service}-${purpose}`))).sort();
     // Issue #158 round 12: the Workload template also creates the CleanupOperation
@@ -1173,6 +1210,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:s3:::anywearworkloadstack-beta-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
+      'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup',
       ...workloadRoleArns,
       '*',
     ]));
