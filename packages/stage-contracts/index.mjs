@@ -280,6 +280,16 @@ export const DEPLOYMENT_GATE_SIGNAL_NAMES = Object.freeze([
   'outbox_oldest_age',
 ]);
 
+// The three GetQueueAttributes names the live SQS API accepts for depth. The
+// oldest-message age is not a GetQueueAttributes result: it is the AWS/SQS
+// ApproximateAgeOfOldestMessage CloudWatch metric, so the bake reads it with
+// GetMetricStatistics instead of an invented attribute name.
+export const DEPLOYMENT_SQS_DEPTH_ATTRIBUTES = Object.freeze([
+  'ApproximateNumberOfMessages',
+  'ApproximateNumberOfMessagesNotVisible',
+  'ApproximateNumberOfMessagesDelayed',
+]);
+
 // One stage-free table. Changing a threshold is a reviewed source change, not a
 // deployment context or environment switch.
 export const DEPLOYMENT_GATE_THRESHOLDS = Object.freeze({
@@ -437,18 +447,47 @@ function validateSignalReads(name, reads, stage) {
       if (read.samples < 15) throw new Error('Insufficient deployment gate ECS samples');
       return reads;
     }
-    case 'sqs_oldest_message_age':
+    case 'sqs_oldest_message_age': {
+      // Two sources: the AWS/SQS age metric for each work queue, then the three
+      // valid depth attributes from GetQueueAttributes (used only to prove an
+      // idle queue with a missing age datapoint is age 0).
+      if (reads.length !== 4) throw new Error('Invalid sqs_oldest_message_age reads');
+      const queues = deploymentQueueNames(stage);
+      for (const [index, queueName] of [queues.vto, queues.auto_tagging].entries()) {
+        const read = reads[index];
+        exact(read, ['source', 'namespace', 'metric_name', 'dimensions', 'statistic', 'period_seconds', 'datapoints'],
+          'deployment gate SQS age read');
+        if (read.source !== 'cloudwatch' || read.namespace !== 'AWS/SQS'
+          || read.metric_name !== 'ApproximateAgeOfOldestMessage' || read.statistic !== 'Maximum'
+          || read.period_seconds !== 600 || read.datapoints !== 1) {
+          throw new Error('Invalid deployment gate sqs_oldest_message_age CloudWatch read');
+        }
+        exact(read.dimensions, ['QueueName'], 'deployment gate SQS age dimensions');
+        if (read.dimensions.QueueName !== queueName) throw new Error('Invalid deployment gate SQS age queue');
+      }
+      for (const [index, queueName] of [queues.vto, queues.auto_tagging].entries()) {
+        const read = reads[index + 2];
+        exact(read, ['source', 'queue_name', 'attributes', 'samples'], 'deployment gate SQS depth read');
+        if (read.source !== 'sqs' || read.queue_name !== queueName) {
+          throw new Error('Invalid deployment gate sqs_oldest_message_age depth read');
+        }
+        if (!Array.isArray(read.attributes)
+          || read.attributes.length !== DEPLOYMENT_SQS_DEPTH_ATTRIBUTES.length
+          || read.attributes.some((attribute, position) => attribute !== DEPLOYMENT_SQS_DEPTH_ATTRIBUTES[position])) {
+          throw new Error('Invalid deployment gate SQS depth attributes');
+        }
+        count(read.samples, 'deployment gate SQS depth read samples');
+        if (read.samples < 15) throw new Error('Insufficient deployment gate SQS depth samples');
+      }
+      return reads;
+    }
     case 'sqs_dlq_depth': {
       if (reads.length !== 2) throw new Error(`Invalid ${name} reads`);
-      const dlq = name === 'sqs_dlq_depth';
       const queues = deploymentQueueNames(stage);
-      const expectedQueues = dlq
-        ? [queues.vto_dlq, queues.auto_tagging_dlq]
-        : [queues.vto, queues.auto_tagging];
-      const attribute = dlq ? 'ApproximateNumberOfMessages' : 'ApproximateAgeOfOldestMessage';
       for (const [index, read] of reads.entries()) {
         exact(read, ['source', 'queue_name', 'attribute', 'samples'], 'deployment gate SQS read');
-        if (read.source !== 'sqs' || read.queue_name !== expectedQueues[index] || read.attribute !== attribute) {
+        if (read.source !== 'sqs' || read.queue_name !== [queues.vto_dlq, queues.auto_tagging_dlq][index]
+          || read.attribute !== 'ApproximateNumberOfMessages') {
           throw new Error(`Invalid deployment gate ${name} read`);
         }
         count(read.samples, 'deployment gate SQS read samples');

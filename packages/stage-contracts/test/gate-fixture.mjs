@@ -76,8 +76,16 @@ export function gateBlock(stage = STAGE) {
         samples: 20,
       }])),
       withAlarms(signal('sqs_oldest_message_age', { vto_seconds: 0, auto_tagging_seconds: 0 }, [
-        { source: 'sqs', queue_name: `${stage}-anywear-vto`, attribute: 'ApproximateAgeOfOldestMessage', samples: 20 },
-        { source: 'sqs', queue_name: `${stage}-anywear-auto-tagging`, attribute: 'ApproximateAgeOfOldestMessage', samples: 20 },
+        { source: 'cloudwatch', namespace: 'AWS/SQS', metric_name: 'ApproximateAgeOfOldestMessage',
+          dimensions: { QueueName: `${stage}-anywear-vto` }, statistic: 'Maximum', period_seconds: 600, datapoints: 1 },
+        { source: 'cloudwatch', namespace: 'AWS/SQS', metric_name: 'ApproximateAgeOfOldestMessage',
+          dimensions: { QueueName: `${stage}-anywear-auto-tagging` }, statistic: 'Maximum', period_seconds: 600, datapoints: 1 },
+        { source: 'sqs', queue_name: `${stage}-anywear-vto`,
+          attributes: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible',
+            'ApproximateNumberOfMessagesDelayed'], samples: 20 },
+        { source: 'sqs', queue_name: `${stage}-anywear-auto-tagging`,
+          attributes: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible',
+            'ApproximateNumberOfMessagesDelayed'], samples: 20 },
       ], [`${stage} work queues are idle (visible, in-flight and delayed all 0); the oldest age is recorded as 0`])),
       withAlarms(signal('sqs_dlq_depth', { vto_depth: 0, auto_tagging_depth: 0 }, [
         { source: 'sqs', queue_name: `${stage}-anywear-vto-dlq`, attribute: 'ApproximateNumberOfMessages', samples: 20 },

@@ -16,7 +16,8 @@
       "call": "cloudwatch:get-metric-statistics",
       "action": "cloudwatch:GetMetricStatistics",
       "grant": "#162",
-      "target": "all CloudWatch metrics, region-bound to ap-east-1",
+      "target": "all CloudWatch metrics, region-bound to ap-east-1: AWS/ApplicationELB ALB signals and the AWS/SQS ApproximateAgeOfOldestMessage Maximum per work queue",
+      "namespaces": ["AWS/ApplicationELB", "AWS/SQS"],
       "resources": ["*"],
       "condition": { "StringEquals": { "aws:RequestedRegion": "ap-east-1" } }
     },
@@ -41,7 +42,9 @@
       "call": "sqs:get-queue-attributes",
       "action": "sqs:GetQueueAttributes",
       "grant": "#162",
-      "target": "the four stage-base queues only",
+      "target": "the four stage-base queues only; the three live-valid depth attributes, never an invented age or visible-count name",
+      "attributes": ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible",
+        "ApproximateNumberOfMessagesDelayed"],
       "resources": [
         "arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging",
         "arn:aws:sqs:ap-east-1:650880818323:beta-anywear-auto-tagging-dlq",

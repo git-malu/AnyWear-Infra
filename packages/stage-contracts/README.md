@@ -7,8 +7,8 @@ record and bake-gate validators, and the Foundation service-role naming helpers.
 | | |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.2.0` |
-| Tag | `stage-contracts-v0.2.0` (a post-merge publication step; `0.1.0` is the last tagged release) |
+| Version | `0.2.1` |
+| Tag | `stage-contracts-v0.2.1` (a post-merge publication step; `0.1.0` is the last tagged release) |
 | Registry | GitHub Packages (`https://npm.pkg.github.com`) |
 | Runtime | Node.js 24+, plain ESM (`.mjs`) with `.d.ts`; no build step, no runtime dependency |
 
@@ -41,7 +41,12 @@ record and bake-gate validators, and the Foundation service-role naming helpers.
   `validateDeploymentGate(gate, stage)`, which enforces the 600-second window,
   the probe budget, each signal's value/threshold/comparison self-consistency,
   the deployed alarm names and observed states, and each signal's exact read
-  identity and minimum data points.
+  identity and minimum data points. The `sqs_oldest_message_age` read identity is
+  two-sourced: the `AWS/SQS` `ApproximateAgeOfOldestMessage` `Maximum` metric per
+  work queue (`GetMetricStatistics`), plus the three valid depth attributes from
+  `GetQueueAttributes` (`DEPLOYMENT_SQS_DEPTH_ATTRIBUTES`). The age is not a
+  `GetQueueAttributes` attribute; `ApproximateNumberOfMessagesVisible` is not a
+  valid attribute name, so neither can appear in the record.
 - **Foundation roles** — `serviceDeployRoleName('service')` →
   `beta-service-deploy-role`,
   `serviceDeployCfnRoleName('service')` → `beta-service-deploy-cfn-role`, and
@@ -56,14 +61,14 @@ The conditional `cleanup_task_role_arn` definition is included in
 
 ```sh
 npm test    # node --test test/*.test.mjs
-npm pack    # git-malu-stage-contracts-0.2.0.tgz
+npm pack    # git-malu-stage-contracts-0.2.1.tgz
 ```
 
 ## Publishing
 
 Publishing is a separate, tag-triggered workflow
 (`.github/workflows/publish-stage-contracts.yml`) with `packages: write`. Pushing
-the annotated tag `stage-contracts-v0.2.0` runs the package tests, asserts the
+the annotated tag `stage-contracts-v0.2.1` runs the package tests, asserts the
 tag equals `stage-contracts-v<package version>`, and publishes with
 `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` to
 `https://npm.pkg.github.com`. It holds no AWS credential and no deployment
@@ -80,9 +85,9 @@ AnyWear-Service pins the packed artifact, not a mutable branch and not a registr
 credential in the deploy job:
 
 1. Commit the tarball (for example
-   `git-malu-stage-contracts-0.2.0.tgz`) under `infra/vendor/`.
+   `git-malu-stage-contracts-0.2.1.tgz`) under `infra/vendor/`.
 2. Pin it in `infra/package.json`:
-   `"@git-malu/stage-contracts": "file:vendor/git-malu-stage-contracts-0.2.0.tgz"`.
+   `"@git-malu/stage-contracts": "file:vendor/git-malu-stage-contracts-0.2.1.tgz"`.
 3. Install with the workspace's usual frozen-lockfile command.
 
 The tarball is built by `npm pack` in this directory; its sha256 and file list are

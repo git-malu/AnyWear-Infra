@@ -158,8 +158,8 @@ test('missing, delayed or short data is insufficient and refused', () => {
     signal(gate, 'ecs_running_not_desired').value.samples = 14;
   }), 'beta'), /Insufficient deployment gate ECS samples/);
   assert.throws(() => validateDeploymentGate(withChange((gate) => {
-    signal(gate, 'sqs_oldest_message_age').reads[0].samples = 14;
-  }), 'beta'), /Insufficient deployment gate SQS samples/);
+    signal(gate, 'sqs_oldest_message_age').reads[2].samples = 14;
+  }), 'beta'), /Insufficient deployment gate SQS depth samples/);
   assert.throws(() => validateDeploymentGate(withChange((gate) => {
     signal(gate, 'outbox_oldest_age').value.lines_observed = 4;
   }), 'beta'), /Insufficient deployment gate outbox log samples/);
@@ -205,8 +205,14 @@ test('each signal read identity is exact', () => {
     signal(gate, 'ecs_running_not_desired').reads[0].services = ['beta-anywear-api'];
   }), 'beta'), /Invalid deployment gate ECS read services/);
   assert.throws(() => validateDeploymentGate(withChange((gate) => {
-    signal(gate, 'sqs_oldest_message_age').reads[0].queue_name = 'beta-anywear-vto-dlq';
-  }), 'beta'), /Invalid deployment gate sqs_oldest_message_age read/);
+    signal(gate, 'sqs_oldest_message_age').reads[0].dimensions.QueueName = 'beta-anywear-vto-dlq';
+  }), 'beta'), /Invalid deployment gate SQS age queue/);
+  assert.throws(() => validateDeploymentGate(withChange((gate) => {
+    signal(gate, 'sqs_oldest_message_age').reads[0].statistic = 'Average';
+  }), 'beta'), /Invalid deployment gate sqs_oldest_message_age CloudWatch read/);
+  assert.throws(() => validateDeploymentGate(withChange((gate) => {
+    signal(gate, 'sqs_oldest_message_age').reads[2].attributes[0] = 'ApproximateNumberOfMessagesVisible';
+  }), 'beta'), /Invalid deployment gate SQS depth attributes/);
   assert.throws(() => validateDeploymentGate(withChange((gate) => {
     signal(gate, 'sqs_dlq_depth').reads[0].attribute = 'ApproximateAgeOfOldestMessage';
   }), 'beta'), /Invalid deployment gate sqs_dlq_depth read/);
