@@ -1237,6 +1237,8 @@ describe('Explicit infrastructure identity cutover', () => {
     const workloadRoleArns = [...taskRoleArns, cleanupOperationRoleArn].sort();
     const cleanupTaskRoleArns = ['beta-anywear-tester-cleanup-task', 'beta-anywear-verification-task',
       'beta-anywear-one-shot-execution'].map((roleName) => `arn:aws:iam::650880818323:role/${roleName}`).sort();
+    const externalInlinePolicyRoleArns = ['beta-e2e-qualification-role', 'beta-infra-runtime-role']
+      .map((roleName) => `arn:aws:iam::650880818323:role/${roleName}`).sort();
     const iamPassRole = cfn.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
     expect(iamPassRole).toHaveLength(2);
     const ecsPassRole = iamPassRole.find((statement) =>
@@ -1265,6 +1267,15 @@ describe('Explicit infrastructure identity cutover', () => {
       'iam:ListRolePolicies', 'iam:PutRolePolicy']);
     expect(roleManagement[0].Condition).toBeUndefined();
     expect(([roleManagement[0].Resource].flat() as any[]).map(resourceOf)).not.toContain('*');
+    const externalInlinePolicy = cfn.filter((statement) => [statement.Action].flat()
+      .includes('iam:PutRolePolicy')
+      && [statement.Resource].flat().map(resourceOf).includes('arn:aws:iam::650880818323:role/beta-e2e-qualification-role'));
+    expect(externalInlinePolicy).toHaveLength(1);
+    expect([externalInlinePolicy[0].Action].flat().sort())
+      .toEqual(['iam:DeleteRolePolicy', 'iam:GetRolePolicy', 'iam:PutRolePolicy']);
+    expect(([externalInlinePolicy[0].Resource].flat() as any[]).map(resourceOf).sort())
+      .toEqual(externalInlinePolicyRoleArns);
+    expect(externalInlinePolicy[0].Condition).toBeUndefined();
     const ec2Ingress = cfn.filter((statement) => [statement.Action].flat().includes('ec2:AuthorizeSecurityGroupIngress'));
     expect(ec2Ingress).toHaveLength(1);
     expect(ec2Ingress[0].Condition).toEqual({ StringEquals: {
@@ -1297,6 +1308,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup',
       ...workloadRoleArns,
       ...cleanupTaskRoleArns,
+      ...externalInlinePolicyRoleArns,
       '*',
     ]));
 
@@ -1329,22 +1341,22 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(serialized).not.toContain('github-actions-pipeline-role');
       for (const resource of resourcesOf(statements)) {
         if (resource.startsWith('arn:aws:iam::')) {
-          expect([...workloadRoleArns, ...cleanupTaskRoleArns]).toContain(resource);
+          expect([...workloadRoleArns, ...cleanupTaskRoleArns, ...externalInlinePolicyRoleArns]).toContain(resource);
         }
       }
       expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
         && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
     }
-    // The CloudFormation role carries exactly four IAM statements (role
-    // management, attach/detach, ECS PassRole, states PassRole), and every IAM
-    // resource is one of the eight Workload-owned role ARNs: the extensions add
-    // no wildcard, policy, user or group resource.
+    // The CloudFormation role carries exactly five IAM statements (role
+    // management, external inline-policy targets, attach/detach, ECS PassRole,
+    // states PassRole), and every IAM resource is one of the ten Workload-owned
+    // or Foundation-managed role ARNs: no wildcard, policy, user or group.
     const iamStatements = cfn.filter((statement) => [statement.Action].flat()
       .some((action: string) => action.startsWith('iam:')));
-    expect(iamStatements).toHaveLength(4);
+    expect(iamStatements).toHaveLength(5);
     for (const statement of iamStatements) {
       for (const resource of ([statement.Resource].flat() as any[]).map(resourceOf)) {
-        expect(resource).toMatch(/^arn:aws:iam::650880818323:role\/beta-anywear-[a-z0-9-]+$/);
+        expect(resource).toMatch(/^arn:aws:iam::650880818323:role\/beta-(?:anywear|e2e|infra)-[a-z0-9-]+$/);
       }
     }
     // The only object write either role holds is the template asset in the
@@ -1580,6 +1592,74 @@ describe('Explicit infrastructure identity cutover', () => {
         }
       }
     }
+  });
+
+  it('covers every concrete Workload resource with the granted actions', () => {
+    // Action presence is not enough: the statement that grants an action must
+    // also name the concrete resource. The previous #84 grant passed the action
+    // table but missed the Foundation-managed E2E and Infra-runtime role policies
+    // that the Workload template rewrites.
+    const coverage = (workloadCfnActions as any).resource_coverage as {
+      iam_policy_target_roles: string[]; task_definition_families: string[]; ecs_services: string[];
+      log_groups: string[]; metric_filter_log_group: string; state_machines: string[]; queues: string[];
+    };
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const app = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = Object.values(foundation.Resources) as any[];
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-cfn-role'))![0];
+    const statements = resources.filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+      && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const render = (value: any): string => {
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) {
+        const [separator, parts] = value['Fn::Join'];
+        return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+      }
+      return JSON.stringify(value);
+    };
+    const covers = (action: string, resource: string) => statements.some((statement) => (
+      [statement.Action].flat().includes(action)
+      && [statement.Resource].flat().map(render).includes(resource)));
+    for (const role of coverage.iam_policy_target_roles) {
+      for (const action of ['iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy']) {
+        expect(covers(action, role)).toBe(true);
+      }
+    }
+    for (const family of coverage.task_definition_families) {
+      expect(covers('ecs:RegisterTaskDefinition', family)).toBe(true);
+    }
+    for (const service of coverage.ecs_services) {
+      for (const action of ['ecs:CreateService', 'ecs:UpdateService', 'ecs:DeleteService', 'ecs:DescribeServices']) {
+        expect(covers(action, service)).toBe(true);
+      }
+    }
+    for (const logGroup of coverage.log_groups) {
+      for (const action of ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy',
+        'logs:DeleteRetentionPolicy']) {
+        expect(covers(action, logGroup)).toBe(true);
+      }
+    }
+    for (const action of ['logs:PutMetricFilter', 'logs:DescribeMetricFilters', 'logs:DeleteMetricFilter']) {
+      expect(covers(action, coverage.metric_filter_log_group)).toBe(true);
+    }
+    for (const stateMachine of coverage.state_machines) {
+      for (const action of ['states:UpdateStateMachine', 'states:DeleteStateMachine',
+        'states:PublishStateMachineVersion', 'states:DeleteStateMachineVersion',
+        'states:DescribeStateMachine', 'states:ListStateMachineVersions']) {
+        expect(covers(action, stateMachine)).toBe(true);
+      }
+    }
+    // The Workload template declares no SQS queue resources; the task
+    // definitions read queue URLs from SSM at runtime. No CFN SQS action may
+    // appear on the execution role.
+    expect(coverage.queues).toEqual([]);
+    const grantedActions = [...new Set(statements.flatMap((statement) => [statement.Action].flat()))];
+    expect(grantedActions.filter((action) => action.startsWith('sqs:'))).toEqual([]);
   });
 
   it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {
