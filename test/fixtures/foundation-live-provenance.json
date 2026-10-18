@@ -12,8 +12,8 @@
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "4bc756c2bf0210f5854415f98f697effa4929cd1",
-  "dedicated_candidate_canonical_sha256": "820ce66319a20ee6a1edab80033abe315ea6f412f05245a133367c6ef80c78b0",
-  "dedicated_additions_sha256": "78be605430ad9a829541267ed7c622cc352a77bcf072bb0bd976b2651856346b",
+  "dedicated_candidate_canonical_sha256": "aec4109fa71f6c1137e11eecd35090e4d8c43489af4db00744a7e4cde0ef3def",
+  "dedicated_additions_sha256": "4e9c078973f53f5a390e1ed3cd40478970a2d91fc3538bcda8f6e64cc37d55f9",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -37,6 +37,13 @@
       "source_branch": "issue/162-stage-contracts-gate",
       "scope": "Service deploy role read-only bake-gate grants; CloudWatch alarm ARNs in colon form; worker metric-filter grants; FilterLogEvents on both worker log-group resource forms, on top of the #158 rounds",
       "detail": "On top of main's round-10 to round-16 #158 statements (logs:DescribeLogGroups wildcard, Step Functions state-machine reads, CleanupOperation role iam:GetRole, record-job install contract), the Service deploy role adds: cloudwatch:GetMetricStatistics; cloudwatch:DescribeAlarms on arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*; ecs:DescribeServices on the two workload services; sqs:GetQueueAttributes on the four stage queues; logs:FilterLogEvents on both the plain and stream-suffixed worker log-group ARNs. The CloudFormation execution role's existing alarm grant moves to the colon alarm ARN and gains logs:PutMetricFilter, logs:DescribeMetricFilters and logs:DeleteMetricFilter on the worker log-group ARN. No SQS send/receive grant and no new resource family."
+    },
+    {
+      "issue": 162,
+      "recorded_at": "2026-10-18",
+      "source_branch": "issue/162-stage-contracts-gate",
+      "scope": "CleanupOperation task-definition and iam:PassRole grants on the Service CloudFormation execution role",
+      "detail": "The Workload template registers beta-anywear-cleanup and beta-anywear-cleanup-verify task definitions alongside api/worker; the CFN execution role's task-definition statement adds those two family ARNs. The three one-shot task roles beta-anywear-tester-cleanup-task, beta-anywear-verification-task and beta-anywear-one-shot-execution are added to iam:PassRole only (they are Workload-owned, not created/deleted by this role). No wildcard, no other role and no new action."
     }
   ]
 }

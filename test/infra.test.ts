@@ -1228,12 +1228,16 @@ describe('Explicit infrastructure identity cutover', () => {
     // StateMachine role. CloudFormation reads it with `iam:GetRole`, so it joins
     // only the role-management statement's resources; it is not a compute
     // task/execution role, so `iam:PassRole` and the attach/detach statement keep
-    // exactly the four task-role ARNs.
+    // exactly the four task-role ARNs plus the three one-shot task roles.
     const cleanupOperationRoleArn = 'arn:aws:iam::650880818323:role/beta-anywear-tester-cleanup-operation';
     const workloadRoleArns = [...taskRoleArns, cleanupOperationRoleArn].sort();
+    const cleanupTaskRoleArns = ['beta-anywear-tester-cleanup-task', 'beta-anywear-verification-task',
+      'beta-anywear-one-shot-execution'].map((roleName) => `arn:aws:iam::650880818323:role/${roleName}`).sort();
     const iamPassRole = cfn.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
     expect(iamPassRole).toHaveLength(1);
-    expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf).sort()).toEqual(taskRoleArns);
+    expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf).sort())
+      .toEqual([...taskRoleArns, ...cleanupTaskRoleArns].sort());
+    expect(([iamPassRole[0].Resource].flat() as any[]).map(resourceOf)).not.toContain(cleanupOperationRoleArn);
     expect(iamPassRole[0].Condition).toEqual({ StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } });
     const attachPolicy = cfn.filter((statement) => [statement.Action].flat().includes('iam:AttachRolePolicy'));
     expect(attachPolicy).toHaveLength(1);
@@ -1268,6 +1272,8 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
       'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:*',
+      'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup:*',
+      'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-verify:*',
       'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:*',
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener-rule/app/beta-anywear-api/*',
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener/app/beta-anywear-api/*',
@@ -1280,6 +1286,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
       'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup',
       ...workloadRoleArns,
+      ...cleanupTaskRoleArns,
       '*',
     ]));
 
@@ -1312,15 +1319,16 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(serialized).not.toContain('github-actions-pipeline-role');
       for (const resource of resourcesOf(statements)) {
         if (resource.startsWith('arn:aws:iam::')) {
-          expect(workloadRoleArns).toContain(resource);
+          expect([...workloadRoleArns, ...cleanupTaskRoleArns]).toContain(resource);
         }
       }
       expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
         && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
     }
     // The CloudFormation role carries exactly three IAM statements, and every IAM
-    // resource is one of the five Workload-created role ARNs: the round-12
-    // extension adds no wildcard, policy, user or group resource.
+    // resource is one of the eight Workload-owned role ARNs (four compute, the
+    // cleanup-operation state-machine role and the three one-shot task roles):
+    // the extensions add no wildcard, policy, user or group resource.
     const iamStatements = cfn.filter((statement) => [statement.Action].flat()
       .some((action: string) => action.startsWith('iam:')));
     expect(iamStatements).toHaveLength(3);
