@@ -1055,7 +1055,8 @@ describe('Explicit infrastructure identity cutover', () => {
       'iam:AttachRolePolicy', 'iam:CreateRole', 'iam:DeleteRole', 'iam:DeleteRolePolicy', 'iam:DetachRolePolicy',
       'iam:GetRole', 'iam:GetRolePolicy', 'iam:ListAttachedRolePolicies', 'iam:ListRolePolicies',
       'iam:PassRole', 'iam:PutRolePolicy',
-      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy', 'logs:PutRetentionPolicy',
+      'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy', 'logs:DescribeLogGroups',
+      'logs:PutRetentionPolicy',
       's3:CreateBucket', 's3:DeleteBucket', 's3:DeleteBucketPolicy', 's3:DeleteBucketPublicAccessBlock',
       's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
       's3:PutBucketPublicAccessBlock',
@@ -1064,6 +1065,44 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(actions(cfn)).toEqual(expectedCfnActions);
     expect(cfn.every((statement) => statement.Effect === 'Allow')).toBe(true);
     expect(cfn.some((statement) => statement.NotAction !== undefined || statement.NotResource !== undefined)).toBe(false);
+    // Positive: CloudFormation resolves the Workload stack's two
+    // `AWS::Logs::LogGroup` `Arn` values with this role while it re-renders the
+    // four policies that reference them, so the log-group read action is allowed
+    // on exactly those two ARNs in the `:*` log-group ARN form.
+    const describeLogGroups = normalized(cfn).filter((statement) => [statement.Action].flat()
+      .includes('logs:DescribeLogGroups'));
+    expect(describeLogGroups).toHaveLength(1);
+    expect(describeLogGroups[0]).toEqual({
+      Action: 'logs:DescribeLogGroups', Effect: 'Allow',
+      Resource: ['arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api:*',
+        'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*'],
+    });
+    // The existing lifecycle/retention statement is unchanged: four actions on
+    // the two log-group ARNs without the `:*` suffix.
+    expect(normalized(cfn)).toContainEqual({
+      Action: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy', 'logs:PutRetentionPolicy'],
+      Effect: 'Allow',
+      Resource: ['arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
+        'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker'],
+    });
+    // Negative: the role stays read-only on logs. No log read API other than the
+    // ARN resolution CFN needs, no log/stream writes, no filters, tags or KMS
+    // binding, and no logs action outside this reviewed set on either role.
+    const allowedLogsActions = ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:DeleteRetentionPolicy',
+      'logs:DescribeLogGroups', 'logs:PutRetentionPolicy'];
+    for (const statements of [deploy, cfn]) {
+      const logsActions = actions(statements).filter((action) => action.startsWith('logs:'));
+      expect(logsActions.filter((action) => !allowedLogsActions.includes(action))).toEqual([]);
+      for (const action of ['logs:FilterLogEvents', 'logs:GetLogEvents', 'logs:PutLogEvents', 'logs:CreateLogStream',
+        'logs:DeleteLogStream', 'logs:PutSubscriptionFilter', 'logs:PutMetricFilter', 'logs:TagResource',
+        'logs:UntagResource', 'logs:AssociateKmsKey', 'logs:DisassociateKmsKey', 'logs:PutDataProtectionPolicy']) {
+        expect(logsActions).not.toContain(action);
+      }
+    }
+    // Exactly one statement was added for the ARN resolution; the lifecycle
+    // statement keeps its own grants.
+    expect(cfn.filter((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('logs:')))).toHaveLength(2);
     const taskRoleArns = ['task', 'execution'].flatMap((purpose) => ['api', 'worker'].map((service) => (
       `arn:aws:iam::650880818323:role/beta-anywear-${service}-${purpose}`))).sort();
     const iamPassRole = cfn.filter((statement) => [statement.Action].flat().includes('iam:PassRole'));
@@ -1097,7 +1136,9 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*',
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:targetgroup/beta-anywear-api/*',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api:*',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
+      'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*',
       'arn:aws:s3:::anywearworkloadstack-beta-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',

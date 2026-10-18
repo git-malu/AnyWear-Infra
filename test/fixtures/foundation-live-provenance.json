@@ -13,7 +13,7 @@
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "af142f6ec033502f62a381172fbba1b648f2b7f0",
   "dedicated_candidate_canonical_sha256": "58c57366f62ac3ec4eab66a46b565c5a29d633753c7600971d326a87aa807bb9",
-  "dedicated_additions_sha256": "7d222a4056536896b1d879c6a0708c1d12eb97bbb00247f0a5289b4fb8e81759",
+  "dedicated_additions_sha256": "242a0e3d6153c61020dcda78743098effb84c9c077a421923f514287ab55cac0",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
