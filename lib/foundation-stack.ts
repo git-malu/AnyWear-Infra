@@ -524,22 +524,31 @@ export class FoundationStack extends cdk.Stack {
         actions: ['logs:DescribeLogGroups'],
         resources: ['*'],
       }));
-      // Issue #158 round 13: CloudFormation resolves the Workload template's
-      // `AWS::StepFunctions::StateMachineVersion` ARN with this execution role,
-      // so the role must read the CleanupOperation state machine that owns the
-      // version. Step Functions authorizes version and alias operations on the
-      // state machine's unqualified ARN, not on a version-suffixed ARN:
-      // `statemachineversion` is not a resource type for either action, and
-      // `ListStateMachineVersions` exposes no `states:StateMachineQualifier`
-      // condition key (that key scopes only the actions the version/alias
-      // authorization guide lists). The single
-      // `stateMachine:beta-anywear-tester-cleanup` ARN therefore authorizes both
-      // reads, so no `:1`-style resource form is added. Both actions are
-      // read-only: no start/stop, execution/history read, publish or `states:*`
-      // grant joins them.
+      // Issue #158 round 13 / #162 D8: CloudFormation manages the Workload
+      // template's CleanupOperation state machine and its StateMachineVersion.
+      // Step Functions authorizes update/delete/version operations on the
+      // state machine's unqualified ARN, not on a version-suffixed ARN (that
+      // form is not a resource type; the qualifier is a condition key only for
+      // the actions the version/alias authorization guide lists).
       serviceCfn.addToPolicy(new iam.PolicyStatement({
-        actions: ['states:DescribeStateMachine', 'states:ListStateMachineVersions'],
+        actions: ['states:DescribeStateMachine', 'states:ListStateMachineVersions',
+          'states:UpdateStateMachine', 'states:DeleteStateMachine',
+          'states:PublishStateMachineVersion', 'states:DeleteStateMachineVersion'],
         resources: [cleanupStateMachine],
+      }));
+      // CreateStateMachine has no resource type in the Step Functions service
+      // authorization table, so it cannot be scoped to the state-machine ARN.
+      // Keep it a single service-level action; CloudFormation calls it only when
+      // a replacement creates a new state machine.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['states:CreateStateMachine'], resources: ['*'],
+      }));
+      // Step Functions requires the caller to pass the state machine's execution
+      // role on create/update. The role is the Workload-owned CleanupOperation
+      // role; no compute task role is a states target.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['iam:PassRole'], resources: [cleanupOperationRole],
+        conditions: { StringEquals: { 'iam:PassedToService': 'states.amazonaws.com' } },
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['s3:CreateBucket', 's3:DeleteBucket', 's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock',
