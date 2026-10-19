@@ -39,10 +39,12 @@ export function assertRuntimeAbsent(runtime, action) {
 // A stopped environment has no Runtime stack. CloudFormation's DescribeStacks
 // answers a missing stack with a `ValidationError: Stack with id <name> does not
 // exist` (or `Stack <name> does not exist`), and the AWS CLI exits non-zero, so
-// every reader below catches exactly that sentence and returns absence. Every
-// other failure — throttling, AccessDenied, network, malformed output — is
-// rethrown: absence is never inferred from a generic error and a mock that
-// returns `{Stacks: []}` without that error fails closed instead.
+// every reader below catches exactly that sentence and returns absence. The
+// runner's stderr prefixes the CLI's own line with `aws: [ERROR]: `, so that
+// wrapper is accepted; nothing else is. Every other failure — throttling,
+// AccessDenied, network, malformed output — is rethrown: absence is never
+// inferred from a generic error and a mock that returns `{Stacks: []}` without
+// that error fails closed instead.
 const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function isStackAbsentError(error, stackName) {
@@ -52,7 +54,8 @@ export function isStackAbsentError(error, stackName) {
   if (!text) return false;
   const name = escapeRegExp(stackName);
   const pattern = new RegExp(
-    `(?:^|\\n)(?:An error occurred \\(ValidationError\\) when calling the DescribeStacks operation: )?`
+    `(?:^|\\n)(?:aws: \\[ERROR\\]: )?`
+    + `(?:An error occurred \\(ValidationError\\) when calling the DescribeStacks operation: )?`
     + `Stack (?:with id )?${name} does not exist\\s*$`,
   );
   return pattern.test(text);

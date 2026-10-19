@@ -18,7 +18,7 @@ const platformOutputs = () => Object.fromEntries(['EcsClusterName', 'PrivateSubn
       : key === 'ApiBaseUrl' ? 'https://d111111abcdef8.cloudfront.net' : `${key}-value`]));
 const entries = outputs => Object.entries(outputs).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue }));
 function stackAbsenceError(stackName) {
-  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
   return Object.assign(new Error(stderr), { stderr });
 }
 
@@ -91,8 +91,8 @@ test('restore requires the Runtime stack to exist: the operator starts first', a
 test('restore does not treat a non-absence Runtime read failure as "start first"', async () => {
   const io = mockIo();
   io.aws = async () => {
-    throw Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
-      { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+    throw Object.assign(new Error('aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+      { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
   };
   await assert.rejects(runRestoreRelease({ io, infraSha, env }), error => {
     assert.match(error.cause?.message ?? error.message, /Throttling/);

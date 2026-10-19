@@ -45,6 +45,31 @@ test('a completed mutation with any unsuccessful required observation records pa
   }
 });
 
+test('a failed run after a completed stack mutation records partial and requires explicit recovery', () => {
+  for (const type of ['stack-deploy', 'stack-destroy']) {
+    const record = fixture('deploy-platform');
+    record.events.push({ type, stack_name: 'AnyWearPlatformStack-beta', result: 'complete' });
+    const finalized = finalizeOperationRecord(record, 'failure', 'skipped');
+    assert.equal(finalized.result, 'partial', type);
+    assert.equal(finalized.recovery, 'requires-explicit-recovery', type);
+    assert.equal(finalized.final_observation, 'skipped');
+  }
+  // A failure before any completed mutation stays failed without recovery.
+  const plain = finalizeOperationRecord(fixture('deploy-platform'), 'failure', 'skipped');
+  assert.equal(plain.result, 'failed');
+  assert.equal(plain.recovery, 'not-required');
+  // A started-but-not-complete stack event is not a completed mutation.
+  const incomplete = fixture('deploy-platform');
+  incomplete.events.push({ type: 'stack-deploy', stack_name: 'AnyWearPlatformStack-beta', result: 'began' });
+  assert.equal(finalizeOperationRecord(incomplete, 'failure', 'skipped').result, 'failed');
+  // Already-recorded recovery evidence is never downgraded.
+  const observed = fixture('deploy-platform');
+  observed.recovery = 'began';
+  observed.events.push({ type: 'stack-deploy', stack_name: 'AnyWearPlatformStack-beta', result: 'complete' });
+  assert.equal(finalizeOperationRecord(observed, 'failure', 'skipped').result, 'partial');
+  assert.equal(observed.recovery, 'began');
+});
+
 test('final observation is required regardless of the observed final stack state', () => {
   for (const operation of ['deploy-platform', 'deploy-egress', 'observe', 'set-testers']) {
     for (const active of ['true', 'false']) {
@@ -75,11 +100,15 @@ test('finalizer CLI rewrites strictly parsed state and ordinary records with the
     ['restore-release', 'success', 'skipped', 'partial', 'requires-explicit-recovery', true],
     ['restore-release', 'cancelled', 'skipped', 'failed', 'requires-explicit-recovery', true],
     ['close-admission', 'failure', 'skipped', 'failed', 'not-required', true],
+    // A completed stack mutation followed by a failed post-deploy read is
+    // partial evidence that requires an explicit recovery decision.
+    ['deploy-platform', 'failure', 'success', 'partial', 'requires-explicit-recovery', true, true],
   ];
-  for (const [operation, operationOutcome, observationOutcome, result, recovery, active] of cases) {
+  for (const [operation, operationOutcome, observationOutcome, result, recovery, active, completed = false] of cases) {
     const record = fixture(operation);
     record.final_observation = operation === 'state' ? 'not-applicable' : 'pending';
     record.events.push({ type: 'final-stack-state', base_status: 'UPDATE_COMPLETE', runtime_status: active ? 'UPDATE_COMPLETE' : 'ABSENT', runtime_exists: active });
+    if (completed) record.events.push({ type: 'stack-deploy', stack_name: 'AnyWearFoundationStack', result: 'complete' });
     if (operation === 'state') record.state_observation = { qualification: 'not-applicable', admission: { tester_count: 2 } };
     await writeFile(file, canonicalJson(record));
     const parsed = parseJson(await readFile(file));

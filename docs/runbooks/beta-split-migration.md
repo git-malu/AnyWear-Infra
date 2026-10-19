@@ -54,16 +54,34 @@ minimal `update-stack` template delta: an in-place `Origin.DomainName` update
 (CloudFront documents "No interruption"), so the distribution ID and domain are
 preserved and the stack keeps serving.
 
+The pre-move `update-stack` must carry every live Workload parameter: four of
+them (`ServiceImageDigest`, `ServiceCommitSha`, `VlmConfigArn`,
+`CloudFrontPrefixListId`) have no defaults, so an update without `--parameters`
+fails with "Parameters must have values". The apply path reads the live
+parameter keys itself (and passes `UsePreviousValue=true` for each, never
+inventing a value). The keys can also be recorded and passed explicitly:
+
+```sh
+# The live parameter keys (reviewed read; no value is republished).
+aws cloudformation describe-stacks --stack-name AnyWearWorkloadStack-beta \
+  --query 'Stacks[0].Parameters[].ParameterKey' --output json \
+  > workload-parameter-keys.json
+```
+
 ```sh
 # 1. Validation only (default): builds the delta and prints the exact changes.
 node scripts/migrate-beta-split.mjs --stage pre-move \
   --workload-template <live-workload-original.json> \
   --api-load-balancer-dns-name <live ApiLoadBalancerDnsName>
 
-# 2. Separate explicit authorization; applies the delta in place.
+# 2. Separate explicit authorization; applies the delta in place. The script
+#    reads the live parameter keys from describe-stacks automatically; pass
+#    --workload-parameters <describe-stacks.json | keys.json> to use the
+#    recorded read instead.
 node scripts/migrate-beta-split.mjs --stage pre-move --apply \
   --workload-template <live-workload-original.json> \
-  --api-load-balancer-dns-name <live ApiLoadBalancerDnsName>
+  --api-load-balancer-dns-name <live ApiLoadBalancerDnsName> \
+  [--workload-parameters <recorded-parameters.json>]
 ```
 
 Accept only when the planned change list is exactly:

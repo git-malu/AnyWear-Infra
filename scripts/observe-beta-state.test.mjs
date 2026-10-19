@@ -7,7 +7,7 @@ import { canonicalJson } from './json-contract.mjs';
 const baseName = 'AnyWearPlatformStack-beta';
 
 function stackAbsenceError(stackName) {
-  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
   return Object.assign(new Error(stderr), { stderr });
 }
 
@@ -67,7 +67,7 @@ test('read-only state records a running Runtime and its sizing parameters', asyn
 });
 
 test('read-only state still fails on a non-absence Runtime read failure', async () => {
-  const throttle = Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
-    { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  const throttle = Object.assign(new Error('aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+    { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
   await assert.rejects(observeBetaState(stateIo({ runtimeError: throttle })), /Complete Beta state observation unavailable/);
 });

@@ -244,12 +244,41 @@ export function validateReadback({ before, after, distribution }) {
   return { physicalId: before.PhysicalResourceId, domain: distribution.DomainName, status: distribution.Status };
 }
 
+// The live Workload template has four parameters without defaults
+// (`ServiceImageDigest`, `ServiceCommitSha`, `VlmConfigArn`,
+// `CloudFrontPrefixListId`). An `update-stack` that omits `--parameters` fails
+// them with "Parameters must have values", so the apply path never invents
+// values: it reads the live stack's parameter keys and passes
+// `UsePreviousValue=true` for each. A caller may supply the recorded
+// `describe-stacks` JSON (or a plain array of keys) instead of the live read.
+export function workloadParameterKeys(source) {
+  const rows = Array.isArray(source) ? source : source?.Stacks?.[0]?.Parameters;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error('The pre-move update requires the live Workload stack parameters; none were returned');
+  }
+  const keys = rows.map((row) => (typeof row === 'string' ? row : row?.ParameterKey));
+  for (const key of keys) {
+    if (typeof key !== 'string' || !/^[A-Za-z0-9]+$/.test(key)) {
+      throw new Error(`Invalid live Workload parameter key: ${JSON.stringify(key)}`);
+    }
+  }
+  if (new Set(keys).size !== keys.length) throw new Error('Duplicate live Workload parameter key');
+  return keys;
+}
+
+export function workloadParameterArguments(keys) {
+  if (!Array.isArray(keys) || keys.length === 0) {
+    throw new Error('The pre-move update requires at least one live Workload parameter key');
+  }
+  return keys.map((key) => `ParameterKey=${key},UsePreviousValue=true`);
+}
+
 // CLI -----------------------------------------------------------------------
 const OPTIONS = Object.freeze({
   '--stage': true, '--workload-template': true, '--base-template': true, '--base-synth-template': true,
   '--api-load-balancer-dns-name': true, '--distribution-type': true, '--workload-stack-policy': true,
   '--base-stack-policy': true, '--describe': true, '--actions': true, '--resource-mappings': true,
-  '--output': false, '--apply': false,
+  '--workload-parameters': true, '--output': false, '--apply': false,
 });
 
 function parseArguments(argv) {
@@ -291,6 +320,13 @@ export async function runStage(options, { run = defaultRun } = {}) {
       apiLoadBalancerDnsName: options['api-load-balancer-dns-name'],
     });
     if (!options.apply) return { stage, applied: false, ...plan };
+    // Read the live parameter keys, then apply the delta with
+    // `UsePreviousValue=true` for every one. Never synthesize a value: the sealed
+    // Service release and reviewed constants stay exactly as the stack has them.
+    const liveParameters = options['workload-parameters']
+      ? readJson(options['workload-parameters'])
+      : await runAws(['cloudformation', 'describe-stacks', '--stack-name', WORKLOAD_STACK], { run });
+    const parameterKeys = workloadParameterKeys(liveParameters);
     // Write the minimal delta template and apply it in place. The pipeline is
     // passed as one argument so no shell parses the template.
     const { mkdtemp, writeFile } = await import('node:fs/promises');
@@ -299,9 +335,11 @@ export async function runStage(options, { run = defaultRun } = {}) {
     const templateFile = path.join(directory, 'workload-pre-move.template.json');
     await writeFile(templateFile, `${JSON.stringify(plan.template, null, 2)}\n`);
     await runAws(['cloudformation', 'update-stack', '--stack-name', WORKLOAD_STACK,
-      '--template-body', `file://${templateFile}`, '--capabilities', 'CAPABILITY_NAMED_IAM'], { run });
+      '--template-body', `file://${templateFile}`, '--capabilities', 'CAPABILITY_NAMED_IAM',
+      '--parameters', ...workloadParameterArguments(parameterKeys)], { run });
     await runAws(['cloudformation', 'wait', 'stack-update-complete', '--stack-name', WORKLOAD_STACK], { run });
-    return { stage, applied: true, changes: plan.changes, removedDependsOn: plan.removedDependsOn };
+    return { stage, applied: true, changes: plan.changes, removedDependsOn: plan.removedDependsOn,
+      parameters: parameterKeys };
   }
   if (stage === 'preview') {
     const liveWorkload = readJson(options['workload-template']);

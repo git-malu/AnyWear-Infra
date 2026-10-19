@@ -279,8 +279,14 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
-      if (stack === baseStack) await enforceBetaPlatformLogRetention(io);
+      // Record the completed mutation immediately: a later retention failure must
+      // still leave `partial`/`requires-explicit-recovery` evidence, not `failed`
+      // as if the deploy had not happened.
       record?.events.push({ type: 'stack-deploy', stack_name: stack, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
+      if (stack === baseStack) {
+        await enforceBetaPlatformLogRetention(io, { ref: env.GITHUB_REF, enabled: env.ENABLE_BETA_MUTATION });
+        record?.events.push({ type: 'beta-platform-log-retention', stack_name: stack, result: 'complete' });
+      }
     },
     // The stop path's second step. It destroys only the disposable Egress stack;
     // the caller proves the Runtime stack is already absent before credentials.

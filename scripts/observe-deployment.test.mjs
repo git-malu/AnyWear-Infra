@@ -9,6 +9,7 @@ import { observeDeployment, observeDeploymentCli, observerArguments } from './ob
 import { sha256 } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 import { runtimeStack } from './one-writer.mjs';
+import { stageContractSchemaHash, validateObservationRecord } from './deployment-contract.mjs';
 import { STAGE_CONTRACT_CONDITIONAL_PARAMETERS, STAGE_CONTRACT_PARAMETERS,
   STAGE_CONTRACT_READ_PARAMETERS } from './stage-contract-parameters.mjs';
 
@@ -43,13 +44,14 @@ const expectedInputs = (names) => names.map((parameter) => ({ parameter,
   value_sha256: sha256(`value-${STAGE_CONTRACT_READ_PARAMETERS.indexOf(parameter)}`) }));
 
 function stackAbsenceError(stackName) {
-  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
   return Object.assign(new Error(stderr), { stderr });
 }
 
 // A deterministic read-only AWS surface for the exact calls observeDeployment
 // makes: no credentials, no network, no timers.
 function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLETE', runtimeError } = {}) {
+  const calls = [];
   const stacks = new Map(configuredStacks.map((configured, index) => [configured.stack_name, {
     StackId: `arn:aws:cloudformation:${configured.region}:650880818323:stack/${configured.stack_name}/${index}`,
     StackName: configured.stack_name, StackStatus: 'UPDATE_COMPLETE', CreationTime: '2026-10-01T00:00:00.000Z',
@@ -63,8 +65,9 @@ function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLE
     });
   }
   const byId = new Map([...stacks.values()].map(stack => [stack.StackId, stack]));
-  return {
+  return { calls,
     async aws(args, region) {
+      calls.push([...args]);
       const argument = flag => args[args.indexOf(flag) + 1];
       if (args[0] === 'sts' && args[1] === 'get-caller-identity') return { Account: '650880818323' };
       if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
@@ -143,10 +146,56 @@ test('the observer requires the Service-owned Runtime stack to exist and be term
       /AnyWearRuntimeStack-beta/, String(runtimeStatus));
   }
   // A throttled/denied Runtime read is not absence and must abort the observation.
-  const throttle = Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
-    { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  const throttle = Object.assign(new Error('aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+    { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
   await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null, runtimeError: throttle }),
     env: executorEnvironment() }), /Throttling/);
+});
+
+test('a beta-deploy observation does not read or require the absent Runtime stack', async () => {
+  const absent = fixtureIo({ runtimeStatus: null });
+  const body = await observeDeployment({ infraSha, io: absent, env: executorEnvironment(), requireRuntime: false });
+  assert.ok(!absent.calls.some((args) => args.includes(runtimeStack)), 'the Runtime stack was not read');
+  assert.deepEqual(Object.keys(body).sort(), ['inputs', 'observed', 'schema', 'stacks']);
+  // The same record body with Runtime present or non-terminal: the family does
+  // not qualify the running slice and the record never included Runtime.
+  const present = await observeDeployment({ infraSha, io: fixtureIo({}), env: executorEnvironment(), requireRuntime: false });
+  const nonTerminal = await observeDeployment({ infraSha,
+    io: fixtureIo({ runtimeStatus: 'UPDATE_IN_PROGRESS' }), env: executorEnvironment(), requireRuntime: false });
+  assert.deepEqual(body, present);
+  assert.deepEqual(body, nonTerminal);
+  // The default/runtime path still requires it (covered again here explicitly).
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null }),
+    env: executorEnvironment(), requireRuntime: true }), /AnyWearRuntimeStack-beta/);
+});
+
+test('a pre-M4 deploy-foundation observation may hash the published stage-contract subset', async () => {
+  const apiBaseUrl = '/anywear/beta/api_base_url';
+  const body = await observeDeployment({ infraSha,
+    io: fixtureIo({ invalidStageParameters: [apiBaseUrl] }), env: executorEnvironment(),
+    requireRuntime: false, allowUnpublishedStageInputs: ['api_base_url'] });
+  assert.equal(body.inputs.length, 35);
+  assert.ok(!body.inputs.some((row) => row.parameter === apiBaseUrl));
+  assert.deepEqual(body.inputs.map((row) => row.parameter),
+    [...STAGE_CONTRACT_READ_PARAMETERS].filter((name) => name !== apiBaseUrl));
+  assert.equal(body.schema.content_sha256, stageContractSchemaHash(body.inputs));
+  const record = { schema_version: 3, record_type: 'anywear_infra_family_observation',
+    producer: { repository: 'git-malu/AnyWear-Infra', sha: infraSha, workflow_path: '.github/workflows/mutate.yml',
+      workflow_ref: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main', run_id: 43, run_attempt: 1 },
+    ...body };
+  assert.deepEqual(validateObservationRecord(record), record);
+
+  // The default `observe` path (Runtime required) stays strict.
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ invalidStageParameters: [apiBaseUrl] }),
+    env: executorEnvironment() }), /Stage contract parameters unavailable/);
+  // deploy-platform (no allow list) also stays strict even though it is beta-deploy.
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ invalidStageParameters: [apiBaseUrl] }),
+    env: executorEnvironment(), requireRuntime: false }), /Stage contract parameters unavailable/);
+  // Any other unconditional parameter is still required with the allow list.
+  const other = STAGE_CONTRACT_PARAMETERS.find((name) => name !== apiBaseUrl);
+  await assert.rejects(observeDeployment({ infraSha,
+    io: fixtureIo({ invalidStageParameters: [apiBaseUrl, other] }), env: executorEnvironment(),
+    requireRuntime: false, allowUnpublishedStageInputs: ['api_base_url'] }), /Stage contract parameters unavailable/);
 });
 
 test('the observer CLI writes the authenticated v3 body that equals the expected record', async () => {
