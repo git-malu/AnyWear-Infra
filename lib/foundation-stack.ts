@@ -633,6 +633,18 @@ export class FoundationStack extends cdk.Stack {
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['ssm:GetParameter', 'ssm:GetParameters'], resources: [betaParameters, bootstrapVersion],
       }));
+      // Issue #166 Stage A: the API distribution's `OriginCustomHeaders` carries a
+      // `{{resolve:secretsmanager:/anywear/beta/cloudfront_origin_header}}`
+      // dynamic reference. CloudFormation re-resolves it on every update of that
+      // resource under this execution role; the role had no Secrets Manager
+      // action, so the first pre-move distribution update rolled back. The read is
+      // confined to that one secret ARN suffix and is required only for the
+      // one-time pre-move. A later reviewed Foundation deploy removes this
+      // statement after the MOVE deletes the Workload stack.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [colonArn('secretsmanager', 'secret', '/anywear/beta/cloudfront_origin_header-*')],
+      }));
     };
     addServiceDeployRoles(DEFAULT_FOUNDATION_SERVICE,
       { deploy: 'BetaServiceDeployRole', cfn: 'BetaServiceDeployCfnRole' });

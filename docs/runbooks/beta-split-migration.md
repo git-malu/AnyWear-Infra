@@ -102,6 +102,20 @@ Both the `aws s3 cp` upload and the `cloudformation update-stack` call must run 
 region. The uploaded S3 object is retained as evidence; the script's local
 temporary template file is not retained.
 
+Stage A also depends on one reviewed IAM grant on the Workload stack's
+CloudFormation execution role, `beta-service-deploy-cfn-role`:
+`secretsmanager:GetSecretValue` on
+`arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*`.
+The API distribution's `OriginCustomHeaders` carries a
+`{{resolve:secretsmanager:.../cloudfront_origin_header}}` dynamic reference;
+CloudFormation re-resolves that reference on every update of the distribution
+under the stack execution role, and this is the first distribution update under
+the restricted role. The action is the only Secrets Manager permission on that
+role and the resource is the one secret ARN suffix (no other secret or action).
+It is required only for the one-time pre-move and is removed in a later reviewed
+Foundation deploy after the MOVE deletes the Workload stack. The OIDC deploy role
+`beta-service-deploy-role` keeps zero Secrets Manager permissions.
+
 ```sh
 # 1. Validation only (default): builds the delta and prints the exact changes.
 #    No AWS call and no --template-bucket required.

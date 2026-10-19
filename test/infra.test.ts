@@ -932,6 +932,7 @@ describe('Platform safety controls', () => {
     ) as any[];
     const devPolicy = JSON.stringify(policies.find((policy) => (
       JSON.stringify(policy.Properties.PolicyDocument.Statement).includes('secretsmanager:GetSecretValue')
+      && JSON.stringify(policy).includes('/anywear/dev/cloudfront_origin_header-*')
     )));
     expect(devPolicy).toContain('/anywear/dev/qweather_api_key-*');
     expect(devPolicy).toContain('/anywear/dev/cloudfront_origin_header-*');
@@ -1186,6 +1187,7 @@ describe('Explicit infrastructure identity cutover', () => {
       's3:CreateBucket', 's3:DeleteBucket', 's3:DeleteBucketPolicy', 's3:DeleteBucketPublicAccessBlock',
       's3:GetBucketPolicy', 's3:GetBucketPublicAccessBlock', 's3:PutBucketPolicy',
       's3:PutBucketPublicAccessBlock',
+      'secretsmanager:GetSecretValue',
       'ssm:GetParameter', 'ssm:GetParameters',
       'states:CreateStateMachine', 'states:DeleteStateMachine', 'states:DeleteStateMachineVersion',
       'states:DescribeStateMachine', 'states:ListStateMachineVersions', 'states:PublishStateMachineVersion',
@@ -1375,6 +1377,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
       'arn:aws:s3:::anywearruntimestack-beta-*',
+      'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
       'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup',
@@ -1393,7 +1396,7 @@ describe('Explicit infrastructure identity cutover', () => {
       const allActions = actions(statements);
       const serialized = JSON.stringify(statements);
       expect(allActions).not.toContain('*');
-      for (const forbidden of ['rds:', 'cognito-idp:', 'secretsmanager:', 'kms:',
+      for (const forbidden of ['rds:', 'cognito-idp:', 'kms:',
         's3:DeleteObject', 's3:PutBucketAcl', 's3:PutObjectAcl',
         'ecr:PutImage', 'ecr:SetRepositoryPolicy', 'ecr:DeleteRepository',
         'ecr:CreateRepository', 'ec2:CreateVpc', 'ec2:DeleteVpc', 'ec2:ModifyVpcAttribute',
@@ -1419,6 +1422,19 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(resources.some((resource) => resource.Type === 'AWS::IAM::ManagedPolicy'
         && JSON.stringify(resource.Properties.Roles).includes(`beta-${roleName}`))).toBe(false);
     }
+    // The OIDC deploy role keeps zero Secrets Manager authority. The CFN role's
+    // only Secrets Manager statement is the reviewed dynamic-reference read for
+    // the API distribution's origin header: one action, one secret ARN suffix.
+    expect(actions(deploy).some((action) => action.startsWith('secretsmanager:'))).toBe(false);
+    const cfnSecretStatements = cfn.filter((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('secretsmanager:')));
+    expect(cfnSecretStatements).toHaveLength(1);
+    expect(normalized(cfnSecretStatements)[0]).toEqual({
+      Action: 'secretsmanager:GetSecretValue', Effect: 'Allow',
+      Resource: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*',
+    });
+    expect(actions(cfn).filter((action) => action.startsWith('secretsmanager:')))
+      .toEqual(['secretsmanager:GetSecretValue']);
     // The CloudFormation role carries exactly five IAM statements (role
     // management, external inline-policy targets, attach/detach, ECS PassRole,
     // states PassRole), and every IAM resource is one of the ten Workload-owned
@@ -1455,6 +1471,59 @@ describe('Explicit infrastructure identity cutover', () => {
       .toEqual(['cloudformation:DescribeStacks']);
     expect(resourceOf(cfn.filter((statement) => [statement.Action].flat().includes('cloudformation:DescribeStacks'))[0]
       .Resource)).toBe('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*');
+  });
+
+  // Issue #166 Stage A: the API distribution's OriginCustomHeaders carries a
+  // `{{resolve:secretsmanager:.../cloudfront_origin_header}}` dynamic reference.
+  // CloudFormation re-resolves it on every update of that distribution under the
+  // stack execution role, so beta-service-deploy-cfn-role needs exactly one read.
+  // This test pins the action, the one secret ARN suffix, and the absence of any
+  // broader Secrets Manager grant, while beta-service-deploy-role keeps none.
+  it('grants the CloudFormation execution role exactly the one dynamic-reference secret read', () => {
+    const app = new cdk.App();
+    const template = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env: { account: '650880818323', region: 'ap-east-1' }, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = template.Resources as Record<string, any>;
+    const roleId = (name: string): string => Object.entries(resources).find(([, resource]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === name))![0];
+    const statementsFor = (name: string): any[] => (Object.values(resources) as any[])
+      .filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === roleId(name)))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const secretArn = 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*';
+    const resourceOf = (value: any): any => {
+      if (Array.isArray(value)) return value.map(resourceOf);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) return value['Fn::Join'][1].map(resourceOf).join(value['Fn::Join'][0]);
+      if (value?.Ref === 'AWS::Partition') return 'aws';
+      return value;
+    };
+    const cfnStatements = statementsFor('beta-service-deploy-cfn-role');
+    const secretStatements = cfnStatements.filter((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('secretsmanager:')));
+    expect(secretStatements).toHaveLength(1);
+    expect(secretStatements[0].Action).toBe('secretsmanager:GetSecretValue');
+    expect(secretStatements[0].Effect).toBe('Allow');
+    expect(resourceOf(secretStatements[0].Resource)).toBe(secretArn);
+    // Exactly one action and one ARN suffix; no wildcard-only secret, no second
+    // secret, no other Secrets Manager action, condition or negation.
+    expect([secretStatements[0].Action].flat()).toEqual(['secretsmanager:GetSecretValue']);
+    expect(secretStatements[0].Condition).toBeUndefined();
+    expect(secretStatements[0].NotAction).toBeUndefined();
+    expect(secretStatements[0].NotResource).toBeUndefined();
+    expect(JSON.stringify(cfnStatements)).not.toContain('secret:*');
+    const deployStatements = statementsFor('beta-service-deploy-role');
+    expect(deployStatements.flatMap((statement) => [statement.Action].flat())
+      .some((action: string) => action.startsWith('secretsmanager:'))).toBe(false);
+    // Whatever policy fragment CDK renders (the CLI template keeps the statement
+    // in the existing inline policy), the two Service deploy roles carry exactly
+    // one Secrets Manager statement between them; legacy dev/prod roles are out of
+    // this assertion's scope.
+    const allSecretStatements = [...cfnStatements, ...deployStatements]
+      .filter((statement) => [statement.Action].flat()
+        .some((action: string) => action.startsWith('secretsmanager:')));
+    expect(allSecretStatements).toHaveLength(1);
   });
 
   // Regression for the #162 Testing failure: a CloudWatch alarm ARN is
