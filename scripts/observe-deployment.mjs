@@ -40,7 +40,13 @@ export function liveObservationIo() {
 // services, API distribution, alarms — is owned and observed by AnyWear-Service's
 // release chain; it is deliberately not read here, so this record cannot claim an
 // observation it no longer produces.
-export async function observeDeployment({ infraSha, io = liveObservationIo(), env = process.env }) {
+//
+// `requireRuntime` is true only for the `runtime` family (`observe`), which
+// qualifies the running slice and therefore needs the Service-owned Runtime stack
+// present. A `beta-deploy` observation (Foundation/Billing/Base/Egress/restore)
+// runs before M6 or while Beta is stopped, so it must not read or require Runtime;
+// the record body never included that stack.
+export async function observeDeployment({ infraSha, io = liveObservationIo(), env = process.env, requireRuntime = true }) {
   matches(infraSha, SHA, 'Observed Infra input');
   assertProtectedExecutor(infraSha, env);
   if (env.AWS_REGION !== region || env.AWS_ACCOUNT_ID !== account || (await io.aws(['sts', 'get-caller-identity'])).Account !== account) {
@@ -60,11 +66,13 @@ export async function observeDeployment({ infraSha, io = liveObservationIo(), en
     actualStacks.set(configured.stack_name, actual);
   }
   const platform = outputMap(actualStacks.get('AnyWearPlatformStack-beta'));
-  // Issue #166: Beta runs when the Service-owned Runtime stack exists. The Base
-  // activity output is gone; the Runtime read is not added to the recorded stack
-  // set because that slice is produced and observed by AnyWear-Service.
-  const runtime = await describeStack(io, runtimeStack, region);
-  assertRuntimeReady(runtime, 'Authenticated deployment observation');
+  if (requireRuntime) {
+    // Issue #166: Beta runs when the Service-owned Runtime stack exists. The Base
+    // activity output is gone; the Runtime read is not added to the recorded stack
+    // set because that slice is produced and observed by AnyWear-Service.
+    const runtime = await describeStack(io, runtimeStack, region);
+    assertRuntimeReady(runtime, 'Authenticated deployment observation');
+  }
   const lambdas = {};
   for (const [key, functionName] of [['pre-sign-up', 'beta-anywear-pre-sign-up'], ['post-confirmation', 'beta-anywear-post-confirmation-sync']]) {
     const config = (await io.aws(['lambda', 'get-function', '--function-name', functionName])).Configuration;

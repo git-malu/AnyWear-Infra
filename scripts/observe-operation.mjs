@@ -16,8 +16,11 @@ const io = await createRuntimeIo(env, operation, { purpose: 'qualification' });
 try {
   // The authenticated observation covers the stacks Infra still produces and the
   // stage-contract surface it publishes. The release slice is observed by
-  // AnyWear-Service's release chain, never from here.
-  const body = await observeDeployment({ infraSha: env.GITHUB_SHA, io, env });
+  // AnyWear-Service's release chain, never from here. Only the `runtime` family
+  // (`observe`) qualifies the running slice and requires the Runtime stack; a
+  // `beta-deploy` observation runs before M6 or while Beta is stopped.
+  const body = await observeDeployment({ infraSha: env.GITHUB_SHA, io, env,
+    requireRuntime: boundary.family === 'runtime' });
   const record = { schema_version: 3,
     record_type: observationRecordType(boundary.family),
     producer: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: boundary.workflow,

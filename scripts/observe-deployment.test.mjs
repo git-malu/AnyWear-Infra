@@ -50,6 +50,7 @@ function stackAbsenceError(stackName) {
 // A deterministic read-only AWS surface for the exact calls observeDeployment
 // makes: no credentials, no network, no timers.
 function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLETE', runtimeError } = {}) {
+  const calls = [];
   const stacks = new Map(configuredStacks.map((configured, index) => [configured.stack_name, {
     StackId: `arn:aws:cloudformation:${configured.region}:650880818323:stack/${configured.stack_name}/${index}`,
     StackName: configured.stack_name, StackStatus: 'UPDATE_COMPLETE', CreationTime: '2026-10-01T00:00:00.000Z',
@@ -63,8 +64,9 @@ function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLE
     });
   }
   const byId = new Map([...stacks.values()].map(stack => [stack.StackId, stack]));
-  return {
+  return { calls,
     async aws(args, region) {
+      calls.push([...args]);
       const argument = flag => args[args.indexOf(flag) + 1];
       if (args[0] === 'sts' && args[1] === 'get-caller-identity') return { Account: '650880818323' };
       if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
@@ -147,6 +149,23 @@ test('the observer requires the Service-owned Runtime stack to exist and be term
     { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
   await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null, runtimeError: throttle }),
     env: executorEnvironment() }), /Throttling/);
+});
+
+test('a beta-deploy observation does not read or require the absent Runtime stack', async () => {
+  const absent = fixtureIo({ runtimeStatus: null });
+  const body = await observeDeployment({ infraSha, io: absent, env: executorEnvironment(), requireRuntime: false });
+  assert.ok(!absent.calls.some((args) => args.includes(runtimeStack)), 'the Runtime stack was not read');
+  assert.deepEqual(Object.keys(body).sort(), ['inputs', 'observed', 'schema', 'stacks']);
+  // The same record body with Runtime present or non-terminal: the family does
+  // not qualify the running slice and the record never included Runtime.
+  const present = await observeDeployment({ infraSha, io: fixtureIo({}), env: executorEnvironment(), requireRuntime: false });
+  const nonTerminal = await observeDeployment({ infraSha,
+    io: fixtureIo({ runtimeStatus: 'UPDATE_IN_PROGRESS' }), env: executorEnvironment(), requireRuntime: false });
+  assert.deepEqual(body, present);
+  assert.deepEqual(body, nonTerminal);
+  // The default/runtime path still requires it (covered again here explicitly).
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null }),
+    env: executorEnvironment(), requireRuntime: true }), /AnyWearRuntimeStack-beta/);
 });
 
 test('the observer CLI writes the authenticated v3 body that equals the expected record', async () => {
