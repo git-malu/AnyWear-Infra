@@ -409,16 +409,42 @@ export async function runStage(options, { run = defaultRun, now = () => new Date
       baseSynth: readJson(options['base-synth-template']) });
     validateResourceMappings(templates.resourceMappings);
     if (!options.apply) return { stage, applied: false, ...templates };
-    const input = {
-      StackDefinitions: [
-        { StackName: WORKLOAD_STACK, TemplateBody: JSON.stringify(templates.source) },
-        { StackName: BASE_STACK, TemplateBody: JSON.stringify(templates.target) },
-      ],
-      ResourceMappings: templates.resourceMappings,
-    };
+    // `StackDefinition.TemplateBody` is capped at 51,200 bytes as well, and the
+    // serialized source/target are ~66 KB/~96 KB, so both definitions travel by
+    // S3 URL (the `TemplateURL` field is only length-bounded at 5,120). Validate
+    // the bucket/region before any AWS call; validation-only needs neither.
+    const templateBucket = validateTemplateBucket(options['template-bucket']);
+    const templateRegion = validateTemplateRegion(options['template-region']
+      || process.env.AWS_REGION || DEFAULT_TEMPLATE_REGION);
+    const timestamp = templateTimestamp(now());
+    const sourceTemplateKey = `${TEMPLATE_PREFIX}/preview-${timestamp}.template.json`;
+    const targetTemplateKey = `${TEMPLATE_PREFIX}/preview-${timestamp}-base.template.json`;
+    const sourceTemplateUrl = templateObjectUrl(templateBucket, templateRegion, sourceTemplateKey);
+    const targetTemplateUrl = templateObjectUrl(templateBucket, templateRegion, targetTemplateKey);
     const { mkdtemp, writeFile } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const directory = await mkdtemp(path.join(tmpdir(), 'anywear-beta-split-'));
+    const sourceFile = path.join(directory, 'workload-preview.template.json');
+    const targetFile = path.join(directory, 'base-preview.template.json');
+    await writeFile(sourceFile, `${JSON.stringify(templates.source, null, 2)}\n`);
+    await writeFile(targetFile, `${JSON.stringify(templates.target, null, 2)}\n`);
+    const upload = async (file, key) => {
+      const object = `s3://${templateBucket}/${key}`;
+      try {
+        await run('aws', ['s3', 'cp', file, object]);
+      } catch (error) {
+        throw new Error(`Refactor template upload to ${object} failed; no refactor was created`, { cause: error });
+      }
+    };
+    await upload(sourceFile, sourceTemplateKey);
+    await upload(targetFile, targetTemplateKey);
+    const input = {
+      StackDefinitions: [
+        { StackName: WORKLOAD_STACK, TemplateURL: sourceTemplateUrl },
+        { StackName: BASE_STACK, TemplateURL: targetTemplateUrl },
+      ],
+      ResourceMappings: templates.resourceMappings,
+    };
     const inputFile = path.join(directory, 'create-stack-refactor.json');
     await writeFile(inputFile, `${JSON.stringify(input)}\n`);
     const created = await runAws(['cloudformation', 'create-stack-refactor', '--cli-input-json', `file://${inputFile}`], { run });
@@ -427,7 +453,8 @@ export async function runStage(options, { run = defaultRun, now = () => new Date
     actions: await runAws(['cloudformation', 'list-stack-refactor-actions',
       '--stack-refactor-id', created.StackRefactorId], { run }) };
     const clean = validateRefactorPreview({ ...preview, resourceMappings: templates.resourceMappings });
-    return { stage, applied: true, stackRefactorId: created.StackRefactorId, preview, clean };
+    return { stage, applied: true, stackRefactorId: created.StackRefactorId, preview, clean,
+      templateBucket, templateRegion, sourceTemplateKey, sourceTemplateUrl, targetTemplateKey, targetTemplateUrl };
   }
   // execute: re-validate the recorded preview before the separate execution call.
   const describe = readJson(options.describe);

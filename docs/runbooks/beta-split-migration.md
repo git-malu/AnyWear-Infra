@@ -170,6 +170,19 @@ npx cdk synth AnyWearPlatformStack-beta --quiet \
 
 Then build the two templates and create the preview:
 
+`StackDefinition.TemplateBody` has the same 51,200-byte cap as Stage A's
+`update-stack` body; the serialized refactor source/target are larger, so the
+`--apply` path uploads both templates and passes `TemplateURL` instead (that
+field is length-bounded at 5,120, not the template body). The two reviewed keys
+under the same private assets bucket are
+`migrations/166/preview-<UTC>.template.json` (Workload source) and
+`migrations/166/preview-<UTC>-base.template.json` (Base target); both objects are
+kept as evidence. The preview apply requires `--template-bucket`, validates it and
+the region (`--template-region`, else `AWS_REGION`, else `ap-east-1`) before any
+AWS call, and aborts before `create-stack-refactor` if either upload fails. The
+same bucket/operator permission and `ap-east-1` region prerequisites as Stage A
+apply. Validation-only still needs no bucket and makes no AWS call.
+
 ```sh
 # Validation only: builds the source/target templates and the one mapping.
 node scripts/migrate-beta-split.mjs --stage preview \
@@ -179,13 +192,16 @@ node scripts/migrate-beta-split.mjs --stage preview \
   --distribution-type <describe-type.json> \
   --output <preview-plan.json>
 
-# Separate authorization: create-stack-refactor validates and records a preview;
-# execution is a separate call.
+# Separate authorization: uploads both refactor templates, then
+# create-stack-refactor validates and records a preview; execution is a separate
+# call.
 node scripts/migrate-beta-split.mjs --stage preview --apply \
   --workload-template <live-workload-original.json> \
   --base-template <live-base-original.json> \
   --base-synth-template <synth>/AnyWearPlatformStack-beta.template.json \
   --distribution-type <describe-type.json> \
+  --template-bucket cdk-hnb659fds-assets-650880818323-ap-east-1 \
+  [--template-region ap-east-1] \
   --output <refactor-preview.json>
 ```
 
