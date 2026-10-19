@@ -26,9 +26,9 @@ test('the package is the single source of the stage and record exports', () => {
   }
   for (const name of ['DEPLOYMENT_RECORD_MEMBERS', 'DEPLOYMENT_PRODUCER_FIELDS', 'DEPLOYMENT_STACK_FIELDS',
     'DEPLOYMENT_INPUT_FIELDS', 'SERVICE_OBSERVED_FIELDS', 'SERVICE_ECS_IDENTITY_FIELDS',
-    'SERVICE_DEPLOYMENT_RECORD_SCHEMA', 'INFRA_REPOSITORY', 'SERVICE_REPOSITORY', 'SERVICE_WORKLOAD_STACK',
+    'SERVICE_DEPLOYMENT_RECORD_SCHEMA', 'INFRA_REPOSITORY', 'SERVICE_REPOSITORY', 'SERVICE_RUNTIME_STACK',
     'validateStageInputs', 'stageContractSchemaHash', 'stableTaskDefinition', 'taskDefinitionContentHash',
-    'validateServiceDeploymentRecord']) {
+    'validateServiceDeploymentRecord', 'runtimeStageFromStack', 'validateServiceStacks']) {
     assert.equal(deployment[name], pkg[name], `${name} is not re-exported from the package`);
   }
   assert.equal(recovery.platformStackName, pkg.platformStackName);
@@ -55,13 +55,18 @@ test('the package definitions match the synthesized Beta Platform stage surface'
     .map(resource => resource.Properties.Name)
     .sort();
   const contractNames = published.filter(name => !OTHER_BETA_PARAMETER_NAMES.includes(name));
-  // The anchor baseline is the legacy identity phase, so it publishes the 34
-  // unconditional names and no cleanup task role.
-  assert.deepEqual(contractNames, [...pkg.STAGE_CONTRACT_PARAMETERS]);
+  const apiBaseUrl = '/anywear/beta/api_base_url';
+  // The anchor baseline is the pre-split legacy synth, recorded before 0.3.0: it
+  // publishes the previous 35 unconditional names but not `api_base_url`, which
+  // the Base stack begins publishing together with the moved API distribution in
+  // the next commit (step 2 re-records this baseline). Both facts are asserted
+  // exactly, so a silently missing or extra published name still fails.
+  assert.deepEqual(contractNames, [...pkg.STAGE_CONTRACT_PARAMETERS].filter(name => name !== apiBaseUrl));
+  assert.deepEqual([...pkg.STAGE_CONTRACT_PARAMETERS].filter(name => !contractNames.includes(name)), [apiBaseUrl]);
   assert.deepEqual(published.filter(name => contractNames.includes(name)), contractNames);
   assert.deepEqual(published.filter(name => !contractNames.includes(name)), [...OTHER_BETA_PARAMETER_NAMES].sort());
   const definitions = pkg.stageParameters();
-  assert.equal(definitions.length, 35);
+  assert.equal(definitions.length, 36);
   assert.deepEqual(definitions.map(definition => definition.parameter), [...pkg.STAGE_CONTRACT_READ_PARAMETERS]);
   assert.deepEqual(definitions.filter(definition => pkg.STAGE_CONTRACT_CONDITIONAL_PARAMETERS
     .includes(definition.parameter)).map(definition => definition.name), ['cleanup_task_role_arn']);

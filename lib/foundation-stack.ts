@@ -6,7 +6,6 @@ import {
   serviceDeployCfnRoleName,
   serviceDeployRoleName,
   serviceTrustSubject,
-  workloadStackName,
 } from '@git-malu/stage-contracts';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
 import { readLegacyRoleSource, type LegacyRoleSource } from './legacy-role-source';
@@ -102,12 +101,14 @@ export function readFoundationServices(value: unknown = undefined): readonly Fou
 }
 
 // The workload stack an additional service's release chain deploys. The default
-// `service` keeps the existing `AnyWearWorkloadStack-beta`; an added service
-// scopes the shared identity with its slug.
+// `service` keeps the currently deployed `AnyWearWorkloadStack-beta` scope until
+// the Foundation-scope change moves both Service roles to `AnyWearRuntimeStack`;
+// an added service scopes the shared identity with its slug.
+const DEPLOYED_WORKLOAD_STACK = 'AnyWearWorkloadStack';
 export function serviceWorkloadStackName(service: string): string {
-  if (service === DEFAULT_FOUNDATION_SERVICE.service) return workloadStackName('beta');
+  if (service === DEFAULT_FOUNDATION_SERVICE.service) return `${DEPLOYED_WORKLOAD_STACK}-beta`;
   if (!SERVICE_SLUG.test(service)) throw new Error('Invalid service name');
-  return `AnyWearWorkloadStack-${service}-beta`;
+  return `${DEPLOYED_WORKLOAD_STACK}-${service}-beta`;
 }
 
 export interface FoundationStackProps extends cdk.StackProps {

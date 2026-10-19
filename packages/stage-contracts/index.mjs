@@ -80,11 +80,13 @@ function integer(value, label, minimum = 1) {
 // Beta identity phase and environment variant. `cleanup_task_role_arn` exists
 // only while the phase creates the cleanup task role (`identityPhase !==
 // 'legacy'`), so a reader accepts its absence and never accepts a missing
-// unconditional name.
+// unconditional name. `api_base_url` is the public API distribution endpoint the
+// Base stack owns (0.3.0); it is unconditional like the other resource values.
 
 export const STAGE_CONTRACT_STAGE = 'beta';
 
 const STAGE_CONTRACT_DEFINITIONS = Object.freeze([
+  { name: 'api_base_url', kind: 'String', conditional: false },
   { name: 'api_security_group_id', kind: 'String', conditional: false },
   { name: 'auto_tagging_dlq_name', kind: 'String', conditional: false },
   { name: 'auto_tagging_dlq_url', kind: 'String', conditional: false },
@@ -199,14 +201,17 @@ export function platformStackName(stage) {
   return `AnyWearPlatformStack-${stage}`;
 }
 
-export function workloadStackName(stage) {
-  return `AnyWearWorkloadStack-${stage}`;
+// Issue #166: the Service-owned release slice is the Runtime stack. Every
+// resource in it is recreated on start, so the identity moved with it; the
+// persistent state stayed in Base (`AnyWearPlatformStack-<stage>`).
+export function runtimeStackName(stage) {
+  return `AnyWearRuntimeStack-${stage}`;
 }
 
 // The Service release chain's one stack and its producer workflow. The record
 // schema and validators below are the generic v4 Service producer contract.
-export const SERVICE_WORKLOAD_STACK = Object.freeze({
-  name: workloadStackName(STAGE_CONTRACT_STAGE),
+export const SERVICE_RUNTIME_STACK = Object.freeze({
+  name: runtimeStackName(STAGE_CONTRACT_STAGE),
   region: 'ap-east-1',
   workflow_path: '.github/workflows/service-artifacts.yml',
 });
@@ -221,7 +226,7 @@ export const SERVICE_WORKLOAD_STACK = Object.freeze({
 //   observed  the authenticated observation that producer made
 //   schema    a content hash of the consumed stage-contract schema surface
 //
-// Service produces `anywear_service_deployment` for `AnyWearWorkloadStack-beta`
+// Service produces `anywear_service_deployment` for `AnyWearRuntimeStack-beta`
 // only. `validateServiceDeploymentRecord` is the consumer-side validator: a
 // record it accepts is a record another producer can verify without trusting the
 // writer. Infra's `anywear_infra_deployment` keeps the seven-member core below
@@ -350,10 +355,10 @@ export function deploymentBakeName(stage) {
   return `${requireStage(stage)}-${DEPLOYMENT_GATE_NAME_SUFFIX}`;
 }
 
-/** The stage encoded in `AnyWearWorkloadStack-<stage>`. */
-export function workloadStageFromStack(stackName) {
-  const match = typeof stackName === 'string' ? /^AnyWearWorkloadStack-([a-z][a-z0-9-]*)$/.exec(stackName) : null;
-  if (!match) throw new Error('Invalid Workload stack identity');
+/** The stage encoded in `AnyWearRuntimeStack-<stage>`. */
+export function runtimeStageFromStack(stackName) {
+  const match = typeof stackName === 'string' ? /^AnyWearRuntimeStack-([a-z][a-z0-9-]*)$/.exec(stackName) : null;
+  if (!match) throw new Error('Invalid Runtime stack identity');
   return match[1];
 }
 
@@ -678,8 +683,8 @@ export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
   signal: DEPLOYMENT_GATE_SIGNAL_FIELDS,
   signals: DEPLOYMENT_GATE_SIGNAL_NAMES,
   stacks: Object.freeze([Object.freeze({
-    name: SERVICE_WORKLOAD_STACK.name,
-    region: SERVICE_WORKLOAD_STACK.region,
+    name: SERVICE_RUNTIME_STACK.name,
+    region: SERVICE_RUNTIME_STACK.region,
   })]),
 });
 
@@ -688,7 +693,7 @@ function validateServiceProducer(producer) {
   if (producer.repository !== SERVICE_REPOSITORY) throw new Error('Unexpected deployment producer repository');
   if (!producer.workflow_path?.startsWith('.github/workflows/')
     || producer.workflow_ref !== `${producer.repository}/${producer.workflow_path}@refs/heads/main`) throw new Error('Unexpected deployment workflow');
-  if (producer.workflow_path !== SERVICE_WORKLOAD_STACK.workflow_path) throw new Error('Unexpected deployment workflow path');
+  if (producer.workflow_path !== SERVICE_RUNTIME_STACK.workflow_path) throw new Error('Unexpected deployment workflow path');
   matches(producer.sha, SHA, 'deployment producer SHA');
   integer(producer.run_id, 'deployment run');
   integer(producer.run_attempt, 'deployment attempt');
@@ -697,7 +702,7 @@ function validateServiceProducer(producer) {
 
 // A stack row may only name the record's own producer and the exact configured
 // stack set; a stack produced by another repository is that repository's record.
-function validateServiceStacks(rows) {
+export function validateServiceStacks(rows) {
   const expected = SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks;
   if (!Array.isArray(rows) || rows.length !== expected.length) {
     throw new Error('Deployment record must list exactly its producer\'s stacks');
@@ -776,15 +781,15 @@ function validateServiceRecordBase(record) {
  * Validate one v4 `anywear_service_deployment` record.
  *
  * Pure: no AWS, network or filesystem access. The record lists exactly the
- * Service producer's stack (`AnyWearWorkloadStack-beta`), the stage-contract SSM
- * inputs the deploy read, the authenticated Workload observation, and the passed
+ * Service producer's stack (`AnyWearRuntimeStack-beta`), the stage-contract SSM
+ * inputs the deploy read, the authenticated Runtime observation, and the passed
  * 600-second six-signal bake gate bound to the same `service_sha`/`image_digest`.
  */
 export function validateServiceDeploymentRecord(record) {
   validateServiceRecordBase(record);
   validateServiceProducer(record.producer);
   validateServiceObserved(record.observed);
-  const stage = workloadStageFromStack(record.stacks[0].name);
+  const stage = runtimeStageFromStack(record.stacks[0].name);
   validateDeploymentGate(record.gate, stage);
   // The gate is evidence for this deployment only: a gate block from another
   // run cannot be reused for a different observed tuple.

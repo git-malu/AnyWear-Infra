@@ -21,13 +21,13 @@ export interface StageParameter {
 /** The stage the contract names apply to. */
 export declare const STAGE_CONTRACT_STAGE: 'beta';
 
-/** The 34 `/anywear/beta/...` names published in every Beta identity phase. */
+/** The 35 `/anywear/beta/...` names published in every Beta identity phase. */
 export declare const STAGE_CONTRACT_PARAMETERS: readonly string[];
 
 /** The one name published only while the identity phase creates the cleanup task role. */
 export declare const STAGE_CONTRACT_CONDITIONAL_PARAMETERS: readonly string[];
 
-/** All 35 names a deployment may read: the unconditional 34 plus the conditional one. */
+/** All 36 names a deployment may read: the unconditional 35 plus the conditional one. */
 export declare const STAGE_CONTRACT_READ_PARAMETERS: readonly string[];
 
 /**
@@ -59,17 +59,17 @@ export declare const SERVICE_REPOSITORY: 'git-malu/AnyWear-Service';
 /** `platformStackName('beta')` -> `AnyWearPlatformStack-beta`. */
 export declare function platformStackName(stage: string): string;
 
-/** `workloadStackName('beta')` -> `AnyWearWorkloadStack-beta`. */
-export declare function workloadStackName(stage: string): string;
+/** `runtimeStackName('beta')` -> `AnyWearRuntimeStack-beta`. */
+export declare function runtimeStackName(stage: string): string;
 
 /** The Service release slice's one stack and producer workflow. */
-export interface ServiceWorkloadStack {
+export interface ServiceRuntimeStack {
   readonly name: string;
   readonly region: string;
   readonly workflow_path: string;
 }
 
-export declare const SERVICE_WORKLOAD_STACK: ServiceWorkloadStack;
+export declare const SERVICE_RUNTIME_STACK: ServiceRuntimeStack;
 
 /** The exact top-level members of a v3 deployment record core (Infra owns this shape). */
 export declare const DEPLOYMENT_RECORD_MEMBERS: readonly string[];
@@ -158,8 +158,8 @@ export declare const DEPLOYMENT_GATE_NAME_SUFFIX: 'anywear-deployment-bake';
 /** `deploymentBakeName('beta')` -> `beta-anywear-deployment-bake`. */
 export declare function deploymentBakeName(stage: string): string;
 
-/** The stage encoded in `AnyWearWorkloadStack-<stage>`. */
-export declare function workloadStageFromStack(stackName: string): string;
+/** The stage encoded in `AnyWearRuntimeStack-<stage>`. */
+export declare function runtimeStageFromStack(stackName: string): string;
 
 /** The deployed alarm names for one signal, for example `beta-anywear-alb-5xx`. */
 export declare function deploymentAlarmName(stage: string, signalName: string): readonly string[];
@@ -264,6 +264,12 @@ export declare function taskDefinitionContentHash(definition: unknown): string;
  * unchanged when it is valid.
  */
 export declare function validateServiceDeploymentRecord<T>(record: T): T;
+
+/**
+ * Validate the record's `stacks[]` rows: exactly the Service Runtime stack with
+ * its configured region and the exact stack fields.
+ */
+export declare function validateServiceStacks<T extends readonly { readonly name: string }[]>(rows: T): T;
 
 /** `serviceDeployRoleName('service')` -> `beta-service-deploy-role`. */
 export declare function serviceDeployRoleName(service: string): string;

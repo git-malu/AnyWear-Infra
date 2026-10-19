@@ -8,7 +8,7 @@ import {
   SERVICE_OBSERVED_FIELDS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
   SERVICE_REPOSITORY,
-  SERVICE_WORKLOAD_STACK,
+  SERVICE_RUNTIME_STACK,
   stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
@@ -57,14 +57,14 @@ function serviceRecord() {
     producer: {
       repository: SERVICE_REPOSITORY,
       sha: serviceSha,
-      workflow_path: SERVICE_WORKLOAD_STACK.workflow_path,
-      workflow_ref: `${SERVICE_REPOSITORY}/${SERVICE_WORKLOAD_STACK.workflow_path}@refs/heads/main`,
+      workflow_path: SERVICE_RUNTIME_STACK.workflow_path,
+      workflow_ref: `${SERVICE_REPOSITORY}/${SERVICE_RUNTIME_STACK.workflow_path}@refs/heads/main`,
       run_id: 11,
       run_attempt: 1,
     },
     stacks: [{
-      name: SERVICE_WORKLOAD_STACK.name,
-      region: SERVICE_WORKLOAD_STACK.region,
+      name: SERVICE_RUNTIME_STACK.name,
+      region: SERVICE_RUNTIME_STACK.region,
       producer_repository: SERVICE_REPOSITORY,
       producer_sha: serviceSha,
       template_sha256: '5'.repeat(64),
@@ -95,14 +95,14 @@ function serviceRecord() {
   };
 }
 
-test('a complete Service v4 record validates, lists only the Workload stack and requires the gate', () => {
+test('a complete Service v4 record validates, lists only the Runtime stack and requires the gate', () => {
   const record = serviceRecord();
   assert.deepEqual(validateServiceDeploymentRecord(record), record);
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(),
     [...DEPLOYMENT_RECORD_MEMBERS, 'gate'].sort());
   assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks,
-    [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1' }]);
+    [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }]);
   assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 4);
   assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type, 'anywear_service_deployment');
   assert.deepEqual([...SERVICE_ECS_IDENTITY_FIELDS],

@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   INFRA_REPOSITORY,
   SERVICE_REPOSITORY,
-  SERVICE_WORKLOAD_STACK,
+  SERVICE_RUNTIME_STACK,
   platformStackName,
-  workloadStackName,
+  runtimeStackName,
+  runtimeStageFromStack,
+  validateServiceStacks,
   serviceDeployRoleName,
   serviceDeployCfnRoleName,
   serviceTrustSubject,
@@ -17,14 +19,22 @@ test('stack identities are derived from the stage, not duplicated per caller', (
   assert.equal(platformStackName('dev'), 'AnyWearPlatformStack-dev');
   assert.equal(platformStackName('beta'), 'AnyWearPlatformStack-beta');
   assert.equal(platformStackName('prod'), 'AnyWearPlatformStack-prod');
-  assert.equal(workloadStackName('beta'), 'AnyWearWorkloadStack-beta');
-  assert.equal(workloadStackName('prod'), 'AnyWearWorkloadStack-prod');
-  assert.deepEqual(SERVICE_WORKLOAD_STACK, {
-    name: 'AnyWearWorkloadStack-beta',
+  assert.equal(runtimeStackName('beta'), 'AnyWearRuntimeStack-beta');
+  assert.equal(runtimeStackName('prod'), 'AnyWearRuntimeStack-prod');
+  assert.equal(runtimeStageFromStack('AnyWearRuntimeStack-beta'), 'beta');
+  assert.throws(() => runtimeStageFromStack('AnyWearPlatformStack-beta'), /Invalid Runtime stack identity/);
+  assert.deepEqual(SERVICE_RUNTIME_STACK, {
+    name: 'AnyWearRuntimeStack-beta',
     region: 'ap-east-1',
     workflow_path: '.github/workflows/service-artifacts.yml',
   });
-  assert.ok(Object.isFrozen(SERVICE_WORKLOAD_STACK));
+  assert.ok(Object.isFrozen(SERVICE_RUNTIME_STACK));
+  const row = { name: SERVICE_RUNTIME_STACK.name, region: SERVICE_RUNTIME_STACK.region,
+    producer_repository: SERVICE_REPOSITORY, producer_sha: 'a'.repeat(40), template_sha256: 'b'.repeat(64) };
+  assert.deepEqual(validateServiceStacks([row]), [row]);
+  assert.throws(() => validateServiceStacks([{ ...row, name: 'AnyWearPlatformStack-beta' }]),
+    /Invalid stack identity in deployment record/);
+  assert.throws(() => validateServiceStacks([row, { ...row }]), /exactly its producer's stacks/);
 });
 
 test('Foundation service deploy roles are named per service and stage', () => {

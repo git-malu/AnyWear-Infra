@@ -1,7 +1,7 @@
 {
   "name": "@git-malu/stage-contracts",
-  "version": "0.2.2",
-  "description": "Versioned AnyWear Beta stage contract, stack identities, v4 Service deployment-record and bake-gate validators",
+  "version": "0.3.0",
+  "description": "Versioned AnyWear Beta stage contract, Base/Egress/Runtime stack identities, v4 Service deployment-record and bake-gate validators",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./index.mjs",

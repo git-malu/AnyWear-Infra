@@ -26,11 +26,11 @@ const record = () => ({ schema_version: 3, record_type: 'anywear_infra_deploymen
   observed: observed(),
   schema: { content_sha256: stageContractSchemaHash(stageInputs) } });
 
-test('the stage-contract name list is the 34 unconditional Beta parameters plus one phase-dependent name', () => {
-  assert.equal(STAGE_CONTRACT_PARAMETERS.length, 34);
+test('the stage-contract name list is the 35 unconditional Beta parameters plus one phase-dependent name', () => {
+  assert.equal(STAGE_CONTRACT_PARAMETERS.length, 35);
   assert.deepEqual([...STAGE_CONTRACT_PARAMETERS], [...STAGE_CONTRACT_PARAMETERS].sort());
   assert.deepEqual([...STAGE_CONTRACT_CONDITIONAL_PARAMETERS], ['/anywear/beta/cleanup_task_role_arn']);
-  assert.equal(STAGE_CONTRACT_READ_PARAMETERS.length, 35);
+  assert.equal(STAGE_CONTRACT_READ_PARAMETERS.length, 36);
   assert.deepEqual([...STAGE_CONTRACT_READ_PARAMETERS], [...STAGE_CONTRACT_READ_PARAMETERS].sort());
   assert.ok(STAGE_CONTRACT_PARAMETERS.every(name => /^\/anywear\/beta\/[a-z0-9_]+$/.test(name)));
   assert.ok(STAGE_CONTRACT_PARAMETERS.every(name => !STAGE_CONTRACT_CONDITIONAL_PARAMETERS.includes(name)));
@@ -56,14 +56,14 @@ test('readStageInputs records every unconditional parameter and admits only the 
   } });
   const rows = await readStageInputs(io());
   assert.deepEqual(calls, [...STAGE_CONTRACT_READ_BATCHES]);
-  assert.equal(rows.length, 35);
+  assert.equal(rows.length, 36);
   assert.deepEqual(rows.map(row => row.parameter), [...STAGE_CONTRACT_READ_PARAMETERS]);
   assert.deepEqual(rows.map(row => row.version), STAGE_CONTRACT_READ_PARAMETERS.map((_, index) => String(index + 1)));
   // A legacy deploy publishes no cleanup role, so its parameter is legitimately invalid.
   calls.length = 0;
   const legacyRows = await readStageInputs(io({ invalid: [...STAGE_CONTRACT_CONDITIONAL_PARAMETERS] }));
   assert.deepEqual(calls, [...STAGE_CONTRACT_READ_BATCHES]);
-  assert.equal(legacyRows.length, 34);
+  assert.equal(legacyRows.length, 35);
   assert.deepEqual(legacyRows.map(row => row.parameter), [...STAGE_CONTRACT_PARAMETERS]);
   // Any unconditional absence, an unexpected name or a duplicate still fails.
   await assert.rejects(readStageInputs(io({ invalid: [STAGE_CONTRACT_PARAMETERS[0]] })), /unavailable/);
@@ -89,7 +89,7 @@ test('the Infra record rejects a stack it does not produce or a wrong producer',
   const workload = { schema_version: 3, record_type: value.record_type,
     producer: { ...value.producer, repository: 'git-malu/AnyWear-Service', workflow_path: '.github/workflows/service-artifacts.yml',
       workflow_ref: 'git-malu/AnyWear-Service/.github/workflows/service-artifacts.yml@refs/heads/main' },
-    stacks: [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Service',
+    stacks: [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Service',
       producer_sha: infraSha, template_sha256: 'f'.repeat(64) }], inputs: stageInputs, observed: value.observed, schema: value.schema };
   assert.throws(() => validateDeploymentRecord(workload), /exactly its producer's stacks|Unexpected deployment workflow path/);
   assert.throws(() => validateDeploymentRecord({ ...value, inputs: [] }), /Stage contract schema hash differs/);
