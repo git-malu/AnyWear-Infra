@@ -63,7 +63,7 @@
       "issue": 166,
       "recorded_at": "2026-10-19",
       "source_branch": "issue/166-beta-three-stack",
-      "scope": "Service deploy and CloudFormation execution roles scoped to AnyWearRuntimeStack-beta (was AnyWearRuntimeStack-beta); maintenance-bucket ARN follows the Runtime stack generated name",
+      "scope": "Service deploy and CloudFormation execution roles scoped to AnyWearRuntimeStack-beta (was AnyWearWorkloadStack-beta); maintenance-bucket ARN follows the Runtime stack generated name",
       "detail": "Issue #166 renames the Service-owned release slice to AnyWearRuntimeStack-beta and moves the persistent VPC/Aurora/S3/Cognito/ECR/SQS/SSM/CloudFront state into the Base stack. Both Foundation Service deploy roles keep every existing action; only the CloudFormation stack scope string and the maintenance-bucket name prefix change to the Runtime identity. These are source-side reviewed additions, not deployed: the fixture records the delta the synthesized Foundation adds on top of the still-authenticated live original. publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
     }
   ]
