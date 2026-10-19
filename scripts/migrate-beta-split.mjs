@@ -411,8 +411,8 @@ export async function runStage(options, { run = defaultRun, now = () => new Date
     if (!options.apply) return { stage, applied: false, ...templates };
     const input = {
       StackDefinitions: [
-        { StackName: WORKLOAD_STACK, TemplateBody: templates.source },
-        { StackName: BASE_STACK, TemplateBody: templates.target },
+        { StackName: WORKLOAD_STACK, TemplateBody: JSON.stringify(templates.source) },
+        { StackName: BASE_STACK, TemplateBody: JSON.stringify(templates.target) },
       ],
       ResourceMappings: templates.resourceMappings,
     };
