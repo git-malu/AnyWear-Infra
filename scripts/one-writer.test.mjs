@@ -12,12 +12,14 @@ const distributionLogicalId = JSON.parse(
 const liveOrigin = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
 
 // CloudFormation answers an absent stack with this exact ValidationError and the
-// CLI exits non-zero; the reader must treat only this sentence as absence.
+// CLI exits non-zero; the runner prefixes the line with `aws: [ERROR]: `. The
+// reader must treat only this sentence (with or without the runner prefix) as
+// absence for this exact stack name.
 function stackAbsenceError(stackName) {
-  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
   return Object.assign(new Error(`Command failed: aws cloudformation describe-stacks --stack-name ${stackName}\n${stderr}`), { stderr });
 }
-function alternativeAbsenceError(stackName) {
+function unprefixedAbsenceError(stackName) {
   const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack ${stackName} does not exist`;
   return Object.assign(new Error(stderr), { stderr });
 }
@@ -42,24 +44,28 @@ function operationMock({ runtimeStatus } = {}) {
 }
 
 test('describeStack treats only the exact CloudFormation absence sentences as absence', async () => {
-  for (const error of [stackAbsenceError(runtimeStack), alternativeAbsenceError(runtimeStack)]) {
+  for (const error of [stackAbsenceError(runtimeStack), unprefixedAbsenceError(runtimeStack)]) {
     assert.equal(await describeStack({ async aws() { throw error; } }, runtimeStack), undefined);
   }
-  // Absence of another stack is not this stack's absence.
-  await assert.rejects(describeStack({ async aws() { throw stackAbsenceError('OtherStack'); } }, runtimeStack),
-    /OtherStack does not exist/);
+  // Absence of another stack is not this stack's absence, prefixed or not.
+  for (const error of [stackAbsenceError('OtherStack'), unprefixedAbsenceError('OtherStack')]) {
+    await assert.rejects(describeStack({ async aws() { throw error; } }, runtimeStack), /OtherStack does not exist/);
+  }
   // A mock that returns an empty list without the absence error fails closed.
   await assert.rejects(describeStack({ async aws() { return { Stacks: [] }; } }, runtimeStack),
     /without an absence error/);
-  // Throttling, AccessDenied and network failures are never swallowed.
+  // Throttling, AccessDenied and network failures are never swallowed, including
+  // when the runner prefixes the CLI's stderr.
   for (const failure of [
     Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
-      { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' }),
+      { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' }),
     Object.assign(new Error('An error occurred (AccessDenied) when calling the DescribeStacks operation: not authorized'),
-      { stderr: 'An error occurred (AccessDenied) when calling the DescribeStacks operation: not authorized' }),
+      { stderr: 'aws: [ERROR]: An error occurred (AccessDenied) when calling the DescribeStacks operation: not authorized' }),
+    Object.assign(new Error('An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id OtherStack does not exist'),
+      { stderr: 'aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id OtherStack does not exist' }),
     new Error('getaddrinfo ENOTFOUND cloudformation.ap-east-1.amazonaws.com'),
   ]) {
-    await assert.rejects(describeStack({ async aws() { throw failure; } }, runtimeStack), /Throttling|AccessDenied|ENOTFOUND/);
+    await assert.rejects(describeStack({ async aws() { throw failure; } }, runtimeStack), /Throttling|AccessDenied|OtherStack|ENOTFOUND/);
   }
 });
 

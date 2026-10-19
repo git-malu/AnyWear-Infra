@@ -19,6 +19,8 @@ import {
   validateReadback,
   validateRefactorPreview,
   validateResourceMappings,
+  workloadParameterArguments,
+  workloadParameterKeys,
 } from './migrate-beta-split.mjs';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`../test/fixtures/beta-split/${name}`, import.meta.url), 'utf8'));
@@ -193,6 +195,66 @@ test('(c) the readback requires the same physical distribution, domain and Deplo
     /not in the Base stack/);
   assert.throws(() => validateReadback({ before, after, distribution: { ...cloudfront, Status: 'InProgress' } }),
     /not Deployed/);
+});
+
+test('the pre-move apply passes every live Workload parameter with UsePreviousValue and never invents one', async () => {
+  const liveKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'];
+  const expectedArguments = liveKeys.map((key) => `ParameterKey=${key},UsePreviousValue=true`);
+  const liveDescribe = { Stacks: [{ StackName: WORKLOAD_STACK,
+    Parameters: liveKeys.map((ParameterKey) => ({ ParameterKey, ParameterValue: `value-${ParameterKey}` })) }] };
+  const runApply = async (options) => {
+    const calls = [];
+    const run = async (command, args) => {
+      assert.equal(command, 'aws');
+      calls.push([...args]);
+      if (args[1] === 'describe-stacks') return JSON.stringify(liveDescribe);
+      if (args[1] === 'update-stack') return '{}';
+      if (args[1] === 'wait') return '{}';
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    };
+    const result = await runStage({ stage: 'pre-move', apply: true,
+      'workload-template': fixturePath('workload-live.template.json'),
+      'api-load-balancer-dns-name': origin, ...options }, { run });
+    return { calls, result };
+  };
+
+  // Automatic live read: describe-stacks first, then update-stack with all keys.
+  const automatic = await runApply({});
+  assert.equal(automatic.result.applied, true);
+  assert.deepEqual(automatic.result.parameters, liveKeys);
+  assert.equal(automatic.calls[0][1], 'describe-stacks');
+  const update = automatic.calls.find((args) => args[1] === 'update-stack');
+  assert.ok(update, 'update-stack was called');
+  const parameterIndex = update.indexOf('--parameters');
+  assert.ok(parameterIndex > 0, 'update-stack passes --parameters');
+  assert.deepEqual(update.slice(parameterIndex + 1), expectedArguments);
+
+  // Recorded fixture input: no live read; the same parameter list is pinned.
+  const recorded = await runApply({ 'workload-parameters': writeTemp(liveDescribe) });
+  assert.equal(recorded.calls.some((args) => args[1] === 'describe-stacks'), false);
+  const recordedUpdate = recorded.calls.find((args) => args[1] === 'update-stack');
+  assert.deepEqual(recordedUpdate.slice(recordedUpdate.indexOf('--parameters') + 1), expectedArguments);
+  // A plain array of keys is an accepted recorded form.
+  assert.deepEqual(workloadParameterKeys(liveKeys), liveKeys);
+  assert.deepEqual(workloadParameterArguments(liveKeys), expectedArguments);
+
+  // Missing/empty/malformed live parameters refuse before update-stack.
+  for (const source of [{ Stacks: [{ Parameters: [] }] }, {}, { Stacks: [] }, []] ) {
+    const calls = [];
+    const run = async (command, args) => {
+      calls.push([...args]);
+      if (args[1] === 'describe-stacks') return JSON.stringify(source);
+      if (args[1] === 'update-stack') return '{}';
+      if (args[1] === 'wait') return '{}';
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    };
+    await assert.rejects(runStage({ stage: 'pre-move', apply: true,
+      'workload-template': fixturePath('workload-live.template.json'),
+      'api-load-balancer-dns-name': origin }, { run }), /requires the live Workload stack parameters/);
+    assert.equal(calls.some((args) => args[1] === 'update-stack'), false);
+  }
+  assert.throws(() => workloadParameterKeys({ Stacks: [{ Parameters: [{ ParameterKey: '' }] }] }), /Invalid live Workload parameter key/);
+  assert.throws(() => workloadParameterKeys([{ ParameterKey: 'A' }, { ParameterKey: 'A' }]), /Duplicate live Workload parameter key/);
 });
 
 test('every stage defaults to validation-only and never calls AWS without --apply', async () => {

@@ -43,7 +43,7 @@ const expectedInputs = (names) => names.map((parameter) => ({ parameter,
   value_sha256: sha256(`value-${STAGE_CONTRACT_READ_PARAMETERS.indexOf(parameter)}`) }));
 
 function stackAbsenceError(stackName) {
-  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
   return Object.assign(new Error(stderr), { stderr });
 }
 
@@ -143,8 +143,8 @@ test('the observer requires the Service-owned Runtime stack to exist and be term
       /AnyWearRuntimeStack-beta/, String(runtimeStatus));
   }
   // A throttled/denied Runtime read is not absence and must abort the observation.
-  const throttle = Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
-    { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  const throttle = Object.assign(new Error('aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+    { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
   await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null, runtimeError: throttle }),
     env: executorEnvironment() }), /Throttling/);
 });

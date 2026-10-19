@@ -29,7 +29,7 @@ function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.
       const name = args.at(-1);
       const stack = stacks.get(name);
       if (!stack) {
-        const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${name} does not exist`;
+        const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${name} does not exist`;
         throw Object.assign(new Error(stderr), { stderr });
       }
       return { Stacks: [stack] };
