@@ -151,8 +151,10 @@ and must not be relabeled as an Infra-produced deployment.
   an Infra source edit; the default context keeps the synthesized Foundation
   template equal to the authenticated live Foundation plus the recorded
   `test/fixtures/foundation-dedicated-additions.json` delta, whose #162 extension
-  and #166 Runtime-scope extension are recorded in the fixture provenance
-  (`test/foundation-services.test.ts`). The #166 extension is source-side only:
+  and #166 Runtime-scope extension (including the Foundation-owned
+  `beta-infra-runtime-role` CloudFormation read grants for the M4 origin pre-read)
+  are recorded in the fixture provenance (`test/foundation-services.test.ts`).
+  The #166 extension is source-side only:
   `publication_verified` and `deployment_qualified` remain false until the
   Deployment gate deploys Foundation.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
@@ -194,7 +196,8 @@ Also synthesize the live Foundation with `deployScope=foundation`,
 `identityPhase=roles-added`, `legacyRoleSource=external`, account `650880818323`
 and application region `ap-east-1`, then run `scripts/compare-live-foundation.mjs`
 against that output. CI preserves the actual CLI template and comparison. The
-authenticated Original fixture permits exactly eight dedicated roles/four policies;
+authenticated Original fixture permits exactly eight dedicated roles/five policies
+(the fifth is the #166 runtime-role read grant);
 only fixed pseudo-parameter equivalence and declared CDK diagnostic metadata
 differences are normalized. Provider/helper code, output and IAM changes fail.
 

@@ -137,27 +137,30 @@ test('only delete-egress may destroy a stack', async () => {
 });
 
 test('M4 resolves the API origin from the adopted Base distribution when Runtime and Workload are absent', async () => {
-  const calls = [];
-  const io = {
-    async aws(args, region) {
-      calls.push([...args, ...(region ? ['--region', region] : [])]);
-      const name = args[args.indexOf('--stack-name') + 1];
-      if (args[1] === 'describe-stacks') {
-        if (name === runtimeStack || name === workloadName) throw stackAbsenceError(name);
-        if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
-        throw new Error(`Unexpected stack ${name}`);
-      }
-      if (args[1] === 'get-template') {
-        return { TemplateBody: { Resources: {
-          [distributionLogicalId]: { Type: 'AWS::CloudFront::Distribution', Properties: {
-            DistributionConfig: { Origins: [{ DomainName: liveOrigin }] } } },
-        } } };
-      }
-      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
-    },
-  };
-  assert.equal(await readApiOrigin(io), liveOrigin);
-  assert.ok(calls.some(call => call[1] === 'get-template' && call.includes(baseName)));
+  for (const stringBody of [false, true]) {
+    const calls = [];
+    const template = { Resources: {
+      [distributionLogicalId]: { Type: 'AWS::CloudFront::Distribution', Properties: {
+        DistributionConfig: { Origins: [{ DomainName: liveOrigin }] } } },
+    } };
+    const io = {
+      async aws(args, region) {
+        calls.push([...args, ...(region ? ['--region', region] : [])]);
+        const name = args[args.indexOf('--stack-name') + 1];
+        if (args[1] === 'describe-stacks') {
+          if (name === runtimeStack || name === workloadName) throw stackAbsenceError(name);
+          if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
+          throw new Error(`Unexpected stack ${name}`);
+        }
+        if (args[1] === 'get-template') {
+          return { TemplateBody: stringBody ? JSON.stringify(template) : template };
+        }
+        throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+      },
+    };
+    assert.equal(await readApiOrigin(io), liveOrigin, String(stringBody));
+    assert.ok(calls.some(call => call[1] === 'get-template' && call.includes(baseName)));
+  }
 });
 
 test('M4 rejects a non-domain Base distribution origin and still prefers a running Runtime output', async () => {
@@ -183,4 +186,71 @@ test('M4 rejects a non-domain Base distribution origin and still prefers a runni
     throw new Error(`Unexpected ${args.join(' ')}`);
   } };
   assert.equal(await readApiOrigin(runtimeIo), runtimeOrigin);
+});
+
+test('an existing Runtime stack without a domain output hard-errors instead of falling through', async () => {
+  for (const outputs of [[], [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: 'not a domain' }]]) {
+    const calls = [];
+    const io = { async aws(args) {
+      calls.push([...args]);
+      const name = args[args.indexOf('--stack-name') + 1];
+      if (args[1] === 'describe-stacks' && name === runtimeStack) {
+        return { Stacks: [{ StackName: runtimeStack, StackStatus: 'UPDATE_COMPLETE', Outputs: outputs }] };
+      }
+      throw new Error(`Unexpected ${args.join(' ')}`);
+    } };
+    await assert.rejects(readApiOrigin(io), /Runtime stack exists but its ApiLoadBalancerDnsName output is missing or not a DNS name/);
+    // No Base/Workload fallback is attempted when the Runtime read itself is bad.
+    assert.ok(!calls.some(call => call[1] === 'get-template'), JSON.stringify(outputs));
+    assert.ok(!calls.some(call => call.includes(workloadName)), JSON.stringify(outputs));
+  }
+});
+
+test('the Base literal origin is preferred over the legacy Workload output after the MOVE', async () => {
+  const workloadOriginPreMove = 'beta-anywear-api-old-0123456789.ap-east-1.elb.amazonaws.com';
+  const calls = [];
+  const io = { async aws(args) {
+    calls.push([...args]);
+    const name = args[args.indexOf('--stack-name') + 1];
+    if (args[1] === 'describe-stacks') {
+      if (name === runtimeStack) throw stackAbsenceError(name);
+      if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
+      if (name === workloadName) {
+        return { Stacks: [{ StackName: workloadName, StackStatus: 'UPDATE_COMPLETE',
+          Outputs: [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: workloadOriginPreMove }] }] };
+      }
+      throw new Error(`Unexpected stack ${name}`);
+    }
+    if (args[1] === 'get-template') {
+      return { TemplateBody: { Resources: { [distributionLogicalId]: { Type: 'AWS::CloudFront::Distribution',
+        Properties: { DistributionConfig: { Origins: [{ DomainName: liveOrigin }] } } } } } };
+    }
+    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+  } };
+  assert.equal(await readApiOrigin(io), liveOrigin);
+  // The Workload read is not needed once Base carries the adopted literal.
+  assert.ok(!calls.some(call => call.includes(workloadName)));
+});
+
+test('before the MOVE the legacy Workload output is the fallback when Base has no distribution', async () => {
+  const workloadOriginPreMove = 'beta-anywear-api-old-0123456789.ap-east-1.elb.amazonaws.com';
+  const io = { async aws(args) {
+    const name = args[args.indexOf('--stack-name') + 1];
+    if (args[1] === 'describe-stacks') {
+      if (name === runtimeStack || name === workloadName) {
+        if (name === workloadName) {
+          return { Stacks: [{ StackName: workloadName, StackStatus: 'UPDATE_COMPLETE',
+            Outputs: [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: workloadOriginPreMove }] }] };
+        }
+        throw stackAbsenceError(name);
+      }
+      return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
+    }
+    if (args[1] === 'get-template') {
+      // Live Base before the MOVE has no adopted distribution.
+      return { TemplateBody: { Resources: {} } };
+    }
+    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+  } };
+  assert.equal(await readApiOrigin(io), workloadOriginPreMove);
 });

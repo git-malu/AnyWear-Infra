@@ -2112,3 +2112,86 @@ describe('Disposable Beta Egress stack', () => {
     }
   }, 180_000);
 });
+
+// Issue #166 M4: the Base deploy resolves its API origin under
+// `beta-infra-runtime-role` before it applies the new Base policy. The live
+// runtime-role read policy is the Base stack's DedicatedPolicy and covers
+// Foundation/Platform/Workload, not the renamed Runtime stack; the Runtime grant
+// inside the new Base template is applied by the very update that needs the
+// pre-read. This test uses the real synthesized Foundation + Base policies (no
+// IAM mock) and proves the effective union authorizes the M4 reads: Runtime is
+// permanent (absence is a ValidationError that still needs authorization) and
+// Workload is the transitional pre-MOVE read.
+describe('Issue #166 runtime-role CloudFormation read surface', () => {
+  const roleName = 'beta-infra-runtime-role';
+  const render = (value: any): string => {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.map(render).join(',');
+    if (value?.['Fn::Join']) {
+      const [separator, parts] = value['Fn::Join'];
+      return parts.map((part: any) => (part?.Ref === 'AWS::Partition' ? 'aws' : part)).join(separator);
+    }
+    return JSON.stringify(value);
+  };
+  const runtimeArn = 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*';
+  const workloadArn = 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*';
+
+  function synthesis(): { foundation: any; base: any } {
+    const env = { account: '650880818323', region: 'ap-east-1' };
+    const foundationApp = new cdk.App();
+    const foundation = Template.fromStack(new FoundationStack(foundationApp, 'AnyWearFoundationStack', {
+      env, identityPhase: 'retired', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const baseApp = new cdk.App();
+    const base = Template.fromStack(new PlatformStack(baseApp, 'AnyWearPlatformStack-beta', {
+      stage: 'beta', env, identityPhase: 'retired', artifactInputs,
+      apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME,
+    })).toJSON();
+    return { foundation, base };
+  }
+  const policiesForRuntime = (template: any, roleId?: string): any[] => (Object.values(template.Resources) as any[])
+    .filter((resource) => resource.Type === 'AWS::IAM::Policy'
+      && resource.Properties.Roles?.some((role: any) => (roleId ? role.Ref === roleId : role === roleName)));
+
+  it('authorizes DescribeStacks and GetTemplate on Runtime and Workload before the Base update', () => {
+    const { foundation, base } = synthesis();
+    const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === roleName))![0];
+    const foundationRuntime = policiesForRuntime(foundation, roleId);
+    const baseRuntime = policiesForRuntime(base);
+    // The Foundation-owned grant exists exactly once, with exactly the two reads
+    // and exactly the Runtime + transitional Workload stack ARNs.
+    expect(foundationRuntime.length).toBeGreaterThanOrEqual(1);
+    const foundationStatements = foundationRuntime.flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const stackReads = foundationStatements.filter((statement: any) => [statement.Action].flat()
+      .includes('cloudformation:DescribeStacks'));
+    expect(stackReads).toHaveLength(1);
+    expect([stackReads[0].Action].flat().sort())
+      .toEqual(['cloudformation:DescribeStacks', 'cloudformation:GetTemplate']);
+    expect([stackReads[0].Resource].flat().map(render).sort()).toEqual([runtimeArn, workloadArn].sort());
+    // The Base stack's own runtime-role policy covers Runtime (after M4) and no
+    // longer Workload; the Foundation grant is what bridges the pre-read.
+    const baseStackResources = new Set(baseRuntime
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => [statement.Action].flat().some((action: string) => (
+        ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate'].includes(action))))
+      .flatMap((statement: any) => [statement.Resource].flat().map(render)));
+    expect(baseStackResources).toContain(runtimeArn);
+    expect(baseStackResources).not.toContain(workloadArn);
+    // The effective union is the M4 precondition: both reads are authorized on
+    // Runtime (Base) and on Workload (Foundation, transitional).
+    const effective = [...foundationStatements, ...baseRuntime
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement)]
+      .filter((statement: any) => [statement.Action].flat()
+        .some((action: string) => ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate'].includes(action)))
+      .flatMap((statement: any) => [statement.Resource].flat().map(render));
+    expect(effective).toEqual(expect.arrayContaining([runtimeArn, workloadArn]));
+    // The grant is inline and read-only: no managed policy and no write.
+    const role = (Object.values(foundation.Resources) as any[]).find((resource) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === roleName));
+    expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+    for (const action of ['cloudformation:UpdateStack', 'cloudformation:DeleteStack', 'cloudformation:CreateStack']) {
+      expect(effective).not.toContain(action);
+    }
+  });
+});

@@ -213,12 +213,32 @@ export class FoundationStack extends cdk.Stack {
     });
     const infraSubject = betaSubject('AnyWear-Infra', 1409047265);
     const deploy = createRole('BetaInfraDeployRole', 'infra-deploy', infraSubject);
-    createRole('BetaInfraRuntimeRole', 'infra-runtime', infraSubject);
+    const runtime = createRole('BetaInfraRuntimeRole', 'infra-runtime', infraSubject);
     const artifacts = createRole('BetaServiceArtifactRole', 'service-artifact',
       'repo:git-malu@11473072/AnyWear-Service@1158460323:environment:service-artifacts');
     createRole('BetaServiceDataRole', 'service-data', betaSubject('AnyWear-Service', 1158460323));
     createRole('BetaClientPublishRole', 'client-publish', betaSubject('AnyWear-Client', 1176104200));
     createRole('BetaE2EQualificationRole', 'e2e-qualification', betaSubject('AnyWear-E2E', 1317091305));
+    // Issue #166 M4: a Base deploy resolves its API origin by reading the
+    // Service-owned Runtime stack (an absent stack is a `ValidationError` that
+    // still requires authorization) and, before the MOVE, the legacy Workload
+    // stack. Those reads run under this runtime role, whose live read policy is
+    // the Base stack's `DedicatedPolicy` and does not yet cover the renamed
+    // Runtime stack at M4 (the new Base policy is applied by the same update that
+    // needs the pre-read). Foundation therefore owns the read grants and step 8
+    // deploys them before M4. The Runtime ARN is permanent. The Workload ARN is
+    // transitional: after M3/M4 deletes Workload and the Base literal-origin
+    // fallback is the only source, a later reviewed Foundation deploy removes
+    // the Workload ARN. Neither grant adds a write, a managed policy or another
+    // stack family.
+    const stageStackArn = (stackName: string) => this.formatArn({
+      service: 'cloudformation', resource: 'stack', resourceName: `${stackName}/*`,
+      arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+    });
+    runtime.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate'],
+      resources: [stageStackArn('AnyWearRuntimeStack-beta'), stageStackArn('AnyWearWorkloadStack-beta')],
+    }));
     // Existing CDK bootstrap roles still own their reviewed deployment policies.
     // Direct callers cannot assume image-publishing or CFN execution roles.
     deploy.addToPolicy(new iam.PolicyStatement({

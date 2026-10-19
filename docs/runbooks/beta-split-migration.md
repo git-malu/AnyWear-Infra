@@ -30,6 +30,19 @@ authorization recorded in the issue.**
 - The Foundation change that scopes both Service deploy roles to
   `AnyWearRuntimeStack-beta` is not required for the MOVE itself but must be
   deployed before the Runtime stack is first created (issue step 8).
+- **Step 8 must also deploy the Foundation-owned runtime-role read grants before
+  M4.** `beta-infra-runtime-role` needs `cloudformation:DescribeStacks` and
+  `cloudformation:GetTemplate` on `AnyWearRuntimeStack-beta` (permanent: reading
+  an absent stack is a `ValidationError` that still needs authorization) and on
+  `AnyWearWorkloadStack-beta` (transitional: only the pre-MOVE origin read). The
+  live runtime-role policy comes from the Base stack's `DedicatedPolicy` and
+  covers Foundation/Platform/Workload, not Runtime; the new Runtime grant inside
+  the Base template is applied by the same M4 update that needs the pre-read.
+  Verify the synthesized Foundation policy contains both stack ARNs before
+  starting M4. The Workload ARN is removed only in a later reviewed Foundation
+  deploy, after M3/M4 has deleted Workload and the Base literal-origin fallback
+  is the only origin source; removing it earlier re-breaks a stopped-state
+  `deploy-platform`.
 
 ## Stage A — Workload pre-move update
 
@@ -142,10 +155,12 @@ update takes no live ALB output: its API distribution origin is the literal
 `Origin.DomainName` the pre-move update already wrote into the moved distribution
 (the value is preserved by the MOVE). `scripts/runtime-operation.mjs`
 `readApiOrigin` resolves in this order — the running Runtime stack's
-`ApiLoadBalancerDnsName`, the legacy Workload output while it still exists, then
-the literal origin read back from the Base stack's Original template — and
-validates it as a domain. M7 then rewires the same distribution to the new
-Runtime ALB DNS.
+`ApiLoadBalancerDnsName` (hard error if the stack exists but the output is
+missing or not a DNS name), the literal origin read back from the Base stack's
+Original template, then the legacy Workload output only while Base has no adopted
+distribution (pre-MOVE) — and validates each as a domain. Base is read before
+Workload so the stopped state after M4 never needs the transitional Workload
+read. M7 then rewires the same distribution to the new Runtime ALB DNS.
 
 ## Abort behavior
 

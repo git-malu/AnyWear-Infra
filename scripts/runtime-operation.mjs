@@ -86,8 +86,7 @@ const stackRead = (io, name, region) => describeStack(io, name, region);
 const outputOf = (stack, key) => (stack?.Outputs ?? []).find(output => output.OutputKey === key)?.OutputValue;
 // During the migration's M4 Base update both the Workload ALB and the Runtime
 // stack are absent. The MOVE already adopted the distribution with its literal
-// origin, so read that value back from Base's Original template. This is only a
-// fallback: a running Runtime (or the pre-migration Workload) output wins.
+// origin, so read that value back from Base's Original template.
 async function baseDistributionOrigin(io) {
   if (!(await stackRead(io, baseStack))) return undefined;
   const body = (await io.aws(['cloudformation', 'get-template', '--stack-name', baseStack,
@@ -98,18 +97,25 @@ async function baseDistributionOrigin(io) {
   return isOrigin(origin) ? origin : undefined;
 }
 // A Base deploy needs the live API ALB DNS name as a literal distribution origin.
-// Order: the running Runtime output, the legacy Workload output during the
-// migration, then the literal already adopted by the Base distribution (M4).
+// Order: a running Runtime stack's output, then the literal already adopted by
+// the Base distribution (M4, when Runtime and Workload are both absent), then
+// the legacy Workload output before the MOVE. The Base read is before Workload so
+// that the stopped state never needs the transitional Workload read after M4.
 export async function readApiOrigin(io) {
   const runtime = await stackRead(io, runtimeStack);
-  const runtimeOrigin = outputOf(runtime, 'ApiLoadBalancerDnsName');
-  if (runtimeExists(runtime) && isOrigin(runtimeOrigin)) return runtimeOrigin;
+  if (runtimeExists(runtime)) {
+    const runtimeOrigin = outputOf(runtime, 'ApiLoadBalancerDnsName');
+    if (!isOrigin(runtimeOrigin)) {
+      throw new Error('The Runtime stack exists but its ApiLoadBalancerDnsName output is missing or not a DNS name');
+    }
+    return runtimeOrigin;
+  }
+  const baseOrigin = await baseDistributionOrigin(io);
+  if (baseOrigin) return baseOrigin;
   const workload = await stackRead(io, legacyWorkloadStack);
   const workloadOrigin = outputOf(workload, 'ApiLoadBalancerDnsName');
   if (isOrigin(workloadOrigin)) return workloadOrigin;
-  const baseOrigin = await baseDistributionOrigin(io);
-  if (baseOrigin) return baseOrigin;
-  throw new Error('A Base deploy requires the live API load-balancer DNS name from the Runtime stack, the legacy Workload stack during the migration, or the literal origin in the adopted Base distribution');
+  throw new Error('A Base deploy requires the live API load-balancer DNS name from the Runtime stack, the literal origin in the adopted Base distribution, or the legacy Workload stack before the MOVE');
 }
 // The stage base and the Runtime slice have different producers: Infra deploys
 // the Base stack and AnyWear-Service deploys the Runtime stack. A Base or Egress
