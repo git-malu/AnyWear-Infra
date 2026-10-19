@@ -12,8 +12,9 @@ export function finalizeOperationRecord(record, operationOutcome, observationOut
   if (!outcomes.includes(operationOutcome) || !outcomes.includes(observationOutcome)) throw new Error('Invalid final operation outcome');
   readOperationRecord(record);
   record.final_observation = record.operation === 'state' ? 'not-applicable' : observationOutcome;
-  // Beta is resident, so every non-state operation ends on an active final
-  // readback that must be observed and accepted; there is no stopped exemption.
+  // Every non-state operation ends on an observed final stack state (terminal
+  // Base plus the observed Runtime existence/status) that must be accepted; the
+  // read-only state operation is the only exemption.
   const requiresObservation = record.operation !== 'state';
   if (operationOutcome !== 'success') {
     record.result = 'failed';

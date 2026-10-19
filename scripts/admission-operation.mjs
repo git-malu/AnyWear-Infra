@@ -3,6 +3,7 @@ import { ADMISSION_MODE_PARAMETER, ADMISSION_MODE_CLOSED, ADMISSION_MODE_TESTERS
 import { canonicalTesterList, observeAdmissionState, readAdmissionState, assertProvableAdmissionClosure } from './admission-state.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
+import { runtimeStack, assertRuntimeReady, describeStack } from './one-writer.mjs';
 
 export { readAdmissionState } from './admission-state.mjs';
 // The standalone `migrate` operation uses this fence from `admission-mode.mjs`;
@@ -18,11 +19,14 @@ function assertAdmissionExecutor(env) {
   if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_WORKFLOW_REF !== admissionEntry) throw new Error('Protected Infra admission executor required');
 }
 
-function assertActiveBeta(platform, workload, purpose) {
-  if (!stableStatuses.has(platform?.StackStatus) || !stableStatuses.has(workload?.StackStatus)) throw new Error(`Stable Beta stacks required to ${purpose}`);
-  const outputs = values(platform);
-  if (outputs.BetaActive !== 'true' || values(workload).BetaActive !== 'true' || outputs.EcsClusterName !== 'beta-anywear') throw new Error(`Active Beta required to ${purpose}`);
-  return outputs;
+// Issue #166: admission acts on the deployed compute only. Beta runs when the
+// Service-owned Runtime stack exists; the Base stack stays persistent and no
+// `BetaActive` output describes partial activation.
+function assertRunningBeta(platform, runtime, purpose) {
+  if (!stableStatuses.has(platform?.StackStatus)) throw new Error(`Stable Beta Base stack required to ${purpose}`);
+  assertRuntimeReady(runtime, `Admission (${purpose})`);
+  if (values(platform).EcsClusterName !== 'beta-anywear') throw new Error(`Running Beta Base cluster required to ${purpose}`);
+  return values(platform);
 }
 
 // Closure is the mode's own decision, and it must be a decision the record can
@@ -163,10 +167,10 @@ export async function runCloseAdmission({ io, infraSha, env = process.env }) {
   assertProtectedExecutor(infraSha, env);
   let revision; let prior; let suspendAttempted = false;
   try {
-    const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-    const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
-    assertActiveBeta(platform, workload, 'close admission');
-    revision = workloadRevision(workload);
+    const platform = await describeStack(io, 'AnyWearPlatformStack-beta');
+    const runtime = await describeStack(io, runtimeStack);
+    assertRunningBeta(platform, runtime, 'close admission');
+    revision = workloadRevision(runtime);
     const original = await readAdmissionState(io);
     io.recordAdmissionState?.({ phase: 'original', state: original, result: 'observed' });
     // Read the database admission state before closing so the operation records
@@ -240,10 +244,10 @@ export async function runOpenAdmission({ io, infraSha, env = process.env }) {
   assertProtectedExecutor(infraSha, env);
   let revision; let original; let requested = false;
   try {
-    const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-    const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
-    assertActiveBeta(platform, workload, 'open admission');
-    revision = workloadRevision(workload);
+    const platform = await describeStack(io, 'AnyWearPlatformStack-beta');
+    const runtime = await describeStack(io, runtimeStack);
+    assertRunningBeta(platform, runtime, 'open admission');
+    revision = workloadRevision(runtime);
     // Refuse before resuming unless the database decision is provably closed and
     // the database policy agrees with the mirror.
     assertClosedAdmissionStatus(parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status')));

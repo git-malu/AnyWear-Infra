@@ -1,0 +1,12 @@
+{
+  "logicalId": "ComputeRuntimeApiDistribution5788DFE7",
+  "originId": "AnyWearWorkloadStackbetaComputeRuntimeApiDistributionOrigin11E892748",
+  "comment": "beta AnyWear API",
+  "originVerifyHeaderName": "X-AnyWear-Origin-Verify",
+  "originVerifySecretArn": "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header",
+  "defaultCachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+  "originRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+  "destinationStack": "AnyWearPlatformStack-beta",
+  "sourceStack": "AnyWearWorkloadStack-beta",
+  "sourceLogicalId": "ComputeRuntimeApiDistribution5788DFE7"
+}

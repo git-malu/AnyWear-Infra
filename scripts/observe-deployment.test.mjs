@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { observeDeployment, observeDeploymentCli, observerArguments } from './observe-deployment.mjs';
 import { sha256 } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
+import { runtimeStack } from './one-writer.mjs';
 import { STAGE_CONTRACT_CONDITIONAL_PARAMETERS, STAGE_CONTRACT_PARAMETERS,
   STAGE_CONTRACT_READ_PARAMETERS } from './stage-contract-parameters.mjs';
 
@@ -26,7 +27,6 @@ const templates = {
   'AnyWearPlatformStack-beta': {
     Resources: { StageBaseBucket: { Type: 'AWS::S3::Bucket' } },
     Outputs: [
-      { OutputKey: 'BetaActive', OutputValue: 'true' },
       { OutputKey: 'ClientBaseUrl', OutputValue: endpoint },
       { OutputKey: 'VtoQueueUrl', OutputValue: 'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-vto' },
       { OutputKey: 'AutoTaggingQueueUrl',
@@ -34,27 +34,45 @@ const templates = {
     ],
   },
   'AnyWearBillingStack-beta': { Resources: { BillingBudget: { Type: 'AWS::Budgets::Budget' } } },
+  // Issue #166: the Service-owned Runtime stack exists while Beta runs; the
+  // authenticated observation reads it but never adds it to the record's stacks.
+  [runtimeStack]: { Resources: { RuntimeService: { Type: 'AWS::ECS::Service' } }, Outputs: [] },
 };
 const expectedInputs = (names) => names.map((parameter) => ({ parameter,
   version: String(STAGE_CONTRACT_READ_PARAMETERS.indexOf(parameter) + 1),
   value_sha256: sha256(`value-${STAGE_CONTRACT_READ_PARAMETERS.indexOf(parameter)}`) }));
 
+function stackAbsenceError(stackName) {
+  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  return Object.assign(new Error(stderr), { stderr });
+}
+
 // A deterministic read-only AWS surface for the exact calls observeDeployment
 // makes: no credentials, no network, no timers.
-function fixtureIo({ invalidStageParameters = [] } = {}) {
+function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLETE', runtimeError } = {}) {
   const stacks = new Map(configuredStacks.map((configured, index) => [configured.stack_name, {
     StackId: `arn:aws:cloudformation:${configured.region}:650880818323:stack/${configured.stack_name}/${index}`,
     StackName: configured.stack_name, StackStatus: 'UPDATE_COMPLETE', CreationTime: '2026-10-01T00:00:00.000Z',
     LastUpdatedTime: '2026-10-02T00:00:00.000Z', Outputs: templates[configured.stack_name]?.Outputs ?? [],
   }]));
+  if (runtimeStatus !== null) {
+    stacks.set(runtimeStack, {
+      StackId: `arn:aws:cloudformation:ap-east-1:650880818323:stack/${runtimeStack}/runtime`,
+      StackName: runtimeStack, StackStatus: runtimeStatus, CreationTime: '2026-10-01T00:00:00.000Z',
+      LastUpdatedTime: '2026-10-02T00:00:00.000Z', Outputs: [],
+    });
+  }
   const byId = new Map([...stacks.values()].map(stack => [stack.StackId, stack]));
   return {
     async aws(args, region) {
       const argument = flag => args[args.indexOf(flag) + 1];
       if (args[0] === 'sts' && args[1] === 'get-caller-identity') return { Account: '650880818323' };
       if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
-        const stack = stacks.get(argument('--stack-name')) ?? byId.get(argument('--stack-name'));
-        return { Stacks: stack ? [structuredClone(stack)] : [] };
+        const name = argument('--stack-name');
+        if (runtimeError && name === runtimeStack) throw runtimeError;
+        const stack = stacks.get(name) ?? byId.get(name);
+        if (!stack) throw stackAbsenceError(name);
+        return { Stacks: [structuredClone(stack)] };
       }
       if (args[0] === 'cloudformation' && args[1] === 'get-template') {
         const stack = byId.get(argument('--stack-name'));
@@ -117,6 +135,18 @@ test('the observer arguments accept exactly the v3 E2E invocation and reject a s
   assert.throws(() => observerArguments(['--expected', 'record.json', '--output']), /requires a value/);
   assert.throws(() => observerArguments(['--expected', 'a', '--expected', 'b', '--output', 'out', '--infra-sha', infraSha]),
     /Duplicate observer argument --expected/);
+});
+
+test('the observer requires the Service-owned Runtime stack to exist and be terminal', async () => {
+  for (const runtimeStatus of [null, 'UPDATE_IN_PROGRESS', 'UPDATE_ROLLBACK_FAILED']) {
+    await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus }), env: executorEnvironment() }),
+      /AnyWearRuntimeStack-beta/, String(runtimeStatus));
+  }
+  // A throttled/denied Runtime read is not absence and must abort the observation.
+  const throttle = Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+    { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null, runtimeError: throttle }),
+    env: executorEnvironment() }), /Throttling/);
 });
 
 test('the observer CLI writes the authenticated v3 body that equals the expected record', async () => {

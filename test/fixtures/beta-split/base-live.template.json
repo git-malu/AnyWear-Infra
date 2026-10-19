@@ -1,0 +1,17 @@
+{
+  "Resources": {
+    "AnyWearVpcA8B15590": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": { "CidrBlock": "10.0.0.0/16", "EnableDnsHostnames": true }
+    },
+    "AnyWearWardrobeBucket61DCC096": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": { "BucketName": "beta-anywear-wardrobe-bucket" }
+    }
+  },
+  "Outputs": {
+    "WardrobeBucketName": { "Value": { "Ref": "AnyWearWardrobeBucket61DCC096" } }
+  }
+}

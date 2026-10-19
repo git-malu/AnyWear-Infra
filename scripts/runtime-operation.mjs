@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { readFile, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -13,7 +14,7 @@ import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inpu
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runCloseAdmission, runOpenAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
-import { assertTerminalReleaseSlice, releaseSliceStackName } from './one-writer.mjs';
+import { assertTerminalRuntime, assertRuntimeAbsent, assertRuntimeReady, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { account, region } from './deployment-contract.mjs';
@@ -71,44 +72,100 @@ export function validateOperationInputs(env = process.env) {
   }
   return { source_sha: env.GITHUB_SHA, operation, service_release: release };
 }
-// Beta is resident: every protected operation that reaches a completed deploy must
-// observe both stacks active. The stage base and the release slice have different
-// producers, but a stopped slice is still an invariant violation for the stage
-// base's own deployments. A stack stopped out of band fails closed here.
-export function assertResidentBeta(platform, workload) {
-  const state = stack => stack?.Outputs?.find(output => output.OutputKey === 'BetaActive')?.OutputValue;
-  for (const [name, stack] of [['Platform', platform], ['Workload', workload]]) {
-    const active = state(stack);
-    if (!['true', 'false'].includes(active)) throw new Error(`Both Beta activity states must be observed: ${name}=${active ?? 'unavailable'}`);
-    if (active !== 'true') throw new Error(`Resident Beta requires active ${name}; observed ${active}`);
-  }
+const baseStack = 'AnyWearPlatformStack-beta';
+const egressStack = 'AnyWearEgressStack-beta';
+// The legacy Service stack that still exists until the one-time split migration
+// deletes it. Its `ApiLoadBalancerDnsName` output is the only origin source
+// before the Runtime stack exists; it is a read-only transition path.
+const legacyWorkloadStack = 'AnyWearWorkloadStack-beta';
+const API_DISTRIBUTION = Object.freeze(JSON.parse(
+  readFileSync(new URL('../lib/api-distribution.json', import.meta.url), 'utf8')));
+const API_ORIGIN = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+const isOrigin = value => typeof value === 'string' && API_ORIGIN.test(value);
+const stackRead = (io, name, region) => describeStack(io, name, region);
+const outputOf = (stack, key) => (stack?.Outputs ?? []).find(output => output.OutputKey === key)?.OutputValue;
+// During the migration's M4 Base update both the Workload ALB and the Runtime
+// stack are absent. The MOVE already adopted the distribution with its literal
+// origin, so read that value back from Base's Original template.
+async function baseDistributionOrigin(io) {
+  if (!(await stackRead(io, baseStack))) return undefined;
+  const body = (await io.aws(['cloudformation', 'get-template', '--stack-name', baseStack,
+    '--template-stage', 'Original'])).TemplateBody;
+  const template = typeof body === 'string' ? parseJson(body) : body;
+  const origin = template?.Resources?.[API_DISTRIBUTION.logicalId]
+    ?.Properties?.DistributionConfig?.Origins?.[0]?.DomainName;
+  return isOrigin(origin) ? origin : undefined;
 }
-// The stage base and the release slice have different producers: Infra deploys the
-// Platform and AnyWear-Service deploys the Workload. A Platform mutation must read
-// the release slice terminal before CloudFormation is touched, so the two writers
-// never cross a deployment. `restore-release` runs its own staged checks; every
-// other operation that deploys reaches here after its credentials are obtained.
+// A Base deploy needs the live API ALB DNS name as a literal distribution origin.
+// Order: a running Runtime stack's output, then the literal already adopted by
+// the Base distribution (M4, when Runtime and Workload are both absent), then
+// the legacy Workload output before the MOVE. The Base read is before Workload so
+// that the stopped state never needs the transitional Workload read after M4.
+export async function readApiOrigin(io) {
+  const runtime = await stackRead(io, runtimeStack);
+  if (runtimeExists(runtime)) {
+    const runtimeOrigin = outputOf(runtime, 'ApiLoadBalancerDnsName');
+    if (!isOrigin(runtimeOrigin)) {
+      throw new Error('The Runtime stack exists but its ApiLoadBalancerDnsName output is missing or not a DNS name');
+    }
+    return runtimeOrigin;
+  }
+  const baseOrigin = await baseDistributionOrigin(io);
+  if (baseOrigin) return baseOrigin;
+  const workload = await stackRead(io, legacyWorkloadStack);
+  const workloadOrigin = outputOf(workload, 'ApiLoadBalancerDnsName');
+  if (isOrigin(workloadOrigin)) return workloadOrigin;
+  throw new Error('A Base deploy requires the live API load-balancer DNS name from the Runtime stack, the literal origin in the adopted Base distribution, or the legacy Workload stack before the MOVE');
+}
+// The stage base and the Runtime slice have different producers: Infra deploys
+// the Base stack and AnyWear-Service deploys the Runtime stack. A Base or Egress
+// mutation must read the Runtime stack terminal before CloudFormation is touched,
+// so the two writers never cross a deployment. A missing Runtime is simply the
+// stopped state; `restore-release` still requires it to exist (start first).
 export async function deployOperationStack(io, operation) {
   const [stack] = changedStackNames(operation);
   if (!stack) throw new Error(`Operation ${operation} has no stack to deploy`);
-  if (stack === 'AnyWearPlatformStack-beta') {
-    const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', releaseSliceStackName])).Stacks?.[0];
-    assertTerminalReleaseSlice(workload, operation);
+  if (stack === baseStack || stack === egressStack) {
+    const runtime = await stackRead(io, runtimeStack);
+    if (runtimeExists(runtime)) assertTerminalRuntime(runtime, operation);
   }
   await io.deploy(stack);
   return stack;
 }
-// Every protected deploy reconciles the resident active environment. The CDK
-// default is the active path (environmentRunning=true), so no operation selects the
-// dormant stopped template and no observed activity changes the arguments.
+// The stop sequence is Runtime (AnyWear-Service) then Egress. This operation is
+// the second step only: it refuses while the Runtime stack still exists.
+export async function deleteOperationStack(io, operation) {
+  const [stack] = changedStackNames(operation);
+  if (operation !== 'delete-egress' || stack !== egressStack) {
+    throw new Error(`Operation ${operation} has no stack to delete`);
+  }
+  assertRuntimeAbsent(await stackRead(io, runtimeStack), operation);
+  await io.destroy(stack);
+  return stack;
+}
 // `deployScope` restricts synthesis to the stack this operation deploys: only an
-// application-scope deploy (the stage base) loads Service-built Lambda assets.
-export function cdkDeploymentArguments(stack, directory, env) {
-  const deployScope = stack.includes('AnyWearPlatformStack') ? 'application'
-    : stack === 'AnyWearBillingStack-beta' ? 'billing' : 'foundation';
+// application-scope deploy (the Base stack) loads Service-built Lambda assets and
+// the literal API origin; the Egress stack is a separate scope with no artifacts.
+function deployScopeFor(stack) {
+  if (stack === baseStack) return 'application';
+  if (stack === 'AnyWearBillingStack-beta') return 'billing';
+  if (stack === egressStack) return 'egress';
+  return 'foundation';
+}
+export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName } = {}) {
+  const deployScope = deployScopeFor(stack);
+  if (deployScope === 'application' && !apiOriginDomainName) throw new Error('The Base deploy requires the API origin domain name');
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
     '-c', `deployScope=${deployScope}`, '-c', 'stage=beta', '-c', 'legacyRoleSource=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
-    '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`, ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`] : [])];
+    '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`,
+    ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`, '-c', `apiOriginDomainName=${apiOriginDomainName}`] : [])];
+}
+// The Egress destroy uses the same restricted deploy session and reviewed
+// context; `--force` is safe because the stack holds no retained resources.
+export function cdkDestroyArguments(stack, env) {
+  return ['cdk', 'destroy', stack, '--force', '--exclusively',
+    '-c', `deployScope=${deployScopeFor(stack)}`, '-c', 'stage=beta', '-c', 'legacyRoleSource=external',
+    '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`, '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`];
 }
 export function cleanAwsEnvironment(env) {
   const result = { ...env };
@@ -218,11 +275,23 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
     async deploy(stack) {
       if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
       assertDeployAllowed(env, stack);
+      const apiOriginDomainName = stack === baseStack ? await readApiOrigin(io) : undefined;
       const awsEnv = await roleEnv('deploy');
-      await run('npx', cdkDeploymentArguments(stack, directory, env),
+      await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
-      if (stack === 'AnyWearPlatformStack-beta') await enforceBetaPlatformLogRetention(io);
-      record?.events.push({ type: 'stack-deploy', stack_name: stack, beta_active: true, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
+      if (stack === baseStack) await enforceBetaPlatformLogRetention(io);
+      record?.events.push({ type: 'stack-deploy', stack_name: stack, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
+    },
+    // The stop path's second step. It destroys only the disposable Egress stack;
+    // the caller proves the Runtime stack is already absent before credentials.
+    async destroy(stack) {
+      if (purpose !== 'operation') throw new Error('Qualification cannot destroy');
+      assertDeployAllowed(env, stack);
+      if (env.INFRA_OPERATION !== 'delete-egress' || stack !== egressStack) throw new Error('Only delete-egress may destroy a stack');
+      const awsEnv = await roleEnv('deploy');
+      await run('npx', cdkDestroyArguments(stack, env),
+        { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
+      record?.events.push({ type: 'stack-destroy', stack_name: stack, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
     },
     recordRecovery(outcome) { if (record) recordRecovery(record, outcome); },
     recordLifecycleState(observed) { record?.events.push({ type: 'observed-lifecycle-state', ...observed }); },
@@ -270,9 +339,9 @@ export async function runOperation(env = process.env) {
     try { record.state_observation = await observeBetaState(io); }
     catch (error) { record.state_observation = error.observedState; throw error; }
     finally {
-      record.events.push({ type: 'final-beta-activity', ...Object.fromEntries((record.state_observation?.stacks ?? []).flatMap(stack => {
-        const key = stack.stack_name.includes('Platform') ? 'platform' : 'workload';
-        return [[`${key}_active`, stack.beta_active], [`${key}_status`, stack.status]];
+      record.events.push({ type: 'final-stack-state', ...Object.fromEntries((record.state_observation?.stacks ?? []).flatMap(stack => {
+        const key = stack.stack_name.includes('Platform') ? 'base' : 'runtime';
+        return [[`${key}_status`, stack.status], [`${key}_exists`, key === 'runtime' ? stack.runtime_exists : true]];
       })) });
     }
     record.final_observation = 'not-applicable';
@@ -293,27 +362,27 @@ export async function runOperation(env = process.env) {
     // runs on the revision the release slice reports, never on a locally selected
     // image: Infra no longer chooses a Service release.
     await assertMigrationAdmissionClosed(io);
-    const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
-    const revision = workloadRevision(workload);
+    const runtime = await stackRead(io, runtimeStack);
+    assertRuntimeReady(runtime, 'migrate');
+    const revision = workloadRevision(runtime);
     record.observed_service_revision = { service_sha: revision.commit, image_digest: revision.digest };
     await io.oneShot('migrate', revision);
+  } else if (operation === 'delete-egress') {
+    await deleteOperationStack(io, operation);
   } else if (operation !== 'observe') {
-    // The stage base and the account-wide stacks take no release input; only the
-    // stage base consumes Service-built Lambda assets, and its deploy proves those
-    // bytes through the reviewed release identity before credentials. A Platform
-    // deploy additionally reads the Service-owned slice terminal first (one writer).
+    // The Base and account-wide stacks take no release input; only the Base stack
+    // consumes Service-built Lambda assets, and its deploy proves those bytes
+    // through the reviewed release identity before credentials. A Base deploy
+    // additionally reads the Service-owned Runtime stack terminal first (one
+    // writer) and takes its live API origin.
     await deployOperationStack(io, operation);
   }
-  const finalStacks = {};
-  for (const [key, name] of [['platform', 'AnyWearPlatformStack-beta'], ['workload', 'AnyWearWorkloadStack-beta']]) {
-    finalStacks[key] = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', name])).Stacks?.[0];
-  }
-  record.events.push({ type: 'final-beta-activity', ...Object.fromEntries(Object.entries(finalStacks).flatMap(([key, stack]) => [
-    [`${key}_active`, stack?.Outputs?.find(output => output.OutputKey === 'BetaActive')?.OutputValue ?? 'unavailable'],
-    [`${key}_status`, stack?.StackStatus ?? 'unavailable'],
-  ])) });
-  assertResidentBeta(finalStacks.platform, finalStacks.workload);
-  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, 'beta_active=true\nrequires_qualification=true\n');
+  const base = await stackRead(io, baseStack);
+  const runtime = await stackRead(io, runtimeStack);
+  record.events.push({ type: 'final-stack-state', base_status: base?.StackStatus ?? 'unavailable',
+    runtime_status: runtime?.StackStatus ?? 'unavailable', runtime_exists: runtimeExists(runtime) });
+  if (!terminalStackStatuses.has(base?.StackStatus)) throw new Error(`The Base stack is not terminal after ${operation}`);
+  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `runtime_exists=${runtimeExists(runtime)}\nrequires_qualification=true\n`);
   if (env.GITHUB_STEP_SUMMARY) {
     const release = inputs.service_release ? ` Service release ${inputs.service_release.releaseTag}@${inputs.service_release.serviceCommit}.` : '';
     await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}.${release}\n`);

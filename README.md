@@ -27,10 +27,12 @@ node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --bas
 ```
 
 [Source CI](.github/workflows/check.yml) runs these checks without private peer
-checkouts or cloud credentials. The matrix compares dev active, Beta active, Beta
-stopped and prod active across the three identity phases against the preserved
+checkouts or cloud credentials. The matrix compares dev active, Beta active and
+prod active across the three identity phases against the preserved
 Service source templates for the stack set this app still synthesizes
-(Foundation, Platform, Billing). Fixture artifacts are a local stand-in for the
+(Foundation, Base, Billing). Issue #166 removed the stopped Beta template: the
+environment stops by deleting the Egress and Runtime stacks, so the Base template
+has one variant. Fixture artifacts are a local stand-in for the
 stage base's Service-built Lambda inputs; deployments download the sealed Service
 release instead. CI repeats all three phases with explicit retention protection
 and uploads `cdk.matrix/comparison.json` and
@@ -38,9 +40,10 @@ and uploads `cdk.matrix/comparison.json` and
 
 ## Stage contract
 
-`AnyWearPlatformStack-beta` publishes the Beta stage base as plain SSM
-parameters under `/anywear/beta/`. **34 names exist in every identity phase and
-environment variant**: the VPC and subnet tiers (public, private and isolated),
+`AnyWearPlatformStack-beta` (the persistent `Base` stack) publishes the Beta stage
+base as plain SSM parameters under `/anywear/beta/`. **35 names exist in every
+identity phase and environment variant**: the public API distribution base URL
+(`api_base_url`), the VPC and subnet tiers (public, private and isolated),
 ECS cluster name and ARN, Aurora endpoint and secret, the three workload security
 groups plus the one-shot task security group, the ECR repository identity, both
 task queues, both queue and dead-letter-queue names and URLs, the wardrobe bucket
@@ -52,22 +55,24 @@ while the identity phase creates the cleanup task role
 (`cognito_user_pool_id`, `cognito_client_id`, `s3_bucket_name`,
 `qweather_api_host`); the runtime-owned `admission_mode`, `tester_allowlist` and
 `aws_region` parameters are not duplicated. Values come from the existing
-Platform resources; nothing reads another stack at deploy time. The ten values
+Base resources; nothing reads another stack at deploy time. The ten values
 added by the issue #158 extension replace the remaining weak
 `Fn::GetStackOutput` reads, so once AnyWear-Service's step D converts them the
-Platform/Workload deploy order no longer matters. `isolated_subnet_ids` is
-always published because Beta keeps a dedicated isolated subnet tier in both
-states; it is never an empty `StringList`.
+Base/Runtime deploy order no longer matters. `private_subnet_ids` and
+`isolated_subnet_ids` are the two Base subnet groups and are never empty
+`StringList`s; the Egress stack adds the 0.0.0.0/0 routes to the Base-owned
+Private route tables while it exists (Base keeps the route tables and their single
+per-subnet associations).
 
-Two values have no Platform resource: `vlm_config_arn` and
+Two values have no Base resource: `vlm_config_arn` and
 `cloudfront_prefix_list_id` are reviewed constants read from the live
-`AnyWearWorkloadStack-beta` parameters on 2026-10-18 (account `650880818323`,
+Service release-slice parameters before the #166 split (account `650880818323`,
 `ap-east-1`), recorded as identifiers only. They are changed only in a reviewed
 diff. Any other stage must pass explicit values and fails closed without them.
 
 Foundation owns the two Service release-slice deployment identities:
 `beta-service-deploy-role` (GitHub OIDC `environment:beta`; CloudFormation change
-sets for `AnyWearWorkloadStack-beta`, `ssm:GetParameter*` under
+sets for `AnyWearRuntimeStack-beta`, `ssm:GetParameter*` under
 `/anywear/beta/`, `ecr:DescribeImages` on `beta-anywear-service`, plus the CDK
 CLI's own-credentials path: `ssm:GetParameter` on
 `cdk-bootstrap/hnb659fds/version`, `s3:PutObject`/`s3:GetObject` on
@@ -75,7 +80,7 @@ CLI's own-credentials path: `ssm:GetParameter` on
 `s3:ListBucket`/`s3:GetBucketLocation` on that bucket) and
 `beta-service-deploy-cfn-role` (trusted by
 `cloudformation.amazonaws.com`; the
-Workload stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
+Runtime stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
 load-balancer-ingress and four task-role families). Issue #162 adds the deploy
 role's read-only bake grants: `cloudwatch:GetMetricStatistics`,
 `cloudwatch:DescribeAlarms` on `beta-anywear-*`, `ecs:DescribeServices` on the
@@ -88,9 +93,10 @@ assumes a
 policy or holds account-wide grants; the policy-inventory tests pin both the
 allowed inventory and the absent VPC, Aurora, Cognito, wardrobe/client bucket
 configuration, SQS configuration, ECR configuration, Foundation and other-stack
-grants. The Workload stack's
+grants. The Runtime stack's
 CDK source and deploy chain now live in AnyWear-Service (#158 step B); after step
-C nothing in this repository synthesizes, deploys or recovers it.
+C nothing in this repository synthesizes, deploys or recovers it. Issue #166
+renamed the slice to `AnyWearRuntimeStack-beta` and scoped both roles to it.
 
 The Foundation service set is reviewed CDK context, not source. `infraServices`
 is an array of `{ service, repository, repositoryId, environment }` descriptors
@@ -102,7 +108,7 @@ edit to this repository. The context is strict: an unknown key, a malformed
 descriptor, a duplicate service, a missing default service or a changed default
 descriptor fails synthesis before any resource is created. The default context
 reproduces today's template byte for byte; a second service adds only its own two
-roles and policies, scoped to its own workload stack and resource families.
+roles and policies, scoped to its own runtime stack and resource families.
 
 ### Versioned `@git-malu/stage-contracts`
 
@@ -110,8 +116,8 @@ roles and policies, scoped to its own workload stack and resource families.
 dependency-free, versioned source of the stage-contract names/kinds, the stack
 identities, the v4 `anywear_service_deployment` validators (the v3 core plus the
 required 600-second bake gate), the gate's one stage-free threshold table and the
-Foundation service-role naming. It is `@git-malu/stage-contracts` `0.2.0`; the
-`stage-contracts-v0.2.0` tag is a post-merge publication step (`0.1.0` is the
+Foundation service-role naming. It is `@git-malu/stage-contracts` `0.3.0`; the
+`stage-contracts-v0.3.0` tag is a post-merge publication step (`0.1.0` is the
 last tagged release), and the package is packed with `npm pack`. AnyWear-Service
 pins the
 tarball (for example under `infra/vendor/`) instead of a mutable branch or a
@@ -140,10 +146,12 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (10 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission` |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission` |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
+| [bin/infra.ts](bin/infra.ts), `deployScope=egress` | CLI | Separate disposable `AnyWearEgressStack-beta` scope; no Service artifact input |
+| [migrate-beta-split.mjs](scripts/migrate-beta-split.mjs) | CLI (Deployment-gated) | One-time Base/Runtime split: three separately authorized stages, validation-only by default; see its runbook |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | CLI | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
 | [observe-deployment.mjs](scripts/observe-deployment.mjs) | CLI | Authenticate the deployed stage-base templates, Lambdas, queues, Client and stage-contract parameters |
 

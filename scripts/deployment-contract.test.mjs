@@ -38,7 +38,7 @@ function serviceRecord({ revision = 12, digest = imageDigest } = {}) {
       command: ['node', 'dist/index.js'], environment: [{ name: 'B', value: '2' }, { name: 'A', value: '1' }] }] };
   return { schema_version: 4, record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
     producer: producer('git-malu/AnyWear-Service', '.github/workflows/service-artifacts.yml'),
-    stacks: [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Service',
+    stacks: [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Service',
       producer_sha: serviceSha, template_sha256: '5'.repeat(64) }],
     inputs,
     observed: { service_sha: serviceSha, image_digest: digest, minimum_client_version: 0,
@@ -61,11 +61,11 @@ test('a complete Infra v3 record validates', () => {
   assert.deepEqual([...DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
 });
 
-test('a complete Service v4 record validates, lists only the workload stack and carries the gate', () => {
+test('a complete Service v4 record validates, lists only the Runtime stack and carries the gate', () => {
   const record = serviceRecord();
   assert.deepEqual(validateServiceDeploymentRecord(record), record);
   assert.deepEqual(validateDeploymentRecord(record), record);
-  assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks, [{ name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1' }]);
+  assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks, [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }]);
   assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 4);
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), [...DEPLOYMENT_RECORD_MEMBERS, 'gate'].sort());

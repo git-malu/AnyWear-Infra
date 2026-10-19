@@ -15,6 +15,7 @@ import {
 // `inputs[].parameter` values and the Platform stack's published SSM names, so a
 // change here is a stage-contract change, not a refactor.
 const EXPECTED_UNCONDITIONAL = [
+  '/anywear/beta/api_base_url',
   '/anywear/beta/api_security_group_id',
   '/anywear/beta/auto_tagging_dlq_name',
   '/anywear/beta/auto_tagging_dlq_url',
@@ -53,15 +54,15 @@ const EXPECTED_UNCONDITIONAL = [
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 
-test('the contract names are the 34 unconditional Beta parameters plus one conditional name', () => {
+test('the contract names are the 35 unconditional Beta parameters plus one conditional name', () => {
   assert.equal(STAGE_CONTRACT_STAGE, 'beta');
   assert.deepEqual([...STAGE_CONTRACT_PARAMETERS], EXPECTED_UNCONDITIONAL);
   assert.deepEqual([...STAGE_CONTRACT_CONDITIONAL_PARAMETERS], ['/anywear/beta/cleanup_task_role_arn']);
   assert.deepEqual([...STAGE_CONTRACT_READ_PARAMETERS], [...EXPECTED_UNCONDITIONAL,
     '/anywear/beta/cleanup_task_role_arn'].sort());
-  assert.equal(STAGE_CONTRACT_PARAMETERS.length, 34);
+  assert.equal(STAGE_CONTRACT_PARAMETERS.length, 35);
   assert.equal(STAGE_CONTRACT_CONDITIONAL_PARAMETERS.length, 1);
-  assert.equal(STAGE_CONTRACT_READ_PARAMETERS.length, 35);
+  assert.equal(STAGE_CONTRACT_READ_PARAMETERS.length, 36);
   assert.ok(STAGE_CONTRACT_PARAMETERS.every(name => /^\/anywear\/beta\/[a-z0-9_]+$/.test(name)));
   assert.ok([...STAGE_CONTRACT_PARAMETERS, ...STAGE_CONTRACT_CONDITIONAL_PARAMETERS]
     .every(name => STAGE_CONTRACT_READ_PARAMETERS.includes(name)));
@@ -73,11 +74,11 @@ test('the contract names are the 34 unconditional Beta parameters plus one condi
 test('stageParameters returns typed definitions sorted by absolute name', () => {
   const definitions = stageParameters();
   assert.ok(Object.isFrozen(definitions));
-  assert.equal(definitions.length, 35);
+  assert.equal(definitions.length, 36);
   assert.deepEqual(definitions.map(definition => definition.parameter), [...STAGE_CONTRACT_READ_PARAMETERS]);
   assert.deepEqual(definitions.map(definition => definition.parameter),
     [...definitions.map(definition => definition.parameter)].sort());
-  assert.equal(new Set(definitions.map(definition => definition.name)).size, 35);
+  assert.equal(new Set(definitions.map(definition => definition.name)).size, 36);
   for (const definition of definitions) {
     assert.deepEqual(Object.keys(definition).sort(), ['kind', 'name', 'parameter']);
     assert.ok(Object.isFrozen(definition));

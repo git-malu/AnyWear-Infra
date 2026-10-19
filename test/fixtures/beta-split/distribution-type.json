@@ -1,0 +1,7 @@
+{
+  "TypeName": "AWS::CloudFront::Distribution",
+  "ProvisioningType": "FULLY_MUTABLE",
+  "DeprecatedStatus": "LIVE",
+  "Visibility": "PUBLIC",
+  "Description": "CloudFront distribution"
+}

@@ -24,8 +24,9 @@ const holdsIdToken = job => job?.permissions?.['id-token'] === 'write';
 const credentialJobs = workflow => Object.entries(workflow.jobs ?? {})
   .filter(([, job]) => declaresEnvironment(job) || holdsIdToken(job)).map(([jobName]) => jobName);
 
-const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', 'deploy-platform', 'restore-release',
-  'migrate', 'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission']);
+const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', 'deploy-platform',
+  'deploy-egress', 'delete-egress', 'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers',
+  'open-admission', 'close-admission']);
 
 test('the workflow directory is exactly the three Beta entries plus the callable and publication files', async () => {
   // GitHub accepts both `.yml` and `.yaml`; the census must see either extension,
@@ -92,7 +93,12 @@ test('mutate.yml keeps one preflight → verify → deploy → record chain and 
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.options.includes('deploy-workload'), false);
   const text = await readFile(workflowFile('mutate.yml'), 'utf8');
   assert.equal(/deploy-workload/.test(text), false, 'mutate.yml must not name the retired workload operation');
-  assert.equal(/AnyWearWorkloadStack-beta/.test(text), false, 'mutate.yml must not deploy the Service-owned release slice');
+  // #166: Egress is the only disposable stack Infra deletes; the Runtime slice is
+  // the Service release chain's.
+  assert.match(text, /deploy-egress/);
+  assert.match(text, /delete-egress/);
+  assert.equal(/AnyWearRuntimeStack-beta/.test(text), false, 'mutate.yml must not deploy the Service-owned Runtime stack');
+  assert.equal(/AnyWearWorkloadStack/.test(text), false, 'mutate.yml must not name the retired Workload stack');
 });
 
 test('runtime.yml keeps state runnable with the switch closed and observe switch-gated', async () => {

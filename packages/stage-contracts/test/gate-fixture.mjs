@@ -1,7 +1,7 @@
 // Shared fixtures for the v4 Service deployment record and its bake gate.
 //
 // These are shape fixtures only: they describe one healthy 600-second bake for
-// `AnyWearWorkloadStack-beta` and are mutated by the negative tests. Nothing here
+// `AnyWearRuntimeStack-beta` and are mutated by the negative tests. Nothing here
 // reads AWS, the filesystem or a clock.
 import {
   DEPLOYMENT_GATE_COMPARISONS,

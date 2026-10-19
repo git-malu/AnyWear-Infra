@@ -16,7 +16,7 @@ function platformTemplate({ clusterDeletionPolicy = 'Delete', deletionProtection
       Properties: { DBClusterIdentifier: { Ref: clusterId }, DBInstanceClass: 'db.serverless' } },
   } };
 }
-const beta = (overrides = {}) => platformTemplate({ clusterDeletionPolicy: 'Delete', deletionProtection: true,
+const beta = (overrides = {}) => platformTemplate({ clusterDeletionPolicy: 'Retain', deletionProtection: true,
   retention: 7, window: '16:00-16:30', ...overrides });
 const prod = (overrides = {}) => platformTemplate({ clusterDeletionPolicy: 'Retain', deletionProtection: true,
   retention: 35, window: '16:00-16:30', ...overrides });
@@ -31,7 +31,7 @@ test('recovery targets are frozen and use template deletion-policy terms', () =>
     protection: RECOVERY_TARGETS.beta.deletionProtection, removalPolicy: RECOVERY_TARGETS.beta.clusterRemovalPolicy,
     deletionPolicy: RECOVERY_TARGETS.beta.clusterDeletionPolicy },
   { stage: 'beta', stackName: 'AnyWearPlatformStack-beta', retention: 7, window: '16:00-16:30',
-    protection: true, removalPolicy: 'DESTROY', deletionPolicy: 'Delete' });
+    protection: true, removalPolicy: 'RETAIN', deletionPolicy: 'Retain' });
   assert.deepEqual({ retention: RECOVERY_TARGETS.prod.pitrRetentionDays, window: RECOVERY_TARGETS.prod.preferredBackupWindow,
     removalPolicy: RECOVERY_TARGETS.prod.clusterRemovalPolicy, deletionPolicy: RECOVERY_TARGETS.prod.clusterDeletionPolicy },
   { retention: 35, window: '16:00-16:30', removalPolicy: 'RETAIN', deletionPolicy: 'Retain' });
@@ -73,8 +73,8 @@ test('cluster deletion protection false is reported with the expected true value
 });
 
 test('a wrong cluster DeletionPolicy is reported against the stage target', () => {
-  assert.deepEqual(recoveryViolations(beta({ clusterDeletionPolicy: 'Retain', writerDeletionPolicy: 'Delete' }), { stage: 'beta' }), [
-    { path: `/Resources/${clusterId}/DeletionPolicy`, expected: 'Delete', actual: 'Retain' },
+  assert.deepEqual(recoveryViolations(beta({ clusterDeletionPolicy: 'Delete', writerDeletionPolicy: 'Retain' }), { stage: 'beta' }), [
+    { path: `/Resources/${clusterId}/DeletionPolicy`, expected: 'Retain', actual: 'Delete' },
   ]);
   assert.deepEqual(recoveryViolations(prod({ clusterDeletionPolicy: 'Delete', writerDeletionPolicy: 'Delete' }), { stage: 'prod' }), [
     { path: `/Resources/${clusterId}/DeletionPolicy`, expected: 'Retain', actual: 'Delete' },
@@ -86,14 +86,14 @@ test('a wrong writer-instance DeletionPolicy is reported as the instance-level e
   assert.deepEqual(recoveryViolations(prod({ writerDeletionPolicy: 'Delete' }), { stage: 'prod' }), [
     { path: `/Resources/${writerId}/DeletionPolicy`, expected: 'Retain', actual: 'Delete' },
   ]);
-  assert.deepEqual(recoveryViolations(beta({ writerDeletionPolicy: 'Retain' }), { stage: 'beta' }), [
-    { path: `/Resources/${writerId}/DeletionPolicy`, expected: 'Delete', actual: 'Retain' },
+  assert.deepEqual(recoveryViolations(beta({ writerDeletionPolicy: 'Delete' }), { stage: 'beta' }), [
+    { path: `/Resources/${writerId}/DeletionPolicy`, expected: 'Retain', actual: 'Delete' },
   ]);
 });
 
 test('every violation is reported for a template that regresses on several properties', () => {
   const template = beta({ retention: 1, window: '17:00-18:00', deletionProtection: false,
-    clusterDeletionPolicy: 'Retain', writerDeletionPolicy: 'Retain' });
+    clusterDeletionPolicy: 'Delete', writerDeletionPolicy: 'Delete' });
   assert.deepEqual(recoveryViolations(template, { stage: 'beta' }).map(({ path }) => path), [
     `/Resources/${clusterId}/Properties/BackupRetentionPeriod`,
     `/Resources/${clusterId}/Properties/PreferredBackupWindow`,

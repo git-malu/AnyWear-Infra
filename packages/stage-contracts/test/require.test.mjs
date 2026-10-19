@@ -11,9 +11,9 @@ const require = createRequire(import.meta.url);
 test('Node 24 CommonJS require() can load the ESM package', () => {
   const loaded = require('../index.mjs');
   assert.equal(loaded.STAGE_CONTRACT_STAGE, 'beta');
-  assert.equal(loaded.STAGE_CONTRACT_PARAMETERS.length, 34);
+  assert.equal(loaded.STAGE_CONTRACT_PARAMETERS.length, 35);
   assert.equal(loaded.STAGE_CONTRACT_CONDITIONAL_PARAMETERS.length, 1);
-  assert.equal(loaded.STAGE_CONTRACT_READ_PARAMETERS.length, 35);
+  assert.equal(loaded.STAGE_CONTRACT_READ_PARAMETERS.length, 36);
   assert.equal(typeof loaded.stageParameters, 'function');
   assert.equal(typeof loaded.validateServiceDeploymentRecord, 'function');
   assert.equal(loaded.serviceDeployRoleName('service'), 'beta-service-deploy-role');

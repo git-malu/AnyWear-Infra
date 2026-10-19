@@ -22,17 +22,18 @@ import {
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_OBSERVED_FIELDS,
   SERVICE_REPOSITORY,
-  SERVICE_WORKLOAD_STACK,
+  SERVICE_RUNTIME_STACK,
   deploymentAlarmName,
   deploymentAlarmNames,
   deploymentBakeName,
+  runtimeStageFromStack,
   stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
   validateDeploymentGate,
   validateServiceDeploymentRecord,
+  validateServiceStacks,
   validateStageInputs,
-  workloadStageFromStack,
 } from '@git-malu/stage-contracts';
 import { canonicalJson, exact, matches, integer, SHA, HASH } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
@@ -65,17 +66,18 @@ export {
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_OBSERVED_FIELDS,
   SERVICE_REPOSITORY,
-  SERVICE_WORKLOAD_STACK,
+  SERVICE_RUNTIME_STACK,
   deploymentAlarmName,
   deploymentAlarmNames,
   deploymentBakeName,
+  runtimeStageFromStack,
   stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
   validateDeploymentGate,
   validateServiceDeploymentRecord,
+  validateServiceStacks,
   validateStageInputs,
-  workloadStageFromStack,
 };
 
 export const account = '650880818323';
@@ -103,8 +105,8 @@ const equal = (actual, expected, label) => {
 // identity of the deployed template and remains the hard evidence for each row.
 // Two producers share this core and never the stack lists:
 //
-//   anywear_infra_deployment   Infra: Foundation, the Beta stage base, Billing
-//   anywear_service_deployment Service: AnyWearWorkloadStack-beta only
+//   anywear_infra_deployment   Infra: Foundation, the Beta Base stack, Billing
+//   anywear_service_deployment Service: AnyWearRuntimeStack-beta only
 //
 // A record may not list a stack its own producer did not produce, so forcing one
 // producer's stacks into the other's record is a validation failure, not a merge.

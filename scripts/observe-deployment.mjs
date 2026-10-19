@@ -9,6 +9,7 @@ import { validateSnapshot, stableLambdaConfiguration, account, region, INFRA_REP
 import { readStageInputs } from './stage-contract-parameters.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
+import { runtimeStack, assertRuntimeReady, describeStack } from './one-writer.mjs';
 
 // The v3 CLI and AnyWear-E2E import these validators. They stay one contract
 // implementation: the observer validates the expected record through the same
@@ -59,7 +60,11 @@ export async function observeDeployment({ infraSha, io = liveObservationIo(), en
     actualStacks.set(configured.stack_name, actual);
   }
   const platform = outputMap(actualStacks.get('AnyWearPlatformStack-beta'));
-  if (platform.BetaActive !== 'true') throw new Error('Only active Beta may issue runtime deployment evidence');
+  // Issue #166: Beta runs when the Service-owned Runtime stack exists. The Base
+  // activity output is gone; the Runtime read is not added to the recorded stack
+  // set because that slice is produced and observed by AnyWear-Service.
+  const runtime = await describeStack(io, runtimeStack, region);
+  assertRuntimeReady(runtime, 'Authenticated deployment observation');
   const lambdas = {};
   for (const [key, functionName] of [['pre-sign-up', 'beta-anywear-pre-sign-up'], ['post-confirmation', 'beta-anywear-post-confirmation-sync']]) {
     const config = (await io.aws(['lambda', 'get-function', '--function-name', functionName])).Configuration;

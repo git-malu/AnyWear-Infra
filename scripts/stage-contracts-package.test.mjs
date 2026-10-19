@@ -26,9 +26,9 @@ test('the package is the single source of the stage and record exports', () => {
   }
   for (const name of ['DEPLOYMENT_RECORD_MEMBERS', 'DEPLOYMENT_PRODUCER_FIELDS', 'DEPLOYMENT_STACK_FIELDS',
     'DEPLOYMENT_INPUT_FIELDS', 'SERVICE_OBSERVED_FIELDS', 'SERVICE_ECS_IDENTITY_FIELDS',
-    'SERVICE_DEPLOYMENT_RECORD_SCHEMA', 'INFRA_REPOSITORY', 'SERVICE_REPOSITORY', 'SERVICE_WORKLOAD_STACK',
+    'SERVICE_DEPLOYMENT_RECORD_SCHEMA', 'INFRA_REPOSITORY', 'SERVICE_REPOSITORY', 'SERVICE_RUNTIME_STACK',
     'validateStageInputs', 'stageContractSchemaHash', 'stableTaskDefinition', 'taskDefinitionContentHash',
-    'validateServiceDeploymentRecord']) {
+    'validateServiceDeploymentRecord', 'runtimeStageFromStack', 'validateServiceStacks']) {
     assert.equal(deployment[name], pkg[name], `${name} is not re-exported from the package`);
   }
   assert.equal(recovery.platformStackName, pkg.platformStackName);
@@ -55,13 +55,14 @@ test('the package definitions match the synthesized Beta Platform stage surface'
     .map(resource => resource.Properties.Name)
     .sort();
   const contractNames = published.filter(name => !OTHER_BETA_PARAMETER_NAMES.includes(name));
-  // The anchor baseline is the legacy identity phase, so it publishes the 34
-  // unconditional names and no cleanup task role.
+  // The anchor baseline is the split Base synthesis: it publishes exactly the 35
+  // unconditional names, including `api_base_url` from the adopted API
+  // distribution. A silently missing or extra published name fails here.
   assert.deepEqual(contractNames, [...pkg.STAGE_CONTRACT_PARAMETERS]);
   assert.deepEqual(published.filter(name => contractNames.includes(name)), contractNames);
   assert.deepEqual(published.filter(name => !contractNames.includes(name)), [...OTHER_BETA_PARAMETER_NAMES].sort());
   const definitions = pkg.stageParameters();
-  assert.equal(definitions.length, 35);
+  assert.equal(definitions.length, 36);
   assert.deepEqual(definitions.map(definition => definition.parameter), [...pkg.STAGE_CONTRACT_READ_PARAMETERS]);
   assert.deepEqual(definitions.filter(definition => pkg.STAGE_CONTRACT_CONDITIONAL_PARAMETERS
     .includes(definition.parameter)).map(definition => definition.name), ['cleanup_task_role_arn']);

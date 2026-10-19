@@ -24,9 +24,9 @@ test('successful observation, close failure and operation failure keep accurate 
   assert.equal(finalizeOperationRecord(fixture('restore-release'), 'success', 'success').result, 'succeeded');
   const closed = finalizeOperationRecord(fixture('close-admission'), 'failure', 'skipped');
   assert.equal(closed.result, 'failed'); assert.equal(closed.recovery, 'not-required');
-  // Beta is resident, so no protected operation can end stopped and skip the
-  // final observation; only the read-only state operation is exempt.
-  for (const operation of ['deploy-platform', 'deploy-workload', 'observe', 'set-testers', 'restore-release', 'close-admission']) {
+  // A completed mutation cannot skip the final observation; only the read-only
+  // state operation is exempt.
+  for (const operation of ['deploy-platform', 'deploy-egress', 'observe', 'set-testers', 'restore-release', 'close-admission']) {
     assert.equal(finalizeOperationRecord(fixture(operation), 'success', 'skipped').result, 'partial', operation);
   }
   assert.equal(finalizeOperationRecord(fixture('state'), 'success', 'skipped').result, 'succeeded');
@@ -35,7 +35,7 @@ test('successful observation, close failure and operation failure keep accurate 
 });
 
 test('a completed mutation with any unsuccessful required observation records partial', () => {
-  for (const operation of ['deploy-platform', 'deploy-workload', 'observe', 'set-testers', 'restore-release', 'close-admission']) {
+  for (const operation of ['deploy-platform', 'deploy-egress', 'observe', 'set-testers', 'restore-release', 'close-admission']) {
     for (const observation of ['failure', 'cancelled']) {
       const record = finalizeOperationRecord(fixture(operation), 'success', observation);
       assert.equal(record.result, 'partial', `${operation} ${observation}`);
@@ -45,11 +45,11 @@ test('a completed mutation with any unsuccessful required observation records pa
   }
 });
 
-test('final observation is required regardless of the observed final activity', () => {
-  for (const operation of ['deploy-platform', 'deploy-workload', 'observe', 'set-testers']) {
+test('final observation is required regardless of the observed final stack state', () => {
+  for (const operation of ['deploy-platform', 'deploy-egress', 'observe', 'set-testers']) {
     for (const active of ['true', 'false']) {
       const record = fixture(operation);
-      record.events.push({ type: 'final-beta-activity', platform_active: active, workload_active: active });
+      record.events.push({ type: 'final-stack-state', base_status: 'UPDATE_COMPLETE', runtime_status: active === 'true' ? 'UPDATE_COMPLETE' : 'ABSENT', runtime_exists: active === 'true' });
       assert.equal(finalizeOperationRecord(record, 'success', 'skipped').result, 'partial', `${operation} ${active}`);
     }
   }
@@ -79,7 +79,7 @@ test('finalizer CLI rewrites strictly parsed state and ordinary records with the
   for (const [operation, operationOutcome, observationOutcome, result, recovery, active] of cases) {
     const record = fixture(operation);
     record.final_observation = operation === 'state' ? 'not-applicable' : 'pending';
-    record.events.push({ type: 'final-beta-activity', platform_active: String(active), workload_active: String(active) });
+    record.events.push({ type: 'final-stack-state', base_status: 'UPDATE_COMPLETE', runtime_status: active ? 'UPDATE_COMPLETE' : 'ABSENT', runtime_exists: active });
     if (operation === 'state') record.state_observation = { qualification: 'not-applicable', admission: { tester_count: 2 } };
     await writeFile(file, canonicalJson(record));
     const parsed = parseJson(await readFile(file));

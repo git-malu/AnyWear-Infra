@@ -83,7 +83,7 @@ test('only the phase-dependent cleanup stage-contract parameter may be added out
     Properties: {
       Name: '/anywear/beta/cleanup_task_role_arn', Type: 'String',
       Value: { 'Fn::GetAtt': ['CleanupTaskRoleABCD1234', 'Arn'] },
-      Description: 'AnyWear-Service AnyWearWorkloadStack-beta stage contract: dedicated cleanup task role ARN',
+      Description: 'AnyWear-Service AnyWearRuntimeStack-beta stage contract: dedicated cleanup task role ARN',
     },
   };
   const added = base();

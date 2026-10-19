@@ -99,11 +99,6 @@ output() {
   jq -er --arg key "$1" '.[] | select(.OutputKey == $key) | .OutputValue' <<<"$stack_outputs"
 }
 
-if [[ "$stage" == "beta" && "$(jq -r '.[] | select(.OutputKey=="BetaActive") | .OutputValue' <<<"$stack_outputs")" == "false" ]]; then
-  echo "Resident Beta invariant violated: the Platform stack is not active, and Beta Lifecycle start no longer exists. Repair the out-of-band change through a reviewed deployment." >&2
-  exit 1
-fi
-
 repository_uri="$(output ServiceRepositoryUri)"
 cluster_name="$(output EcsClusterName)"
 subnet_ids="$(output PrivateSubnetIds)"

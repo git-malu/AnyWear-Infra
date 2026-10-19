@@ -6,7 +6,7 @@ import {
   DEFAULT_FOUNDATION_SERVICE,
   readFoundationServices,
   SERVICE_SET_CONTEXT,
-  serviceWorkloadStackName,
+  serviceRuntimeStackName,
 } from '../lib/foundation-stack';
 import cdkConfig from '../cdk.json';
 import provenance from './fixtures/foundation-live-provenance.json';
@@ -102,15 +102,15 @@ describe('Foundation reviewed service set (CDK context)', () => {
     const comparison = JSON.parse(readFileSync(reportPath, 'utf8'));
     expect(comparison.accepted).toBe(true);
     expect(comparison.original_resource_count).toBe(4);
-    expect(comparison.candidate_resource_count).toBe(16);
-    expect(comparison.added).toHaveLength(12);
+    expect(comparison.candidate_resource_count).toBe(17);
+    expect(comparison.added).toHaveLength(13);
     // sha256 of the normalized live candidate including the #162 extension on top
     // of the #158 rounds (read-only bake grants on both worker log-group forms,
     // colon-form CloudWatch alarm ARNs, worker metric-filter grants, and main's
     // DescribeLogGroups/Step Functions/CleanupOperation-role grants). The
     // comparison normalizes only the declared CDK diagnostic metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('a32869890f4f04e1d32eb32253d8589cfbf8b073c003a4d41d9b566d4f44965f');
+      .toBe('8883305d402ccdae77eebabf1b172f1f1b607426137ea62ef205dbe2b292794a');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();
@@ -138,8 +138,8 @@ describe('Foundation reviewed service set (CDK context)', () => {
     expect(cfn).toBeDefined();
     expect(roleName(withSecond, 'beta-service-deploy-role')).toEqual(baseline.Resources[
       Object.keys(baseline.Resources).find((id) => baseline.Resources[id].Properties?.RoleName === 'beta-service-deploy-role')!]);
-    expect(serviceWorkloadStackName('ocr')).toBe('AnyWearWorkloadStack-ocr-beta');
-    expect(serviceWorkloadStackName('service')).toBe('AnyWearWorkloadStack-beta');
+    expect(serviceRuntimeStackName('ocr')).toBe('AnyWearRuntimeStack-ocr-beta');
+    expect(serviceRuntimeStackName('service')).toBe('AnyWearRuntimeStack-beta');
 
     // The OIDC subject is derived from the descriptor's repository id, repository
     // name and environment; the CFN role keeps CloudFormation-only trust.
@@ -157,25 +157,25 @@ describe('Foundation reviewed service set (CDK context)', () => {
     ]);
 
     // The added policies are the same Service role shape, scoped to the second
-    // service's own workload stack and resource families. No bootstrap role
+    // service's own runtime stack and resource families. No bootstrap role
     // assumption, no bootstrap/account-wide widening.
     const cfnStatements = policiesFor(withSecond, cfn).flatMap((policy) => policy.Properties.PolicyDocument.Statement);
     const deployStatements = policiesFor(withSecond, deploy).flatMap((policy) => policy.Properties.PolicyDocument.Statement);
     const cfnActions = cfnStatements.flatMap((statement) => [statement.Action].flat());
     const cfnText = JSON.stringify(cfnStatements);
     const deployText = JSON.stringify(deployStatements);
-    // The OIDC role can drive only the second service's workload stack and its
+    // The OIDC role can drive only the second service's runtime stack and its
     // change sets; the execution role keeps CloudFormation read-only and owns
-    // only that workload's resource families.
-    expect(deployText).toContain('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-ocr-beta/*');
+    // only that runtime's resource families.
+    expect(deployText).toContain('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-ocr-beta/*');
     expect(deployText).toContain('"cloudformation:*"');
-    expect(deployText).not.toContain('stack/AnyWearWorkloadStack-beta/*');
+    expect(deployText).not.toContain('stack/AnyWearRuntimeStack-beta/*');
     expect(cfnText).toContain('arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*');
-    expect(cfnText).not.toContain('AnyWearWorkloadStack-ocr-beta');
+    expect(cfnText).not.toContain('AnyWearRuntimeStack-ocr-beta');
     expect(cfnActions.filter((action) => action.startsWith('cloudformation:'))).toEqual(['cloudformation:DescribeStacks']);
     expect(cfnText).toContain('beta-anywear-ocr-api');
     expect(cfnText).toContain('beta-anywear-ocr-*');
-    expect(cfnText).toContain('anywearworkloadstack-ocr-beta-*');
+    expect(cfnText).toContain('anywearruntimestack-ocr-beta-*');
     expect(deployText).toContain('beta-anywear-ocr');
     expect(deployText).not.toContain('sts:AssumeRole');
     expect(deployText).toContain('arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version');

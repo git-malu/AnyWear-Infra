@@ -8,6 +8,7 @@ import { admissionClosureProof, isAdmissionClosed,
 import { assertOneShotAllowed } from './operation-boundaries.mjs';
 import { createRuntimeIo } from './runtime-operation.mjs';
 import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
+import { runtimeStack } from './one-writer.mjs';
 
 // The release slice is deployed by AnyWear-Service; these drivers act on the
 // revision the Workload stack reports. The fixture records that revision in the
@@ -29,7 +30,7 @@ const openState = (testers = originalTesters) => ({ admission_mode: 'testers', a
   admission_mode_reason: null, admission_recorded_mode: 'testers', admission_recorded_keys: ['mode'], tester_emails: testers });
 const stackOutputs = Object.assign(Object.fromEntries(['PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn',
   'OneShotExecutionRoleArn', 'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName', 'WardrobeBucketName']
-  .map(key => [key, key])), { EcsClusterName: 'beta-anywear', BetaActive: 'true' });
+  .map(key => [key, key])), { EcsClusterName: 'beta-anywear' });
 const outputEntries = outputs => Object.entries(outputs).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue }));
 const guardEnv = (operation) => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
@@ -46,14 +47,24 @@ function mockIo(options = {}) {
   const now = () => options.now ?? NOW;
   const actionSet = operation === 'open-admission' ? ['resume', 'suspend', 'status'] : ['suspend', 'status'];
   let statusReads = 0;
-  const platform = { StackStatus: options.platformStatus ?? 'UPDATE_COMPLETE', Outputs: outputEntries({ ...stackOutputs, BetaActive: options.platformActive ?? 'true' }) };
-  const workload = { StackStatus: options.workloadStatus ?? 'UPDATE_COMPLETE', Outputs: outputEntries({ BetaActive: options.workloadActive ?? 'true' }),
-    Parameters: Object.entries({ ServiceImageDigest: options.digest ?? digest, ServiceCommitSha: options.commit ?? serviceSha,
-      VlmConfigArn: 'arn:aws:ssm:ap-east-1:650880818323:parameter/beta-vlm', CloudFrontPrefixListId: 'pl-1234' })
-      .map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })) };
+  const platform = { StackName: 'AnyWearPlatformStack-beta', StackStatus: options.platformStatus ?? 'UPDATE_COMPLETE', Outputs: outputEntries(stackOutputs) };
+  const runtime = options.runtimeStatus === null ? undefined
+    : { StackName: runtimeStack, StackStatus: options.runtimeStatus ?? 'UPDATE_COMPLETE',
+      Parameters: Object.entries({ ServiceImageDigest: options.digest ?? digest, ServiceCommitSha: options.commit ?? serviceSha,
+        VlmConfigArn: 'arn:aws:ssm:ap-east-1:650880818323:parameter/beta-vlm', CloudFrontPrefixListId: 'pl-1234' })
+        .map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })) };
+  const stacks = new Map([['AnyWearPlatformStack-beta', platform], [runtimeStack, runtime]]);
   return { calls, events, proofs, world, operation, now, async aws(args) {
     calls.push(['aws', ...args]);
-    if (args[0] === 'cloudformation') return { Stacks: [args.at(-1).includes('Platform') ? platform : workload] };
+    if (args[0] === 'cloudformation') {
+      const name = args.at(-1);
+      const stack = stacks.get(name);
+      if (!stack) {
+        const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${name} does not exist`;
+        throw Object.assign(new Error(stderr), { stderr });
+      }
+      return { Stacks: [stack] };
+    }
     if (args[0] === 'ssm') {
       assert.equal(args[1], 'get-parameter');
       const name = args.at(-1);
@@ -184,8 +195,8 @@ test('source and active-Beta mismatches prevent every close before any lifecycle
     { env: { ...env, GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/retired-executor.yml@refs/heads/main' } }]) {
     const io = mockIo(); await assert.rejects(close(io, extra)); assert.equal(io.calls.length, 0);
   }
-  for (const options of [{ platformActive: 'false' }, { workloadActive: 'false' }, { platformActive: 'unknown' },
-    { platformStatus: 'UPDATE_IN_PROGRESS' }, { workloadStatus: 'UPDATE_ROLLBACK_FAILED' }]) {
+  for (const options of [{ runtimeStatus: 'UPDATE_IN_PROGRESS' }, { runtimeStatus: 'UPDATE_ROLLBACK_FAILED' },
+    { runtimeStatus: null }, { platformStatus: 'UPDATE_IN_PROGRESS' }]) {
     const io = mockIo(options); await assert.rejects(close(io));
     assert.equal(lifecycleActionsRun(io).includes('suspend'), false, JSON.stringify(options));
     assert.equal(io.events.at(-1).phase, 'failed');

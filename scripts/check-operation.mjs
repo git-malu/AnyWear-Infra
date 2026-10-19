@@ -24,7 +24,7 @@ export async function assertDatabaseRecoveryPrecondition(env = process.env) {
     const artifactDirectory = path.join(scratch, 'service-artifacts');
     await createTestInputs(artifactDirectory);
     const directory = path.join(scratch, 'cdk.out');
-    const files = synthStage({ repository: root, directory, stage, environmentRunning: true,
+    const files = synthStage({ repository: root, directory, stage,
       inputs: { identityPhase: env.INFRA_IDENTITY_PHASE, ecrImageRetention: env.INFRA_RETENTION_PROTECTION === 'true',
         legacyRoleSource: 'external', artifactDirectory } });
     const templateFile = `${stackName}.template.json`;

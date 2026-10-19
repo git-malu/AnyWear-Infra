@@ -22,16 +22,33 @@ import type { ArtifactInputs } from './artifact-inputs';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
 import { grantBetaDedicatedRoles } from './beta-role-grants';
 import { StageContract } from './stage-contract';
+import { BASE_EXPORTS } from './base-exports';
+import apiDistributionIdentity from './api-distribution.json';
 
 export const DEFAULT_QWEATHER_API_HOST = 'jt4d94d58q.re.qweatherapi.com';
+
+// Issue #166: the API CloudFront distribution moved from the Service-owned
+// Runtime stack into the persistent Base stack. Its logical ID is pinned to the
+// live source logical ID and its origin is a literal ALB DNS name, so the
+// CloudFormation stack-refactor MOVE adopts the same physical distribution (and
+// therefore keeps its `*.cloudfront.net` domain). The constant is also read by
+// `scripts/migrate-beta-split.mjs`; `test/infra.test.ts` asserts the synthesized
+// resource carries it and the migration script emits the same destination.
+export const API_DISTRIBUTION_IDENTITY = Object.freeze(apiDistributionIdentity);
 
 export interface PlatformStackProps extends cdk.StackProps {
   stage: string;
   artifactInputs: ArtifactInputs;
   identityPhase?: IdentityPhase;
   ecrImageRetention?: boolean;
-  environmentRunning?: boolean;
   qWeatherApiHost?: string;
+  /**
+   * The public API load-balancer DNS name the Beta API distribution points at.
+   * Required for `beta`; the deployment reads it from the Runtime stack's
+   * `ApiLoadBalancerDnsName` output (or the recorded live value during the
+   * one-time split migration).
+   */
+  apiOriginDomainName?: string;
 }
 
 export class PlatformStack extends cdk.Stack {
@@ -44,6 +61,7 @@ export class PlatformStack extends cdk.Stack {
   readonly wardrobeBucket: s3.Bucket;
   readonly clientBucket?: s3.Bucket;
   readonly clientDistribution?: cloudfront.Distribution;
+  apiDistribution?: cloudfront.CfnDistribution;
   readonly userPool: cognito.UserPool;
   readonly userPoolClient: cognito.UserPoolClient;
   readonly qWeatherApiKeySecret: secretsmanager.ISecret;
@@ -70,10 +88,10 @@ export class PlatformStack extends cdk.Stack {
     const isDev = stage === 'dev';
     const isNonProd = stage === 'dev' || stage === 'beta';
     const isProd = stage === 'prod';
-    const environmentRunning = stage !== 'beta' || props.environmentRunning !== false;
+    const isBeta = stage === 'beta';
     const identityPhase = readIdentityPhase(props.identityPhase);
     const asyncRuntime = new AsyncRuntime(this, 'AsyncRuntime', {
-      stage, production: isProd, runtimePolicy: props.artifactInputs.runtimePolicy,
+      stage, production: isProd, retainState: isBeta, runtimePolicy: props.artifactInputs.runtimePolicy,
       ecrImageRetention: props.ecrImageRetention,
     });
     this.repository = asyncRuntime.repository;
@@ -92,21 +110,21 @@ export class PlatformStack extends cdk.Stack {
       }
     }
 
+    // Issue #166: the Beta Base stack owns no egress. Its Private tier is
+    // isolated like the Isolated tier; `AnyWearEgressStack-beta` attaches the
+    // NAT and route tables while the environment is running, so deleting that
+    // stack removes egress without touching any Base resource. Production keeps
+    // its existing resident topology (it has no Egress stack in this change).
     this.vpc = isDev ? undefined : new ec2.Vpc(this, 'AnyWearVpc', {
       maxAzs: 2,
-      natGateways: environmentRunning ? 1 : 0,
-      ...(stage === 'beta' ? {
+      ...(isBeta ? {
+        natGateways: 0,
         subnetConfiguration: [
           { name: 'Public', subnetType: ec2.SubnetType.PUBLIC },
-          {
-            name: 'Private',
-            subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED,
-          },
-          // Keep a dedicated isolated tier in both active and stopped states so
-          // the VPC topology remains stable while paid compute is scaled down.
+          { name: 'Private', subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
           { name: 'Isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
         ],
-      } : {}),
+      } : { natGateways: 1 }),
     });
 
     const preSignUpLambda = isNonProd
@@ -129,7 +147,7 @@ export class PlatformStack extends cdk.Stack {
       handler: 'index.handler',
       vpc: this.vpc,
       vpcSubnets: this.vpc
-        ? { subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED }
+        ? { subnetType: isBeta ? ec2.SubnetType.PRIVATE_ISOLATED : ec2.SubnetType.PRIVATE_WITH_EGRESS }
         : undefined,
       environment: { STAGE: stage },
       timeout: cdk.Duration.seconds(30),
@@ -163,6 +181,9 @@ export class PlatformStack extends cdk.Stack {
 
     this.userPool = new cognito.UserPool(this, 'AnyWearUserPool', {
       userPoolName: `${stage}-anywear-user-pool`,
+      // Issue #166: persistent identity survives the deletion of the Egress and
+      // Runtime stacks. Retain sets both DeletionPolicy and UpdateReplacePolicy.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       selfSignUpEnabled: true,
       signInAliases: { email: true },
       customAttributes: {
@@ -200,10 +221,14 @@ export class PlatformStack extends cdk.Stack {
       stringValue: this.userPoolClient.userPoolClientId,
     });
 
+    // Issue #166: Beta's persistent data outlives every disposable stack. Retain
+    // applies `DeletionPolicy` and `UpdateReplacePolicy: Retain` to the bucket,
+    // so `autoDeleteObjects` (which is incompatible with retaining) is off.
+    const retainPersistent = isProd || isBeta;
     this.wardrobeBucket = new s3.Bucket(this, 'AnyWearWardrobeBucket', {
       bucketName: `${stage}-anywear-wardrobe-bucket-${this.account}-${this.region}`,
-      removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: !isProd,
+      removalPolicy: retainPersistent ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: !retainPersistent,
       lifecycleRules: [{
         id: 'ExpireUnpromotedTaskAttempts',
         prefix: 'task-attempts/',
@@ -228,8 +253,8 @@ export class PlatformStack extends cdk.Stack {
         bucketName: `beta-anywear-client-${this.account}-${this.region}`,
         blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
         enforceSSL: true,
-        autoDeleteObjects: true,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        autoDeleteObjects: false,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
       });
       this.clientDistribution = new cloudfront.Distribution(this, 'AnyWearClientDistribution', {
         comment: 'beta AnyWear Client',
@@ -245,6 +270,10 @@ export class PlatformStack extends cdk.Stack {
         ],
         enableIpv6: true,
       });
+      // The client distribution is part of Beta's persistent state: its
+      // `*.cloudfront.net` domain must survive deleting the disposable stacks.
+      this.clientDistribution.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+      this.createApiDistribution(props.apiOriginDomainName);
     }
 
     new ssm.StringParameter(this, 'WardrobeBucketNameParam', {
@@ -306,12 +335,6 @@ export class PlatformStack extends cdk.Stack {
     }
 
     if (this.vpc) {
-      if (stage === 'beta') {
-        this.vpc.addGatewayEndpoint('S3GatewayEndpoint', {
-          service: ec2.GatewayVpcEndpointAwsService.S3,
-          subnets: [{ subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED }],
-        });
-      }
       this.database = new rds.DatabaseCluster(this, 'AnyWearDatabase', {
         engine: rds.DatabaseClusterEngine.auroraPostgres({
           version: rds.AuroraPostgresEngineVersion.VER_17_7,
@@ -322,15 +345,16 @@ export class PlatformStack extends cdk.Stack {
         serverlessV2AutoPauseDuration: stage === 'beta' ? cdk.Duration.minutes(5) : undefined,
         storageEncrypted: true,
         vpc: this.vpc,
-        vpcSubnets: {
-          subnetType: environmentRunning ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PRIVATE_ISOLATED,
-        },
+        vpcSubnets: { subnetType: isBeta ? ec2.SubnetType.PRIVATE_ISOLATED : ec2.SubnetType.PRIVATE_WITH_EGRESS },
         defaultDatabaseName: 'anywear',
         backup: {
           retention: cdk.Duration.days(isProd ? 35 : 7),
           preferredWindow: '16:00-16:30',
         },
-        removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+        // Issue #166: Beta's Aurora data is persistent state. Retain sets both
+        // `DeletionPolicy` and `UpdateReplacePolicy`, so a Base update can never
+        // delete the cluster (which has deletion protection on anyway).
+        removalPolicy: retainPersistent ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
         // Aurora has no instance-level deletion protection; the cluster carries
         // it, and the production writer instance's DeletionPolicy follows the
         // cluster removal policy.
@@ -479,7 +503,6 @@ export class PlatformStack extends cdk.Stack {
           conditions: regionCondition,
         }));
         new cdk.CfnOutput(this, 'LifecycleTaskRoleArn', { value: this.lifecycleTaskRole.roleArn });
-        new cdk.CfnOutput(this, 'BetaActive', { value: String(environmentRunning) });
       }
       this.oneShotLogGroup = new logs.LogGroup(this, 'OneShotLogGroup', {
         logGroupName: `/anywear/${stage}/one-shot`,
@@ -657,11 +680,100 @@ export class PlatformStack extends cdk.Stack {
       new cdk.CfnOutput(this, 'OneShotExecutionRoleArn', { value: this.oneShotExecutionRole.roleArn });
       new cdk.CfnOutput(this, 'OneShotLogGroupName', { value: this.oneShotLogGroup.logGroupName });
       new cdk.CfnOutput(this, 'PrivateSubnetIds', {
-        value: cdk.Fn.join(',', [
-          ...(environmentRunning ? this.vpc!.privateSubnets : this.vpc!.isolatedSubnets),
-        ].map((subnet) => subnet.subnetId)),
+        value: cdk.Fn.join(',', this.privateSubnets().map((subnet) => subnet.subnetId)),
+      });
+      if (isBeta) this.createEgressExports();
+    }
+    if (this.apiDistribution) {
+      new cdk.CfnOutput(this, 'ApiDistributionId', { value: this.apiDistribution.attrId });
+      new cdk.CfnOutput(this, 'ApiDistributionDomainName', { value: this.apiDistribution.attrDomainName });
+      new cdk.CfnOutput(this, 'ApiBaseUrl', { value: `https://${this.apiDistribution.attrDomainName}` });
+    }
+  }
+
+  // The Beta Private tier carries the workload and the Aurora cluster. Both it
+  // and the dedicated Isolated tier are `PRIVATE_ISOLATED` in the Base template;
+  // the Egress stack adds the NAT routes to this tier while it exists. Selecting
+  // by subnet-group name keeps the published `private_subnet_ids` stable instead
+  // of falling back to every isolated subnet.
+  private privateSubnets(): ec2.ISubnet[] {
+    const vpc = this.vpc!;
+    return this.stageName === 'beta'
+      ? vpc.selectSubnets({ subnetGroupName: 'Private' }).subnets
+      : vpc.privateSubnets;
+  }
+
+  // The Base-owned network ids the disposable Egress stack imports. Base keeps
+  // each subnet's route table and association (one association per subnet); the
+  // exports let Egress add only its default routes and S3 gateway endpoint into
+  // those existing tables. They are plain CloudFormation exports, not stage
+  // contract parameters, so the 36/35/1 contract is unchanged and `deploy-egress`
+  // still synthesizes only the Egress stack.
+  private createEgressExports(): void {
+    const vpc = this.vpc;
+    if (!vpc) throw new Error('The Beta Egress exports require the Base VPC');
+    const privateSubnets = this.privateSubnets();
+    if (privateSubnets.length !== BASE_EXPORTS.privateRouteTableIds.length) {
+      throw new Error(`The Beta Egress export contract requires ${BASE_EXPORTS.privateRouteTableIds.length} Private subnets, found ${privateSubnets.length}`);
+    }
+    if (vpc.publicSubnets.length === 0) throw new Error('The Beta Egress exports require a public subnet for the NAT gateway');
+    new cdk.CfnOutput(this, 'BaseVpcIdExport', { value: vpc.vpcId, exportName: BASE_EXPORTS.vpcId });
+    new cdk.CfnOutput(this, 'BaseNatSubnetIdExport', { value: vpc.publicSubnets[0].subnetId, exportName: BASE_EXPORTS.natSubnetId });
+    for (const [index, subnet] of privateSubnets.entries()) {
+      new cdk.CfnOutput(this, `BasePrivateRouteTable${index + 1}IdExport`, {
+        value: subnet.routeTable.routeTableId, exportName: BASE_EXPORTS.privateRouteTableIds[index],
       });
     }
+  }
+
+  // The Beta API distribution. Issue #166 moves this resource out of the
+  // Service-owned Runtime stack with a one-time CloudFormation stack refactor.
+  // The config is the live recorded shape: the pinned logical ID, the literal
+  // origin id the live resource uses and a literal origin DNS name (the live ALB
+  // `ApiLoadBalancerDnsName` the deployment passes as context). A same-stack
+  // `Fn::GetAtt` origin is what made the resource unmovable, so none of the
+  // origin may be resolved through another resource here.
+  private createApiDistribution(apiOriginDomainName: string | undefined): void {
+    if (typeof apiOriginDomainName !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(apiOriginDomainName)) {
+      throw new Error('The Beta Base stack requires the explicit live API origin domain name (apiOriginDomainName)');
+    }
+    const identity = API_DISTRIBUTION_IDENTITY;
+    this.apiDistribution = new cloudfront.CfnDistribution(this, 'ApiDistribution', {
+      distributionConfig: {
+        comment: identity.comment,
+        enabled: true,
+        httpVersion: 'http2and3',
+        ipv6Enabled: true,
+        defaultCacheBehavior: {
+          targetOriginId: identity.originId,
+          viewerProtocolPolicy: 'redirect-to-https',
+          allowedMethods: ['GET', 'HEAD', 'OPTIONS', 'PUT', 'PATCH', 'POST', 'DELETE'],
+          cachePolicyId: identity.defaultCachePolicyId,
+          originRequestPolicyId: identity.originRequestPolicyId,
+          compress: false,
+        },
+        origins: [{
+          id: identity.originId,
+          domainName: apiOriginDomainName,
+          customOriginConfig: {
+            httpPort: 80,
+            originProtocolPolicy: 'http-only',
+            originSslProtocols: ['TLSv1.2'],
+            originReadTimeout: 60,
+            originKeepaliveTimeout: 60,
+          },
+          originCustomHeaders: [{
+            headerName: identity.originVerifyHeaderName,
+            headerValue: `{{resolve:secretsmanager:${identity.originVerifySecretArn}:SecretString:::}}`,
+          }],
+        }],
+      },
+    });
+    // Pinning the destination logical ID is what makes Base's first post-move
+    // deploy adopt the moved distribution instead of replacing it (a replacement
+    // would assign a new distribution ID and domain).
+    this.apiDistribution.overrideLogicalId(identity.logicalId);
+    this.apiDistribution.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
   }
 
   private setLambdaLogRetention(functionResource: lambda.Function, retention: logs.RetentionDays): void {

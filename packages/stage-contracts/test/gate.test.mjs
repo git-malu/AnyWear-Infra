@@ -10,7 +10,7 @@ import {
   deploymentBakeName,
   deploymentQueueNames,
   validateDeploymentGate,
-  workloadStageFromStack,
+  runtimeStageFromStack,
 } from '../index.mjs';
 import { ENDED_AT, IMAGE_DIGEST, SERVICE_SHA, STARTED_AT, gateBlock } from './gate-fixture.mjs';
 
@@ -65,8 +65,8 @@ test('the threshold table and comparison strings are stage-free; only names carr
   });
   assert.throws(() => deploymentAlarmName('beta', 'nope'), /Unknown deployment gate signal/);
   assert.throws(() => deploymentBakeName('Beta'), /Invalid deployment stage/);
-  assert.equal(workloadStageFromStack('AnyWearWorkloadStack-prod'), 'prod');
-  assert.throws(() => workloadStageFromStack('AnyWearPlatformStack-beta'), /Invalid Workload stack identity/);
+  assert.equal(runtimeStageFromStack('AnyWearRuntimeStack-prod'), 'prod');
+  assert.throws(() => runtimeStageFromStack('AnyWearPlatformStack-beta'), /Invalid Runtime stack identity/);
 });
 
 test('the window must be exactly 600 seconds with a coherent duration', () => {

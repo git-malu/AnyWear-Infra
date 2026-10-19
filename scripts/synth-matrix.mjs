@@ -26,8 +26,7 @@ assert.ok(options['retention-protection'] === undefined || ['true', 'false'].inc
   '--retention-protection must be true or false');
 const ecrImageRetention = options['retention-protection'] === 'true';
 assert.ok(phases.every((phase) => ['legacy', 'roles-added', 'retired'].includes(phase)), 'Unknown identity phase');
-const variants = [{ stage: 'dev', active: true }, { stage: 'beta', active: true },
-  { stage: 'beta', active: false }, { stage: 'prod', active: true }];
+const variants = [{ stage: 'dev' }, { stage: 'beta' }, { stage: 'prod' }];
 const revision = (cwd) => execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
 const source = { repository_sha: revision(repository), baseline_sha: baselineRepository && !baselineSnapshot && revision(baselineRepository) };
 if (baselineSnapshot) {
@@ -54,7 +53,7 @@ if (baselineTemplates) {
   for (const [file, hash] of Object.entries(provenance.templates)) {
     // The release slice is Service's baseline; this repository's baseline set is
     // exactly the stack set this app still synthesizes.
-    assert.match(file, /^(dev-active|beta-active|beta-stopped|prod-active)\/AnyWear(?:Foundation|Platform|Billing)Stack(?:-(?:dev|beta|prod))?\.template\.json$/);
+    assert.match(file, /^(dev-active|beta-active|prod-active)\/AnyWear(?:Foundation|Platform|Billing)Stack(?:-(?:dev|beta|prod))?\.template\.json$/);
     assert.match(hash, /^[a-f0-9]{64}$/);
     assert.equal(createHash('sha256').update(readFileSync(path.join(baselineTemplates, file))).digest('hex'), hash,
       `Baseline template integrity: ${file}`);
@@ -71,13 +70,13 @@ mkdirSync(output, { recursive: true });
 function synth(cwd, directory, variant, phase, immutableInputs) {
   // The shared synthesis is what the pre-credential deployment check runs, so
   // the matrix and the deployment gate cannot drift into different shapes.
-  return synthStage({ repository: cwd, directory, stage: variant.stage, environmentRunning: variant.active,
+  return synthStage({ repository: cwd, directory, stage: variant.stage,
     inputs: immutableInputs ? { identityPhase: phase, ecrImageRetention, legacyRoleSource: 'cdk',
       artifactDirectory: path.resolve(options['artifact-directory']) } : undefined });
 }
 const reports = [];
 for (const variant of variants) {
-  const name = `${variant.stage}-${variant.active ? 'active' : 'stopped'}`;
+  const name = `${variant.stage}-active`;
   const baseline = baselineTemplates ? path.join(baselineTemplates, name) : path.join(output, 'baseline', name);
   if (baselineRepository) synth(baselineRepository, baseline, variant, 'legacy', false);
   for (const phase of phases) {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { compareLiveFoundation, loadLiveFoundationFixture } from './compare-live-foundation.mjs';
 
-test('explicit live Foundation adds only eight roles/four policies and preserves the actual provider', async () => {
+test('explicit live Foundation adds only eight roles/five policies and preserves the actual provider', async () => {
   const output = await mkdtemp(path.join(os.tmpdir(), 'infra-live-foundation-'));
   const config = JSON.parse(await readFile('cdk.json', 'utf8'));
   const run = (patch, scope = 'foundation', overrides = {}) => execFileSync(process.execPath, ['bin/infra.js'], { stdio: 'pipe', env: { ...process.env,
@@ -24,10 +24,10 @@ test('explicit live Foundation adds only eight roles/four policies and preserves
   run({ legacyRoleSource: 'external' });
   const candidate = JSON.parse(await readFile(path.join(output, 'AnyWearFoundationStack.template.json')));
   const { original, additions } = await loadLiveFoundationFixture();
-  assert.equal(compareLiveFoundation(original, candidate, additions).candidate_resource_count, 16);
+  assert.equal(compareLiveFoundation(original, candidate, additions).candidate_resource_count, 17);
   const invalid = structuredClone(candidate);
   invalid.Resources.LegacyRole = { Type: 'AWS::IAM::Role', Properties: { RoleName: 'prod-github-actions-pipeline-role' } };
-  assert.throws(() => compareLiveFoundation(original, invalid, additions), /reviewed 12 additive/);
+  assert.throws(() => compareLiveFoundation(original, invalid, additions), /reviewed 13 additive/);
   const code = structuredClone(candidate);
   code.Resources.CustomAWSCDKOpenIdConnectProviderCustomResourceProviderHandlerF2C543E0.Properties.Code.S3Key = 'other.zip';
   assert.throws(() => compareLiveFoundation(original, code, additions), /drift/);

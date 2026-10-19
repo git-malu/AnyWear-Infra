@@ -146,7 +146,7 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.after.Properties.Type === 'String'
       && typeof difference.after.Properties.Description === 'string'
       && difference.after.Properties.Description
-        .startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: ');
+        .startsWith('AnyWear-Service AnyWearRuntimeStack-beta stage contract: ');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
       || recoveryDelta || cleanupContractParameter) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'

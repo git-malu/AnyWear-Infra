@@ -3,10 +3,10 @@ import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import {
   deploymentQueueNames,
+  runtimeStackName,
   serviceDeployCfnRoleName,
   serviceDeployRoleName,
   serviceTrustSubject,
-  workloadStackName,
 } from '@git-malu/stage-contracts';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
 import { readLegacyRoleSource, type LegacyRoleSource } from './legacy-role-source';
@@ -101,13 +101,13 @@ export function readFoundationServices(value: unknown = undefined): readonly Fou
     ...descriptors.filter((descriptor) => !sameDescriptor(descriptor, primary))]);
 }
 
-// The workload stack an additional service's release chain deploys. The default
-// `service` keeps the existing `AnyWearWorkloadStack-beta`; an added service
-// scopes the shared identity with its slug.
-export function serviceWorkloadStackName(service: string): string {
-  if (service === DEFAULT_FOUNDATION_SERVICE.service) return workloadStackName('beta');
+// The Runtime stack an additional service's release chain deploys. The default
+// `service` keeps the existing `AnyWearRuntimeStack-beta` identity (0.3.0); an
+// added service scopes the shared identity with its slug.
+export function serviceRuntimeStackName(service: string): string {
+  if (service === DEFAULT_FOUNDATION_SERVICE.service) return runtimeStackName('beta');
   if (!SERVICE_SLUG.test(service)) throw new Error('Invalid service name');
-  return `AnyWearWorkloadStack-${service}-beta`;
+  return `AnyWearRuntimeStack-${service}-beta`;
 }
 
 export interface FoundationStackProps extends cdk.StackProps {
@@ -213,12 +213,32 @@ export class FoundationStack extends cdk.Stack {
     });
     const infraSubject = betaSubject('AnyWear-Infra', 1409047265);
     const deploy = createRole('BetaInfraDeployRole', 'infra-deploy', infraSubject);
-    createRole('BetaInfraRuntimeRole', 'infra-runtime', infraSubject);
+    const runtime = createRole('BetaInfraRuntimeRole', 'infra-runtime', infraSubject);
     const artifacts = createRole('BetaServiceArtifactRole', 'service-artifact',
       'repo:git-malu@11473072/AnyWear-Service@1158460323:environment:service-artifacts');
     createRole('BetaServiceDataRole', 'service-data', betaSubject('AnyWear-Service', 1158460323));
     createRole('BetaClientPublishRole', 'client-publish', betaSubject('AnyWear-Client', 1176104200));
     createRole('BetaE2EQualificationRole', 'e2e-qualification', betaSubject('AnyWear-E2E', 1317091305));
+    // Issue #166 M4: a Base deploy resolves its API origin by reading the
+    // Service-owned Runtime stack (an absent stack is a `ValidationError` that
+    // still requires authorization) and, before the MOVE, the legacy Workload
+    // stack. Those reads run under this runtime role, whose live read policy is
+    // the Base stack's `DedicatedPolicy` and does not yet cover the renamed
+    // Runtime stack at M4 (the new Base policy is applied by the same update that
+    // needs the pre-read). Foundation therefore owns the read grants and step 8
+    // deploys them before M4. The Runtime ARN is permanent. The Workload ARN is
+    // transitional: after M3/M4 deletes Workload and the Base literal-origin
+    // fallback is the only source, a later reviewed Foundation deploy removes
+    // the Workload ARN. Neither grant adds a write, a managed policy or another
+    // stack family.
+    const stageStackArn = (stackName: string) => this.formatArn({
+      service: 'cloudformation', resource: 'stack', resourceName: `${stackName}/*`,
+      arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+    });
+    runtime.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate'],
+      resources: [stageStackArn('AnyWearRuntimeStack-beta'), stageStackArn('AnyWearWorkloadStack-beta')],
+    }));
     // Existing CDK bootstrap roles still own their reviewed deployment policies.
     // Direct callers cannot assume image-publishing or CFN execution roles.
     deploy.addToPolicy(new iam.PolicyStatement({
@@ -241,16 +261,18 @@ export class FoundationStack extends cdk.Stack {
 
     // Issue #158 step A: each reviewed service deploys its own release slice
     // with two identities. The OIDC role can only drive a CloudFormation change
-    // set for that service's workload stack and pass one execution role; that
+    // set for that service's runtime stack and pass one execution role; that
     // execution role is trusted by CloudFormation alone and operates only the
-    // workload stack's resource families. Neither role carries a managed policy,
+    // runtime stack's resource families. Neither role carries a managed policy,
     // `iam:*`, `*` or any VPC/Aurora/Cognito/SQS configuration/ECR
     // configuration/Foundation grant.
-    // The versioned `@git-malu/stage-contracts` package owns the per-service role
-    // naming and the immutable OIDC subject. The reviewed `infraServices` CDK
-    // context set defaults to exactly today's single `service`: its construct
-    // ids, names, trust and policies are unchanged. An additional service gets
-    // unique construct ids and a policy set scoped to its own workload stack.
+    // Issue #166: the Service-owned slice is `AnyWearRuntimeStack-beta`; both
+    // roles are scoped to that stack. The versioned `@git-malu/stage-contracts`
+    // package owns the per-service role naming and the immutable OIDC subject.
+    // The reviewed `infraServices` CDK context set defaults to exactly today's
+    // single `service`: its construct ids, names, trust and policies are
+    // unchanged apart from the stack identity. An additional service gets unique
+    // construct ids and a policy set scoped to its own runtime stack.
     const addServiceDeployRoles = (descriptor: FoundationServiceDescriptor,
       ids: { deploy: string; cfn: string }) => {
       // An additional service shares the Beta cluster and stage base but owns the
@@ -258,7 +280,7 @@ export class FoundationStack extends cdk.Stack {
       // default descriptor reproduces today's `beta-anywear-*` literals exactly.
       const unique = (name: string) => descriptor.service === DEFAULT_FOUNDATION_SERVICE.service
         ? name : `${descriptor.service}-${name}`;
-      const workloadStack = serviceWorkloadStackName(descriptor.service);
+      const runtimeStack = serviceRuntimeStackName(descriptor.service);
       const serviceDeploy = new iam.Role(this, ids.deploy, {
         roleName: serviceDeployRoleName(descriptor.service),
         assumedBy: new iam.WebIdentityPrincipal(githubProvider.openIdConnectProviderArn, {
@@ -284,9 +306,9 @@ export class FoundationStack extends cdk.Stack {
         service, resource, resourceName, region, account, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
       });
       const stackArn = (stackName: string) => slashArn('cloudformation', 'stack', `${stackName}/*`);
-      const cloudformationStack = stackArn(workloadStack);
+      const cloudformationStack = stackArn(runtimeStack);
       // Change sets carry their own ARN; executing one still requires the target
-      // stack ARN, which is limited to this service's workload stack.
+      // stack ARN, which is limited to this service's runtime stack.
       const changeSetArn = slashArn('cloudformation', 'changeSet', '*');
       const platformStack = stackArn('AnyWearPlatformStack-beta');
       // Issue #158 round 3: the Service owner's synthesizer makes the CDK CLI use
@@ -393,9 +415,9 @@ export class FoundationStack extends cdk.Stack {
         service: 'logs', resource: 'log-group', resourceName: name, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
       });
       // CloudFormation generates the maintenance bucket's physical name from the
-      // workload stack, so the grant is confined to this stack's generated names.
+      // runtime stack, so the grant is confined to this stack's generated names.
       const maintenanceBucket = this.formatArn({
-        service: 's3', region: '', account: '', resource: `${workloadStack.toLowerCase()}-*`,
+        service: 's3', region: '', account: '', resource: `${runtimeStack.toLowerCase()}-*`,
       });
       const loadBalancerSecurityGroups = slashArn('ec2', 'security-group', '*');
       // The load-balancer security group is a Platform resource whose id is only
