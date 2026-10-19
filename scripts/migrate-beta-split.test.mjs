@@ -314,14 +314,25 @@ test('the CLI parser requires values for --output and --template-bucket', () => 
   assert.throws(() => parseArguments(['--stage', 'pre-move', '--template-bucket']), /requires a value/);
 });
 
-test('the preview apply serializes each StackDefinition TemplateBody as a JSON string', async () => {
+test('the preview apply uploads both refactor templates and sends TemplateURL definitions', async () => {
   const expected = buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() });
   const preview = cleanPreview();
+  const bucket = 'cdk-hnb659fds-assets-650880818323-ap-east-1';
+  const timestamp = '20261019T130000Z';
+  const sourceKey = `migrations/166/preview-${timestamp}.template.json`;
+  const targetKey = `migrations/166/preview-${timestamp}-base.template.json`;
+  const sourceUrl = `https://${bucket}.s3.ap-east-1.amazonaws.com/${sourceKey}`;
+  const targetUrl = `https://${bucket}.s3.ap-east-1.amazonaws.com/${targetKey}`;
   const calls = [];
   let inputFile;
+  const uploads = [];
   const run = async (command, args) => {
     assert.equal(command, 'aws');
     calls.push([...args]);
+    if (args[1] === 'cp') {
+      uploads.push({ file: args[2], object: args[3] });
+      return '';
+    }
     if (args[1] === 'create-stack-refactor') {
       assert.ok(args.includes('--cli-input-json'));
       const value = args[args.indexOf('--cli-input-json') + 1];
@@ -339,24 +350,49 @@ test('the preview apply serializes each StackDefinition TemplateBody as a JSON s
     'base-template': fixturePath('base-live.template.json'),
     'base-synth-template': fixturePath('base-synth.template.json'),
     'distribution-type': fixturePath('distribution-type.json'),
-  }, { run });
+    'template-bucket': bucket, 'template-region': 'ap-east-1',
+  }, { run, now: () => new Date('2026-10-19T13:00:00.000Z') });
   assert.equal(result.applied, true);
-  assert.equal(calls[0][0], 'cloudformation');
-  assert.equal(calls[0][1], 'create-stack-refactor');
-  assert.deepEqual(calls.map((args) => args[1]), ['create-stack-refactor', 'describe-stack-refactor', 'list-stack-refactor-actions']);
+  assert.equal(result.templateBucket, bucket);
+  assert.equal(result.sourceTemplateKey, sourceKey);
+  assert.equal(result.targetTemplateKey, targetKey);
+  assert.equal(result.sourceTemplateUrl, sourceUrl);
+  assert.equal(result.targetTemplateUrl, targetUrl);
+  // Two uploads first, in source then target order, then create/describe/list.
+  assert.deepEqual(calls.map((args) => args[1]),
+    ['cp', 'cp', 'create-stack-refactor', 'describe-stack-refactor', 'list-stack-refactor-actions']);
+  assert.deepEqual(uploads.map((upload) => upload.object), [`s3://${bucket}/${sourceKey}`, `s3://${bucket}/${targetKey}`]);
+  assert.match(uploads[0].file, /workload-preview\.template\.json$/);
+  assert.match(uploads[1].file, /base-preview\.template\.json$/);
+  assert.deepEqual(JSON.parse(readFileSync(uploads[0].file, 'utf8')), expected.source);
+  assert.deepEqual(JSON.parse(readFileSync(uploads[1].file, 'utf8')), expected.target);
+  assert.equal(calls[2][0], 'cloudformation');
+  assert.equal(calls[2][1], 'create-stack-refactor');
   assert.ok(inputFile, 'the CLI input file was written');
   const input = JSON.parse(readFileSync(inputFile, 'utf8'));
   assert.equal(input.StackDefinitions.length, 2);
   assert.equal(input.StackDefinitions[0].StackName, WORKLOAD_STACK);
   assert.equal(input.StackDefinitions[1].StackName, BASE_STACK);
-  for (const [index, expectedTemplate] of [[0, expected.source], [1, expected.target]]) {
-    assert.equal(typeof input.StackDefinitions[index].TemplateBody, 'string');
-    assert.deepEqual(JSON.parse(input.StackDefinitions[index].TemplateBody), expectedTemplate);
-  }
+  assert.equal(input.StackDefinitions[0].TemplateURL, sourceUrl);
+  assert.equal(input.StackDefinitions[1].TemplateURL, targetUrl);
+  for (const definition of input.StackDefinitions) assert.equal(Object.hasOwn(definition, 'TemplateBody'), false);
   assert.deepEqual(input.ResourceMappings, expected.resourceMappings);
-  // No other input form (TemplateURL/TemplateBody object) is accepted.
-  assert.equal(Object.hasOwn(input.StackDefinitions[0], 'TemplateURL'), false);
   assert.deepEqual(result.clean.clean, true);
+});
+
+test('the preview apply refuses a missing or invalid template bucket before any AWS call', async () => {
+  for (const bucket of [undefined, '', 'Invalid_Bucket']) {
+    const calls = [];
+    const run = async (command, args) => { calls.push([command, ...args]); return '{}'; };
+    const options = { stage: 'preview', apply: true,
+      'workload-template': writeTemp(preMovedWorkload()),
+      'base-template': fixturePath('base-live.template.json'),
+      'base-synth-template': fixturePath('base-synth.template.json'),
+      'distribution-type': fixturePath('distribution-type.json'),
+      ...(bucket === undefined ? {} : { 'template-bucket': bucket }) };
+    await assert.rejects(runStage(options, { run }), /valid S3 bucket name/);
+    assert.deepEqual(calls, []);
+  }
 });
 
 test('every stage defaults to validation-only and never calls AWS without --apply', async () => {
