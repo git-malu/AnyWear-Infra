@@ -10,8 +10,8 @@ import type { PlatformStack } from './platform-stack';
 
 // The stage base is published as plain SSM parameters so a release slice can be
 // deployed from a checkout that holds no Infra source. Values come from the
-// existing Platform resources/attributes; nothing here reads SSM.
-export const STAGE_CONTRACT_CONSUMER = 'AnyWear-Service AnyWearWorkloadStack-beta';
+// existing Base resources/attributes; nothing here reads SSM.
+export const STAGE_CONTRACT_CONSUMER = 'AnyWear-Service AnyWearRuntimeStack-beta';
 
 // Two stage-base values have no Platform attribute: they are today retained
 // `AnyWearWorkloadStack-beta` stack parameters. For Beta they are reviewed
@@ -72,22 +72,24 @@ export class StageContract extends Construct {
     // parameter is published with it instead of publishing an ARN that names a
     // role the same template does not create.
     const { vpc, database, cluster, apiSecurityGroup, workerSecurityGroup, loadBalancerSecurityGroup, operationsTopic,
-      oneShotSecurityGroup, verificationTaskRole, oneShotExecutionRole, oneShotLogGroup, cleanupTaskRole } = platform;
+      oneShotSecurityGroup, verificationTaskRole, oneShotExecutionRole, oneShotLogGroup, cleanupTaskRole,
+      apiDistribution } = platform;
     if (!vpc || !database?.secret || !cluster || !apiSecurityGroup || !workerSecurityGroup
       || !loadBalancerSecurityGroup || !operationsTopic || !oneShotSecurityGroup
-      || !verificationTaskRole || !oneShotExecutionRole || !oneShotLogGroup) {
-      throw new Error('The Beta stage contract requires the existing Platform VPC, database, cluster, security groups, topic and one-shot task resources');
+      || !verificationTaskRole || !oneShotExecutionRole || !oneShotLogGroup || !apiDistribution) {
+      throw new Error('The Beta stage contract requires the existing Base VPC, database, cluster, security groups, topic, one-shot task resources and API distribution');
     }
     const path = `/anywear/${stage}/`;
     const describe = (detail: string) => `${STAGE_CONTRACT_CONSUMER} stage contract: ${detail}`;
     const constructId = (parameterName: string) => `${parameterName.split('_')
       .map((part) => part[0].toUpperCase() + part.slice(1)).join('')}Param`;
-    // PlatformStack does not expose `environmentRunning`, but its subnet types
-    // carry the same information: while Beta is stopped the task tier is
-    // PRIVATE_ISOLATED, so `privateSubnets` is empty and this fallback mirrors
-    // the existing `PrivateSubnetIds` output (`environmentRunning ? private
-    // : isolated`) instead of publishing an empty list.
-    const privateSubnets = vpc.privateSubnets.length ? vpc.privateSubnets : vpc.isolatedSubnets;
+    // Issue #166: the Base stack's Private tier is `PRIVATE_ISOLATED` (the Egress
+    // stack adds its NAT routes while the environment runs) and the Isolated tier
+    // is a separate group. Select by group name so `private_subnet_ids` publishes
+    // exactly the workload tier and `isolated_subnet_ids` exactly the no-egress
+    // tier, in every variant, with no stopped-state fallback.
+    const privateSubnets = vpc.selectSubnets({ subnetGroupName: 'Private' }).subnets;
+    const isolatedSubnets = vpc.selectSubnets({ subnetGroupName: 'Isolated' }).subnets;
     const publishedKinds = new Map<string, 'String' | 'List'>();
     const string = (parameterName: string, value: string, detail: string) => {
       const publishedName = `${path}${parameterName}`;
@@ -109,6 +111,11 @@ export class StageContract extends Construct {
       'shared Beta public subnet ids');
     stringList('private_subnet_ids', privateSubnets.map((subnet) => subnet.subnetId),
       'shared Beta private subnet ids for workload tasks');
+    // Issue #166: the API distribution is persistent Base state, so its public
+    // endpoint is part of the unconditional stage contract. The domain is the
+    // adopted distribution's own `DomainName`; no ALB resource is referenced.
+    string('api_base_url', `https://${apiDistribution.attrDomainName}`,
+      'public API CloudFront distribution base URL');
     string('ecs_cluster_name', cluster.clusterName, 'shared Beta ECS cluster name');
     string('database_secret_arn', database.secret.secretArn, 'Aurora credential secret ARN');
     string('database_host', database.clusterEndpoint.hostname, 'Aurora writer endpoint hostname');
@@ -133,10 +140,10 @@ export class StageContract extends Construct {
     string('cloudfront_prefix_list_id', inputs.cloudFrontPrefixListId,
       'AWS-managed CloudFront origin-facing prefix list id for the shared load-balancer ingress');
     string('vlm_config_arn', inputs.vlmConfigArn, 'Secrets Manager ARN holding DOUBAO_VLM_API_KEY');
-    // Issue #158 approved extension: the remaining stage-base values the Workload
+    // Issue #158 approved extension: the remaining stage-base values the Runtime
     // cleanup fixture and one-shot tasks read. They replace weak
-    // `Fn::GetStackOutput` reads, so after Service's conversion the Platform and
-    // Workload deploy order no longer matters.
+    // `Fn::GetStackOutput` reads, so after Service's conversion the Base and
+    // Runtime deploy order no longer matters.
     string('verification_task_role_arn', verificationTaskRole.roleArn,
       'one-shot verification task role ARN');
     string('one_shot_execution_role_arn', oneShotExecutionRole.roleArn,
@@ -153,14 +160,11 @@ export class StageContract extends Construct {
       'VTO dead-letter queue URL for the workload cleanup task');
     string('auto_tagging_dlq_url', platform.autoTaggingDeadLetterQueue.queueUrl,
       'auto-tagging dead-letter queue URL for the workload cleanup task');
-    // Beta keeps a dedicated isolated tier in both states (`platform-stack.ts`
-    // builds `Isolated` unconditionally and never routes it), so this list is
-    // never empty: while Beta runs it is the dedicated isolated tier, and while
-    // the environment is stopped it is that tier plus the former private tier,
-    // which is exactly the list `private_subnet_ids` carries in that state. The
-    // parameter is therefore published in every variant instead of being
-    // conditionally absent; an empty StringList is never synthesized.
-    stringList('isolated_subnet_ids', vpc.isolatedSubnets.map((subnet) => subnet.subnetId),
+    // Issue #166: the dedicated Isolated tier is built unconditionally and never
+    // routed, so this list is never empty in any variant: it is exactly the
+    // `Isolated` subnet group. The workload tier is published separately as
+    // `private_subnet_ids`; there is no stopped-state fallback.
+    stringList('isolated_subnet_ids', isolatedSubnets.map((subnet) => subnet.subnetId),
       'shared Beta isolated subnet ids for workload tasks with no egress');
     if (cleanupTaskRole) {
       string('cleanup_task_role_arn', cleanupTaskRole.roleArn,

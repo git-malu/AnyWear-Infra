@@ -22,8 +22,11 @@ export const RECOVERY_TARGETS = Object.freeze({
     pitrRetentionDays: 7,
     preferredBackupWindow: '16:00-16:30',
     deletionProtection: true,
-    clusterRemovalPolicy: 'DESTROY',
-    clusterDeletionPolicy: 'Delete',
+    // Issue #166: Beta's Aurora data is persistent Base state. Retain sets both
+    // DeletionPolicy and UpdateReplacePolicy; a Base update can no longer delete
+    // the cluster, and the writer instance follows the same policy.
+    clusterRemovalPolicy: 'RETAIN',
+    clusterDeletionPolicy: 'Retain',
   }),
   prod: Object.freeze({
     stage: 'prod',
@@ -91,16 +94,21 @@ export function recoveryFailureMessage(violations, { stage, stackName }) {
   return `Database recovery contract violated for stage ${stage}, stack ${stackName}: ${details}`;
 }
 
-// The matrix and the pre-credential deployment check must synthesize the same
-// way: run the existing app directly with the locked local ts-node. CDK auto-
-// synthesizes because CDK_OUTDIR is set; no AWS context lookup or CDK CLI
-// invocation happens here.
-export function synthStage({ repository = repositoryRoot, directory, stage, environmentRunning = true, inputs } = {}) {
+// The matrix, the package test and the pre-credential deployment check must
+// synthesize the same way: run the existing app directly with the locked local
+// ts-node. CDK auto-synthesizes because CDK_OUTDIR is set; no AWS context lookup
+// or CDK CLI invocation happens here. The Beta Base stack needs a literal API
+// distribution origin; a stage simulation uses this fixed fixture value and the
+// re-recorded baseline carries it.
+export const TEST_API_ORIGIN_DOMAIN_NAME = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
+
+export function synthStage({ repository = repositoryRoot, directory, stage, apiOriginDomainName, inputs } = {}) {
   assert.ok(directory, 'Synthesis output directory is required');
   assert.ok(['dev', 'beta', 'prod'].includes(stage), `Unknown stage: ${stage}`);
   mkdirSync(directory, { recursive: true });
   const config = JSON.parse(readFileSync(path.join(repository, 'cdk.json'), 'utf8'));
-  const context = { ...config.context, stage, environmentRunning };
+  const context = { ...config.context, stage };
+  if (stage === 'beta') context.apiOriginDomainName = apiOriginDomainName ?? TEST_API_ORIGIN_DOMAIN_NAME;
   if (inputs) {
     assert.ok(['legacy', 'roles-added', 'retired'].includes(inputs.identityPhase), 'Explicit identity phase required');
     assert.equal(typeof inputs.ecrImageRetention, 'boolean', 'Explicit image retention required');

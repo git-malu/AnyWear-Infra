@@ -1,9 +1,13 @@
 import * as cdk from 'aws-cdk-lib';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import * as os from 'node:os';
 import { Template } from 'aws-cdk-lib/assertions';
 import { BillingStack } from '../lib/billing-stack';
+import { EgressStack } from '../lib/egress-stack';
 import { FoundationStack } from '../lib/foundation-stack';
-import { DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
+import { API_DISTRIBUTION_IDENTITY, DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
 import { stageContractInputs } from '../lib/stage-contract';
 import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '@git-malu/stage-contracts';
 import runtimePolicies from './fixtures/runtime-policy.json';
@@ -23,9 +27,15 @@ const artifactInputs: ArtifactInputs = {
 };
 import cdkConfig from '../cdk.json';
 
-function synthesizePlatform(stage: string, environmentRunning?: boolean, identityPhase?: IdentityPhase): Record<string, any> {
+const root = path.resolve(__dirname, '..');
+
+// Issue #166 removed the stopped topology: one Base template per stage. Beta
+// needs the literal API distribution origin the live distribution uses.
+const TEST_API_ORIGIN_DOMAIN_NAME = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
+function synthesizePlatform(stage: string, identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
-  const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, environmentRunning, artifactInputs, identityPhase });
+  const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, artifactInputs, identityPhase,
+    ...(stage === 'beta' ? { apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME } : {}) });
   return Template.fromStack(stack).toJSON();
 }
 
@@ -124,7 +134,7 @@ describe('Platform safety controls', () => {
     const app = new cdk.App({ context: cdkConfig.context });
     const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
       artifactInputs,
-      stage, environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
+      stage, apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
     });
     const template = Template.fromStack(stack).toJSON();
     // Frozen from main 2e03278 before moving the three statements, with deployment CDK flags.
@@ -169,13 +179,13 @@ describe('Platform safety controls', () => {
     }
   });
 
-  it('bounds wildcard lifecycle evidence reads to the Beta pipeline region in both runtime states', () => {
+  it('bounds wildcard lifecycle evidence reads to the Beta pipeline region in the single topology', () => {
     const readActions = ['rds:DescribeDBClusters', 'rds:DescribeEvents', 'cloudwatch:GetMetricStatistics', 'ecs:ListTaskDefinitions', 'ecs:DescribeTaskDefinition'];
-    for (const environmentRunning of [true, false]) {
+    {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
       });
       const policies = Object.values(Template.fromStack(stack).toJSON().Resources)
         .filter((resource: any) => resource.Type === 'AWS::IAM::Policy') as any[];
@@ -193,11 +203,11 @@ describe('Platform safety controls', () => {
 
   it('covers exact Beta retention inventory without expanding other stages or existing grants', () => {
     const ownedNames = ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync', 'AnyWearPlatformStack-beta-*'];
-    for (const environmentRunning of [true, false]) {
+    {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
       });
       const policies = Object.values(Template.fromStack(stack).toJSON().Resources)
         .filter((resource: any) => resource.Type === 'AWS::IAM::Policy'
@@ -291,11 +301,11 @@ describe('Platform safety controls', () => {
   });
 
   it('preserves only exact cost families with a separate required request tag and Beta region bound', () => {
-    for (const environmentRunning of [true, false]) {
+    {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', environmentRunning, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
       });
       const statements = pipelinePolicies(Template.fromStack(stack).toJSON(), 'beta')
         .flatMap((resource: any) => resource.Properties.PolicyDocument.Statement);
@@ -454,27 +464,69 @@ describe('Platform safety controls', () => {
     expect(database.Properties.BackupRetentionPeriod).toBe(7);
     expect(database.Properties.PreferredBackupWindow).toBe('16:00-16:30');
     expect(database.Properties.PreferredBackupWindow).toMatch(/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/);
-    expect(database.DeletionPolicy).toBe('Delete');
+    // Issue #166: Beta's data is persistent Base state; a Base update can never
+    // replace or delete the cluster.
+    expect(database.DeletionPolicy).toBe('Retain');
+    expect(database.UpdateReplacePolicy).toBe('Retain');
   });
 
-  it('removes Beta NAT gateways in stopped state while keeping subnets and database', () => {
-    const template = synthesizePlatform('beta', false);
+  it('keeps Beta egress and compute out of the persistent Base stack', () => {
+    const template = synthesizePlatform('beta');
     const resources = Object.values(template.Resources) as any[];
+    // The disposable Egress stack owns the NAT, the EIP and the S3 gateway
+    // endpoint; deleting it leaves the Base subnets isolated.
     expect(resources.filter((resource) => resource.Type === 'AWS::EC2::NatGateway')).toHaveLength(0);
+    expect(resources.filter((resource) => resource.Type === 'AWS::EC2::EIP')).toHaveLength(0);
+    expect(resources.filter((resource) => resource.Type === 'AWS::EC2::VPCEndpoint')).toHaveLength(0);
     expect(resources.filter((resource) => resource.Type === 'AWS::EC2::Subnet')).toHaveLength(6);
+    // The public route tables carry only the internet-gateway default route; no
+    // Base route table has a NAT route or an S3 prefix-list route.
+    const routes = resources.filter((resource) => resource.Type === 'AWS::EC2::Route');
+    expect(routes.length).toBeGreaterThan(0);
+    expect(routes.every((route) => route.Properties.NatGatewayId === undefined
+      && route.Properties.GatewayId !== undefined)).toBe(true);
     expect(resources.filter((resource) => resource.Type === 'AWS::RDS::DBCluster')).toHaveLength(1);
     expect(resources.filter((resource) => resource.Type === 'AWS::ECS::Cluster')).toHaveLength(1);
-    expect(resources.find((resource) => resource.Type === 'AWS::EC2::VPCEndpoint')).toBeDefined();
-    expect(template.Outputs.BetaActive.Value).toBe('false');
+    // No environment activity output exists any more: run state is the existence
+    // of the Runtime stack.
+    expect(template.Outputs.BetaActive).toBeUndefined();
+    expect(JSON.stringify(template.Outputs)).not.toContain('BetaActive');
+
+    // The API distribution is pinned to the live source logical ID, uses the
+    // literal origin, and is retained.
+    const distributions = Object.entries(template.Resources)
+      .filter(([, resource]: [string, any]) => resource.Type === 'AWS::CloudFront::Distribution');
+    expect(distributions).toHaveLength(2);
+    expect(distributions.map(([id]) => id)).toContain(API_DISTRIBUTION_IDENTITY.logicalId);
+    expect(distributions.map(([id]) => id)).toContainEqual(expect.stringMatching(/^AnyWearClientDistribution[A-F0-9]{8}$/));
+    const [, apiDistribution] = distributions.find(([id]) => id === API_DISTRIBUTION_IDENTITY.logicalId)! as [string, any];
+    expect(apiDistribution.Properties.DistributionConfig.Origins[0]).toMatchObject({
+      Id: API_DISTRIBUTION_IDENTITY.originId,
+      DomainName: TEST_API_ORIGIN_DOMAIN_NAME,
+    });
+    expect(apiDistribution.Properties.DistributionConfig.DefaultCacheBehavior.TargetOriginId)
+      .toBe(API_DISTRIBUTION_IDENTITY.originId);
+    expect(apiDistribution.DeletionPolicy).toBe('Retain');
+    expect(apiDistribution.UpdateReplacePolicy).toBe('Retain');
+
+    // Persistent Base resources are retained together.
+    for (const resource of resources.filter((entry) => entry.Type === 'AWS::S3::Bucket')) {
+      expect(resource.UpdateReplacePolicy).toBe('Retain');
+      expect(resource.DeletionPolicy).toBe('Retain');
+    }
+    const userPool = resources.find((resource) => resource.Type === 'AWS::Cognito::UserPool');
+    expect(userPool.UpdateReplacePolicy).toBe('Retain');
+    const repository = resources.find((resource) => resource.Type === 'AWS::ECR::Repository');
+    expect(repository.UpdateReplacePolicy).toBe('Retain');
+    expect(repository.DeletionPolicy).toBe('Retain');
   });
 
 
   it('keeps billing controls out of regional platform stacks', () => {
     const betaResources = Object.values(synthesizePlatform('beta').Resources) as any[];
     const prodResources = Object.values(synthesizePlatform('prod').Resources) as any[];
-    const betaS3Endpoint = betaResources.find((resource) => resource.Type === 'AWS::EC2::VPCEndpoint');
 
-    expect(JSON.stringify(betaS3Endpoint.Properties.ServiceName)).toContain('s3');
+    expect(betaResources.some((resource) => resource.Type === 'AWS::EC2::VPCEndpoint')).toBe(false);
     expect(betaResources.some((resource) => resource.Type === 'AWS::Budgets::Budget')).toBe(false);
     expect(betaResources.some((resource) => resource.Type === 'AWS::CE::AnomalyMonitor')).toBe(false);
     expect(prodResources.some((resource) => resource.Type === 'AWS::Budgets::Budget')).toBe(false);
@@ -672,17 +724,17 @@ describe('Platform safety controls', () => {
     expect(JSON.stringify(lifecycleStatements[0].Resource)).not.toContain('*');
   });
 
-  it('publishes exactly the 34 unconditional Beta stage-contract parameters without duplicates', () => {
+  it('publishes exactly the 35 unconditional Beta stage-contract parameters without duplicates', () => {
     const resources = Object.values(synthesizePlatform('beta').Resources) as any[];
     const parameters = resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter');
     const names = parameters.map((parameter) => parameter.Properties.Name);
     expect(new Set(names).size).toBe(names.length);
-    expect(parameters).toHaveLength(41);
+    expect(parameters).toHaveLength(42);
     const stageContract = parameters.filter((parameter) => (
-      parameter.Properties.Description?.startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: ')));
-    expect(stageContract).toHaveLength(34);
+      parameter.Properties.Description?.startsWith('AnyWear-Service AnyWearRuntimeStack-beta stage contract: ')));
+    expect(stageContract).toHaveLength(35);
     expect(stageContract.map((parameter) => parameter.Properties.Name).sort()).toEqual([
-      'api_security_group_id', 'auto_tagging_dlq_name', 'auto_tagging_dlq_url', 'auto_tagging_queue_arn',
+      'api_base_url', 'api_security_group_id', 'auto_tagging_dlq_name', 'auto_tagging_dlq_url', 'auto_tagging_queue_arn',
       'auto_tagging_queue_name', 'auto_tagging_queue_url', 'cloudfront_prefix_list_id', 'database_host',
       'database_port', 'database_secret_arn', 'ecs_cluster_arn', 'ecs_cluster_name', 'isolated_subnet_ids',
       'load_balancer_security_group_id', 'one_shot_execution_role_arn', 'one_shot_log_group_arn',
@@ -727,15 +779,15 @@ describe('Platform safety controls', () => {
   });
 
   it('publishes the phase-dependent cleanup role ARN only while the identity phase creates the role', () => {
-    for (const environmentRunning of [true, false]) {
-      const legacy = Object.values(synthesizePlatform('beta', environmentRunning).Resources) as any[];
-      const added = Object.values(synthesizePlatform('beta', environmentRunning, 'roles-added').Resources) as any[];
-      const retired = Object.values(synthesizePlatform('beta', environmentRunning, 'retired').Resources) as any[];
+    {
+      const legacy = Object.values(synthesizePlatform('beta').Resources) as any[];
+      const added = Object.values(synthesizePlatform('beta', 'roles-added').Resources) as any[];
+      const retired = Object.values(synthesizePlatform('beta', 'retired').Resources) as any[];
       const contract = (resources: any[]) => resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter'
-        && resource.Properties.Description?.startsWith('AnyWear-Service AnyWearWorkloadStack-beta stage contract: '));
-      expect(contract(legacy)).toHaveLength(34);
-      expect(contract(added)).toHaveLength(35);
-      expect(contract(retired)).toHaveLength(35);
+        && resource.Properties.Description?.startsWith('AnyWear-Service AnyWearRuntimeStack-beta stage contract: '));
+      expect(contract(legacy)).toHaveLength(35);
+      expect(contract(added)).toHaveLength(36);
+      expect(contract(retired)).toHaveLength(36);
       for (const resources of [added, retired]) {
         const cleanup = contract(resources).filter((resource) => resource.Properties.Name === '/anywear/beta/cleanup_task_role_arn');
         expect(cleanup).toHaveLength(1);
@@ -746,10 +798,10 @@ describe('Platform safety controls', () => {
   });
 
   it('keeps the live one-shot execution-role log-stream grant', () => {
-    for (const [stage, environmentRunning] of [['beta', true], ['beta', false], ['prod', true]] as const) {
+    for (const stage of ['beta', 'prod'] as const) {
       const app = new cdk.App();
       const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
-        artifactInputs, stage, environmentRunning,
+        artifactInputs, stage, apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME,
         env: { account: '650880818323', region: 'ap-east-1' },
       });
       const template = Template.fromStack(stack).toJSON();
@@ -1731,9 +1783,9 @@ describe('Explicit infrastructure identity cutover', () => {
     }
   });
 
-  it.each([true, false])('adds policies while retaining every legacy Beta resource and output (active=%s)', (active) => {
-    const legacy = synthesizePlatform('beta', active);
-    const added = synthesizePlatform('beta', active, 'roles-added');
+  it('adds policies while retaining every legacy Beta resource and output', () => {
+    const legacy = synthesizePlatform('beta');
+    const added = synthesizePlatform('beta', 'roles-added');
     for (const [id, resource] of Object.entries(legacy.Resources)) expect(added.Resources[id]).toEqual(resource);
     for (const [key, value] of Object.entries(legacy.Outputs)) expect(added.Outputs[key]).toEqual(value);
     expect(Object.keys(added.Outputs).filter(key => !legacy.Outputs[key])).toEqual(['CleanupTaskRoleArn']);
@@ -1761,14 +1813,14 @@ describe('Explicit infrastructure identity cutover', () => {
       if (resource.Type === 'AWS::IAM::Role' && ['dev', 'prod'].some((stage) =>
         resource.Properties.RoleName === `${stage}-github-actions-pipeline-role`)) expect(retired.Resources[id]).toEqual(resource);
     }
-    expect(pipelinePolicies(synthesizePlatform('beta', true, 'retired'), 'beta')).toHaveLength(0);
+    expect(pipelinePolicies(synthesizePlatform('beta', 'retired'), 'beta')).toHaveLength(0);
     for (const stage of ['dev', 'prod']) {
-      expect(synthesizePlatform(stage, true, 'retired')).toEqual(synthesizePlatform(stage, true, 'legacy'));
+      expect(synthesizePlatform(stage, 'retired')).toEqual(synthesizePlatform(stage, 'legacy'));
     }
   });
 
   it('separates artifact, data, Client, runtime and qualification capabilities', () => {
-    const template = synthesizePlatform('beta', true, 'roles-added');
+    const template = synthesizePlatform('beta', 'roles-added');
     const artifactActions = actionsFor(synthesizeFoundation('roles-added'), 'service-artifact');
     expect(artifactActions).toContain('ecr:PutImage');
     expect(artifactActions.every((action) => action.startsWith('ecr:'))).toBe(true);
@@ -1932,6 +1984,7 @@ describe('Explicit infrastructure identity cutover', () => {
     });
     const platformStack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
       stage: 'beta', env, identityPhase: 'roles-added', artifactInputs,
+      apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME,
     });
     const foundation = Template.fromStack(foundationStack).toJSON();
     const platform = Template.fromStack(platformStack).toJSON();
@@ -1953,6 +2006,7 @@ describe('Explicit infrastructure identity cutover', () => {
       const app = new cdk.App();
       const protectedStack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
         stage, artifactInputs, ecrImageRetention: true,
+        ...(stage === 'beta' ? { apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME } : {}),
       });
       const template = Template.fromStack(protectedStack).toJSON();
       const repository = (Object.values(template.Resources) as any[]).find((resource) => resource.Type === 'AWS::ECR::Repository');
@@ -1972,4 +2026,67 @@ describe('Explicit infrastructure identity cutover', () => {
         countType: 'imageCountMoreThan', countNumber: stage === 'beta' ? 30 : 100 });
     }
   });
+});
+
+describe('Disposable Beta Egress stack', () => {
+  function synthesizeEgress(): Record<string, any> {
+    const app = new cdk.App();
+    return Template.fromStack(new EgressStack(app, 'AnyWearEgressStack-beta', {
+      env: { account: '650880818323', region: 'ap-east-1' },
+    })).toJSON();
+  }
+
+  it('holds only the recreatable NAT, EIP, per-AZ routes and the S3 gateway endpoint', () => {
+    const template = synthesizeEgress();
+    const resources = Object.values(template.Resources) as any[];
+    const ofType = (type: string) => resources.filter((resource) => resource.Type === type);
+
+    expect(ofType('AWS::EC2::NatGateway')).toHaveLength(1);
+    expect(ofType('AWS::EC2::EIP')).toHaveLength(1);
+    expect(ofType('AWS::EC2::RouteTable')).toHaveLength(2);
+    expect(ofType('AWS::EC2::SubnetRouteTableAssociation')).toHaveLength(2);
+    const routes = ofType('AWS::EC2::Route');
+    expect(routes).toHaveLength(2);
+    expect(routes.every((route) => route.Properties.DestinationCidrBlock === '0.0.0.0/0'
+      && route.Properties.NatGatewayId !== undefined)).toBe(true);
+    const endpoint = ofType('AWS::EC2::VPCEndpoint');
+    expect(endpoint).toHaveLength(1);
+    expect(String(endpoint[0].Properties.ServiceName)).toContain('s3');
+    expect(endpoint[0].Properties.RouteTableIds).toHaveLength(2);
+    // The Egress stack owns no Base or Runtime resource: no subnet, VPC, Aurora,
+    // Cognito, bucket, ECR, SSM parameter or distribution is recreated here.
+    for (const type of ['AWS::EC2::VPC', 'AWS::EC2::Subnet', 'AWS::RDS::DBCluster', 'AWS::S3::Bucket',
+      'AWS::Cognito::UserPool', 'AWS::ECR::Repository', 'AWS::SSM::Parameter', 'AWS::CloudFront::Distribution']) {
+      expect(ofType(type)).toHaveLength(0);
+    }
+    // Inputs are the Base stage-contract SSM parameters, not CDK lookups. The
+    // fourth parameter is CDK's own bootstrap-version read.
+    const stageParameterDefaults = (Object.values(template.Parameters) as any[])
+      .map((parameter) => parameter.Default).filter((value) => String(value).startsWith('/anywear/beta/')).sort();
+    expect(stageParameterDefaults).toEqual([
+      '/anywear/beta/private_subnet_ids', '/anywear/beta/public_subnet_ids', '/anywear/beta/vpc_id',
+    ]);
+    for (const parameter of Object.values(template.Parameters) as any[]) {
+      expect(parameter.Type).toMatch(/^AWS::SSM::Parameter::Value</);
+    }
+    expect(Object.keys(template.Outputs).sort()).toEqual([
+      'EgressNatEipAllocationId', 'EgressNatGatewayId', 'EgressPrivateRouteTableIds',
+    ]);
+  });
+
+  it('synthesizes from the egress-only app scope without Service artifacts', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'anywear-egress-scope-'));
+    try {
+      execFileSync(process.execPath, [path.join(root, 'bin', 'infra.js')], {
+        cwd: root, stdio: 'pipe', timeout: 120_000,
+        env: { ...process.env, CDK_CONTEXT_JSON: JSON.stringify({ deployScope: 'egress', identityPhase: 'retired',
+          legacyRoleSource: 'external', ecrImageRetention: 'true' }), CDK_OUTDIR: directory,
+          CDK_DEFAULT_ACCOUNT: '650880818323', CDK_DEFAULT_REGION: 'ap-east-1', BILLING_REGION: 'us-east-1' },
+      });
+      const files = readdirSync(directory).filter((file) => file.endsWith('.template.json')).sort();
+      expect(files).toEqual(['AnyWearEgressStack-beta.template.json', 'AnyWearFoundationStack.template.json']);
+    } finally {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 180_000);
 });

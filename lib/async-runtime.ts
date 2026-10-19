@@ -7,6 +7,11 @@ import type { RuntimePolicy } from './artifact-inputs';
 export interface AsyncRuntimeProps {
   stage: string;
   production: boolean;
+  /**
+   * Retain the ECR repository (and skip `emptyOnDelete`) for a stage whose
+   * images are persistent state. Issue #166 sets this for Beta's Base stack.
+   */
+  retainState?: boolean;
   runtimePolicy: RuntimePolicy;
   ecrImageRetention?: boolean;
 }
@@ -21,14 +26,15 @@ export class AsyncRuntime extends Construct {
   constructor(scope: Construct, id: string, props: AsyncRuntimeProps) {
     super(scope, id);
 
-    const removalPolicy = props.production ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
+    const retain = props.production || props.retainState === true;
+    const removalPolicy = retain ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
     this.repository = new ecr.Repository(this, 'ServiceRepository', {
       repositoryName: `${props.stage}-anywear-service`,
       imageScanOnPush: true,
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
       encryption: ecr.RepositoryEncryption.AES_256,
       removalPolicy,
-      emptyOnDelete: !props.production,
+      emptyOnDelete: !retain,
       // Explicitly activated only after reviewing the retention diff and
       // tagging every current/rollback digest. The operational guard caps
       // protected digests at 256, leaving at least 744 images of headroom.

@@ -26,21 +26,23 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     service, resource, resourceName, region,
     arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
   });
-  const stackArns = ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta']
+  // Issue #166: the Service-owned release slice is the Runtime stack. These
+  // read grants follow the stack identity; they do not widen any action.
+  const stackArns = ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearRuntimeStack-beta']
     .map((name) => arn('cloudformation', 'stack', `${name}/*`));
-  const platformAndWorkload = stackArns.slice(1);
+  const platformAndRuntime = stackArns.slice(1);
   const admissionNames = ['admission_mode', 'tester_allowlist'];
   const parameters = (names: string[]) => names.map((name) => arn('ssm', 'parameter', `anywear/beta/${name}`));
   const publicParameters = ['cognito_user_pool_id', 'cognito_client_id', 'aws_region', 's3_bucket_name', 'qweather_api_host'];
-  const describeStacks = (principal: iam.IRole, resources = platformAndWorkload) => principal.addToPrincipalPolicy(
+  const describeStacks = (principal: iam.IRole, resources = platformAndRuntime) => principal.addToPrincipalPolicy(
     new iam.PolicyStatement({ actions: ['cloudformation:DescribeStacks'], resources }),
   );
   const getParameters = (principal: iam.IRole, names: string[]) => principal.addToPrincipalPolicy(
     new iam.PolicyStatement({ actions: ['ssm:GetParameter', 'ssm:GetParameters'], resources: parameters(names) }),
   );
   // The Beta stage contract is published as one `/anywear/beta/` prefix. The
-  // observe path records every value under it (the Workload conversion replaced
-  // the Platform stack-output reads with the contract), and the E2E qualification
+  // observe path records every value under it (the Runtime conversion replaced
+  // the Base stack-output reads with the contract), and the E2E qualification
   // observer validates every value under the prefix against the platform record.
   // The runtime and E2E principals therefore get the prefix read: it is the same
   // two read actions as the named reads above, and no write, delete or version
@@ -153,7 +155,7 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'], conditions: regional,
   }));
-  // Workload synth resolves the existing CloudFront origin header; this is the
+  // Runtime synth resolves the existing CloudFront origin header; this is the
   // only runtime secret read required by the deployment consumer itself.
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['secretsmanager:GetSecretValue'],
