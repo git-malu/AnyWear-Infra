@@ -314,6 +314,51 @@ test('the CLI parser requires values for --output and --template-bucket', () => 
   assert.throws(() => parseArguments(['--stage', 'pre-move', '--template-bucket']), /requires a value/);
 });
 
+test('the preview apply serializes each StackDefinition TemplateBody as a JSON string', async () => {
+  const expected = buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() });
+  const preview = cleanPreview();
+  const calls = [];
+  let inputFile;
+  const run = async (command, args) => {
+    assert.equal(command, 'aws');
+    calls.push([...args]);
+    if (args[1] === 'create-stack-refactor') {
+      assert.ok(args.includes('--cli-input-json'));
+      const value = args[args.indexOf('--cli-input-json') + 1];
+      assert.match(value, /^file:\/\//);
+      inputFile = value.slice('file://'.length);
+      return JSON.stringify({ StackRefactorId: 're-1111' });
+    }
+    if (args[1] === 'describe-stack-refactor') return JSON.stringify(preview.describe);
+    if (args[1] === 'list-stack-refactor-actions') return JSON.stringify(preview.actions);
+    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+  };
+  const result = await runStage({
+    stage: 'preview', apply: true,
+    'workload-template': writeTemp(preMovedWorkload()),
+    'base-template': fixturePath('base-live.template.json'),
+    'base-synth-template': fixturePath('base-synth.template.json'),
+    'distribution-type': fixturePath('distribution-type.json'),
+  }, { run });
+  assert.equal(result.applied, true);
+  assert.equal(calls[0][0], 'cloudformation');
+  assert.equal(calls[0][1], 'create-stack-refactor');
+  assert.deepEqual(calls.map((args) => args[1]), ['create-stack-refactor', 'describe-stack-refactor', 'list-stack-refactor-actions']);
+  assert.ok(inputFile, 'the CLI input file was written');
+  const input = JSON.parse(readFileSync(inputFile, 'utf8'));
+  assert.equal(input.StackDefinitions.length, 2);
+  assert.equal(input.StackDefinitions[0].StackName, WORKLOAD_STACK);
+  assert.equal(input.StackDefinitions[1].StackName, BASE_STACK);
+  for (const [index, expectedTemplate] of [[0, expected.source], [1, expected.target]]) {
+    assert.equal(typeof input.StackDefinitions[index].TemplateBody, 'string');
+    assert.deepEqual(JSON.parse(input.StackDefinitions[index].TemplateBody), expectedTemplate);
+  }
+  assert.deepEqual(input.ResourceMappings, expected.resourceMappings);
+  // No other input form (TemplateURL/TemplateBody object) is accepted.
+  assert.equal(Object.hasOwn(input.StackDefinitions[0], 'TemplateURL'), false);
+  assert.deepEqual(result.clean.clean, true);
+});
+
 test('every stage defaults to validation-only and never calls AWS without --apply', async () => {
   const failIfCalled = async () => { throw new Error('AWS was called in a validation-only run'); };
   const preMove = await runStage({ stage: 'pre-move', 'workload-template': fixturePath('workload-live.template.json'),
