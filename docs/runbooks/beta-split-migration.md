@@ -68,21 +68,45 @@ aws cloudformation describe-stacks --stack-name AnyWearWorkloadStack-beta \
   > workload-parameter-keys.json
 ```
 
+`update-stack --template-body` sends the template inline and CloudFormation caps
+`TemplateBody` at 51,200 bytes; the live Workload template is far larger, so the
+apply path uploads the delta to S3 and calls `update-stack --template-url`
+(1 MB limit) instead. The reviewed location is the account's CDK assets bucket
+`cdk-hnb659fds-assets-650880818323-ap-east-1`, key prefix
+`migrations/166/pre-move-<UTC timestamp>.template.json`; the object is kept after
+the update as evidence. The URL is
+`https://<bucket>.s3.<region>.amazonaws.com/<key>`; the region comes from
+`AWS_REGION` (default `ap-east-1`) or `--template-region`. The apply path refuses
+a missing or invalid `--template-bucket` before any AWS call, and validation-only
+mode needs no bucket.
+
+Prerequisite for a private template bucket: the CloudFormation execution role
+must be able to read the uploaded object (for example
+`s3:GetObject` on `arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/migrations/166/*`),
+and the migration operator must be able to `s3:PutObject` it. The stock CDK
+assets bucket already grants the account's CDK roles; if a separately reviewed
+bucket is used, add that read without changing the `--template-url` mechanism.
+
 ```sh
 # 1. Validation only (default): builds the delta and prints the exact changes.
+#    No AWS call and no --template-bucket required.
 node scripts/migrate-beta-split.mjs --stage pre-move \
   --workload-template <live-workload-original.json> \
   --api-load-balancer-dns-name <live ApiLoadBalancerDnsName>
 
-# 2. Separate explicit authorization; applies the delta in place. The script
-#    reads the live parameter keys from describe-stacks automatically; pass
-#    --workload-parameters <describe-stacks.json | keys.json> to use the
+# 2. Separate explicit authorization; uploads the delta and applies it in place.
+#    The script reads the live parameter keys from describe-stacks automatically;
+#    pass --workload-parameters <describe-stacks.json | keys.json> to use the
 #    recorded read instead.
 node scripts/migrate-beta-split.mjs --stage pre-move --apply \
   --workload-template <live-workload-original.json> \
   --api-load-balancer-dns-name <live ApiLoadBalancerDnsName> \
+  --template-bucket cdk-hnb659fds-assets-650880818323-ap-east-1 \
+  [--template-region ap-east-1] \
   [--workload-parameters <recorded-parameters.json>]
 ```
+
+`--output <file>` writes the stage plan/result JSON; it requires a value.
 
 Accept only when the planned change list is exactly:
 

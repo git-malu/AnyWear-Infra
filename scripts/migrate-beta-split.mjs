@@ -273,15 +273,59 @@ export function workloadParameterArguments(keys) {
   return keys.map((key) => `ParameterKey=${key},UsePreviousValue=true`);
 }
 
+// `update-stack --template-body` sends the template inline and CloudFormation
+// caps `TemplateBody` at 51,200 bytes; the live Workload template is far larger,
+// so the pre-move delta is uploaded to S3 and applied with `--template-url`
+// (1 MB limit). The object is kept after the update as evidence.
+const TEMPLATE_PREFIX = 'migrations/166';
+export const DEFAULT_TEMPLATE_REGION = 'ap-east-1';
+const S3_BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+const IP_LIKE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+const TEMPLATE_REGION = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
+
+export function validateTemplateBucket(bucket) {
+  if (typeof bucket !== 'string' || bucket.length < 3 || bucket.length > 63
+    || !S3_BUCKET.test(bucket) || bucket.includes('..') || IP_LIKE.test(bucket)) {
+    throw new Error('--template-bucket must be a valid S3 bucket name (3-63 lowercase letters, digits, dots or hyphens)');
+  }
+  return bucket;
+}
+
+export function validateTemplateRegion(region) {
+  if (typeof region !== 'string' || !TEMPLATE_REGION.test(region)) {
+    throw new Error('--template-region must be an AWS region such as ap-east-1');
+  }
+  return region;
+}
+
+// `20261019T130000Z` from a fixed Date, so the key is deterministic in tests.
+export function templateTimestamp(date = new Date()) {
+  const iso = date.toISOString();
+  return `${iso.slice(0, 10).replaceAll('-', '')}T${iso.slice(11, 19).replaceAll(':', '')}Z`;
+}
+
+export function preMoveTemplateKey(date = new Date()) {
+  return `${TEMPLATE_PREFIX}/pre-move-${templateTimestamp(date)}.template.json`;
+}
+
+// Encode each key segment but keep the `/` separators.
+export function templateObjectUrl(bucket, region, key) {
+  validateTemplateBucket(bucket);
+  validateTemplateRegion(region);
+  const encoded = key.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  return `https://${bucket}.s3.${region}.amazonaws.com/${encoded}`;
+}
+
 // CLI -----------------------------------------------------------------------
 const OPTIONS = Object.freeze({
   '--stage': true, '--workload-template': true, '--base-template': true, '--base-synth-template': true,
   '--api-load-balancer-dns-name': true, '--distribution-type': true, '--workload-stack-policy': true,
   '--base-stack-policy': true, '--describe': true, '--actions': true, '--resource-mappings': true,
-  '--workload-parameters': true, '--output': false, '--apply': false,
+  '--workload-parameters': true, '--template-bucket': true, '--template-region': true,
+  '--output': true, '--apply': false,
 });
 
-function parseArguments(argv) {
+export function parseArguments(argv) {
   const options = { apply: false };
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
@@ -313,13 +357,20 @@ async function defaultRun(command, args) {
 
 // Runs one explicitly selected stage. Validation-only unless `--apply` is given.
 // This is the only place that can call AWS, and it never does so implicitly.
-export async function runStage(options, { run = defaultRun } = {}) {
+export async function runStage(options, { run = defaultRun, now = () => new Date() } = {}) {
   const stage = options.stage;
   if (stage === 'pre-move') {
     const plan = preMoveWorkloadUpdate(readJson(options['workload-template']), {
       apiLoadBalancerDnsName: options['api-load-balancer-dns-name'],
     });
     if (!options.apply) return { stage, applied: false, ...plan };
+    // Refuse an unusable template bucket before any AWS call (including the live
+    // parameter read), so a typo cannot consume credentials or touch S3/CFN.
+    const templateBucket = validateTemplateBucket(options['template-bucket']);
+    const templateRegion = validateTemplateRegion(options['template-region']
+      || process.env.AWS_REGION || DEFAULT_TEMPLATE_REGION);
+    const templateKey = preMoveTemplateKey(now());
+    const templateUrl = templateObjectUrl(templateBucket, templateRegion, templateKey);
     // Read the live parameter keys, then apply the delta with
     // `UsePreviousValue=true` for every one. Never synthesize a value: the sealed
     // Service release and reviewed constants stay exactly as the stack has them.
@@ -327,19 +378,25 @@ export async function runStage(options, { run = defaultRun } = {}) {
       ? readJson(options['workload-parameters'])
       : await runAws(['cloudformation', 'describe-stacks', '--stack-name', WORKLOAD_STACK], { run });
     const parameterKeys = workloadParameterKeys(liveParameters);
-    // Write the minimal delta template and apply it in place. The pipeline is
-    // passed as one argument so no shell parses the template.
+    // Write the delta locally, upload it, and apply it by URL. `TemplateBody` is
+    // capped at 51,200 bytes and the live Workload template is much larger.
     const { mkdtemp, writeFile } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const directory = await mkdtemp(path.join(tmpdir(), 'anywear-beta-split-'));
     const templateFile = path.join(directory, 'workload-pre-move.template.json');
     await writeFile(templateFile, `${JSON.stringify(plan.template, null, 2)}\n`);
+    const object = `s3://${templateBucket}/${templateKey}`;
+    try {
+      await run('aws', ['s3', 'cp', templateFile, object]);
+    } catch (error) {
+      throw new Error(`Pre-move template upload to ${object} failed; nothing was updated`, { cause: error });
+    }
     await runAws(['cloudformation', 'update-stack', '--stack-name', WORKLOAD_STACK,
-      '--template-body', `file://${templateFile}`, '--capabilities', 'CAPABILITY_NAMED_IAM',
+      '--template-url', templateUrl, '--capabilities', 'CAPABILITY_NAMED_IAM',
       '--parameters', ...workloadParameterArguments(parameterKeys)], { run });
     await runAws(['cloudformation', 'wait', 'stack-update-complete', '--stack-name', WORKLOAD_STACK], { run });
     return { stage, applied: true, changes: plan.changes, removedDependsOn: plan.removedDependsOn,
-      parameters: parameterKeys };
+      parameters: parameterKeys, templateBucket, templateKey, templateUrl };
   }
   if (stage === 'preview') {
     const liveWorkload = readJson(options['workload-template']);
