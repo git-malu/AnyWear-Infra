@@ -15,6 +15,7 @@ import {
   assertTemplateSurfaceUnchanged,
   buildRefactorTemplates,
   preMoveWorkloadUpdate,
+  validateApiDistributionDomain,
   runStage,
   parseArguments,
   preMoveTemplateKey,
@@ -34,8 +35,13 @@ const liveBase = () => fixture('base-live.template.json');
 const baseSynth = () => fixture('base-synth.template.json');
 const distributionType = () => fixture('distribution-type.json');
 const origin = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
+const distributionDomain = 'd111111abcdef8.cloudfront.net';
+const verificationLogicalId = 'CleanupOperationVerificationTaskDefinition2283B142';
+const verificationValuePath = `/Resources/${verificationLogicalId}/Properties/ContainerDefinitions/0/Environment/13/Value`;
 const distribution = template => template.Resources[SOURCE_LOGICAL_ID];
-const preMovedWorkload = () => preMoveWorkloadUpdate(liveWorkload(), { apiLoadBalancerDnsName: origin }).template;
+const preMovedWorkload = () => preMoveWorkloadUpdate(liveWorkload(), {
+  apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
+}).template;
 const cleanPreview = () => ({
   describe: { StackRefactorId: 're-1111', Description: 'beta API distribution move', ExecutionStatus: 'AVAILABLE',
     StatusReason: null, UnsupportedResources: [], Conflicts: [] },
@@ -45,9 +51,9 @@ const cleanPreview = () => ({
   resourceMappings: buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() }).resourceMappings,
 });
 
-test('(a) the pre-move update rewrites only the literal origin and the distribution DependsOn', () => {
+test('(a) the pre-move update rewrites the literal origin, the verify URL and the distribution DependsOn', () => {
   const before = liveWorkload();
-  const plan = preMoveWorkloadUpdate(before, { apiLoadBalancerDnsName: origin });
+  const plan = preMoveWorkloadUpdate(before, { apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain });
   assert.deepEqual(plan.origin.from, { 'Fn::GetAtt': ['ComputeRuntimeLoadBalancerABD1175B', 'DNSName'] });
   assert.equal(plan.origin.to, origin);
   assert.equal(distribution(plan.template).Properties.DistributionConfig.Origins[0].DomainName, origin);
@@ -56,13 +62,29 @@ test('(a) the pre-move update rewrites only the literal origin and the distribut
   assert.deepEqual(plan.changes.sort(), [
     `/Resources/${SOURCE_LOGICAL_ID}/DependsOn`,
     `/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`,
-  ]);
-  // Everything else, including the two outputs, stays byte-identical.
+    verificationValuePath,
+  ].sort());
+  // The verification value is the literal CloudFront URL at the same index and
+  // the entry name is unchanged.
+  const environment = plan.template.Resources[verificationLogicalId]
+    .Properties.ContainerDefinitions[0].Environment;
+  assert.equal(environment.length, 14);
+  assert.equal(environment[13].Name, 'VERIFY_API_URL');
+  assert.equal(environment[13].Value, `https://${distributionDomain}`);
+  assert.deepEqual(plan.verifyUrl.from,
+    { 'Fn::Join': ['', ['https://', { 'Fn::GetAtt': [SOURCE_LOGICAL_ID, 'DomainName'] }]] });
+  assert.equal(plan.verifyUrl.resource, verificationLogicalId);
+  assert.equal(plan.verifyUrl.index, 13);
+  // Everything else, including the two outputs and all other environment entries,
+  // stays byte-identical.
   const after = structuredClone(plan.template);
   delete after.Resources[SOURCE_LOGICAL_ID].Properties.DistributionConfig.Origins[0].DomainName;
+  delete after.Resources[SOURCE_LOGICAL_ID].DependsOn;
+  delete after.Resources[verificationLogicalId].Properties.ContainerDefinitions[0].Environment[13].Value;
   const original = structuredClone(before);
   delete original.Resources[SOURCE_LOGICAL_ID].Properties.DistributionConfig.Origins[0].DomainName;
   delete original.Resources[SOURCE_LOGICAL_ID].DependsOn;
+  delete original.Resources[verificationLogicalId].Properties.ContainerDefinitions[0].Environment[13].Value;
   assert.deepEqual(after, original);
   for (const output of MOVED_OUTPUTS) assert.ok(after.Outputs[output]);
 });
@@ -71,15 +93,80 @@ test('(a) the pre-move update is idempotent on an already-literal origin and ref
   const already = liveWorkload();
   distribution(already).Properties.DistributionConfig.Origins[0].DomainName = origin;
   delete distribution(already).DependsOn;
-  const plan = preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: origin });
-  assert.deepEqual(plan.changes, []);
-  assert.throws(() => preMoveWorkloadUpdate(liveWorkload(), {}), /requires the live ApiLoadBalancerDnsName/);
-  assert.throws(() => preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: 'other.example.com' }),
+  const plan = preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain });
+  assert.deepEqual(plan.changes, [verificationValuePath]);
+  assert.throws(() => preMoveWorkloadUpdate(liveWorkload(), { apiDistributionDomain: distributionDomain }),
+    /requires the live ApiLoadBalancerDnsName/);
+  assert.throws(() => preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: 'other.example.com', apiDistributionDomain: distributionDomain }),
     /neither the expected GetAtt nor the recorded literal/);
   const external = liveWorkload();
   distribution(external).Properties.DistributionConfig.Origins[0].DomainName = { 'Fn::GetAtt': ['ForeignKeyABCD1234', 'DNSName'] };
-  assert.throws(() => preMoveWorkloadUpdate(external, { apiLoadBalancerDnsName: origin }),
+  assert.throws(() => preMoveWorkloadUpdate(external, { apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain }),
     /does not name a same-stack load balancer/);
+});
+
+test('(a) the pre-move update refuses a missing, duplicate or foreign verify-url and validates the domain', () => {
+  const environmentOf = template => template.Resources[verificationLogicalId]
+    .Properties.ContainerDefinitions[0].Environment;
+  const update = (mutate) => {
+    const template = liveWorkload();
+    mutate(template);
+    return preMoveWorkloadUpdate(template, { apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain });
+  };
+  // Missing entry.
+  assert.throws(() => update((template) => {
+    template.Resources[verificationLogicalId].Properties.ContainerDefinitions[0].Environment =
+      environmentOf(template).filter((entry) => entry.Name !== 'VERIFY_API_URL');
+  }), /exactly one VERIFY_API_URL entry; got 0/);
+  // Duplicate entry.
+  assert.throws(() => update((template) => {
+    environmentOf(template).push({ Name: 'VERIFY_API_URL', Value: `https://${distributionDomain}` });
+  }), /exactly one VERIFY_API_URL entry; got 2/);
+  // A literal or foreign value is not the expected reference.
+  for (const value of [`https://${distributionDomain}`, { 'Fn::GetAtt': ['ForeignKeyABCD1234', 'DomainName'] },
+    { 'Fn::Join': ['', ['http://', { 'Fn::GetAtt': [SOURCE_LOGICAL_ID, 'DomainName'] }]] }]) {
+    assert.throws(() => update((template) => { environmentOf(template)[13].Value = value; }),
+      /not the expected https:\/\/ \+ distribution GetAtt reference/);
+  }
+  // A second verification task definition is refused.
+  assert.throws(() => update((template) => {
+    template.Resources.CleanupOperationVerificationTaskDefinitionFFFF =
+      structuredClone(template.Resources[verificationLogicalId]);
+  }), /exactly one CleanupOperationVerificationTaskDefinition resource/);
+  // CloudFront-domain input: no scheme/path, lowercase only, required.
+  for (const value of [undefined, '', `https://${distributionDomain}`, `${distributionDomain}/path`,
+    'D111.CLOUDFRONT.NET', 'd111111abcdef8.example.com']) {
+    assert.throws(() => preMoveWorkloadUpdate(liveWorkload(),
+      { apiLoadBalancerDnsName: origin, apiDistributionDomain: value }), /--api-distribution-domain/);
+  }
+  assert.equal(validateApiDistributionDomain(distributionDomain), distributionDomain);
+});
+
+test('(a) the pre-move update makes exactly the origin and verify-URL changes when DependsOn is absent', () => {
+  const template = liveWorkload();
+  delete distribution(template).DependsOn;
+  const plan = preMoveWorkloadUpdate(template, { apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain });
+  assert.deepEqual(plan.changes.sort(), [
+    `/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`,
+    verificationValuePath,
+  ].sort());
+  assert.deepEqual(plan.removedDependsOn, []);
+  assert.equal(distribution(plan.template).DependsOn, undefined);
+});
+
+test('(b) the refactor source has no distribution GetAtt and refuses any remaining reference', () => {
+  const templates = buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() });
+  assert.equal(JSON.stringify(templates.source).includes(SOURCE_LOGICAL_ID), false);
+  // A foreign reference anywhere in the source refuses before create-stack-refactor.
+  const foreign = preMovedWorkload();
+  foreign.Resources.ComputeRuntimeApiServiceD2475D0A.Properties.Environment = [
+    { Name: 'WRONG_REFERENCE', Value: { 'Fn::GetAtt': [SOURCE_LOGICAL_ID, 'DomainName'] } },
+  ];
+  assert.throws(() => buildRefactorTemplates({ liveWorkload: foreign, liveBase: liveBase(), baseSynth: baseSynth() }),
+    /still references .* outside the moved outputs/);
+  // An unrewritten verify URL is the same dangling-reference class.
+  assert.throws(() => buildRefactorTemplates({ liveWorkload: liveWorkload(), liveBase: liveBase(), baseSynth: baseSynth() }),
+    /still references .* outside the moved outputs/);
 });
 
 test('(b) the refactor source loses the distribution and both outputs; the target gains exactly them', () => {
@@ -223,7 +310,8 @@ test('the pre-move apply uploads the template and applies it by URL with every l
     };
     const result = await runStage({ stage: 'pre-move', apply: true,
       'workload-template': fixturePath('workload-live.template.json'),
-      'api-load-balancer-dns-name': origin, 'template-bucket': bucket, 'template-region': 'ap-east-1', ...options },
+      'api-load-balancer-dns-name': origin, 'api-distribution-domain': distributionDomain,
+      'template-bucket': bucket, 'template-region': 'ap-east-1', ...options },
     { run, now: () => new Date('2026-10-19T13:00:00.000Z') });
     return { calls, result };
   };
@@ -270,7 +358,8 @@ test('the pre-move apply uploads the template and applies it by URL with every l
     };
     await assert.rejects(runStage({ stage: 'pre-move', apply: true,
       'workload-template': fixturePath('workload-live.template.json'),
-      'api-load-balancer-dns-name': origin, 'template-bucket': bucket }, { run }),
+      'api-load-balancer-dns-name': origin, 'api-distribution-domain': distributionDomain,
+      'template-bucket': bucket }, { run }),
     /requires the live Workload stack parameters/);
     assert.equal(calls.some((args) => args[1] === 'cp' || args[1] === 'update-stack'), false);
   }
@@ -298,10 +387,22 @@ test('the pre-move template location is deterministic and refuses a bad bucket b
     const run = async (command, args) => { calls.push([command, ...args]); return '{}'; };
     const options = { stage: 'pre-move', apply: true,
       'workload-template': fixturePath('workload-live.template.json'),
-      'api-load-balancer-dns-name': origin, ...(bucket === undefined ? {} : { 'template-bucket': bucket }) };
+      'api-load-balancer-dns-name': origin, 'api-distribution-domain': distributionDomain,
+      ...(bucket === undefined ? {} : { 'template-bucket': bucket }) };
     await assert.rejects(runStage(options, { run }), /valid S3 bucket name/);
     assert.deepEqual(calls, []);
   }
+});
+
+test('the pre-move apply refuses a missing distribution domain before any AWS call', async () => {
+  const calls = [];
+  const run = async (command, args) => { calls.push([command, ...args]); return '{}'; };
+  await assert.rejects(runStage({ stage: 'pre-move', apply: true,
+    'workload-template': fixturePath('workload-live.template.json'),
+    'api-load-balancer-dns-name': origin,
+    'template-bucket': 'cdk-hnb659fds-assets-650880818323-ap-east-1' }, { run }),
+  /--api-distribution-domain/);
+  assert.deepEqual(calls, []);
 });
 
 test('the CLI parser requires values for --output and --template-bucket', () => {
@@ -398,7 +499,7 @@ test('the preview apply refuses a missing or invalid template bucket before any 
 test('every stage defaults to validation-only and never calls AWS without --apply', async () => {
   const failIfCalled = async () => { throw new Error('AWS was called in a validation-only run'); };
   const preMove = await runStage({ stage: 'pre-move', 'workload-template': fixturePath('workload-live.template.json'),
-    'api-load-balancer-dns-name': origin }, { run: failIfCalled });
+    'api-load-balancer-dns-name': origin, 'api-distribution-domain': distributionDomain }, { run: failIfCalled });
   assert.equal(preMove.applied, false);
 
   const preview = await runStage({

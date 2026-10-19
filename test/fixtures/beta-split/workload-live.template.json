@@ -17,6 +17,35 @@
       "Type": "AWS::ECS::Service",
       "Properties": { "ServiceName": "beta-anywear-api", "DesiredCount": 1 }
     },
+    "CleanupOperationVerificationTaskDefinition2283B142": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "Family": "beta-anywear-cleanup-verify",
+        "ContainerDefinitions": [{
+          "Name": "CleanupOperationVerification",
+          "Image": "650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service:recorded",
+          "Environment": [
+            { "Name": "NODE_ENV", "Value": "beta" },
+            { "Name": "STAGE", "Value": "beta" },
+            { "Name": "AWS_REGION", "Value": "ap-east-1" },
+            { "Name": "SERVICE_NAME", "Value": "beta-anywear-cleanup-verify" },
+            { "Name": "VERIFY_TARGET", "Value": "beta-anywear-api" },
+            { "Name": "API_HEALTH_PATH", "Value": "/health" },
+            { "Name": "VERIFY_TIMEOUT_SECONDS", "Value": "60" },
+            { "Name": "VERIFY_INTERVAL_SECONDS", "Value": "5" },
+            { "Name": "LOG_LEVEL", "Value": "info" },
+            { "Name": "CLIENT_BASE_URL", "Value": "https://d111111abcdef8.cloudfront.net" },
+            { "Name": "COGNITO_USER_POOL_ID", "Value": "ap-east-1_Example" },
+            { "Name": "DATABASE_SECRET_ARN", "Value": "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/database-Example" },
+            { "Name": "S3_BUCKET", "Value": "anywear-client-beta" },
+            {
+              "Name": "VERIFY_API_URL",
+              "Value": { "Fn::Join": ["", ["https://", { "Fn::GetAtt": ["ComputeRuntimeApiDistribution5788DFE7", "DomainName"] }]] }
+            }
+          ]
+        }]
+      }
+    },
     "ComputeRuntimeApiDistribution5788DFE7": {
       "Type": "AWS::CloudFront::Distribution",
       "DependsOn": ["ComputeRuntimeLoadBalancerABD1175B", "ComputeRuntimeApiServiceD2475D0A"],

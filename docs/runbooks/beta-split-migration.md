@@ -49,10 +49,15 @@ authorization recorded in the issue.**
 The live distribution's `Origin.DomainName` is a same-stack `Fn::GetAtt` of the
 ALB, which is what makes the resource unmovable. Resolve it to the literal the
 stack already uses (the live `ApiLoadBalancerDnsName`) and remove the
-distribution's `DependsOn` residue on resources that stay behind. This is a
-minimal `update-stack` template delta: an in-place `Origin.DomainName` update
-(CloudFront documents "No interruption"), so the distribution ID and domain are
-preserved and the stack keeps serving.
+distribution's `DependsOn` residue on resources that stay behind. The moved
+distribution is also referenced by the cleanup verification task definition's
+`VERIFY_API_URL` environment entry (`CleanupOperationVerificationTaskDefinition*`,
+first container, the recorded index); resolve that `https://` + distribution
+`Fn::GetAtt` value to the literal `https://<apiDistributionDomain>` in the same
+update, so the refactor source does not keep a dangling reference. This is a
+minimal `update-stack` template delta: the in-place origin and verify-URL rewrites
+(CloudFront documents "No interruption" for the origin update) preserve the
+distribution ID and domain, and the stack keeps serving.
 
 The pre-move `update-stack` must carry every live Workload parameter: four of
 them (`ServiceImageDigest`, `ServiceCommitSha`, `VlmConfigArn`,
@@ -121,15 +126,19 @@ Foundation deploy after the MOVE deletes the Workload stack. The OIDC deploy rol
 #    No AWS call and no --template-bucket required.
 node scripts/migrate-beta-split.mjs --stage pre-move \
   --workload-template <live-workload-original.json> \
-  --api-load-balancer-dns-name <live ApiLoadBalancerDnsName>
+  --api-load-balancer-dns-name <live ApiLoadBalancerDnsName> \
+  --api-distribution-domain <live ApiDistributionDomainName>
 
 # 2. Separate explicit authorization; uploads the delta and applies it in place.
 #    The script reads the live parameter keys from describe-stacks automatically;
 #    pass --workload-parameters <describe-stacks.json | keys.json> to use the
-#    recorded read instead.
+#    recorded read instead. --api-distribution-domain is required for both modes
+#    and must be a bare <id>.cloudfront.net domain (no scheme or path); it is
+#    validated before any AWS call.
 node scripts/migrate-beta-split.mjs --stage pre-move --apply \
   --workload-template <live-workload-original.json> \
   --api-load-balancer-dns-name <live ApiLoadBalancerDnsName> \
+  --api-distribution-domain <live ApiDistributionDomainName> \
   --template-bucket cdk-hnb659fds-assets-650880818323-ap-east-1 \
   [--template-region ap-east-1] \
   [--workload-parameters <recorded-parameters.json>]
@@ -137,10 +146,19 @@ node scripts/migrate-beta-split.mjs --stage pre-move --apply \
 
 `--output <file>` writes the stage plan/result JSON; it requires a value.
 
-Accept only when the planned change list is exactly:
+Accept only when the planned change list is exactly the two paths below, plus
+the distribution's `DependsOn` removal only when the live distribution has one:
 
 - `/Resources/<distributionLogicalId>/Properties/DistributionConfig/Origins/0/DomainName`
-- `/Resources/<distributionLogicalId>/DependsOn` (removed; may be empty)
+  (only when the live origin is the expected same-stack ALB `Fn::GetAtt`)
+- `/Resources/<cleanupVerificationTaskDefinition>/Properties/ContainerDefinitions/0/Environment/<index>/Value`
+  (the one `VERIFY_API_URL` entry; the value becomes the literal `https://<apiDistributionDomain>`)
+- `/Resources/<distributionLogicalId>/DependsOn` (removed; only when present)
+
+Any other difference, a missing or duplicate `VERIFY_API_URL` entry, a
+verification value that is not the expected `Fn::Join`/`Fn::GetAtt`, or any
+remaining reference to the distribution outside its moved outputs refuses the
+update.
 
 Read back the distribution ID, domain and `Deployed` status and the public
 `/health` response. No other Workload property changes and no Service source
@@ -212,6 +230,12 @@ Base's synthesis with `-c apiOriginDomainName=<live ALB DNS>` — never Base's
 full post-split synthesis, whose other changes belong to the next normal deploy.
 The `--resource-mappings` entry maps the live source logical ID to the pinned
 Base destination logical ID in `lib/api-distribution.json`.
+
+Before `create-stack-refactor`, the script recursively scans the constructed
+Workload source for any remaining `Fn::GetAtt` to the moved distribution outside
+the removed outputs and refuses with the offending path. Stage A's
+`VERIFY_API_URL` literal rewrite is what satisfies this guard; an unrewritten or
+foreign reference aborts before any API call.
 
 Require `describe-stack-refactor` to report no unsupported resource and no
 conflict, and `list-stack-refactor-actions` to show **exactly one MOVE** (the
