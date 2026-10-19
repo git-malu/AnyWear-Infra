@@ -26,8 +26,13 @@ function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.
   const stacks = new Map([['AnyWearPlatformStack-beta', platform], [runtimeStack, runtime]]);
   return { calls, events, async aws(args) {
     if (args[0] === 'cloudformation') {
-      const stack = stacks.get(args.at(-1));
-      return { Stacks: stack ? [stack] : [] };
+      const name = args.at(-1);
+      const stack = stacks.get(name);
+      if (!stack) {
+        const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${name} does not exist`;
+        throw Object.assign(new Error(stderr), { stderr });
+      }
+      return { Stacks: [stack] };
     }
     if (args[0] === 'ssm') {
       const name = args.at(-1);

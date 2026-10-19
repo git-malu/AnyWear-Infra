@@ -60,8 +60,9 @@ added by the issue #158 extension replace the remaining weak
 `Fn::GetStackOutput` reads, so once AnyWear-Service's step D converts them the
 Base/Runtime deploy order no longer matters. `private_subnet_ids` and
 `isolated_subnet_ids` are the two Base subnet groups and are never empty
-`StringList`s; the Egress stack attaches NAT routes to the Private group while it
-exists.
+`StringList`s; the Egress stack adds the 0.0.0.0/0 routes to the Base-owned
+Private route tables while it exists (Base keeps the route tables and their single
+per-subnet associations).
 
 Two values have no Base resource: `vlm_config_arn` and
 `cloudfront_prefix_list_id` are reviewed constants read from the live

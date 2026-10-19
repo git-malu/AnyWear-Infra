@@ -52,11 +52,13 @@ and must not be relabeled as an Infra-produced deployment.
   concurrency is not a cross-repository lock; migration rollout stays separately
   coordinated.
 - Issue #166: Beta is three stacks with disjoint lifetimes. `Base`
-  (`AnyWearPlatformStack-beta`, physical name retained) holds the VPC/subnets,
-  Aurora, S3, Cognito, ECR, SQS, SSM params and both CloudFront distributions and
-  is persistent; `Egress` (`AnyWearEgressStack-beta`) holds the NAT, EIP, private
-  route tables/routes/associations and the S3 gateway endpoint and is deleted on
-  stop; `Runtime` (`AnyWearRuntimeStack-beta`, Service-owned) holds ALB, ECS
+  (`AnyWearPlatformStack-beta`, physical name retained) holds the VPC and its
+  subnets plus each subnet's route table and association, Aurora, S3, Cognito,
+  ECR, SQS, SSM params and both CloudFront distributions and is persistent;
+  `Egress` (`AnyWearEgressStack-beta`) holds the NAT, EIP, the 0.0.0.0/0 default
+  routes in the Base-owned private route tables and the S3 gateway endpoint and
+  is deleted on stop (it creates no route table and no subnet association);
+  `Runtime` (`AnyWearRuntimeStack-beta`, Service-owned) holds ALB, ECS
   services/task definitions, log groups and the cleanup operation and is deleted
   on stop. There is no `environmentRunning` switch, no `BetaActive` output and no
   stopped template. Beta run state is one fact: whether the Runtime stack exists.

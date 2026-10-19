@@ -17,6 +17,10 @@ const platformOutputs = () => Object.fromEntries(['EcsClusterName', 'PrivateSubn
       : key === 'ApiDistributionDomainName' ? 'd111111abcdef8.cloudfront.net'
       : key === 'ApiBaseUrl' ? 'https://d111111abcdef8.cloudfront.net' : `${key}-value`]));
 const entries = outputs => Object.entries(outputs).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue }));
+function stackAbsenceError(stackName) {
+  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  return Object.assign(new Error(stderr), { stderr });
+}
 
 // The Base stack is the only stack a restore deploys. The Runtime slice is
 // AnyWear-Service's; it must exist and stay terminal, but is never deployed.
@@ -31,7 +35,11 @@ function mockIo(options = {}) {
       calls.push([...args]);
       if (args[0] === 'cloudformation') {
         const name = args.at(-1);
-        return { Stacks: (name === runtimeStack ? (runtime ? [runtime] : []) : [platform]) };
+        if (name === runtimeStack) {
+          if (!runtime) throw stackAbsenceError(name);
+          return { Stacks: [runtime] };
+        }
+        return { Stacks: [platform] };
       }
       if (args[0] === 'cloudfront') {
         assert.equal(args[1], 'get-distribution');
@@ -78,6 +86,20 @@ test('restore requires the Runtime stack to exist: the operator starts first', a
   });
   assert.equal(io.deployCount, 0);
   assert.equal(io.states.length, 1);
+});
+
+test('restore does not treat a non-absence Runtime read failure as "start first"', async () => {
+  const io = mockIo();
+  io.aws = async () => {
+    throw Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+      { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  };
+  await assert.rejects(runRestoreRelease({ io, infraSha, env }), error => {
+    assert.match(error.cause?.message ?? error.message, /Throttling/);
+    return true;
+  });
+  assert.equal(io.deployCount, 0);
+  assert.equal(io.recovered, 'requires-explicit-recovery');
 });
 
 test('restore refuses a non-terminal Runtime before deploying the Base stack', async () => {

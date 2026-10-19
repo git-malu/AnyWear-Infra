@@ -3568,6 +3568,38 @@
     ]
    }
   },
+  "BaseVpcIdExport": {
+   "Value": {
+    "Ref": "AnyWearVpcA8B15590"
+   },
+   "Export": {
+    "Name": "AnyWearBetaBaseVpcId"
+   }
+  },
+  "BaseNatSubnetIdExport": {
+   "Value": {
+    "Ref": "AnyWearVpcPublicSubnet1Subnet5CC36A83"
+   },
+   "Export": {
+    "Name": "AnyWearBetaBaseNatSubnetId"
+   }
+  },
+  "BasePrivateRouteTable1IdExport": {
+   "Value": {
+    "Ref": "AnyWearVpcPrivateSubnet1RouteTable9BAADAF1"
+   },
+   "Export": {
+    "Name": "AnyWearBetaBasePrivateRouteTable1Id"
+   }
+  },
+  "BasePrivateRouteTable2IdExport": {
+   "Value": {
+    "Ref": "AnyWearVpcPrivateSubnet2RouteTable88A2B5DD"
+   },
+   "Export": {
+    "Name": "AnyWearBetaBasePrivateRouteTable2Id"
+   }
+  },
   "ApiDistributionId": {
    "Value": {
     "Fn::GetAtt": [

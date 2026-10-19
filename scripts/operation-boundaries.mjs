@@ -5,9 +5,9 @@ import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
 // `state` entry and the accepted `anywear_infra_deployment` producer `observe`;
-// every mutation shares `mutate.yml`. The release slice is no longer an Infra
-// operation: AnyWear-Service deploys `AnyWearWorkloadStack-beta` from its own
-// release chain, so no entry here can deploy or recover it.
+// every mutation shares `mutate.yml`. The release slice (`AnyWearRuntimeStack-beta`)
+// is no longer an Infra operation: AnyWear-Service deploys it from its own
+// release chain, so no entry here can deploy, verify or recover it.
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['state', 'observe'],
   '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',

@@ -3,7 +3,7 @@ import { ADMISSION_MODE_PARAMETER, ADMISSION_MODE_CLOSED, ADMISSION_MODE_TESTERS
 import { canonicalTesterList, observeAdmissionState, readAdmissionState, assertProvableAdmissionClosure } from './admission-state.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
-import { runtimeStack, assertRuntimeReady } from './one-writer.mjs';
+import { runtimeStack, assertRuntimeReady, describeStack } from './one-writer.mjs';
 
 export { readAdmissionState } from './admission-state.mjs';
 // The standalone `migrate` operation uses this fence from `admission-mode.mjs`;
@@ -167,8 +167,8 @@ export async function runCloseAdmission({ io, infraSha, env = process.env }) {
   assertProtectedExecutor(infraSha, env);
   let revision; let prior; let suspendAttempted = false;
   try {
-    const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-    const runtime = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', runtimeStack])).Stacks?.[0];
+    const platform = await describeStack(io, 'AnyWearPlatformStack-beta');
+    const runtime = await describeStack(io, runtimeStack);
     assertRunningBeta(platform, runtime, 'close admission');
     revision = workloadRevision(runtime);
     const original = await readAdmissionState(io);
@@ -244,8 +244,8 @@ export async function runOpenAdmission({ io, infraSha, env = process.env }) {
   assertProtectedExecutor(infraSha, env);
   let revision; let original; let requested = false;
   try {
-    const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-    const runtime = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', runtimeStack])).Stacks?.[0];
+    const platform = await describeStack(io, 'AnyWearPlatformStack-beta');
+    const runtime = await describeStack(io, runtimeStack);
     assertRunningBeta(platform, runtime, 'open admission');
     revision = workloadRevision(runtime);
     // Refuse before resuming unless the database decision is provably closed and

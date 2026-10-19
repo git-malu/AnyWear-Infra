@@ -95,8 +95,10 @@ if (stage === 'beta') {
 // `egress` is the disposable network edge. It is a separate scope so
 // `deploy-egress` / `delete-egress` synthesize only this stack and need no
 // Service artifact directory; `cdk deploy/destroy --exclusively` then touches
-// exactly this stack. The SSM parameter inputs are read by CloudFormation, so
-// synthesis itself performs no AWS call.
+// exactly this stack. Base publishes the VPC/subnet/route-table ids as
+// CloudFormation exports (lib/base-exports.ts) and Egress imports them, so the
+// two stacks share the Base-owned network without Egress re-creating route
+// tables or a second association. Synthesis performs no AWS call.
 if (deployScope === 'egress') {
   new EgressStack(app, 'AnyWearEgressStack-beta', { env });
 }

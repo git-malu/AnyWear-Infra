@@ -2,7 +2,7 @@ import { parseJson, canonicalJson } from './json-contract.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { normalizeTesterEmails, observeAdmissionState } from './admission-state.mjs';
 import { compareAdmissionDecision, parseLifecycleStatus } from './admission-operation.mjs';
-import { runtimeStack, assertRuntimeReady } from './one-writer.mjs';
+import { runtimeStack, assertRuntimeReady, describeStack } from './one-writer.mjs';
 
 export { normalizeTesterEmails } from './admission-state.mjs';
 
@@ -18,8 +18,8 @@ export async function runTesterAllowlist(action, input, io) {
   if (!['status', 'add', 'set'].includes(action)) throw new Error('Unknown Infra tester action');
   let payload = normalizeTesterEmails(input);
   if (action === 'status' && payload !== '[]') throw new Error('Status does not accept emails');
-  const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-  const runtime = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', runtimeStack])).Stacks?.[0];
+  const platform = await describeStack(io, 'AnyWearPlatformStack-beta');
+  const runtime = await describeStack(io, runtimeStack);
   const stable = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE']);
   if (!stable.has(platform?.StackStatus)) throw new Error('Stable Beta Base stack required');
   // Issue #166: Beta runs only when the Runtime stack exists; there is no

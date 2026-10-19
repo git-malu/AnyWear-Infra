@@ -22,6 +22,7 @@ import type { ArtifactInputs } from './artifact-inputs';
 import { readIdentityPhase, type IdentityPhase } from './identity-phase';
 import { grantBetaDedicatedRoles } from './beta-role-grants';
 import { StageContract } from './stage-contract';
+import { BASE_EXPORTS } from './base-exports';
 import apiDistributionIdentity from './api-distribution.json';
 
 export const DEFAULT_QWEATHER_API_HOST = 'jt4d94d58q.re.qweatherapi.com';
@@ -681,6 +682,7 @@ export class PlatformStack extends cdk.Stack {
       new cdk.CfnOutput(this, 'PrivateSubnetIds', {
         value: cdk.Fn.join(',', this.privateSubnets().map((subnet) => subnet.subnetId)),
       });
+      if (isBeta) this.createEgressExports();
     }
     if (this.apiDistribution) {
       new cdk.CfnOutput(this, 'ApiDistributionId', { value: this.apiDistribution.attrId });
@@ -699,6 +701,29 @@ export class PlatformStack extends cdk.Stack {
     return this.stageName === 'beta'
       ? vpc.selectSubnets({ subnetGroupName: 'Private' }).subnets
       : vpc.privateSubnets;
+  }
+
+  // The Base-owned network ids the disposable Egress stack imports. Base keeps
+  // each subnet's route table and association (one association per subnet); the
+  // exports let Egress add only its default routes and S3 gateway endpoint into
+  // those existing tables. They are plain CloudFormation exports, not stage
+  // contract parameters, so the 36/35/1 contract is unchanged and `deploy-egress`
+  // still synthesizes only the Egress stack.
+  private createEgressExports(): void {
+    const vpc = this.vpc;
+    if (!vpc) throw new Error('The Beta Egress exports require the Base VPC');
+    const privateSubnets = this.privateSubnets();
+    if (privateSubnets.length !== BASE_EXPORTS.privateRouteTableIds.length) {
+      throw new Error(`The Beta Egress export contract requires ${BASE_EXPORTS.privateRouteTableIds.length} Private subnets, found ${privateSubnets.length}`);
+    }
+    if (vpc.publicSubnets.length === 0) throw new Error('The Beta Egress exports require a public subnet for the NAT gateway');
+    new cdk.CfnOutput(this, 'BaseVpcIdExport', { value: vpc.vpcId, exportName: BASE_EXPORTS.vpcId });
+    new cdk.CfnOutput(this, 'BaseNatSubnetIdExport', { value: vpc.publicSubnets[0].subnetId, exportName: BASE_EXPORTS.natSubnetId });
+    for (const [index, subnet] of privateSubnets.entries()) {
+      new cdk.CfnOutput(this, `BasePrivateRouteTable${index + 1}IdExport`, {
+        value: subnet.routeTable.routeTableId, exportName: BASE_EXPORTS.privateRouteTableIds[index],
+      });
+    }
   }
 
   // The Beta API distribution. Issue #166 moves this resource out of the

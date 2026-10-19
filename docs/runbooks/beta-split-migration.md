@@ -133,12 +133,19 @@ node scripts/migrate-beta-split.mjs --stage execute --apply \
   --output <refactor-execute.json>
 ```
 
-Read back the distribution ID, domain and `Deployed` status, both stacks
-terminal, and `/health` unchanged through the domain. Then delete
-`AnyWearWorkloadStack-beta` as a separate explicit step. The remaining issue
-steps are separate: update Base (`M4`), create Egress (`M5`), create Runtime
-(`M6`), rewire the Base origin to the new ALB and verify `/readyz` plus identity
-(`M7`).
+The readback below is followed by the remaining issue steps as separate
+authorizations: update Base (`M4`), create Egress (`M5`), create Runtime (`M6`),
+rewire the Base origin to the new ALB and verify `/readyz` plus identity (`M7`).
+
+For **M4** both the Workload ALB and the Runtime stack are absent, so the Base
+update takes no live ALB output: its API distribution origin is the literal
+`Origin.DomainName` the pre-move update already wrote into the moved distribution
+(the value is preserved by the MOVE). `scripts/runtime-operation.mjs`
+`readApiOrigin` resolves in this order — the running Runtime stack's
+`ApiLoadBalancerDnsName`, the legacy Workload output while it still exists, then
+the literal origin read back from the Base stack's Original template — and
+validates it as a domain. M7 then rewires the same distribution to the new
+Runtime ALB DNS.
 
 ## Abort behavior
 

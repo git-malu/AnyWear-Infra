@@ -8,6 +8,7 @@ import { BillingStack } from '../lib/billing-stack';
 import { EgressStack } from '../lib/egress-stack';
 import { FoundationStack } from '../lib/foundation-stack';
 import { API_DISTRIBUTION_IDENTITY, DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
+import { BASE_EXPORTS } from '../lib/base-exports';
 import { stageContractInputs } from '../lib/stage-contract';
 import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '@git-malu/stage-contracts';
 import runtimePolicies from './fixtures/runtime-policy.json';
@@ -484,6 +485,26 @@ describe('Platform safety controls', () => {
     expect(routes.length).toBeGreaterThan(0);
     expect(routes.every((route) => route.Properties.NatGatewayId === undefined
       && route.Properties.GatewayId !== undefined)).toBe(true);
+    // Base owns each subnet's route table and its single association; the
+    // disposable Egress stack only adds default routes into these tables.
+    const routeTables = resources.filter((resource) => resource.Type === 'AWS::EC2::RouteTable');
+    const associations = resources.filter((resource) => resource.Type === 'AWS::EC2::SubnetRouteTableAssociation');
+    expect(routeTables).toHaveLength(6);
+    expect(associations).toHaveLength(6);
+    // The Egress boundary is a same-account CloudFormation export/import pair:
+    // Base exports its VPC, the NAT placement subnet and the two Private route
+    // tables; Egress imports them and creates no association of its own.
+    const exported = Object.fromEntries(Object.values(template.Outputs)
+      .filter((output: any) => output.Export?.Name)
+      .map((output: any) => [output.Export.Name, output.Value]));
+    expect(Object.keys(exported).sort()).toEqual([BASE_EXPORTS.vpcId, BASE_EXPORTS.natSubnetId,
+      ...BASE_EXPORTS.privateRouteTableIds].sort());
+    expect(exported[BASE_EXPORTS.vpcId]).toEqual({ Ref: expect.stringMatching(/^AnyWearVpc[A-F0-9]{8}$/) });
+    expect(exported[BASE_EXPORTS.natSubnetId]).toEqual({ Ref: expect.stringMatching(/^AnyWearVpcPublicSubnet1Subnet[A-F0-9]{8}$/) });
+    for (const [index, exportName] of BASE_EXPORTS.privateRouteTableIds.entries()) {
+      expect(exported[exportName]).toEqual({ Ref: expect.stringMatching(
+        new RegExp(`^${['AnyWearVpcPrivateSubnet1RouteTable', 'AnyWearVpcPrivateSubnet2RouteTable'][index]}[A-F0-9]{8}$`)) });
+    }
     expect(resources.filter((resource) => resource.Type === 'AWS::RDS::DBCluster')).toHaveLength(1);
     expect(resources.filter((resource) => resource.Type === 'AWS::ECS::Cluster')).toHaveLength(1);
     // No environment activity output exists any more: run state is the existence
@@ -2035,39 +2056,41 @@ describe('Disposable Beta Egress stack', () => {
     })).toJSON();
   }
 
-  it('holds only the recreatable NAT, EIP, per-AZ routes and the S3 gateway endpoint', () => {
+  it('adds only default routes, NAT/EIP and the S3 gateway endpoint into Base-owned route tables', () => {
     const template = synthesizeEgress();
     const resources = Object.values(template.Resources) as any[];
     const ofType = (type: string) => resources.filter((resource) => resource.Type === type);
 
     expect(ofType('AWS::EC2::NatGateway')).toHaveLength(1);
     expect(ofType('AWS::EC2::EIP')).toHaveLength(1);
-    expect(ofType('AWS::EC2::RouteTable')).toHaveLength(2);
-    expect(ofType('AWS::EC2::SubnetRouteTableAssociation')).toHaveLength(2);
+    // AWS allows one association per subnet and Base owns it: Egress creates no
+    // route table and no association, only routes in the imported Base tables.
+    expect(ofType('AWS::EC2::RouteTable')).toHaveLength(0);
+    expect(ofType('AWS::EC2::SubnetRouteTableAssociation')).toHaveLength(0);
     const routes = ofType('AWS::EC2::Route');
     expect(routes).toHaveLength(2);
+    expect(routes.map((route) => route.Properties.RouteTableId)).toEqual(
+      BASE_EXPORTS.privateRouteTableIds.map((name) => ({ 'Fn::ImportValue': name })));
     expect(routes.every((route) => route.Properties.DestinationCidrBlock === '0.0.0.0/0'
       && route.Properties.NatGatewayId !== undefined)).toBe(true);
     const endpoint = ofType('AWS::EC2::VPCEndpoint');
     expect(endpoint).toHaveLength(1);
     expect(String(endpoint[0].Properties.ServiceName)).toContain('s3');
-    expect(endpoint[0].Properties.RouteTableIds).toHaveLength(2);
+    expect(endpoint[0].Properties.VpcId).toEqual({ 'Fn::ImportValue': BASE_EXPORTS.vpcId });
+    expect(endpoint[0].Properties.RouteTableIds).toEqual(
+      BASE_EXPORTS.privateRouteTableIds.map((name) => ({ 'Fn::ImportValue': name })));
+    expect(ofType('AWS::EC2::NatGateway')[0].Properties.SubnetId)
+      .toEqual({ 'Fn::ImportValue': BASE_EXPORTS.natSubnetId });
     // The Egress stack owns no Base or Runtime resource: no subnet, VPC, Aurora,
     // Cognito, bucket, ECR, SSM parameter or distribution is recreated here.
     for (const type of ['AWS::EC2::VPC', 'AWS::EC2::Subnet', 'AWS::RDS::DBCluster', 'AWS::S3::Bucket',
       'AWS::Cognito::UserPool', 'AWS::ECR::Repository', 'AWS::SSM::Parameter', 'AWS::CloudFront::Distribution']) {
       expect(ofType(type)).toHaveLength(0);
     }
-    // Inputs are the Base stage-contract SSM parameters, not CDK lookups. The
-    // fourth parameter is CDK's own bootstrap-version read.
-    const stageParameterDefaults = (Object.values(template.Parameters) as any[])
-      .map((parameter) => parameter.Default).filter((value) => String(value).startsWith('/anywear/beta/')).sort();
-    expect(stageParameterDefaults).toEqual([
-      '/anywear/beta/private_subnet_ids', '/anywear/beta/public_subnet_ids', '/anywear/beta/vpc_id',
-    ]);
-    for (const parameter of Object.values(template.Parameters) as any[]) {
-      expect(parameter.Type).toMatch(/^AWS::SSM::Parameter::Value</);
-    }
+    // No stage-contract parameter is added for the route tables: the only
+    // parameter is CDK's own bootstrap-version read.
+    expect((Object.values(template.Parameters) as any[]).map((parameter) => parameter.Default))
+      .toEqual(['/cdk-bootstrap/hnb659fds/version']);
     expect(Object.keys(template.Outputs).sort()).toEqual([
       'EgressNatEipAllocationId', 'EgressNatGatewayId', 'EgressPrivateRouteTableIds',
     ]);

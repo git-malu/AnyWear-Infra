@@ -42,9 +42,14 @@ const expectedInputs = (names) => names.map((parameter) => ({ parameter,
   version: String(STAGE_CONTRACT_READ_PARAMETERS.indexOf(parameter) + 1),
   value_sha256: sha256(`value-${STAGE_CONTRACT_READ_PARAMETERS.indexOf(parameter)}`) }));
 
+function stackAbsenceError(stackName) {
+  const stderr = `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  return Object.assign(new Error(stderr), { stderr });
+}
+
 // A deterministic read-only AWS surface for the exact calls observeDeployment
 // makes: no credentials, no network, no timers.
-function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLETE' } = {}) {
+function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLETE', runtimeError } = {}) {
   const stacks = new Map(configuredStacks.map((configured, index) => [configured.stack_name, {
     StackId: `arn:aws:cloudformation:${configured.region}:650880818323:stack/${configured.stack_name}/${index}`,
     StackName: configured.stack_name, StackStatus: 'UPDATE_COMPLETE', CreationTime: '2026-10-01T00:00:00.000Z',
@@ -63,8 +68,11 @@ function fixtureIo({ invalidStageParameters = [], runtimeStatus = 'UPDATE_COMPLE
       const argument = flag => args[args.indexOf(flag) + 1];
       if (args[0] === 'sts' && args[1] === 'get-caller-identity') return { Account: '650880818323' };
       if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
-        const stack = stacks.get(argument('--stack-name')) ?? byId.get(argument('--stack-name'));
-        return { Stacks: stack ? [structuredClone(stack)] : [] };
+        const name = argument('--stack-name');
+        if (runtimeError && name === runtimeStack) throw runtimeError;
+        const stack = stacks.get(name) ?? byId.get(name);
+        if (!stack) throw stackAbsenceError(name);
+        return { Stacks: [structuredClone(stack)] };
       }
       if (args[0] === 'cloudformation' && args[1] === 'get-template') {
         const stack = byId.get(argument('--stack-name'));
@@ -134,6 +142,11 @@ test('the observer requires the Service-owned Runtime stack to exist and be term
     await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus }), env: executorEnvironment() }),
       /AnyWearRuntimeStack-beta/, String(runtimeStatus));
   }
+  // A throttled/denied Runtime read is not absence and must abort the observation.
+  const throttle = Object.assign(new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+    { stderr: 'An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null, runtimeError: throttle }),
+    env: executorEnvironment() }), /Throttling/);
 });
 
 test('the observer CLI writes the authenticated v3 body that equals the expected record', async () => {

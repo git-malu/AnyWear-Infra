@@ -1,6 +1,6 @@
 import { readAdmissionState, assertClosedAdmission } from './admission-operation.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
-import { assertTerminalRuntime, assertRuntimeReady, terminalStackStatuses, runtimeStack } from './one-writer.mjs';
+import { assertTerminalRuntime, assertRuntimeReady, describeStack, terminalStackStatuses, runtimeStack } from './one-writer.mjs';
 import { canonicalJson, sha256, SHA } from './json-contract.mjs';
 
 const platformName = 'AnyWearPlatformStack-beta';
@@ -16,7 +16,7 @@ const platformInterfaceKeys = ['EcsClusterName', 'PrivateSubnetIds', 'OneShotSec
   'ApiDistributionId', 'ApiDistributionDomainName', 'ApiBaseUrl'];
 const outputs = stack => Object.fromEntries((stack?.Outputs ?? []).map(row => [row.OutputKey, row.OutputValue]));
 const selectOutputs = (all, keys) => Object.fromEntries(keys.map(key => [key, all[key]]));
-const stackRead = async (io, name) => (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', name])).Stacks?.[0];
+const stackRead = (io, name) => describeStack(io, name);
 
 function assertContext(infraSha, env) {
   assertProtectedExecutor(infraSha, env);

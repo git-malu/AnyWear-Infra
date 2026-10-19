@@ -20,13 +20,15 @@ IAM exclusivity or Beta resource isolation.
 ## Issue #166: three Beta stacks
 
 Beta is three stacks with disjoint lifetimes. `Base` (`AnyWearPlatformStack-beta`,
-physical name retained) holds the VPC/subnets, Aurora, S3, Cognito, ECR, SQS, SSM
-parameters and both CloudFront distributions and is persistent. `Egress`
-(`AnyWearEgressStack-beta`) holds the NAT, EIP, private route tables/routes/
-associations and the S3 gateway endpoint and is deleted on stop. `Runtime`
-(`AnyWearRuntimeStack-beta`, Service-owned; it replaced the old Workload identity)
-holds the ALB, ECS services/task definitions, log groups and the cleanup
-operation and is deleted on stop.
+physical name retained) holds the VPC and its subnets plus each subnet's route
+table and association, Aurora, S3, Cognito, ECR, SQS, SSM parameters and both
+CloudFront distributions and is persistent. `Egress` (`AnyWearEgressStack-beta`)
+holds only the NAT, EIP, the 0.0.0.0/0 default routes in the Base-owned private
+route tables, and the S3 gateway endpoint, and is deleted on stop; it creates no
+route table and no subnet route-table association (AWS allows one association per
+subnet and Base owns it). `Runtime` (`AnyWearRuntimeStack-beta`, Service-owned; it
+replaced the old Workload identity) holds the ALB, ECS services/task definitions,
+log groups and the cleanup operation and is deleted on stop.
 
 There is no `environmentRunning` switch, no `BetaActive` output and no stopped
 template. Run state is one fact: whether the Runtime stack exists. Stop deletes
@@ -215,7 +217,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; takes no Service release identity and no committed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job downloads that sealed release's Lambda bundles, runtime policy and manifest with a read-only token and proves every byte against the manifest before any credential. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
-| `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/route/S3-endpoint edge. `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
+| `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention, closed admission and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice |
 | ~~`deploy-workload`~~ | Removed in #158 step C; the slice was renamed to Runtime in #166 and is deployed only by AnyWear-Service's release chain |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |

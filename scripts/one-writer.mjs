@@ -35,3 +35,45 @@ export function assertRuntimeAbsent(runtime, action) {
     throw new Error(`${action} requires ${runtimeStack} to be absent; stop the Runtime stack first`);
   }
 }
+
+// A stopped environment has no Runtime stack. CloudFormation's DescribeStacks
+// answers a missing stack with a `ValidationError: Stack with id <name> does not
+// exist` (or `Stack <name> does not exist`), and the AWS CLI exits non-zero, so
+// every reader below catches exactly that sentence and returns absence. Every
+// other failure — throttling, AccessDenied, network, malformed output — is
+// rethrown: absence is never inferred from a generic error and a mock that
+// returns `{Stacks: []}` without that error fails closed instead.
+const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export function isStackAbsentError(error, stackName) {
+  if (typeof stackName !== 'string' || stackName.length === 0) return false;
+  const text = [error?.stderr, error?.message, error?.cause?.message]
+    .filter(value => typeof value === 'string').join('\n');
+  if (!text) return false;
+  const name = escapeRegExp(stackName);
+  const pattern = new RegExp(
+    `(?:^|\\n)(?:An error occurred \\(ValidationError\\) when calling the DescribeStacks operation: )?`
+    + `Stack (?:with id )?${name} does not exist\\s*$`,
+  );
+  return pattern.test(text);
+}
+
+// The one absence-aware stack reader. `io.aws` is the operation's restricted
+// session; `region` is passed through for the observation path. A single stack
+// is returned, or `undefined` when CloudFormation reports exactly that the stack
+// does not exist.
+export async function describeStack(io, stackName, region) {
+  try {
+    const response = await io.aws(['cloudformation', 'describe-stacks', '--stack-name', stackName], region);
+    const stacks = response?.Stacks;
+    if (!Array.isArray(stacks)) throw new Error(`DescribeStacks returned no stack list for ${stackName}`);
+    if (stacks.length > 1) throw new Error(`DescribeStacks returned multiple stacks for ${stackName}`);
+    if (stacks.length === 0) {
+      throw new Error(`DescribeStacks returned no stack for ${stackName} without an absence error`);
+    }
+    return stacks[0];
+  } catch (error) {
+    if (isStackAbsentError(error, stackName)) return undefined;
+    throw error;
+  }
+}
