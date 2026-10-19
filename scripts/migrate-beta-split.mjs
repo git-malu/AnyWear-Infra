@@ -161,6 +161,13 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName, ap
     }
     delete resource.DependsOn;
   }
+  // The moved outputs legitimately reference the distribution until the refactor,
+  // so scan only the resources: any other remaining `Fn::GetAtt` would dangle
+  // once the distribution moves. Refuse here, before the plan is returned.
+  const resourceReferences = distributionReferences(source.Resources);
+  if (resourceReferences.length) {
+    throw new Error(`The pre-move Workload template still references ${SOURCE_LOGICAL_ID} outside the moved outputs at /Resources${resourceReferences[0]}`);
+  }
   const verifyPath = `/Resources/${verificationId}/Properties/ContainerDefinitions/0/Environment/${verifyIndex}/Value`;
   const allowedPaths = [
     ...(getAtt ? [`/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`] : []),

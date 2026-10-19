@@ -142,6 +142,28 @@ test('(a) the pre-move update refuses a missing, duplicate or foreign verify-url
   assert.equal(validateApiDistributionDomain(distributionDomain), distributionDomain);
 });
 
+test('(a) the pre-move update refuses any remaining distribution reference in resources', () => {
+  const foreign = liveWorkload();
+  foreign.Resources.ComputeRuntimeApiServiceD2475D0A.Properties.Environment = [
+    { Name: 'FOREIGN_REFERENCE', Value: { 'Fn::GetAtt': [SOURCE_LOGICAL_ID, 'DomainName'] } },
+  ];
+  assert.throws(() => preMoveWorkloadUpdate(foreign, {
+    apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
+  }), new RegExp(`The pre-move Workload template still references ${SOURCE_LOGICAL_ID} outside the moved outputs at `
+    + '/Resources/ComputeRuntimeApiServiceD2475D0A/Properties/Environment/0/Value'));
+  // The normal fixture still produces exactly the origin + verify changes.
+  const normal = liveWorkload();
+  delete distribution(normal).DependsOn;
+  const plan = preMoveWorkloadUpdate(normal, {
+    apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
+  });
+  assert.deepEqual(plan.changes.sort(), [
+    `/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`,
+    verificationValuePath,
+  ].sort());
+  assert.deepEqual(plan.removedDependsOn, []);
+});
+
 test('(a) the pre-move update makes exactly the origin and verify-URL changes when DependsOn is absent', () => {
   const template = liveWorkload();
   delete distribution(template).DependsOn;
