@@ -2,6 +2,7 @@ import { parseJson, canonicalJson } from './json-contract.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { normalizeTesterEmails, observeAdmissionState } from './admission-state.mjs';
 import { compareAdmissionDecision, parseLifecycleStatus } from './admission-operation.mjs';
+import { runtimeStack, assertRuntimeReady } from './one-writer.mjs';
 
 export { normalizeTesterEmails } from './admission-state.mjs';
 
@@ -18,17 +19,26 @@ export async function runTesterAllowlist(action, input, io) {
   let payload = normalizeTesterEmails(input);
   if (action === 'status' && payload !== '[]') throw new Error('Status does not accept emails');
   const platform = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta'])).Stacks?.[0];
-  const workload = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta'])).Stacks?.[0];
+  const runtime = (await io.aws(['cloudformation', 'describe-stacks', '--stack-name', runtimeStack])).Stacks?.[0];
   const stable = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE']);
-  if (!stable.has(platform?.StackStatus) || !stable.has(workload?.StackStatus)) throw new Error('Stable Beta stacks required');
+  if (!stable.has(platform?.StackStatus)) throw new Error('Stable Beta Base stack required');
+  // Issue #166: Beta runs only when the Runtime stack exists; there is no
+  // `BetaActive` output any more. The tester operations act on the revision that
+  // stack reports.
+  assertRuntimeReady(runtime, 'Tester operations');
   const values = stack => Object.fromEntries((stack.Outputs ?? []).map(row => [row.OutputKey, row.OutputValue]));
-  const outputs = values(platform); const publicOutputs = values(workload);
-  if (outputs.BetaActive !== 'true' || publicOutputs.BetaActive !== 'true' || outputs.EcsClusterName !== 'beta-anywear') throw new Error('Active Beta required for tester operations');
-  const revision = workloadRevision(workload);
+  const outputs = values(platform); const publicOutputs = values(runtime);
+  if (outputs.EcsClusterName !== 'beta-anywear') throw new Error('Running Beta Base cluster required for tester operations');
+  // The public API endpoint is now the Base distribution's published URL; the
+  // Runtime output is the pre-split fallback while the Service stack still owns
+  // the distribution.
+  const apiBaseUrl = outputs.ApiBaseUrl ?? publicOutputs.ApiBaseUrl;
+  if (typeof apiBaseUrl !== 'string' || !apiBaseUrl) throw new Error('Public API endpoint unavailable for tester operations');
+  const revision = workloadRevision(runtime);
   await io.aws(['ecs', 'wait', 'services-stable', '--cluster', 'beta-anywear', '--services', 'beta-anywear-api', 'beta-anywear-worker']);
   // The public endpoint must answer for the revision the slice reports before any
   // admission write.
-  await io.verifyHealth(publicOutputs.ApiBaseUrl, revision);
+  await io.verifyHealth(apiBaseUrl, revision);
   if (action === 'add') {
     const existing = (await io.aws(['ssm', 'get-parameter', '--name', '/anywear/beta/tester_allowlist'])).Parameter?.Value;
     payload = normalizeTesterEmails(canonicalJson([...parseJson(normalizeTesterEmails(existing)), ...parseJson(payload)]));

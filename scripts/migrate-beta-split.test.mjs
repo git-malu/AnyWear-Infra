@@ -1,0 +1,234 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  API_DISTRIBUTION,
+  BASE_STACK,
+  DESTINATION_LOGICAL_ID,
+  MOVED_OUTPUTS,
+  SOURCE_LOGICAL_ID,
+  WORKLOAD_STACK,
+  assertRefactorEligibility,
+  assertTemplateSurfaceUnchanged,
+  buildRefactorTemplates,
+  preMoveWorkloadUpdate,
+  runStage,
+  validateReadback,
+  validateRefactorPreview,
+  validateResourceMappings,
+} from './migrate-beta-split.mjs';
+
+const fixture = name => JSON.parse(readFileSync(new URL(`../test/fixtures/beta-split/${name}`, import.meta.url), 'utf8'));
+const liveWorkload = () => fixture('workload-live.template.json');
+const liveBase = () => fixture('base-live.template.json');
+const baseSynth = () => fixture('base-synth.template.json');
+const distributionType = () => fixture('distribution-type.json');
+const origin = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
+const distribution = template => template.Resources[SOURCE_LOGICAL_ID];
+const preMovedWorkload = () => preMoveWorkloadUpdate(liveWorkload(), { apiLoadBalancerDnsName: origin }).template;
+const cleanPreview = () => ({
+  describe: { StackRefactorId: 're-1111', Description: 'beta API distribution move', ExecutionStatus: 'AVAILABLE',
+    StatusReason: null, UnsupportedResources: [], Conflicts: [] },
+  actions: { StackRefactorActions: [{ Action: 'MOVE', Entity: 'RESOURCE', PhysicalResourceId: 'E2ABCDEFGHIJKL',
+    ResourceIdentifier: { ResourceType: 'AWS::CloudFront::Distribution', LogicalResourceId: SOURCE_LOGICAL_ID },
+    Description: 'Move resource to its destination stack' }] },
+  resourceMappings: buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() }).resourceMappings,
+});
+
+test('(a) the pre-move update rewrites only the literal origin and the distribution DependsOn', () => {
+  const before = liveWorkload();
+  const plan = preMoveWorkloadUpdate(before, { apiLoadBalancerDnsName: origin });
+  assert.deepEqual(plan.origin.from, { 'Fn::GetAtt': ['ComputeRuntimeLoadBalancerABD1175B', 'DNSName'] });
+  assert.equal(plan.origin.to, origin);
+  assert.equal(distribution(plan.template).Properties.DistributionConfig.Origins[0].DomainName, origin);
+  assert.equal(distribution(plan.template).DependsOn, undefined);
+  assert.deepEqual(plan.removedDependsOn, ['ComputeRuntimeLoadBalancerABD1175B', 'ComputeRuntimeApiServiceD2475D0A']);
+  assert.deepEqual(plan.changes.sort(), [
+    `/Resources/${SOURCE_LOGICAL_ID}/DependsOn`,
+    `/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`,
+  ]);
+  // Everything else, including the two outputs, stays byte-identical.
+  const after = structuredClone(plan.template);
+  delete after.Resources[SOURCE_LOGICAL_ID].Properties.DistributionConfig.Origins[0].DomainName;
+  const original = structuredClone(before);
+  delete original.Resources[SOURCE_LOGICAL_ID].Properties.DistributionConfig.Origins[0].DomainName;
+  delete original.Resources[SOURCE_LOGICAL_ID].DependsOn;
+  assert.deepEqual(after, original);
+  for (const output of MOVED_OUTPUTS) assert.ok(after.Outputs[output]);
+});
+
+test('(a) the pre-move update is idempotent on an already-literal origin and refuses a bad origin', () => {
+  const already = liveWorkload();
+  distribution(already).Properties.DistributionConfig.Origins[0].DomainName = origin;
+  delete distribution(already).DependsOn;
+  const plan = preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: origin });
+  assert.deepEqual(plan.changes, []);
+  assert.throws(() => preMoveWorkloadUpdate(liveWorkload(), {}), /requires the live ApiLoadBalancerDnsName/);
+  assert.throws(() => preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: 'other.example.com' }),
+    /neither the expected GetAtt nor the recorded literal/);
+  const external = liveWorkload();
+  distribution(external).Properties.DistributionConfig.Origins[0].DomainName = { 'Fn::GetAtt': ['ForeignKeyABCD1234', 'DNSName'] };
+  assert.throws(() => preMoveWorkloadUpdate(external, { apiLoadBalancerDnsName: origin }),
+    /does not name a same-stack load balancer/);
+});
+
+test('(b) the refactor source loses the distribution and both outputs; the target gains exactly them', () => {
+  const templates = buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() });
+  // Source: only the distribution and its two outputs are removed.
+  assert.equal(templates.source.Resources[SOURCE_LOGICAL_ID], undefined);
+  for (const output of MOVED_OUTPUTS) assert.equal(templates.source.Outputs[output], undefined);
+  assert.deepEqual(templates.source.Outputs.ApiLoadBalancerDnsName, liveWorkload().Outputs.ApiLoadBalancerDnsName);
+  assert.deepEqual(templates.source.Resources.ComputeRuntimeLoadBalancerABD1175B,
+    liveWorkload().Resources.ComputeRuntimeLoadBalancerABD1175B);
+  assert.deepEqual(templates.source.Parameters, liveWorkload().Parameters);
+  assert.deepEqual(templates.source.Conditions, liveWorkload().Conditions);
+  assert.deepEqual(templates.source.Mappings, liveWorkload().Mappings);
+  // Target: the live Base resources are untouched; the distribution and the two
+  // outputs are adopted from Base's same-HEAD synthesis.
+  assert.deepEqual(templates.target.Resources.AnyWearWardrobeBucket61DCC096,
+    liveBase().Resources.AnyWearWardrobeBucket61DCC096);
+  assert.deepEqual(templates.target.Resources[DESTINATION_LOGICAL_ID], baseSynth().Resources[DESTINATION_LOGICAL_ID]);
+  for (const output of MOVED_OUTPUTS) assert.deepEqual(templates.target.Outputs[output], baseSynth().Outputs[output]);
+  assert.deepEqual(templates.target.Parameters ?? {}, liveBase().Parameters ?? {});
+  assert.deepEqual(templates.target.Conditions ?? {}, liveBase().Conditions ?? {});
+  assert.deepEqual(templates.target.Mappings ?? {}, liveBase().Mappings ?? {});
+  // The moved resource has the same configuration; only the destination logical
+  // ID (and the Retain attributes asserted by synthesis) differ.
+  assert.deepEqual(templates.target.Resources[DESTINATION_LOGICAL_ID].Properties,
+    distribution(preMovedWorkload()).Properties);
+  assert.equal(templates.target.Resources[DESTINATION_LOGICAL_ID].UpdateReplacePolicy, 'Retain');
+  // The one mapping's destination is the CDK-pinned logical ID.
+  assert.equal(templates.resourceMappings.length, 1);
+  assert.deepEqual(validateResourceMappings(templates.resourceMappings),
+    templates.resourceMappings[0]);
+  assert.equal(templates.resourceMappings[0].Destination.LogicalResourceId, API_DISTRIBUTION.logicalId);
+  assert.equal(templates.resourceMappings[0].Source.StackName, WORKLOAD_STACK);
+  assert.equal(templates.resourceMappings[0].Destination.StackName, BASE_STACK);
+});
+
+test('(b) the refactor refuses an already-moved Base, a changed parameter/condition/mapping surface or a foreign mapping', () => {
+  const already = baseSynth();
+  assert.throws(() => buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: already, baseSynth: baseSynth() }),
+    /already contains/);
+  for (const section of ['Parameters', 'Conditions', 'Mappings']) {
+    const live = liveWorkload();
+    const refactored = structuredClone(live);
+    refactored[section] = { ...(refactored[section] ?? {}), Tampered: { Type: 'String', Default: 'x' } };
+    assert.throws(() => assertTemplateSurfaceUnchanged(live, refactored, WORKLOAD_STACK), new RegExp(`${section} differs`));
+  }
+  const templates = buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() });
+  for (const target of [
+    { ...templates.resourceMappings[0], Destination: { StackName: BASE_STACK, LogicalResourceId: 'OtherLogicalId' } },
+    { ...templates.resourceMappings[0], Destination: { StackName: 'AnyWearOtherStack', LogicalResourceId: DESTINATION_LOGICAL_ID } },
+  ]) assert.throws(() => validateResourceMappings([target]), /differs|CDK-pinned/);
+  assert.throws(() => validateResourceMappings([]), /Exactly one resource mapping/);
+});
+
+test('(b) a clean preview is exactly one MOVE of the API distribution', () => {
+  const preview = cleanPreview();
+  const result = validateRefactorPreview(preview);
+  assert.equal(result.clean, true);
+  assert.equal(result.action.Action, 'MOVE');
+  assert.equal(result.mapping.Destination.LogicalResourceId, API_DISTRIBUTION.logicalId);
+});
+
+test('(b) a second action, a configuration change, a CREATE/DELETE or an ineligible preview is refused', () => {
+  const second = cleanPreview();
+  second.actions.StackRefactorActions.push({ Action: 'MOVE', Entity: 'RESOURCE', PhysicalResourceId: 'E2OTHER',
+    ResourceIdentifier: { ResourceType: 'AWS::CloudFront::Distribution', LogicalResourceId: 'OtherDistribution' } });
+  assert.throws(() => validateRefactorPreview(second), /exactly one action/);
+
+  for (const Action of ['UPDATE', 'CREATE', 'DELETE']) {
+    const changed = cleanPreview();
+    changed.actions.StackRefactorActions[0].Action = Action;
+    assert.throws(() => validateRefactorPreview(changed), new RegExp(`is not the single MOVE`));
+  }
+  const unsupported = cleanPreview();
+  unsupported.describe.UnsupportedResources = ['AWS::CloudFront::Distribution'];
+  assert.throws(() => validateRefactorPreview(unsupported), /unsupported resource/);
+  const conflict = cleanPreview();
+  conflict.describe.Conflicts = ['stack policy differs'];
+  assert.throws(() => validateRefactorPreview(conflict), /conflict/);
+  const notAvailable = cleanPreview();
+  notAvailable.describe.ExecutionStatus = 'EXECUTE_IN_PROGRESS';
+  assert.throws(() => validateRefactorPreview(notAvailable), /not available/);
+  const reason = cleanPreview();
+  reason.describe.StatusReason = 'blocked';
+  assert.throws(() => validateRefactorPreview(reason), /status reason/);
+  const wrongType = cleanPreview();
+  wrongType.actions.StackRefactorActions[0].ResourceIdentifier.ResourceType = 'AWS::S3::Bucket';
+  assert.throws(() => validateRefactorPreview(wrongType), /unexpected resource type/);
+  const wrongMapping = cleanPreview();
+  wrongMapping.resourceMappings[0].Destination.LogicalResourceId = 'OtherLogicalId';
+  assert.throws(() => validateRefactorPreview(wrongMapping), /differs|CDK-pinned/);
+});
+
+test('eligibility requires FULLY_MUTABLE, no stack policy and no stack-varying pseudo parameter', () => {
+  const base = { distributionType: distributionType(), workloadStackPolicy: undefined, baseStackPolicy: undefined,
+    workloadTemplate: liveWorkload() };
+  assert.equal(assertRefactorEligibility(base), true);
+  for (const distributionTypeOverride of [{ ProvisioningType: 'IMMUTABLE' }, { ProvisioningType: 'PARTIAL_UPDATE' }, undefined]) {
+    assert.throws(() => assertRefactorEligibility({ ...base, distributionType: distributionTypeOverride }),
+      /not FULLY_MUTABLE/);
+  }
+  assert.throws(() => assertRefactorEligibility({ ...base, workloadStackPolicy: { Statement: [] } }), /stack policy/);
+  assert.throws(() => assertRefactorEligibility({ ...base, baseStackPolicy: { Statement: [] } }), /stack policy/);
+  const pseudo = liveWorkload();
+  pseudo.Resources[SOURCE_LOGICAL_ID].Properties.DistributionConfig.Comment = { Ref: 'AWS::StackName' };
+  assert.throws(() => assertRefactorEligibility({ ...base, workloadTemplate: pseudo }), /stack-varying pseudo parameter/);
+});
+
+test('(c) the readback requires the same physical distribution, domain and Deployed status', () => {
+  const before = { PhysicalResourceId: 'E2ABCDEFGHIJKL' };
+  const after = { PhysicalResourceId: 'E2ABCDEFGHIJKL', StackName: BASE_STACK };
+  const cloudfront = { Id: 'E2ABCDEFGHIJKL', DomainName: 'd111111abcdef8.cloudfront.net', Status: 'Deployed' };
+  assert.deepEqual(validateReadback({ before, after, distribution: cloudfront }),
+    { physicalId: 'E2ABCDEFGHIJKL', domain: 'd111111abcdef8.cloudfront.net', status: 'Deployed' });
+  assert.throws(() => validateReadback({ before, after: { ...after, PhysicalResourceId: 'E2CHANGED' }, distribution: cloudfront }),
+    /changed physical ID/);
+  assert.throws(() => validateReadback({ before, after: { ...after, StackName: WORKLOAD_STACK }, distribution: cloudfront }),
+    /not in the Base stack/);
+  assert.throws(() => validateReadback({ before, after, distribution: { ...cloudfront, Status: 'InProgress' } }),
+    /not Deployed/);
+});
+
+test('every stage defaults to validation-only and never calls AWS without --apply', async () => {
+  const failIfCalled = async () => { throw new Error('AWS was called in a validation-only run'); };
+  const preMove = await runStage({ stage: 'pre-move', 'workload-template': fixturePath('workload-live.template.json'),
+    'api-load-balancer-dns-name': origin }, { run: failIfCalled });
+  assert.equal(preMove.applied, false);
+
+  const preview = await runStage({
+    stage: 'preview',
+    // Stage (b) reads the live Workload template after stage (a) has applied the
+    // literal-origin update, so the validation-only fixture carries that shape.
+    'workload-template': writeTemp(preMovedWorkload()),
+    'base-template': fixturePath('base-live.template.json'),
+    'base-synth-template': fixturePath('base-synth.template.json'),
+    'distribution-type': fixturePath('distribution-type.json'),
+  }, { run: failIfCalled });
+  assert.equal(preview.applied, false);
+  assert.equal(preview.resourceMappings.length, 1);
+
+  const execute = await runStage({
+    stage: 'execute',
+    describe: writeTemp(cleanPreview().describe),
+    actions: writeTemp(cleanPreview().actions),
+    'resource-mappings': writeTemp(cleanPreview().resourceMappings),
+  }, { run: failIfCalled });
+  assert.equal(execute.applied, false);
+  assert.equal(execute.clean.clean, true);
+});
+
+function fixturePath(name) {
+  return fileURLToPath(new URL(`../test/fixtures/beta-split/${name}`, import.meta.url));
+}
+function writeTemp(value) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'anywear-beta-split-test-'));
+  const file = path.join(directory, 'value.json');
+  writeFileSync(file, JSON.stringify(value));
+  return file;
+}

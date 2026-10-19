@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { configuredStacks, configuredStackNames, changedStackNames, validateStackManifest } from './operation-stacks.mjs';
-import { cdkDeploymentArguments } from './runtime-operation.mjs';
+import { cdkDeploymentArguments, cdkDestroyArguments } from './runtime-operation.mjs';
 import { createOperationRecord, readOperationRecord } from './operation-record.mjs';
 
 const env = { GITHUB_SHA: '5'.repeat(40), GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_RUN_ID: '11', GITHUB_RUN_ATTEMPT: '1',
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main', INFRA_OPERATION: 'deploy-platform',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true' };
+const origin = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
 
-test('the configured stack set is exactly Foundation, the Beta stage base and Billing', () => {
+test('the configured stack set is exactly Foundation, the Beta Base stack and Billing', () => {
   assert.deepEqual(configuredStacks.map(stack => [stack.stack_name, stack.region]), [
     ['AnyWearFoundationStack', 'ap-east-1'],
     ['AnyWearPlatformStack-beta', 'ap-east-1'],
@@ -17,12 +18,15 @@ test('the configured stack set is exactly Foundation, the Beta stage base and Bi
   assert.deepEqual(configuredStackNames(), configuredStacks.map(stack => stack.stack_name));
 });
 
-test('no operation can deploy or recover the release slice', () => {
+test('no operation can deploy or recover the Runtime slice, and Egress is operation-owned', () => {
   assert.deepEqual(changedStackNames('deploy-foundation'), ['AnyWearFoundationStack']);
   assert.deepEqual(changedStackNames('deploy-billing'), ['AnyWearBillingStack-beta']);
   assert.deepEqual(changedStackNames('deploy-platform'), ['AnyWearPlatformStack-beta']);
   assert.deepEqual(changedStackNames('restore-release'), ['AnyWearPlatformStack-beta']);
+  assert.deepEqual(changedStackNames('deploy-egress'), ['AnyWearEgressStack-beta']);
+  assert.deepEqual(changedStackNames('delete-egress'), ['AnyWearEgressStack-beta']);
   assert.deepEqual(changedStackNames('deploy-workload'), []);
+  assert.deepEqual(changedStackNames('deploy-runtime'), []);
   assert.deepEqual(changedStackNames('observe'), []);
 });
 
@@ -30,22 +34,31 @@ test('the all-stack manifest is the configured set, never the changed subset', (
   const rows = configuredStacks.map(({ stack_name, region }) => ({ stack_name, region }));
   assert.deepEqual(validateStackManifest(rows, 'test'), rows);
   assert.throws(() => validateStackManifest(rows.slice(1), 'test'), /Every configured stack required/);
-  assert.throws(() => validateStackManifest([...rows, { stack_name: 'AnyWearWorkloadStack-beta', region: 'ap-east-1' }], 'test'));
+  assert.throws(() => validateStackManifest([...rows, { stack_name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }], 'test'));
+  assert.throws(() => validateStackManifest([...rows, { stack_name: 'AnyWearEgressStack-beta', region: 'ap-east-1' }], 'test'));
   assert.throws(() => validateStackManifest([{ ...rows[0] }, { ...rows[0] }, rows[2]], 'test'), /Invalid stack identity/);
   assert.throws(() => validateStackManifest([{ ...rows[0], region: 'us-east-1' }, rows[1], rows[2]], 'test'), /Invalid stack identity/);
 });
 
-test('cdk arguments load Service artifacts only for the stage base', () => {
-  const platform = cdkDeploymentArguments('AnyWearPlatformStack-beta', '/verified', env);
+test('cdk arguments load Service artifacts and the API origin only for the Base stack', () => {
+  const platform = cdkDeploymentArguments('AnyWearPlatformStack-beta', '/verified', env, { apiOriginDomainName: origin });
   assert.ok(platform.includes('deployScope=application'));
   assert.ok(platform.includes('artifactDirectory=/verified'));
-  for (const [stack, scope] of [['AnyWearFoundationStack', 'foundation'], ['AnyWearBillingStack-beta', 'billing']]) {
+  assert.ok(platform.includes(`apiOriginDomainName=${origin}`));
+  assert.throws(() => cdkDeploymentArguments('AnyWearPlatformStack-beta', '/verified', env), /requires the API origin domain name/);
+  for (const [stack, scope] of [['AnyWearFoundationStack', 'foundation'], ['AnyWearBillingStack-beta', 'billing'],
+    ['AnyWearEgressStack-beta', 'egress']]) {
     const args = cdkDeploymentArguments(stack, '/verified', env);
     assert.ok(args.includes(`deployScope=${scope}`), stack);
     assert.ok(!args.some(arg => arg.startsWith('artifactDirectory=')), `${stack} must not load Service artifacts`);
+    assert.ok(!args.some(arg => arg.startsWith('apiOriginDomainName=')), `${stack} must not take the API origin`);
   }
   assert.ok(platform.includes(`identityPhase=${env.INFRA_IDENTITY_PHASE}`));
   assert.ok(platform.includes(`ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`));
+  // The stop path destroys only the Egress stack through the same reviewed scope.
+  const destroy = cdkDestroyArguments('AnyWearEgressStack-beta', env);
+  assert.deepEqual(destroy.slice(0, 4), ['cdk', 'destroy', 'AnyWearEgressStack-beta', '--force']);
+  assert.ok(destroy.includes('deployScope=egress'));
 });
 
 test('the operation record is v4 with the reviewed release identity and configured manifest', () => {
@@ -60,6 +73,11 @@ test('the operation record is v4 with the reviewed release identity and configur
   assert.deepEqual(readOperationRecord(record), record);
   const withoutRelease = createOperationRecord({ env: { ...env, INFRA_OPERATION: 'deploy-billing' } });
   assert.equal(withoutRelease.service_release, null);
+  // Egress is an operation-owned changed stack, not a manifest row.
+  const egress = createOperationRecord({ env: { ...env, INFRA_OPERATION: 'delete-egress' } });
+  assert.deepEqual(egress.changed_stack_names, ['AnyWearEgressStack-beta']);
+  assert.deepEqual(egress.stack_manifest.map(row => row.stack_name), configuredStackNames());
+  assert.deepEqual(readOperationRecord(egress), egress);
 });
 
 test('historical operation records stay readable and invalid changed stacks fail', () => {
@@ -67,4 +85,5 @@ test('historical operation records stay readable and invalid changed stacks fail
   assert.equal(readOperationRecord({ ...record, schema_version: 3 }).schema_version, 3);
   assert.throws(() => readOperationRecord({ ...record, schema_version: 5 }), /Unknown operation record schema/);
   assert.throws(() => readOperationRecord({ ...record, changed_stack_names: ['AnyWearWorkloadStack-beta'] }), /Invalid changed stack names/);
+  assert.throws(() => readOperationRecord({ ...record, changed_stack_names: ['AnyWearRuntimeStack-beta'] }), /Invalid changed stack names/);
 });

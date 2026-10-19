@@ -12,8 +12,8 @@
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
-  "dedicated_candidate_canonical_sha256": "fb7db9ca09b1e3e591dfd51e11e150c3f691bd61a731da0f90efc118d2ee330a",
-  "dedicated_additions_sha256": "a171e7483fd4d1949ce9aef30c1d3974b9203e3cf1f2beb3784e77e1b652ef67",
+  "dedicated_candidate_canonical_sha256": "e8dcf1860698fc50885be8421f6127221291b9320a7c32696dae890fbe7d4d86",
+  "dedicated_additions_sha256": "89ffb8880c62e3f40b040e780e96f2320ca3657fbac5ef1297872538d72f2cc2",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -58,6 +58,13 @@
       "source_branch": "issue/162-e2e-policy-coverage",
       "scope": "Inline-policy actions on the Foundation-managed E2E qualification and Infra runtime roles",
       "detail": "The Workload template attaches/updates inline policies on beta-e2e-qualification-role and beta-infra-runtime-role, so the CFN execution role needs exactly iam:PutRolePolicy, iam:GetRolePolicy and iam:DeleteRolePolicy on those two concrete roles. No create/delete/read of the roles and no other role."
+    },
+    {
+      "issue": 166,
+      "recorded_at": "2026-10-19",
+      "source_branch": "issue/166-beta-three-stack",
+      "scope": "Service deploy and CloudFormation execution roles scoped to AnyWearRuntimeStack-beta (was AnyWearRuntimeStack-beta); maintenance-bucket ARN follows the Runtime stack generated name",
+      "detail": "Issue #166 renames the Service-owned release slice to AnyWearRuntimeStack-beta and moves the persistent VPC/Aurora/S3/Cognito/ECR/SQS/SSM/CloudFront state into the Base stack. Both Foundation Service deploy roles keep every existing action; only the CloudFormation stack scope string and the maintenance-bucket name prefix change to the Runtime identity. These are source-side reviewed additions, not deployed: the fixture records the delta the synthesized Foundation adds on top of the still-authenticated live original. publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
     }
   ]
 }

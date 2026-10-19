@@ -1,0 +1,57 @@
+{
+  "Resources": {
+    "AnyWearVpcA8B15590": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": { "CidrBlock": "10.0.0.0/16", "EnableDnsHostnames": true }
+    },
+    "AnyWearWardrobeBucket61DCC096": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": { "BucketName": "beta-anywear-wardrobe-bucket" }
+    },
+    "ComputeRuntimeApiDistribution5788DFE7": {
+      "Type": "AWS::CloudFront::Distribution",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "DistributionConfig": {
+          "Comment": "beta AnyWear API",
+          "DefaultCacheBehavior": {
+            "AllowedMethods": ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"],
+            "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+            "Compress": false,
+            "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+            "TargetOriginId": "AnyWearWorkloadStackbetaComputeRuntimeApiDistributionOrigin11E892748",
+            "ViewerProtocolPolicy": "redirect-to-https"
+          },
+          "Enabled": true,
+          "HttpVersion": "http2and3",
+          "IPV6Enabled": true,
+          "Origins": [{
+            "CustomOriginConfig": {
+              "HTTPPort": 80,
+              "OriginKeepaliveTimeout": 60,
+              "OriginProtocolPolicy": "http-only",
+              "OriginReadTimeout": 60,
+              "OriginSSLProtocols": ["TLSv1.2"]
+            },
+            "DomainName": "beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com",
+            "Id": "AnyWearWorkloadStackbetaComputeRuntimeApiDistributionOrigin11E892748",
+            "OriginCustomHeaders": [{
+              "HeaderName": "X-AnyWear-Origin-Verify",
+              "HeaderValue": "{{resolve:secretsmanager:arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header:SecretString:::}}"
+            }]
+          }]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "WardrobeBucketName": { "Value": { "Ref": "AnyWearWardrobeBucket61DCC096" } },
+    "ApiDistributionDomainName": { "Value": { "Fn::GetAtt": ["ComputeRuntimeApiDistribution5788DFE7", "DomainName"] } },
+    "ApiBaseUrl": {
+      "Value": { "Fn::Join": ["", ["https://", { "Fn::GetAtt": ["ComputeRuntimeApiDistribution5788DFE7", "DomainName"] }]] }
+    }
+  }
+}

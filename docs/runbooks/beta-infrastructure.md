@@ -17,10 +17,29 @@ subject, `cdk-*` assume-role chain and CloudFormation execution role with
 this runbook's #54 claim. Operational single-queue ownership is not account-wide
 IAM exclusivity or Beta resource isolation.
 
+## Issue #166: three Beta stacks
+
+Beta is three stacks with disjoint lifetimes. `Base` (`AnyWearPlatformStack-beta`,
+physical name retained) holds the VPC/subnets, Aurora, S3, Cognito, ECR, SQS, SSM
+parameters and both CloudFront distributions and is persistent. `Egress`
+(`AnyWearEgressStack-beta`) holds the NAT, EIP, private route tables/routes/
+associations and the S3 gateway endpoint and is deleted on stop. `Runtime`
+(`AnyWearRuntimeStack-beta`, Service-owned; it replaced the old Workload identity)
+holds the ALB, ECS services/task definitions, log groups and the cleanup
+operation and is deleted on stop.
+
+There is no `environmentRunning` switch, no `BetaActive` output and no stopped
+template. Run state is one fact: whether the Runtime stack exists. Stop deletes
+Runtime then Egress; start recreates Egress then Runtime; `restore-release`
+requires Runtime to exist ("start first"). A Base mutation still reads Runtime
+terminal first (one writer), and a missing Runtime is the stopped state rather
+than an inactive variant to maintain. The one-time Base/Runtime split migration
+is Deployment-gated: see [beta-split-migration.md](beta-split-migration.md).
+
 ## Step C: the release slice left this repository
 
-After #158 step C, Infra owns Foundation, the Beta stage base and Billing only.
-`AnyWearWorkloadStack-beta`'s CDK source and deploy chain live in
+After #158 step C, Infra owns Foundation, the Beta Base stack, Egress and Billing
+only. The Service release slice's CDK source and deploy chain live in
 AnyWear-Service. The only path that can deploy that stack is Service's release
 chain, and that path needs the deferred Foundation deploy (the two Service deploy
 roles from step A, plus the round-3 CLI-path grants to `beta-service-deploy-role`:
@@ -171,9 +190,10 @@ other operation runs `retired`/`true`). Sizing/telemetry are no longer inputs:
 they belong to Service's release chain.
 Non-deployment operations fixing `retired`/`true` source context does not change
 CFN or prove observed IAM/retention state. Deployment and admission dispatches
-require explicit authorization; Beta is resident, so no operation starts or stops
-it. Source delivery alone does not grant an environment writer or establish
-runtime acceptance.
+require explicit authorization. Beta's paid compute and egress stop by deleting
+the Runtime and Egress stacks, and start by recreating Egress then Runtime; no
+operation selects a stopped Base template. Source delivery alone does not grant an
+environment writer or establish runtime acceptance.
 
 Every STS assumption includes an inline session restriction of at most 2048
 characters. Task register/run/PassRole are limited to the operation's exact
@@ -194,17 +214,18 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | --- | --- |
 | `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; takes no Service release identity and no committed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
-| `deploy-platform` | Deploy the stage base from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job downloads that sealed release's Lambda bundles, runtime policy and manifest with a read-only token and proves every byte against the manifest before any credential. Every deploy takes the resident active path and requires the release slice to be terminal; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
-| `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention and closed admission, with the release slice terminal before and after; never deploy, verify or recover the Workload slice |
-| ~~`deploy-workload`~~ | Removed in #158 step C. The Workload slice is deployed only by AnyWear-Service's release chain |
+| `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job downloads that sealed release's Lambda bundles, runtime policy and manifest with a read-only token and proves every byte against the manifest before any credential. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
+| `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/route/S3-endpoint edge. `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
+| `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention, closed admission and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice |
+| ~~`deploy-workload`~~ | Removed in #158 step C; the slice was renamed to Runtime in #166 and is deployed only by AnyWear-Service's release chain |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
 | `observe` | Collect authenticated active-Beta deployment evidence by launching a verification task; not AWS read-only |
-| `state` | Record Platform/Workload status/activity and sanitized SSM admission state; no DB/schema/policy qualification |
+| `state` | Record Base/Runtime status and Runtime existence plus sanitized SSM admission state; no DB/schema/policy qualification |
 | `admission-status` | Read the admission mode, the record's key set, the tester list and the database status through the selected existing Service lifecycle command. The record publishes the effective decision every gate uses, the recorded mode each surface stores and whether those raw records disagree |
 | `add-testers`, `set-testers` | Update the exact normalized tester list using the selected lifecycle `set-testers` command, which refuses while admission is not provably closed. The write changes no admission state and cannot open admission: no admission operation may run `resume` except `open-admission`, and the record's admission read-back shows the mode and key set unchanged. Open admission separately with `open-admission` |
 | `open-admission` | Refuse before resuming unless the selected Service's status proves effective closure and DB/SSM agreement, the database decision is closed and the mirror holds a `closed` record; then resume with **no payload**, re-read SSM and require the database status to report `testers`, matching policy and **no** `admission_window_expires_at` field. Records `admission-open-proof` (mode, source, tester count/hash, SSM record key set, database status field absence, SSM/DB agreement). The tester list is unchanged. Its only extra lifecycle action is the recovery-only `suspend` a failed open issues; no operator input can request it |
-| `close-admission` | Close admission through its pinned lifecycle `suspend`, then prove effective DB/SSM agreement and preserve the observed tester list; keep both stacks active. Records whether it ended an open admission (`ordinary`) or one already closed (`already-closed`) from the database status |
+| `close-admission` | Close admission through its pinned lifecycle `suspend`, then prove effective DB/SSM agreement and preserve the observed tester list; The Runtime stack must exist and be terminal. Records whether it ended an open admission (`ordinary`) or one already closed (`already-closed`) from the database status |
 
 A dispatch uses explicit inputs, for example:
 
@@ -274,9 +295,9 @@ an accepted profile, the unchanged Service image and a committed stack-source
 binding. That operation and the stack-source map are deleted, so the command cannot
 run from here.) Verify `BetaSizingTelemetry=false`, both actual containers reporting
 telemetry `false`, stable service rollout and the final observer/health result. An
-ordinary `preserve` input does not disable telemetry. Beta is resident, so there is
-no stopped state to preserve; never reactivate a stopped stack merely to restore
-telemetry. This source delivery does not claim deployment, runtime acceptance or
+ordinary `preserve` input does not disable telemetry. A stopped Beta has no
+Runtime stack, so there is no stopped template to reactivate; start by deploying
+Egress and the Service release first. This source delivery does not claim deployment, runtime acceptance or
 telemetry-off restoration.
 
 ## Tester and cleanup ownership
@@ -569,7 +590,8 @@ Foundation/Billing retain their explicit historical producers. Review the exact
 Platform component/resource diff and recovery selection before allocating runtime.
 The operation never migrates, changes phase/retention, writes testers or opens
 admission. It preserves observed membership and closed admission at every phase
-boundary, and its postcondition is both stacks `BetaActive=true` after each deploy.
+boundary, and its postcondition is a terminal Base stack plus an existing
+terminal Runtime stack after each deploy.
 
 An old signed release alone does not establish a usable rollback image: a raw
 policy-byte mismatch fails the existing candidate check even if canonical policy
@@ -593,14 +615,14 @@ Preserve `deployment-evidence/operation-record.json` under the always-attempted
 version-4 `anywear_infra_operation` record keeps the reviewed Service release
 identity (`service_release`, only for the operation that took one) separate from
 the current Infra executor SHA/run/attempt. It records actual
-Original template hashes and the original Workload image/source readbacks,
+Original template hashes and the original Runtime image/source readbacks,
 the validated all-stack `stack_manifest` plus the operation's `changed_stack_names`,
 completed one-shot task/deployment events,
 recovery status and the operation result. The result is `failed` when the
 operation did not complete, `partial` when it completed but the required final
 observation did not confirm the end state, and `succeeded` when it completed with
 a confirmed or not-required end state. A failed operation retains the actual
-Platform/Workload outputs and stack statuses plus admission readback, and marks
+Base/Runtime stack statuses and Runtime existence plus admission readback, and marks
 recovery as `requires-explicit-recovery`; it never redeploys a sibling stack or
 opens admission. The record also retains the copied
 lifecycle implementation's original Service source. Preserve authenticated task,
@@ -651,8 +673,9 @@ run's own `.github/workflows/mutate.yml` path and the record type
 `anywear_infra_deployment` and the `runtime.yml` workflow path that the E2E
 consumer also pins, and the `deploy-platform` operation session carries no task
 family of its own. The deploy run still requires and uploads its own successful
-observation (`finalize-operation.mjs`): Beta is resident, so every non-state
-operation ends on an active final readback that must be observed and accepted.
+observation (`finalize-operation.mjs`): every non-state operation ends on a
+terminal Base readback plus an observed Runtime existence/status that must be
+accepted.
 That family record is evidence, but not the accepted record. That
 `deployment-record.json` is what advances the
 compatibility pin, which `AnyWear-E2E` owns; the routine is in that repository's
@@ -676,10 +699,10 @@ task/definition. Selected image migrations and observed applied migrations are
 separate histories. A compatible older image may run against a later applied
 schema; rollback never runs down migrations.
 
-Read-only `state` is the only operation that can observe an out-of-band stopped
-stack without failing; every protected operation requires the resident
-postcondition, so the final Platform/Workload activity readback must prove both
-stacks active and a failure to do so fails the operation. A still-running
+Read-only `state` is the only operation that can observe the stopped state
+(Runtime absent) without failing. Every protected mutation requires a terminal
+Base stack; a Base mutation additionally requires a terminal Runtime when it
+exists, and a failure to satisfy either fails the operation. A still-running
 verification/helper task remains registered for explicit recovery. Inspect it and
 its owner before cleanup; expiry or task-runner failure is not task cessation.
 

@@ -123,14 +123,13 @@ function policyValueUpperBound(value: any, template: Record<string, any>): any {
 
 describe('Platform safety controls', () => {
   it.each([
-    ['dev', true, 'c45a8484eff8aabe92a894d5db6df813457ec863678a55eba153605d00098161'],
+    ['dev', 'c45a8484eff8aabe92a894d5db6df813457ec863678a55eba153605d00098161'],
     // Includes the Beta-only scoped AdminInitiateAuth grant. The Beta hash moves
     // with the admission parameter set: one mode record and the tester allowlist
     // replace the two boolean parameters, so exactly two SSM ARNs remain.
-    ['beta', true, 'c86fc2f59b97a97b932565443c53a5d96311a73d012950a39079885108ef60d4'],
-    ['beta', false, 'c86fc2f59b97a97b932565443c53a5d96311a73d012950a39079885108ef60d4'],
-    ['prod', true, '12feb7f5939fc6e88051f7b16871a679f6d47f6e5eb73c8fb54b44307d0d528b'],
-  ] as const)('preserves pre-quota-repair effective pipeline grants for %s (active=%s)', (stage, environmentRunning, baselineHash) => {
+    ['beta', 'c86fc2f59b97a97b932565443c53a5d96311a73d012950a39079885108ef60d4'],
+    ['prod', '12feb7f5939fc6e88051f7b16871a679f6d47f6e5eb73c8fb54b44307d0d528b'],
+  ] as const)('preserves pre-quota-repair effective pipeline grants for %s', (stage, baselineHash) => {
     const app = new cdk.App({ context: cdkConfig.context });
     const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
       artifactInputs,
@@ -1023,7 +1022,7 @@ describe('Explicit infrastructure identity cutover', () => {
     // CloudFormation execution role.
     expect(normalized(deploy)).toContainEqual({
       Action: 'cloudformation:*', Effect: 'Allow',
-      Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+      Resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*',
     });
     expect(normalized(deploy)).toContainEqual({
       Action: ['cloudformation:CreateChangeSet', 'cloudformation:DeleteChangeSet', 'cloudformation:DescribeChangeSet'],
@@ -1109,7 +1108,7 @@ describe('Explicit infrastructure identity cutover', () => {
     ]);
     expect(deploy.every((statement) => statement.Effect === 'Allow')).toBe(true);
     expect(resourcesOf(deploy)).toEqual(new Set([
-      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*',
       'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
       'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
@@ -1354,7 +1353,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:elasticloadbalancing:ap-east-1:650880818323:targetgroup/beta-anywear-api/*',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api',
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
-      'arn:aws:s3:::anywearworkloadstack-beta-*',
+      'arn:aws:s3:::anywearruntimestack-beta-*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*',
       'arn:aws:ssm:ap-east-1:650880818323:parameter/cdk-bootstrap/hnb659fds/version',
       'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup',
@@ -1426,7 +1425,7 @@ describe('Explicit infrastructure identity cutover', () => {
       's3:PutBucketPublicAccessBlock', 's3:DeleteBucketPublicAccessBlock', 's3:DeleteObject']) {
       expect(actions(deploy)).not.toContain(forbidden);
     }
-    expect(resourcesOf(cfn).has('arn:aws:s3:::anywearworkloadstack-beta-*')).toBe(true);
+    expect(resourcesOf(cfn).has('arn:aws:s3:::anywearruntimestack-beta-*')).toBe(true);
     expect([...resourcesOf(cfn)].some((resource) => resource.includes('cdk-hnb659fds-assets'))).toBe(false);
     // The CloudFormation role can read the producer stack for
     // `Fn::GetStackOutput`, but it cannot drive CloudFormation itself; only the
@@ -1714,7 +1713,7 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(grantedActions.filter((action) => action.startsWith('sqs:'))).toEqual([]);
   });
 
-  it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearWorkloadStack-beta', () => {
+  it('leaves every cdk-hnb659fds-* role unassumable and confines CloudFormation to AnyWearRuntimeStack-beta', () => {
     const env = { account: '650880818323', region: 'ap-east-1' };
     const app = new cdk.App();
     const foundation = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
@@ -1757,7 +1756,7 @@ describe('Explicit infrastructure identity cutover', () => {
         if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*') {
           for (const action of statementActions) expect(['cloudformation:CreateChangeSet',
             'cloudformation:DeleteChangeSet', 'cloudformation:DescribeChangeSet']).toContain(action);
-        } else if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*') {
+        } else if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*') {
           expect(statementActions.every((action) => action === 'cloudformation:*')).toBe(true);
         } else if (resource === 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*') {
           expect(statementActions).toEqual(['cloudformation:DescribeStacks']);
@@ -1767,7 +1766,7 @@ describe('Explicit infrastructure identity cutover', () => {
       }
     }
     expect(cloudformationResources).toEqual(new Set([
-      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*',
+      'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*',
       'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
       'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
     ]));
@@ -1777,7 +1776,7 @@ describe('Explicit infrastructure identity cutover', () => {
       .includes('cloudformation:*'));
     expect(wildcardStatements).toHaveLength(1);
     expect(flatten([wildcardStatements[0].Resource]).map(resolve))
-      .toEqual(['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*']);
+      .toEqual(['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*']);
     for (const action of ['cloudformation:CreateStack', 'cloudformation:UpdateStack', 'cloudformation:DeleteStack']) {
       expect(actions).not.toContain(action);
     }

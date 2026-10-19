@@ -16,7 +16,8 @@ test('the workflow map and family derivation cover every operation', () => {
   assert.deepEqual(Object.keys(workflowOperations).sort(), ['.github/workflows/mutate.yml', '.github/workflows/runtime.yml']);
   assert.deepEqual(workflowOperations['.github/workflows/runtime.yml'], ['state', 'observe']);
   assert.deepEqual(workflowOperations['.github/workflows/mutate.yml'], ['deploy-foundation', 'deploy-billing', 'deploy-platform',
-    'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission']);
+    'deploy-egress', 'delete-egress', 'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers',
+    'open-admission', 'close-admission']);
   assert.ok(!workflowOperations['.github/workflows/mutate.yml'].includes('deploy-workload'));
   for (const operation of Object.values(workflowOperations).flat()) {
     const boundary = operationBoundary(env(operation));
@@ -25,6 +26,8 @@ test('the workflow map and family derivation cover every operation', () => {
     assert.ok(operationEvidence[operation], `evidence entry required for ${operation}`);
   }
   for (const operation of ['open-admission', 'close-admission']) assert.equal(operationFamilies[operation], 'beta-admission');
+  // Issue #166 adds the disposable Egress operations to the same deploy family.
+  for (const operation of ['deploy-egress', 'delete-egress']) assert.equal(operationFamilies[operation], 'beta-deploy');
   assert.throws(() => operationBoundary(env('deploy-workload')), /forbidden for this workflow family/);
   assert.throws(() => operationBoundary(env('suspend-admission')), /forbidden for this workflow family/);
   assert.throws(() => operationBoundary(env('resume-admission')), /forbidden for this workflow family/);
@@ -70,7 +73,11 @@ test('deploy authority is limited to the configured stack set', () => {
   assertDeployAllowed(env('restore-release'), 'AnyWearPlatformStack-beta');
   assertDeployAllowed(env('deploy-foundation'), 'AnyWearFoundationStack');
   assertDeployAllowed(env('deploy-billing'), 'AnyWearBillingStack-beta');
+  assertDeployAllowed(env('deploy-egress'), 'AnyWearEgressStack-beta');
+  assertDeployAllowed(env('delete-egress'), 'AnyWearEgressStack-beta');
+  assert.throws(() => assertDeployAllowed(env('deploy-platform'), 'AnyWearEgressStack-beta'), /forbidden/);
   assert.throws(() => assertDeployAllowed(env('deploy-platform'), 'AnyWearWorkloadStack-beta'), /forbidden/);
+  assert.throws(() => assertDeployAllowed(env('deploy-platform'), 'AnyWearRuntimeStack-beta'), /forbidden/);
   assert.throws(() => assertDeployAllowed(env('observe'), 'AnyWearPlatformStack-beta'), /forbidden/);
 });
 

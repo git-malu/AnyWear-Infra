@@ -55,14 +55,10 @@ test('the package definitions match the synthesized Beta Platform stage surface'
     .map(resource => resource.Properties.Name)
     .sort();
   const contractNames = published.filter(name => !OTHER_BETA_PARAMETER_NAMES.includes(name));
-  const apiBaseUrl = '/anywear/beta/api_base_url';
-  // The anchor baseline is the pre-split legacy synth, recorded before 0.3.0: it
-  // publishes the previous 35 unconditional names but not `api_base_url`, which
-  // the Base stack begins publishing together with the moved API distribution in
-  // the next commit (step 2 re-records this baseline). Both facts are asserted
-  // exactly, so a silently missing or extra published name still fails.
-  assert.deepEqual(contractNames, [...pkg.STAGE_CONTRACT_PARAMETERS].filter(name => name !== apiBaseUrl));
-  assert.deepEqual([...pkg.STAGE_CONTRACT_PARAMETERS].filter(name => !contractNames.includes(name)), [apiBaseUrl]);
+  // The anchor baseline is the split Base synthesis: it publishes exactly the 35
+  // unconditional names, including `api_base_url` from the adopted API
+  // distribution. A silently missing or extra published name fails here.
+  assert.deepEqual(contractNames, [...pkg.STAGE_CONTRACT_PARAMETERS]);
   assert.deepEqual(published.filter(name => contractNames.includes(name)), contractNames);
   assert.deepEqual(published.filter(name => !contractNames.includes(name)), [...OTHER_BETA_PARAMETER_NAMES].sort());
   const definitions = pkg.stageParameters();

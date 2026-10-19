@@ -9,8 +9,8 @@
       "call": "cloudformation:list-stack-resources",
       "action": "cloudformation:*",
       "grant": "pre-existing",
-      "target": "the deployed AnyWearWorkloadStack-beta only",
-      "resources": ["arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*"]
+      "target": "the deployed AnyWearRuntimeStack-beta only",
+      "resources": ["arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*"]
     },
     {
       "call": "cloudwatch:get-metric-statistics",

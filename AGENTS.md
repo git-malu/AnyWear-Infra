@@ -2,9 +2,11 @@
 
 This repository owns shared AWS infrastructure and environment operations after
 the verified #54 cutover. It owns the account-wide Foundation and Billing stacks
-and the Beta stage base (`AnyWearPlatformStack-beta`) only. AnyWear-Service owns
-the release slice (`AnyWearWorkloadStack-beta`), its CDK source and its deploy
-chain; Infra no longer synthesizes, deploys or recovers that stack. AnyWear-Service
+and the Beta stage's persistent `Base` stack (`AnyWearPlatformStack-beta`), plus
+the disposable `Egress` stack (`AnyWearEgressStack-beta`). AnyWear-Service owns
+the release slice (`AnyWearRuntimeStack-beta`, formerly `AnyWearWorkloadStack-beta`),
+its CDK source and its deploy chain; Infra no longer synthesizes, deploys or
+recovers that stack. AnyWear-Service
 remains the application, migration, verification and immutable artifact
 publisher. Earlier Service-side bootstrap authority is historical evidence only
 and must not be relabeled as an Infra-produced deployment.
@@ -49,20 +51,39 @@ and must not be relabeled as an Infra-produced deployment.
   operations and ECS/helper tasks; timeout does not establish cessation. Repository
   concurrency is not a cross-repository lock; migration rollout stays separately
   coordinated.
-- Beta is resident. Every protected Infra deploy takes the active path and its
-  postcondition is the stage base reporting `BetaActive=true`; no operation
-  switches `environmentRunning` or selects the dormant stopped template. The
-  release slice's activity is owned by AnyWear-Service; Infra reads it only to
-  prove it is terminal (never mid-deployment) before and after its own Platform
-  deploy. A stack observed inactive out of band fails closed in verification,
-  never as a lifecycle state to maintain.
-- Use the three bounded Beta entries in the [operations catalog](README.md#operations):
-  `check.yml` is automatic; `runtime.yml` is the manual `state`/`observe` entry,
+- Issue #166: Beta is three stacks with disjoint lifetimes. `Base`
+  (`AnyWearPlatformStack-beta`, physical name retained) holds the VPC/subnets,
+  Aurora, S3, Cognito, ECR, SQS, SSM params and both CloudFront distributions and
+  is persistent; `Egress` (`AnyWearEgressStack-beta`) holds the NAT, EIP, private
+  route tables/routes/associations and the S3 gateway endpoint and is deleted on
+  stop; `Runtime` (`AnyWearRuntimeStack-beta`, Service-owned) holds ALB, ECS
+  services/task definitions, log groups and the cleanup operation and is deleted
+  on stop. There is no `environmentRunning` switch, no `BetaActive` output and no
+  stopped template. Beta run state is one fact: whether the Runtime stack exists.
+  Stop deletes Runtime then Egress; start recreates Egress then Runtime, and
+  `restore-release` requires Runtime to exist ("start first"). A Base mutation
+  still reads Runtime terminal first (one writer); a missing Runtime is the
+  stopped state, not an inactive variant to maintain.
+- The Base stack publishes `api_base_url` and retains Aurora, both S3 buckets,
+  the Cognito pool, the ECR repository and both CloudFront distributions
+  (`DeletionPolicy`/`UpdateReplacePolicy: Retain`). The API CloudFront
+  distribution moved from the Service stack into Base with a one-time reviewed
+  CloudFormation stack-refactor MOVE; its logical ID is pinned in
+  `lib/api-distribution.json` and its origin is the live literal ALB DNS name
+  (`-c apiOriginDomainName=...`), never a same-stack `Fn::GetAtt`. The one-time
+  migration (`scripts/migrate-beta-split.mjs` + its runbook) is never automatic,
+  defaults to validation-only, and is a Deployment-stage action.
+- Issue #166 keeps the three bounded Beta entries in the
+  [operations catalog](README.md#operations): `check.yml` is automatic;
+  `runtime.yml` is the manual `state`/`observe` entry,
   where `state` is read-only with restricted STS credentials and works with
   `ENABLE_BETA_MUTATION` closed, and `observe` is the qualified observation that
   remains the only accepted `anywear_infra_deployment` v3 producer for E2E
   compatibility; `mutate.yml` is the single manual mutation entry
-  and rejects cross-family or out-of-scope inputs before credentials. `production.yml`
+  and rejects cross-family or out-of-scope inputs before credentials. It now
+  includes `deploy-egress` / `delete-egress`: both are `beta-deploy` family,
+  change only `AnyWearEgressStack-beta`, and `delete-egress` refuses unless the
+  Runtime stack is absent. `production.yml`
   is `workflow_call`-only and is not an entry. The five admission operations are
   `admission-status`, `add-testers`, `set-testers`, `open-admission` and
   `close-admission`; admission is one mode record with no window or expiry,
@@ -77,12 +98,14 @@ and must not be relabeled as an Infra-produced deployment.
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
-- After #158 step C the only path that deploys `AnyWearWorkloadStack-beta` is
-  AnyWear-Service's release chain, and that capability is installed. The deferred
+- After #158 step C the only path that deploys the Service-owned release slice is
+  AnyWear-Service's release chain, and that capability is installed. Issue #166
+  renamed that slice to `AnyWearRuntimeStack-beta`; the historical runs below
+  still refer to it by its then-name `AnyWearWorkloadStack-beta`. The deferred
   Foundation round has happened, so its two Service deploy roles from step A exist
   and Service's own `ENABLE_BETA_MUTATION=true` can act: Service run 39137577023
   ("Service release: deploy", `workflow_dispatch`, success, created
-  2026-10-18T14:47:35Z) deployed the Service-owned Workload release slice, and
+  2026-10-18T14:47:35Z) deployed the Service-owned release slice, and
   Infra `deploy-foundation` runs succeeded on 2026-10-18 at 12:48:21Z, 12:22:55Z,
   11:02:38Z and 07:33:47Z. No Infra entry may deploy, verify or recover that slice.
 - Every CLI scope requires explicit `legacyRoleSource=cdk|external`.
@@ -104,17 +127,17 @@ and must not be relabeled as an Infra-produced deployment.
   the constants only in a reviewed diff; the slice's own stack parameters are
   Service's to assert. Service
   deploys through `beta-service-deploy-role` (CloudFormation change sets for
-  `AnyWearWorkloadStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`;
+  `AnyWearRuntimeStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`;
   the CDK CLI's own-credentials path: the `cdk-bootstrap/hnb659fds/version`
   parameter, list/object/bucket-location access to the dedicated
   `cdk-hnb659fds-assets-<account>-<region>` bucket)
-  and `beta-service-deploy-cfn-role` (CloudFormation trust only, the Workload
+  and `beta-service-deploy-cfn-role` (CloudFormation trust only, the Runtime
   stack's resource families and its four task roles). Neither assumes a
   `cdk-hnb659fds-*` role, carries a managed policy or holds account-wide grants;
   the policy-inventory tests keep the absent
   VPC/Aurora/Cognito/bucket-configuration/SQS/ECR-configuration/Foundation/
   other-stack grants absent. The roles, not this
-  repository, are now the Workload stack's deployment authority.
+  repository, are now the Runtime stack's deployment authority.
 - Foundation's service set is reviewed CDK context, not source: `infraServices` is
   an array of `{ service, repository, repositoryId, environment }` descriptors
   defaulting to exactly the single `service` (`AnyWear-Service`, repository id
@@ -126,7 +149,10 @@ and must not be relabeled as an Infra-produced deployment.
   an Infra source edit; the default context keeps the synthesized Foundation
   template equal to the authenticated live Foundation plus the recorded
   `test/fixtures/foundation-dedicated-additions.json` delta, whose #162 extension
-  is recorded in the fixture provenance (`test/foundation-services.test.ts`).
+  and #166 Runtime-scope extension are recorded in the fixture provenance
+  (`test/foundation-services.test.ts`). The #166 extension is source-side only:
+  `publication_verified` and `deployment_qualified` remain false until the
+  Deployment gate deploys Foundation.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`

@@ -225,18 +225,18 @@ identities; source-matrix equality alone does not authorize a replacement.
 Verify stable independent Client publication through existing CFN/SSM outputs.
 Retain the original templates, selected assets and usable recovery writer.
 
-Exercise reviewed `restore-release` as the stage-base recovery path; it deploys
-only `AnyWearPlatformStack-beta` and leaves the release slice to AnyWear-Service's
-own release chain. It does not run down migrations and it never verifies a
-candidate release. (The former `deploy-workload` path no longer exists in Infra.)
-`restore-release` checks the resident invariant before
-CFN, reads the release slice terminal before and after its own deploy, and
-redeploys only the stage base active; its only activation
-precondition is a provably closed admission record (`{"mode":"closed"}`), with
-stable stack status required for the
-CloudFormation mutation itself. Failures preserve observed state and require an
-explicitly reviewed recovery; no automatic sibling deploy, revert or admission
-reopening occurs.
+Exercise reviewed `restore-release` as the Base recovery path; it deploys only
+`AnyWearPlatformStack-beta` and leaves the Service-owned Runtime slice to
+AnyWear-Service's own release chain. It does not run down migrations and it never
+verifies a candidate release. (The former `deploy-workload` path no longer exists
+in Infra; #166 renamed the slice to `AnyWearRuntimeStack-beta`.)
+`restore-release` requires a provably closed admission record
+(`{"mode":"closed"}`) and an existing terminal Runtime stack ("start first")
+before CFN, reads the Runtime terminal before and after its own deploy, and
+redeploys only Base; stable stack status is required for the CloudFormation
+mutation itself. Failures preserve observed state and require an explicitly
+reviewed recovery; no automatic sibling deploy, revert or admission reopening
+occurs.
 
 Admission is mode-only after #159: `/anywear/beta/admission_mode` is
 `{"mode":"closed"}` or `{"mode":"testers"}`, with no window or expiry.
@@ -249,12 +249,15 @@ explicit `close-admission` and an `admission-status` read-back; no recovery step
 here and no scheduled task closes it. Verify closed admission from that record
 before any restore dispatch.
 
-Current dispatches use `mutate.yml` for maintenance and `restore-release`. Beta is
-resident, so no operation stops or starts it and no inactive deployment path remains.
-A separately coordinated fixed `runtime.yml` `observe` run produces the E2E-compatible
+Current dispatches use `mutate.yml` for maintenance, `deploy-egress`/
+`delete-egress` for the disposable network edge, and `restore-release`. Beta
+stops by deleting Runtime then Egress and starts by recreating Egress then
+Runtime; the persistent Base stack is never deleted and no stopped Base template
+exists. A separately coordinated fixed `runtime.yml` `observe` run produces the
+E2E-compatible
 v3 `anywear_infra_deployment` record after changes; mutation family observations
 identify their actual workflow (`mutate.yml`) and are not accepted as E2E deployment
-inputs. The Workload slice's own record is produced by AnyWear-Service's release
+inputs. The Runtime slice's own record is produced by AnyWear-Service's release
 chain (`anywear_service_deployment`). Read-only `runtime.yml`
 `state` remains available with the stage switch closed, including recovery diagnosis,
 and cannot start tasks or qualify database/schema state.
@@ -263,8 +266,9 @@ At the time, the bounded #54 practical recovery was executed as [stop
 37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)
 then [start 37887802281](https://github.com/git-malu/AnyWear-Infra/actions/runs/37887802281),
 both with historical Infra producer `bafc3072ea6aee2d5193009c014cb1cf04b43848`
-and coherent Service release `407218593`. Both lifecycle entry points are retired and
-Beta is resident, so that sequence is preserved history, not current guidance. This
+and coherent Service release `407218593`. Both lifecycle entry points are retired,
+and #166 replaced the resident direction with the three-stack stop/start, so that
+sequence is preserved history, not current guidance. This
 does not exercise `restore-release` or automatic failure recovery. Historical release
 `406706155` remains preserved evidence but is byte-incoherent and cannot be selected
 for current rollback. Do not relabel the observed Client/Service tuple or historical
@@ -324,8 +328,8 @@ exact E2E v2 qualification, digest-preserving promotion and scan policy. Artifac
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
 
-Inactive CDK deployments are not a supported operation. Every protected deploy takes
-the resident active path, and its postcondition is both stacks `BetaActive=true`;
-an out-of-band stopped stack fails closed in verification rather than authorizing an
-inactive rollout. Preserve actual stack outputs/statuses and admission readback on
-failure.
+There is no inactive Base deployment path. Every protected Base deploy requires a
+terminal Base stack and a terminal Runtime stack when Runtime exists; the
+postcondition is exactly that observed state, not a `BetaActive` output. A Base
+mutation fails closed while Runtime is non-terminal (one writer). Preserve actual
+stack statuses, Runtime existence and admission readback on failure.

@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import {
   deploymentQueueNames,
+  runtimeStackName,
   serviceDeployCfnRoleName,
   serviceDeployRoleName,
   serviceTrustSubject,
@@ -100,15 +101,13 @@ export function readFoundationServices(value: unknown = undefined): readonly Fou
     ...descriptors.filter((descriptor) => !sameDescriptor(descriptor, primary))]);
 }
 
-// The workload stack an additional service's release chain deploys. The default
-// `service` keeps the currently deployed `AnyWearWorkloadStack-beta` scope until
-// the Foundation-scope change moves both Service roles to `AnyWearRuntimeStack`;
-// an added service scopes the shared identity with its slug.
-const DEPLOYED_WORKLOAD_STACK = 'AnyWearWorkloadStack';
-export function serviceWorkloadStackName(service: string): string {
-  if (service === DEFAULT_FOUNDATION_SERVICE.service) return `${DEPLOYED_WORKLOAD_STACK}-beta`;
+// The Runtime stack an additional service's release chain deploys. The default
+// `service` keeps the existing `AnyWearRuntimeStack-beta` identity (0.3.0); an
+// added service scopes the shared identity with its slug.
+export function serviceRuntimeStackName(service: string): string {
+  if (service === DEFAULT_FOUNDATION_SERVICE.service) return runtimeStackName('beta');
   if (!SERVICE_SLUG.test(service)) throw new Error('Invalid service name');
-  return `${DEPLOYED_WORKLOAD_STACK}-${service}-beta`;
+  return `AnyWearRuntimeStack-${service}-beta`;
 }
 
 export interface FoundationStackProps extends cdk.StackProps {
@@ -242,16 +241,18 @@ export class FoundationStack extends cdk.Stack {
 
     // Issue #158 step A: each reviewed service deploys its own release slice
     // with two identities. The OIDC role can only drive a CloudFormation change
-    // set for that service's workload stack and pass one execution role; that
+    // set for that service's runtime stack and pass one execution role; that
     // execution role is trusted by CloudFormation alone and operates only the
-    // workload stack's resource families. Neither role carries a managed policy,
+    // runtime stack's resource families. Neither role carries a managed policy,
     // `iam:*`, `*` or any VPC/Aurora/Cognito/SQS configuration/ECR
     // configuration/Foundation grant.
-    // The versioned `@git-malu/stage-contracts` package owns the per-service role
-    // naming and the immutable OIDC subject. The reviewed `infraServices` CDK
-    // context set defaults to exactly today's single `service`: its construct
-    // ids, names, trust and policies are unchanged. An additional service gets
-    // unique construct ids and a policy set scoped to its own workload stack.
+    // Issue #166: the Service-owned slice is `AnyWearRuntimeStack-beta`; both
+    // roles are scoped to that stack. The versioned `@git-malu/stage-contracts`
+    // package owns the per-service role naming and the immutable OIDC subject.
+    // The reviewed `infraServices` CDK context set defaults to exactly today's
+    // single `service`: its construct ids, names, trust and policies are
+    // unchanged apart from the stack identity. An additional service gets unique
+    // construct ids and a policy set scoped to its own runtime stack.
     const addServiceDeployRoles = (descriptor: FoundationServiceDescriptor,
       ids: { deploy: string; cfn: string }) => {
       // An additional service shares the Beta cluster and stage base but owns the
@@ -259,7 +260,7 @@ export class FoundationStack extends cdk.Stack {
       // default descriptor reproduces today's `beta-anywear-*` literals exactly.
       const unique = (name: string) => descriptor.service === DEFAULT_FOUNDATION_SERVICE.service
         ? name : `${descriptor.service}-${name}`;
-      const workloadStack = serviceWorkloadStackName(descriptor.service);
+      const runtimeStack = serviceRuntimeStackName(descriptor.service);
       const serviceDeploy = new iam.Role(this, ids.deploy, {
         roleName: serviceDeployRoleName(descriptor.service),
         assumedBy: new iam.WebIdentityPrincipal(githubProvider.openIdConnectProviderArn, {
@@ -285,9 +286,9 @@ export class FoundationStack extends cdk.Stack {
         service, resource, resourceName, region, account, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
       });
       const stackArn = (stackName: string) => slashArn('cloudformation', 'stack', `${stackName}/*`);
-      const cloudformationStack = stackArn(workloadStack);
+      const cloudformationStack = stackArn(runtimeStack);
       // Change sets carry their own ARN; executing one still requires the target
-      // stack ARN, which is limited to this service's workload stack.
+      // stack ARN, which is limited to this service's runtime stack.
       const changeSetArn = slashArn('cloudformation', 'changeSet', '*');
       const platformStack = stackArn('AnyWearPlatformStack-beta');
       // Issue #158 round 3: the Service owner's synthesizer makes the CDK CLI use
@@ -394,9 +395,9 @@ export class FoundationStack extends cdk.Stack {
         service: 'logs', resource: 'log-group', resourceName: name, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
       });
       // CloudFormation generates the maintenance bucket's physical name from the
-      // workload stack, so the grant is confined to this stack's generated names.
+      // runtime stack, so the grant is confined to this stack's generated names.
       const maintenanceBucket = this.formatArn({
-        service: 's3', region: '', account: '', resource: `${workloadStack.toLowerCase()}-*`,
+        service: 's3', region: '', account: '', resource: `${runtimeStack.toLowerCase()}-*`,
       });
       const loadBalancerSecurityGroups = slashArn('ec2', 'security-group', '*');
       // The load-balancer security group is a Platform resource whose id is only

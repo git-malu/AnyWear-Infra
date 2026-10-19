@@ -11,7 +11,8 @@ import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['state', 'observe'],
   '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',
-    'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission'],
+    'deploy-egress', 'delete-egress', 'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers',
+    'open-admission', 'close-admission'],
 });
 
 // A record's family is derived from the operation, not from the file that hosts
@@ -25,6 +26,8 @@ export const operationFamilies = Object.freeze({
   'deploy-foundation': 'beta-deploy',
   'deploy-billing': 'beta-deploy',
   'deploy-platform': 'beta-deploy',
+  'deploy-egress': 'beta-deploy',
+  'delete-egress': 'beta-deploy',
   'restore-release': 'beta-deploy',
   migrate: 'beta-schema',
   'admission-status': 'beta-admission',
@@ -108,9 +111,14 @@ export const operationEvidence = Object.freeze({
   'deploy-billing': evidenceEntry([], '.github/workflows/runtime.yml',
     'The accepted record carries the billing stack Original template hash observed in us-east-1.'),
   'deploy-platform': evidenceEntry([], '.github/workflows/runtime.yml',
-    'The accepted record carries the stage-base Original template hash and the consumed stage-contract parameter versions and value hashes.'),
+    'The accepted record carries the Base Original template hash and the consumed stage-contract parameter versions and value hashes.'),
+  // Issue #166: the Egress stack is disposable and exists only while Beta runs.
+  'deploy-egress': evidenceEntry([], '.github/workflows/runtime.yml',
+    'The accepted record carries the Egress stack Original template hash after the disposable network edge is created.'),
+  'delete-egress': evidenceEntry([], '.github/workflows/runtime.yml',
+    'The accepted record carries the observed stack state and proves the Runtime stack was absent before the Egress delete; no deployment record is produced.'),
   'restore-release': evidenceEntry([], '.github/workflows/runtime.yml',
-    'Restoring the stage base leaves the resident Beta invariant observable by the following fixed observation; the release slice is restored by AnyWear-Service.'),
+    'Restoring the Base stack leaves the Runtime stack observable by the following fixed observation; the Runtime slice is restored by AnyWear-Service.'),
   migrate: evidenceEntry(['migrate'], '.github/workflows/runtime.yml',
     'The operation record carries the migrate task identity and its stopped-success result on the deployed Service image.'),
   'admission-status': evidenceEntry(['lifecycle'], 'not-applicable',

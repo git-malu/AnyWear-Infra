@@ -1,6 +1,6 @@
 import { canonicalJson, sha256, SHA, matches } from './json-contract.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
-import { changedStackNames, configuredStacks, configuredStackNames, validateStackManifest } from './operation-stacks.mjs';
+import { changedStackNames, configuredStacks, operationStackNames, validateStackManifest } from './operation-stacks.mjs';
 
 // v4 replaces the v2/v3 `selection` block with the reviewed Service release
 // identity the operation consumed (only `deploy-platform` and `restore-release`
@@ -28,8 +28,8 @@ export function readOperationRecord(value) {
   if (value?.record_type !== 'anywear_infra_operation' || ![2, 3, 4].includes(value.schema_version)) throw new Error('Unknown operation record schema');
   if ([3, 4].includes(value.schema_version)) {
     validateStackManifest(value.stack_manifest, 'operation record');
-    const configured = configuredStackNames();
-    if (!Array.isArray(value.changed_stack_names) || value.changed_stack_names.some(name => !configured.includes(name))) throw new Error('Invalid changed stack names');
+    const allowed = operationStackNames();
+    if (!Array.isArray(value.changed_stack_names) || value.changed_stack_names.some(name => !allowed.includes(name))) throw new Error('Invalid changed stack names');
   }
   return value;
 }

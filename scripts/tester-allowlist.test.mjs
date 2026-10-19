@@ -3,19 +3,32 @@ import assert from 'node:assert/strict';
 import { canonicalJson } from './json-contract.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
+import { runtimeStack } from './one-writer.mjs';
 
 const selector = { image: { service_sha: '1'.repeat(40), digest: `sha256:${'2'.repeat(64)}` } };
-const NOW = Date.parse('2026-01-01T00:00:00.000Z');
-function ioFixture({ active = true, digest = selector.image.digest } = {}) {
+function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.digest } = {}) {
   const calls = []; const events = [];
   // The tester write refuses while admission is not provably closed, and it must
   // leave the recorded decision exactly as it found it.
   const mirror = { mode: 'closed' };
   let testers = ['existing@example.com'];
+  // Issue #166: the Base stack publishes the public API URL; the Runtime stack
+  // exists while Beta runs and reports the pinned revision.
+  const platform = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE',
+    Outputs: Object.entries({ EcsClusterName: 'beta-anywear', ApiBaseUrl: 'https://example.cloudfront.net' })
+      .map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) };
+  const runtime = runtimeStatus === null ? undefined : { StackName: runtimeStack, StackStatus: runtimeStatus,
+    Parameters: Object.entries({ ServiceImageDigest: digest, ServiceCommitSha: selector.image.service_sha,
+      VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:test', CloudFrontPrefixListId: 'pl-test' })
+      .map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })),
+    Outputs: Object.entries({ ApiBaseUrl: 'https://example.cloudfront.net' })
+      .map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) };
+  const stacks = new Map([['AnyWearPlatformStack-beta', platform], [runtimeStack, runtime]]);
   return { calls, events, async aws(args) {
-    if (args[0] === 'cloudformation') return { Stacks: [{ StackStatus: 'UPDATE_COMPLETE',
-      Parameters: Object.entries({ ServiceImageDigest: digest, ServiceCommitSha: selector.image.service_sha, VlmConfigArn: "arn:aws:secretsmanager:ap-east-1:650880818323:secret:test", CloudFrontPrefixListId: "pl-test" }).map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })),
-      Outputs: Object.entries({ BetaActive: String(active), EcsClusterName: 'beta-anywear', ApiBaseUrl: 'https://example.cloudfront.net' }).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) }] };
+    if (args[0] === 'cloudformation') {
+      const stack = stacks.get(args.at(-1));
+      return { Stacks: stack ? [stack] : [] };
+    }
     if (args[0] === 'ssm') {
       const name = args.at(-1);
       if (name.endsWith('tester_allowlist')) return { Parameter: { Name: name, Value: canonicalJson(testers) } };
@@ -33,16 +46,16 @@ function ioFixture({ active = true, digest = selector.image.digest } = {}) {
     }
   }, recordAdmissionState(event) { events.push(structuredClone(event)); } };
 }
-test('Infra tester add merges exact emails on the revision the release slice reports; inactive Beta performs no task', async () => {
+test('Infra tester add merges exact emails on the revision the Runtime stack reports; a non-running Runtime performs no task', async () => {
   const io = ioFixture();
   await runTesterAllowlist('add', '[" NEW@example.com ", "new@example.com"]', io);
   const lifecycle = io.calls.find(call => call[0] === 'lifecycle');
   assert.equal(lifecycle[2], 'set-testers');
   assert.equal(lifecycle[3], '["existing@example.com","new@example.com"]');
-  for (const options of [{ active: false }]) {
+  for (const options of [{ runtimeStatus: null }, { runtimeStatus: 'UPDATE_IN_PROGRESS' }]) {
     const blocked = ioFixture(options);
     await assert.rejects(runTesterAllowlist('set', '[]', blocked));
-    assert.equal(blocked.calls.length, 0);
+    assert.ok(!blocked.calls.some(call => call[0] === 'lifecycle' || call[0] === 'health'), JSON.stringify(options));
   }
   await assert.rejects(runTesterAllowlist('cleanup', '[]', io));
   for (const input of ['["*@example.com"]', '["@example.com"]', JSON.stringify(Array(51).fill('a@example.com'))]) assert.throws(() => normalizeTesterEmails(input));

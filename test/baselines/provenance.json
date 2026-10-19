@@ -43,7 +43,7 @@
       "beta-active/AnyWearPlatformStack-beta.template.json",
       "prod-active/AnyWearPlatformStack-prod.template.json"
     ],
-    "reason": "The Workload consumer left this app, so the beta and prod Platform templates no longer contain the CDK weak cross-stack PublishOutput* outputs; the same re-record records the issue #161 recovery targets and the 34/35-value stage contract as template content instead of a permanent comparator allowance.",
+    "reason": "The Workload consumer left this app, so the beta and prod Platform templates no longer contain the CDK weak cross-stack PublishOutput* outputs; the same re-record records the issue #161 recovery targets and the pre-split stage contract as template content instead of a permanent comparator allowance.",
     "log_grant_rerecord": {
       "files": [
         "beta-active/AnyWearPlatformStack-beta.template.json",
@@ -60,5 +60,5 @@
       "reason": "Beta becomes three stacks with disjoint lifetimes. The Base stack (AnyWearPlatformStack-beta, name retained) keeps the persistent VPC subnets, Aurora, S3, Cognito, ECR, SQS, SSM and both CloudFront distributions, publishes api_base_url, and no longer carries NAT/EIP/private routes or the S3 gateway endpoint (moved to AnyWearEgressStack-beta). All three Platform baselines were re-recorded from this source synthesis; the stopped Beta variant and its directory were deleted with the environmentRunning switch. Foundation and Billing remain the Service move anchor."
     }
   },
-  "scope": "Source synth comparison only. Foundation and Billing templates remain the Service source move anchor; the Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes."
+  "scope": "Source synth comparison only. Foundation and Billing templates remain the Service source move anchor; the Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes. The #166 three-stack split re-recorded only the Base (Beta Platform) baseline; Foundation and Billing still match the Service move anchor."
 }
