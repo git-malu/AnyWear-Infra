@@ -35,14 +35,31 @@ export const STAGE_CONTRACT_READ_BATCHES = Object.freeze(
 // Read the consumed stage contract through bounded `ssm get-parameters` calls and
 // normalize it to the record's `inputs[]` rows. The value itself is never
 // recorded, only its content hash and the parameter version that produced it.
-export async function readStageInputs(io) {
+//
+// `allowUnpublished` is the one reviewed exception for a parameter the target
+// Base stack has not published yet (pre-M4 `api_base_url`): the name may appear
+// as an SSM `InvalidParameters` entry and may be absent from the returned rows,
+// and the record hashes only the published subset. Every other unconditional
+// name stays required; the phase-dependent cleanup role remains the only
+// absence that never needs an allow-list entry.
+export async function readStageInputs(io, { allowUnpublished = [] } = {}) {
+  const allowed = new Set();
+  if (!Array.isArray(allowUnpublished)) throw new Error('Invalid unpublished stage-contract parameters');
+  for (const value of allowUnpublished) {
+    if (typeof value !== 'string' || !value) throw new Error('Invalid unpublished stage-contract parameter');
+    const name = value.startsWith('/anywear/beta/') ? value : `/anywear/beta/${value}`;
+    if (!STAGE_CONTRACT_PARAMETERS.includes(name)) throw new Error(`Unknown unpublished stage-contract parameter ${value}`);
+    if (allowed.has(name)) throw new Error(`Duplicate unpublished stage-contract parameter ${value}`);
+    allowed.add(name);
+  }
   const byName = new Map();
   for (const batch of STAGE_CONTRACT_READ_BATCHES) {
     const response = await io.aws(['ssm', 'get-parameters', '--names', ...batch], 'ap-east-1');
     const parameters = response.Parameters;
     const invalid = response.InvalidParameters ?? [];
     if (!Array.isArray(parameters) || !Array.isArray(invalid)
-      || invalid.some(parameter => !batch.includes(parameter) || !STAGE_CONTRACT_CONDITIONAL_PARAMETERS.includes(parameter))
+      || invalid.some(parameter => !batch.includes(parameter)
+        || (!STAGE_CONTRACT_CONDITIONAL_PARAMETERS.includes(parameter) && !allowed.has(parameter)))
       || parameters.length + invalid.length !== batch.length) {
       throw new Error('Stage contract parameters unavailable');
     }
@@ -53,7 +70,7 @@ export async function readStageInputs(io) {
       byName.set(parameter.Name, parameter);
     }
   }
-  if (STAGE_CONTRACT_PARAMETERS.some(parameter => !byName.has(parameter))) {
+  if (STAGE_CONTRACT_PARAMETERS.some(parameter => !byName.has(parameter) && !allowed.has(parameter))) {
     throw new Error('Stage contract parameters unavailable');
   }
   return STAGE_CONTRACT_READ_PARAMETERS.filter(parameter => byName.has(parameter)).map(parameter => {

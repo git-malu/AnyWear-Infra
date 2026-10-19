@@ -9,6 +9,7 @@ import { observeDeployment, observeDeploymentCli, observerArguments } from './ob
 import { sha256 } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 import { runtimeStack } from './one-writer.mjs';
+import { stageContractSchemaHash, validateObservationRecord } from './deployment-contract.mjs';
 import { STAGE_CONTRACT_CONDITIONAL_PARAMETERS, STAGE_CONTRACT_PARAMETERS,
   STAGE_CONTRACT_READ_PARAMETERS } from './stage-contract-parameters.mjs';
 
@@ -166,6 +167,35 @@ test('a beta-deploy observation does not read or require the absent Runtime stac
   // The default/runtime path still requires it (covered again here explicitly).
   await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus: null }),
     env: executorEnvironment(), requireRuntime: true }), /AnyWearRuntimeStack-beta/);
+});
+
+test('a pre-M4 deploy-foundation observation may hash the published stage-contract subset', async () => {
+  const apiBaseUrl = '/anywear/beta/api_base_url';
+  const body = await observeDeployment({ infraSha,
+    io: fixtureIo({ invalidStageParameters: [apiBaseUrl] }), env: executorEnvironment(),
+    requireRuntime: false, allowUnpublishedStageInputs: ['api_base_url'] });
+  assert.equal(body.inputs.length, 35);
+  assert.ok(!body.inputs.some((row) => row.parameter === apiBaseUrl));
+  assert.deepEqual(body.inputs.map((row) => row.parameter),
+    [...STAGE_CONTRACT_READ_PARAMETERS].filter((name) => name !== apiBaseUrl));
+  assert.equal(body.schema.content_sha256, stageContractSchemaHash(body.inputs));
+  const record = { schema_version: 3, record_type: 'anywear_infra_family_observation',
+    producer: { repository: 'git-malu/AnyWear-Infra', sha: infraSha, workflow_path: '.github/workflows/mutate.yml',
+      workflow_ref: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main', run_id: 43, run_attempt: 1 },
+    ...body };
+  assert.deepEqual(validateObservationRecord(record), record);
+
+  // The default `observe` path (Runtime required) stays strict.
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ invalidStageParameters: [apiBaseUrl] }),
+    env: executorEnvironment() }), /Stage contract parameters unavailable/);
+  // deploy-platform (no allow list) also stays strict even though it is beta-deploy.
+  await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ invalidStageParameters: [apiBaseUrl] }),
+    env: executorEnvironment(), requireRuntime: false }), /Stage contract parameters unavailable/);
+  // Any other unconditional parameter is still required with the allow list.
+  const other = STAGE_CONTRACT_PARAMETERS.find((name) => name !== apiBaseUrl);
+  await assert.rejects(observeDeployment({ infraSha,
+    io: fixtureIo({ invalidStageParameters: [apiBaseUrl, other] }), env: executorEnvironment(),
+    requireRuntime: false, allowUnpublishedStageInputs: ['api_base_url'] }), /Stage contract parameters unavailable/);
 });
 
 test('the observer CLI writes the authenticated v3 body that equals the expected record', async () => {

@@ -19,8 +19,13 @@ try {
   // AnyWear-Service's release chain, never from here. Only the `runtime` family
   // (`observe`) qualifies the running slice and requires the Runtime stack; a
   // `beta-deploy` observation runs before M6 or while Beta is stopped.
+  // `deploy-foundation`/`deploy-billing` run before M4 (the `api_base_url`
+  // publication), so they may record the published subset; every other
+  // operation keeps the strict 0.3.0 surface.
+  const allowUnpublishedStageInputs = ['deploy-foundation', 'deploy-billing'].includes(env.INFRA_OPERATION)
+    ? ['api_base_url'] : [];
   const body = await observeDeployment({ infraSha: env.GITHUB_SHA, io, env,
-    requireRuntime: boundary.family === 'runtime' });
+    requireRuntime: boundary.family === 'runtime', allowUnpublishedStageInputs });
   const record = { schema_version: 3,
     record_type: observationRecordType(boundary.family),
     producer: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: boundary.workflow,

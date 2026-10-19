@@ -74,6 +74,51 @@ test('readStageInputs records every unconditional parameter and admits only the 
   await assert.rejects(readStageInputs(io({ invalid: STAGE_CONTRACT_READ_PARAMETERS.slice(1) })), /unavailable/);
 });
 
+test('readStageInputs admits only the reviewed pre-M4 unpublished parameter and hashes the published subset', async () => {
+  const apiBaseUrl = '/anywear/beta/api_base_url';
+  const makeIo = ({ invalid = [] } = {}) => ({ async aws(args, region) {
+    assert.deepEqual(args.slice(0, 2), ['ssm', 'get-parameters']);
+    assert.equal(region, 'ap-east-1');
+    const names = args.slice(3);
+    const returned = names.filter(name => !invalid.includes(name));
+    return { Parameters: returned.map(name => ({ Name: name, Type: 'String',
+        Value: `value-${STAGE_CONTRACT_READ_PARAMETERS.indexOf(name)}`, Version: STAGE_CONTRACT_READ_PARAMETERS.indexOf(name) + 1 })),
+      InvalidParameters: invalid.filter(name => names.includes(name)) };
+  } });
+
+  const subset = await readStageInputs(makeIo({ invalid: [apiBaseUrl] }), { allowUnpublished: ['api_base_url'] });
+  assert.equal(subset.length, 35);
+  assert.ok(!subset.some(row => row.parameter === apiBaseUrl));
+  assert.deepEqual(subset.map(row => row.parameter),
+    [...STAGE_CONTRACT_READ_PARAMETERS].filter(name => name !== apiBaseUrl));
+  assert.equal(stageContractSchemaHash(subset), stageContractSchemaHash(subset));
+  // The full name form is accepted equivalently.
+  assert.deepEqual(await readStageInputs(makeIo({ invalid: [apiBaseUrl] }), { allowUnpublished: [apiBaseUrl] }), subset);
+  // A published api_base_url is included normally.
+  const full = await readStageInputs(makeIo(), { allowUnpublished: ['api_base_url'] });
+  assert.equal(full.length, 36);
+  assert.ok(full.some(row => row.parameter === apiBaseUrl));
+  assert.notEqual(stageContractSchemaHash(subset), stageContractSchemaHash(full));
+  // Without the allow list the same absence still fails.
+  await assert.rejects(readStageInputs(makeIo({ invalid: [apiBaseUrl] })), /unavailable/);
+  // Another unconditional absence still fails even with the allow list.
+  await assert.rejects(readStageInputs(makeIo({ invalid: [apiBaseUrl, STAGE_CONTRACT_PARAMETERS[0]] }),
+    { allowUnpublished: ['api_base_url'] }), /unavailable/);
+  // The phase-dependent cleanup absence still works with the allow list.
+  const legacy = await readStageInputs(makeIo({ invalid: [...STAGE_CONTRACT_CONDITIONAL_PARAMETERS, apiBaseUrl] }),
+    { allowUnpublished: ['api_base_url'] });
+  assert.equal(legacy.length, 34);
+  assert.ok(!legacy.some(row => row.parameter === apiBaseUrl));
+  // Unknown or conditional allow entries are refused, as are duplicates and a
+  // non-array allow list.
+  for (const entry of ['not_a_param', '/anywear/beta/not_a_param', STAGE_CONTRACT_CONDITIONAL_PARAMETERS[0], '']) {
+    await assert.rejects(readStageInputs(makeIo(), { allowUnpublished: [entry] }), /Unknown unpublished|Invalid unpublished/);
+  }
+  await assert.rejects(readStageInputs(makeIo(), { allowUnpublished: ['api_base_url', '/anywear/beta/api_base_url'] }),
+    /Duplicate unpublished/);
+  await assert.rejects(readStageInputs(makeIo(), { allowUnpublished: 'api_base_url' }), /Invalid unpublished/);
+});
+
 test('an Infra v3 record validates and equals its own authenticated observation', () => {
   const value = record();
   assert.deepEqual(validateDeploymentRecord(value), value);

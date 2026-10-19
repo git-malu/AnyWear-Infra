@@ -46,7 +46,13 @@ export function liveObservationIo() {
 // present. A `beta-deploy` observation (Foundation/Billing/Base/Egress/restore)
 // runs before M6 or while Beta is stopped, so it must not read or require Runtime;
 // the record body never included that stack.
-export async function observeDeployment({ infraSha, io = liveObservationIo(), env = process.env, requireRuntime = true }) {
+//
+// `allowUnpublishedStageInputs` is the reviewed pre-M4 exception: the live Base
+// has not published the new `api_base_url` yet, so a `deploy-foundation` or
+// `deploy-billing` observation may hash the published subset. Every other
+// consumer path (runtime `observe`, Base/Egress/restore deploys) stays strict.
+export async function observeDeployment({ infraSha, io = liveObservationIo(), env = process.env,
+  requireRuntime = true, allowUnpublishedStageInputs = [] }) {
   matches(infraSha, SHA, 'Observed Infra input');
   assertProtectedExecutor(infraSha, env);
   if (env.AWS_REGION !== region || env.AWS_ACCOUNT_ID !== account || (await io.aws(['sts', 'get-caller-identity'])).Account !== account) {
@@ -98,7 +104,7 @@ export async function observeDeployment({ infraSha, io = liveObservationIo(), en
   }
   const client = await io.http(`${endpoints.client}/build-metadata.json?infra=${env.GITHUB_RUN_ID}-${env.GITHUB_RUN_ATTEMPT}`);
   if (client.component !== 'AnyWear-Client') throw new Error('Public Client identity mismatch');
-  const inputs = await readStageInputs(io);
+  const inputs = await readStageInputs(io, { allowUnpublished: allowUnpublishedStageInputs });
   const body = { stacks, inputs, observed: { lambdas, queue_config_sha256: contentHash(queueConfig), client_sha: client.source_commit, endpoints },
     schema: { content_sha256: stageContractSchemaHash(inputs) } };
   validateSnapshot({ stacks: body.stacks, observed: body.observed, schema: body.schema });
