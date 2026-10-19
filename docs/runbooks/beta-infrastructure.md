@@ -581,9 +581,10 @@ successful recovery. Any restore failure records its stage, observed CFN
 parameters/activity, admission and task evidence, with
 `requires-explicit-recovery`; those CFN parameter
 readbacks are not actual running ECS identity proof. It never automatically
-deploys the other stack, reverts or reopens admission. Final observation failure
-also marks the preserved operation artifact failed. Only a separately reviewed
-recovery may proceed from the observed partial state.
+deploys the other stack, reverts or reopens admission. A final observation
+failure still fails the job and records the preserved operation artifact as
+`partial`: the mutation completed but its end state is unverified. Only a
+separately reviewed recovery may proceed from the observed partial state.
 
 ## Evidence and operation recovery
 
@@ -595,7 +596,10 @@ the current Infra executor SHA/run/attempt. It records actual
 Original template hashes and the original Workload image/source readbacks,
 the validated all-stack `stack_manifest` plus the operation's `changed_stack_names`,
 completed one-shot task/deployment events,
-recovery status and the operation result. A failed operation retains the actual
+recovery status and the operation result. The result is `failed` when the
+operation did not complete, `partial` when it completed but the required final
+observation did not confirm the end state, and `succeeded` when it completed with
+a confirmed or not-required end state. A failed operation retains the actual
 Platform/Workload outputs and stack statuses plus admission readback, and marks
 recovery as `requires-explicit-recovery`; it never redeploys a sibling stack or
 opens admission. The record also retains the copied
