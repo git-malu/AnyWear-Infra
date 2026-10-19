@@ -12,8 +12,8 @@
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
-  "dedicated_candidate_canonical_sha256": "182324a5fa29a7aa4c881ec54505c933c5e602cd5114340adbc52a3e866c25e7",
-  "dedicated_additions_sha256": "ebd89ad7990d8f3d03f1bdd4822c69a03ca24e914a135a2f8ca22051fcea4fac",
+  "dedicated_candidate_canonical_sha256": "9af52d4af44bbde2ae806bbe0706b36704e3c27a4d85f13a399d9de7cec4a60a",
+  "dedicated_additions_sha256": "a240d27a6800c6e2405299b13764dba9ebb37fa7b1a651aed3b6b564acaf9ae0",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -73,6 +73,13 @@
       "source_branch": "issue/166-beta-three-stack",
       "scope": "beta-infra-runtime-role CloudFormation read grants for the M4 Base-deploy origin pre-read: DescribeStacks and GetTemplate on AnyWearRuntimeStack-beta (permanent) and AnyWearWorkloadStack-beta (transitional)",
       "detail": "The runtime role resolves the Base deploy origin before the Base update that would install its new DedicatedPolicy. The live runtime-role policy covers Foundation/Platform/Workload only, so the initial M4 read of AnyWearRuntimeStack-beta would be AccessDenied, and after M4 the new Base policy drops Workload, so a stopped-state deploy would fail the Workload read. Foundation therefore owns these two read-only grants and the step-8 Foundation deploy installs them before M4. Runtime is permanent (an absent stack is a ValidationError that still requires authorization); Workload is transitional until M3/M4 deletes it and a later reviewed Foundation deploy removes the ARN. Source-side only: not live, publication_verified and deployment_qualified stay false."
+    },
+    {
+      "issue": 166,
+      "recorded_at": "2026-10-19",
+      "source_branch": "issue/166-cfn-secret-grant",
+      "scope": "beta-service-deploy-cfn-role Secrets Manager dynamic-reference read for the API distribution OriginCustomHeaders (cloudfront_origin_header)",
+      "detail": "Stage A first updates the moved API distribution, whose OriginCustomHeaders carries a {{resolve:secretsmanager:/anywear/beta/cloudfront_origin_header}} dynamic reference. CloudFormation re-resolves that reference on every update of the resource under the Workload stack execution role; the role had no Secrets Manager action, so the update rolled back. Foundation adds exactly secretsmanager:GetSecretValue on arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*; no other secret, action, wildcard, condition, managed policy or role. Source-side only, not live: publication_verified and deployment_qualified stay false. The statement is removed by a later reviewed Foundation deploy after the MOVE deletes the Workload stack."
     }
   ]
 }
