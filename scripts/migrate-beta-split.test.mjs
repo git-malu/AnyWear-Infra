@@ -16,9 +16,14 @@ import {
   buildRefactorTemplates,
   preMoveWorkloadUpdate,
   runStage,
+  parseArguments,
+  preMoveTemplateKey,
+  templateObjectUrl,
+  templateTimestamp,
   validateReadback,
   validateRefactorPreview,
   validateResourceMappings,
+  validateTemplateBucket,
   workloadParameterArguments,
   workloadParameterKeys,
 } from './migrate-beta-split.mjs';
@@ -197,9 +202,12 @@ test('(c) the readback requires the same physical distribution, domain and Deplo
     /not Deployed/);
 });
 
-test('the pre-move apply passes every live Workload parameter with UsePreviousValue and never invents one', async () => {
+test('the pre-move apply uploads the template and applies it by URL with every live parameter', async () => {
   const liveKeys = ['ServiceImageDigest', 'ServiceCommitSha', 'VlmConfigArn', 'CloudFrontPrefixListId'];
   const expectedArguments = liveKeys.map((key) => `ParameterKey=${key},UsePreviousValue=true`);
+  const bucket = 'cdk-hnb659fds-assets-650880818323-ap-east-1';
+  const key = 'migrations/166/pre-move-20261019T130000Z.template.json';
+  const templateUrl = `https://${bucket}.s3.ap-east-1.amazonaws.com/${key}`;
   const liveDescribe = { Stacks: [{ StackName: WORKLOAD_STACK,
     Parameters: liveKeys.map((ParameterKey) => ({ ParameterKey, ParameterValue: `value-${ParameterKey}` })) }] };
   const runApply = async (options) => {
@@ -208,53 +216,102 @@ test('the pre-move apply passes every live Workload parameter with UsePreviousVa
       assert.equal(command, 'aws');
       calls.push([...args]);
       if (args[1] === 'describe-stacks') return JSON.stringify(liveDescribe);
+      if (args[1] === 'cp') return '';
       if (args[1] === 'update-stack') return '{}';
       if (args[1] === 'wait') return '{}';
       throw new Error(`Unexpected AWS call ${args.join(' ')}`);
     };
     const result = await runStage({ stage: 'pre-move', apply: true,
       'workload-template': fixturePath('workload-live.template.json'),
-      'api-load-balancer-dns-name': origin, ...options }, { run });
+      'api-load-balancer-dns-name': origin, 'template-bucket': bucket, 'template-region': 'ap-east-1', ...options },
+    { run, now: () => new Date('2026-10-19T13:00:00.000Z') });
     return { calls, result };
   };
 
-  // Automatic live read: describe-stacks first, then update-stack with all keys.
+  // Automatic live read: describe, upload, update-by-URL, wait.
   const automatic = await runApply({});
   assert.equal(automatic.result.applied, true);
   assert.deepEqual(automatic.result.parameters, liveKeys);
-  assert.equal(automatic.calls[0][1], 'describe-stacks');
+  assert.equal(automatic.result.templateBucket, bucket);
+  assert.equal(automatic.result.templateKey, key);
+  assert.equal(automatic.result.templateUrl, templateUrl);
+  const automaticSequence = automatic.calls.map((args) => args[1]);
+  assert.deepEqual(automaticSequence, ['describe-stacks', 'cp', 'update-stack', 'wait']);
+  const upload = automatic.calls.find((args) => args[1] === 'cp');
+  assert.deepEqual(upload.slice(0, 2), ['s3', 'cp']);
+  assert.match(upload[2], /workload-pre-move\.template\.json$/);
+  assert.equal(upload[3], `s3://${bucket}/${key}`);
   const update = automatic.calls.find((args) => args[1] === 'update-stack');
-  assert.ok(update, 'update-stack was called');
-  const parameterIndex = update.indexOf('--parameters');
-  assert.ok(parameterIndex > 0, 'update-stack passes --parameters');
-  assert.deepEqual(update.slice(parameterIndex + 1), expectedArguments);
+  assert.ok(update.includes('--template-url'));
+  assert.equal(update[update.indexOf('--template-url') + 1], templateUrl);
+  assert.equal(update.includes('--template-body'), false);
+  assert.ok(update.includes('CAPABILITY_NAMED_IAM'));
+  assert.deepEqual(update.slice(update.indexOf('--parameters') + 1), expectedArguments);
 
-  // Recorded fixture input: no live read; the same parameter list is pinned.
+  // Recorded fixture input: no live read; upload then update-by-URL.
   const recorded = await runApply({ 'workload-parameters': writeTemp(liveDescribe) });
-  assert.equal(recorded.calls.some((args) => args[1] === 'describe-stacks'), false);
+  assert.deepEqual(recorded.calls.map((args) => args[1]), ['cp', 'update-stack', 'wait']);
   const recordedUpdate = recorded.calls.find((args) => args[1] === 'update-stack');
+  assert.equal(recordedUpdate[recordedUpdate.indexOf('--template-url') + 1], templateUrl);
+  assert.equal(recordedUpdate.includes('--template-body'), false);
   assert.deepEqual(recordedUpdate.slice(recordedUpdate.indexOf('--parameters') + 1), expectedArguments);
   // A plain array of keys is an accepted recorded form.
   assert.deepEqual(workloadParameterKeys(liveKeys), liveKeys);
   assert.deepEqual(workloadParameterArguments(liveKeys), expectedArguments);
 
-  // Missing/empty/malformed live parameters refuse before update-stack.
-  for (const source of [{ Stacks: [{ Parameters: [] }] }, {}, { Stacks: [] }, []] ) {
+  // Missing/empty/malformed live parameters refuse before upload/update.
+  for (const source of [{ Stacks: [{ Parameters: [] }] }, {}, { Stacks: [] }, []]) {
     const calls = [];
     const run = async (command, args) => {
       calls.push([...args]);
       if (args[1] === 'describe-stacks') return JSON.stringify(source);
-      if (args[1] === 'update-stack') return '{}';
-      if (args[1] === 'wait') return '{}';
+      if (args[1] === 'cp' || args[1] === 'update-stack' || args[1] === 'wait') return '{}';
       throw new Error(`Unexpected AWS call ${args.join(' ')}`);
     };
     await assert.rejects(runStage({ stage: 'pre-move', apply: true,
       'workload-template': fixturePath('workload-live.template.json'),
-      'api-load-balancer-dns-name': origin }, { run }), /requires the live Workload stack parameters/);
-    assert.equal(calls.some((args) => args[1] === 'update-stack'), false);
+      'api-load-balancer-dns-name': origin, 'template-bucket': bucket }, { run }),
+    /requires the live Workload stack parameters/);
+    assert.equal(calls.some((args) => args[1] === 'cp' || args[1] === 'update-stack'), false);
   }
   assert.throws(() => workloadParameterKeys({ Stacks: [{ Parameters: [{ ParameterKey: '' }] }] }), /Invalid live Workload parameter key/);
   assert.throws(() => workloadParameterKeys([{ ParameterKey: 'A' }, { ParameterKey: 'A' }]), /Duplicate live Workload parameter key/);
+});
+
+test('the pre-move template location is deterministic and refuses a bad bucket before any AWS call', async () => {
+  const date = new Date('2026-10-19T13:00:00.000Z');
+  assert.equal(templateTimestamp(date), '20261019T130000Z');
+  assert.equal(preMoveTemplateKey(date), 'migrations/166/pre-move-20261019T130000Z.template.json');
+  assert.equal(templateObjectUrl('cdk-hnb659fds-assets-650880818323-ap-east-1', 'ap-east-1', preMoveTemplateKey(date)),
+    'https://cdk-hnb659fds-assets-650880818323-ap-east-1.s3.ap-east-1.amazonaws.com/migrations/166/pre-move-20261019T130000Z.template.json');
+  // Each key segment is encoded, `/` separators are kept.
+  assert.equal(templateObjectUrl('anywear-bucket', 'ap-east-1', 'migrations/166/a b+c.template.json'),
+    'https://anywear-bucket.s3.ap-east-1.amazonaws.com/migrations/166/a%20b%2Bc.template.json');
+  for (const bucket of ['abc', 'anywear-template-bucket', 'a-b.c-d']) assert.equal(validateTemplateBucket(bucket), bucket);
+  for (const bucket of ['', 'ab', 'A-BUCKET', '-bucket', 'bucket-', 'a..b', '192.168.0.1', `${'a'.repeat(64)}`, 42, null]) {
+    assert.throws(() => validateTemplateBucket(bucket), /valid S3 bucket name/, JSON.stringify(bucket));
+  }
+
+  // Missing/empty/invalid bucket refuses before describe-stacks, upload or update.
+  for (const bucket of [undefined, '', 'Invalid_Bucket']) {
+    const calls = [];
+    const run = async (command, args) => { calls.push([command, ...args]); return '{}'; };
+    const options = { stage: 'pre-move', apply: true,
+      'workload-template': fixturePath('workload-live.template.json'),
+      'api-load-balancer-dns-name': origin, ...(bucket === undefined ? {} : { 'template-bucket': bucket }) };
+    await assert.rejects(runStage(options, { run }), /valid S3 bucket name/);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('the CLI parser requires values for --output and --template-bucket', () => {
+  const parsed = parseArguments(['--stage', 'pre-move', '--output', 'plan.json',
+    '--template-bucket', 'anywear-template-bucket', '--template-region', 'ap-east-1']);
+  assert.equal(parsed.output, 'plan.json');
+  assert.equal(parsed['template-bucket'], 'anywear-template-bucket');
+  assert.equal(parsed['template-region'], 'ap-east-1');
+  assert.throws(() => parseArguments(['--stage', 'pre-move', '--output']), /requires a value/);
+  assert.throws(() => parseArguments(['--stage', 'pre-move', '--template-bucket']), /requires a value/);
 });
 
 test('every stage defaults to validation-only and never calls AWS without --apply', async () => {

@@ -68,21 +68,60 @@ aws cloudformation describe-stacks --stack-name AnyWearWorkloadStack-beta \
   > workload-parameter-keys.json
 ```
 
+`update-stack --template-body` sends the template inline and CloudFormation caps
+`TemplateBody` at 51,200 bytes; the live Workload template is far larger, so the
+apply path uploads the delta to S3 and calls `update-stack --template-url`
+(1 MB limit) instead. The reviewed location is the account's CDK assets bucket
+`cdk-hnb659fds-assets-650880818323-ap-east-1`, key prefix
+`migrations/166/pre-move-<UTC timestamp>.template.json`; the object is kept after
+the update as evidence. The URL is
+`https://<bucket>.s3.<region>.amazonaws.com/<key>`; the region comes from
+`AWS_REGION` (default `ap-east-1`) or `--template-region`. The apply path refuses
+a missing or invalid `--template-bucket` before any AWS call, and validation-only
+mode needs no bucket.
+
+Prerequisite for the private, account-owned template bucket: `update-stack
+--template-url` fetches and validates the object with the **caller/operator's**
+credentials, not the CloudFormation execution role. The stock assets-bucket
+policy grants only the CDK bootstrap roles, so the reviewed path is an explicit
+prefix-scoped bucket-policy statement for the `anywear-dev` operator profile
+(which is not one of those bootstrap roles): it grants `s3:GetObject` and
+`s3:PutObject` on
+`arn:aws:s3:::cdk-hnb659fds-assets-650880818323-ap-east-1/migrations/166/*`.
+The same operator principal performs the `aws s3 cp` upload and the
+`update-stack` fetch/validation; a known key needs no bucket-wide list grant.
+Apply that statement as a separately reviewed bucket-policy change before Stage A
+and do not broaden it beyond the prefix. If the bucket uses SSE-KMS, the operator
+also needs `kms:GenerateDataKey` for the upload and `kms:Decrypt` for the fetch on
+the bucket's key.
+
+Both the `aws s3 cp` upload and the `cloudformation update-stack` call must run in
+`ap-east-1`, matching the URL region: pass `--region ap-east-1` to each command
+(or export `AWS_REGION=ap-east-1` and `AWS_DEFAULT_REGION=ap-east-1`) under the
+`anywear-dev` profile, because both commands otherwise use the ambient profile
+region. The uploaded S3 object is retained as evidence; the script's local
+temporary template file is not retained.
+
 ```sh
 # 1. Validation only (default): builds the delta and prints the exact changes.
+#    No AWS call and no --template-bucket required.
 node scripts/migrate-beta-split.mjs --stage pre-move \
   --workload-template <live-workload-original.json> \
   --api-load-balancer-dns-name <live ApiLoadBalancerDnsName>
 
-# 2. Separate explicit authorization; applies the delta in place. The script
-#    reads the live parameter keys from describe-stacks automatically; pass
-#    --workload-parameters <describe-stacks.json | keys.json> to use the
+# 2. Separate explicit authorization; uploads the delta and applies it in place.
+#    The script reads the live parameter keys from describe-stacks automatically;
+#    pass --workload-parameters <describe-stacks.json | keys.json> to use the
 #    recorded read instead.
 node scripts/migrate-beta-split.mjs --stage pre-move --apply \
   --workload-template <live-workload-original.json> \
   --api-load-balancer-dns-name <live ApiLoadBalancerDnsName> \
+  --template-bucket cdk-hnb659fds-assets-650880818323-ap-east-1 \
+  [--template-region ap-east-1] \
   [--workload-parameters <recorded-parameters.json>]
 ```
+
+`--output <file>` writes the stage plan/result JSON; it requires a value.
 
 Accept only when the planned change list is exactly:
 
