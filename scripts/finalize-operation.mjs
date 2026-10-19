@@ -3,8 +3,10 @@ import { pathToFileURL } from 'node:url';
 import { canonicalJson, parseJson } from './json-contract.mjs';
 import { recordRecovery, readOperationRecord } from './operation-record.mjs';
 
-// Final observation remains strict and separate. Its failure must not leave a
-// succeeded operation artifact after a partially completed release recovery.
+// Final observation remains strict and separate: its failure still fails the job.
+// The durable record distinguishes the two failure situations so a reader never
+// has to treat "the mutation did not happen" and "the mutation happened but its
+// end state is unverified" as the same outcome.
 export function finalizeOperationRecord(record, operationOutcome, observationOutcome) {
   const outcomes = ['success', 'failure', 'cancelled', 'skipped'];
   if (!outcomes.includes(operationOutcome) || !outcomes.includes(observationOutcome)) throw new Error('Invalid final operation outcome');
@@ -13,11 +15,16 @@ export function finalizeOperationRecord(record, operationOutcome, observationOut
   // Beta is resident, so every non-state operation ends on an active final
   // readback that must be observed and accepted; there is no stopped exemption.
   const requiresObservation = record.operation !== 'state';
-  if (operationOutcome !== 'success' || ['failure', 'cancelled'].includes(observationOutcome)
-    || (requiresObservation && observationOutcome !== 'success')) {
+  if (operationOutcome !== 'success') {
     record.result = 'failed';
-    if (record.operation === 'restore-release' && record.recovery === 'not-required') recordRecovery(record, 'requires-explicit-recovery');
+  } else if (requiresObservation && observationOutcome !== 'success') {
+    // The mutation completed, but the required final observation did not confirm
+    // the end state; the job still fails on that observation step.
+    record.result = 'partial';
+  } else {
+    record.result = 'succeeded';
   }
+  if (record.result !== 'succeeded' && record.operation === 'restore-release' && record.recovery === 'not-required') recordRecovery(record, 'requires-explicit-recovery');
   return record;
 }
 
