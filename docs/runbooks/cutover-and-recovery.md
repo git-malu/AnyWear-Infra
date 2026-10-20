@@ -300,7 +300,8 @@ entry points only after their recovery obligations and consumer migrations finis
 
 Observe new post-retirement Original templates and actual runtime identities,
 publish a new trusted completed-success Infra deployment record, then run final
-E2E v2 qualification against that exact record in its scheduled window. Pre-retirement
+E2E v3 qualification in its scheduled window: it reads the deployed tuple and
+takes its own authenticated before/after observations. Pre-retirement
 rehearsal hashes cannot substitute. Preserve deployment/operation/recovery records,
 sealed Service release identities, signed releases and publisher identities, authenticated
 before/after observations and exact source/run/attempt/artifact hashes before root
@@ -323,8 +324,9 @@ Production deployment and readiness gates remain disabled. The workflow has a
 source blocker before AWS credential assumption: changing an activation variable
 cannot establish its missing target-account/runtime/verifier contract. A separately
 reviewed onboarding PR must complete that contract before removing the blocker.
-Future promotion also requires a sealed stable Service release, completed-success
-exact E2E v2 qualification, digest-preserving promotion and scan policy. Artifact
+Future promotion also requires a sealed stable Service release, a completed-success
+E2E v3 qualification whose record binds the reviewed release tuple and its own
+authenticated observations, digest-preserving promotion and scan policy. Artifact
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
 

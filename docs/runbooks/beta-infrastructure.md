@@ -712,9 +712,10 @@ Upload `deployment-evidence/deployment-record.json` as
 `infra-deployment-<run-id>-<attempt>` with 90-day requested retention.
 Record actual hashes and effective expiry; missing/expired
 artifacts cannot authorize qualification or rollback. SSM stage-contract/deployment
-values alone are not observed release proof. Final E2E v2 qualification runs in a
-separate scheduled window and compares authenticated observations before/after
-against the exact deployment record.
+values alone are not observed release proof. Final E2E v3 qualification runs in a
+separate scheduled window: it reads the live Client/Service identity, takes its own
+authenticated before/after observation, and writes a self-contained record (no
+committed pin and no deployment-record download).
 
 ## Admission-mode migration and rollout (historical, pre-#158 step C)
 
