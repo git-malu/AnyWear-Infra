@@ -679,9 +679,11 @@ observation (`finalize-operation.mjs`): every non-state operation ends on a
 terminal Base readback plus an observed Runtime existence/status that must be
 accepted.
 That family record is evidence, but not the accepted record. That
-`deployment-record.json` is what advances the
-compatibility pin, which `AnyWear-E2E` owns; the routine is in that repository's
-[`docs/compatibility-pin.md`](https://github.com/git-malu/AnyWear-E2E/blob/main/docs/compatibility-pin.md).
+`deployment-record.json` remains the accepted deployment evidence; it no longer
+advances a compatibility pin, since qualification reads the live state and its own
+observations (#180). The pin routine in `AnyWear-E2E`'s
+[`docs/compatibility-pin.md`](https://github.com/git-malu/AnyWear-E2E/blob/main/docs/compatibility-pin.md)
+retires with the first live `full`.
 
 `runtime.yml` is the only workflow producer of the accepted record. This is a
 statement about workflow runs, not about all software: the standalone
