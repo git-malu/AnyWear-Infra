@@ -37,7 +37,13 @@ runs:
       if: steps.operation.outputs.requires_qualification == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+        # The producer names its own artifact (`observe-operation.mjs` writes
+        # INFRA_OBSERVATION_ARTIFACT): the accepted record owns the
+        # `infra-deployment-<run-id>-<attempt>` name the E2E producer convention
+        # expects, while a mutation job's family observation is
+        # `infra-family-observation-<run-id>-<attempt>`. An unset name fails this
+        # upload instead of overwriting another contract's artifact.
+        name: ${{ env.INFRA_OBSERVATION_ARTIFACT }}
         path: deployment-evidence/deployment-record.json
         retention-days: 90
         if-no-files-found: error

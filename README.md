@@ -145,8 +145,8 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | Entry | Trigger | Purpose |
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
-| [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission` |
+| [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the manual accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. A deployment that changes a configured stack also produces the accepted `anywear_infra_deployment` v3 record in the same run: `preflight` → `verify` → `deploy` → `observe` → `record` |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -170,25 +170,37 @@ input: lifecycle `resume` is invoked with no payload at all. The standalone
 longer runs a release-verification task.
 
 `mutate.yml` is one credential-timing chain: `preflight` (no environment, no
-`id-token`, no App token) → `verify` (read-only release token only when the
-operation takes a Service release; downloads and hashes the sealed assets) →
-`deploy` (**the only job** with `environment: beta` and `id-token: write`,
-scheduled after `verify`) → `record` (no environment, no `id-token`, no
-`environment:`). `runtime.yml` keeps the same invariant:
+`id-token`, no App token; publishes `requires_accepted_observation` from the
+shared trigger set before any credential) → `verify` (read-only release token only
+when the operation takes a Service release; downloads and hashes the sealed
+assets) → `deploy` (**the only job** that holds the mutation role:
+`environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN`, scheduled after
+`verify`) → `observe` (only when the operation changes a configured stack and the
+mutation succeeded: the second credential job, with the read-only
+`INFRA_RUNTIME_ROLE_ARN` only and no mutation role) → `record` (no environment, no
+`id-token`, no `environment:`). `runtime.yml` keeps the same invariant:
 `preflight` holds no credentials, `state` and `observe` are the two credential
 jobs, and `record` holds none. `state` runs with the stage switch closed;
 `observe` stays behind it because it produces the accepted deployment record.
 
 `state` and `observe` share `runtime.yml`, so the record family is derived from
-the **operation**, not the file: `observe` keeps family `runtime` (the accepted
-deployment-record producer), while `state` keeps family `beta-observe` and can
-never be stamped `anywear_infra_deployment`. `deploy-*`/`restore-release` keep
-`beta-deploy`, `migrate` keeps `beta-schema`, and the admission operations keep
-`beta-admission`, so cross-repository record families stay stable. A
-`deploy-platform` run is still qualified only by a following fixed `runtime.yml`
-`observe` run at reviewed main; a mutate run uploads its own
-`anywear_infra_family_observation` v3 record with its actual workflow path
-(`mutate.yml`), which is not an accepted E2E deployment input.
+the **operation**, not the file: `observe` keeps family `runtime` (the manual
+accepted deployment-record producer), while `state` keeps family `beta-observe`
+and can never be stamped `anywear_infra_deployment`. `deploy-*`/`restore-release`
+keep `beta-deploy`, `migrate` keeps `beta-schema`, and the admission operations
+keep `beta-admission`, so cross-repository record families stay stable. A
+deployment chain that changes a configured stack (`deploy-foundation`,
+`deploy-billing`, `deploy-platform`, `restore-release`) produces the accepted
+record inside the same run: its `observe` job writes the v3 record with producer
+`.github/workflows/mutate.yml` and that run's id/attempt/source SHA, and the
+mutation job's own evidence is uploaded as
+`infra-family-observation-<run-id>-<attempt>`. `deploy-egress`/`delete-egress`,
+`migrate`, the admission operations and read-only `state` are outside that trigger
+set: the Egress stop/start drill reports its family observation and is never
+marked incomplete for lacking an accepted record, a migration or admission write
+changes no recorded stack, and `state` makes no record claim. The trigger set is
+derived from the frozen stack tables in [operation-stacks.mjs](scripts/operation-stacks.mjs)
+by [observation-record.mjs](scripts/observation-record.mjs), not restated in YAML.
 
 Every Beta entry requires exact reviewed main and protected `beta`; the two
 operations that consume Service-built Lambda assets also require the reviewed
@@ -256,27 +268,26 @@ runbook](docs/runbooks/beta-infrastructure.md#admission-open-and-close)
 carries the mode-only contract, the post-open proof and the resident environment
 repair.
 
-Both manual entries share `anywear-infra-runtime` without cancellation.
-`runtime.yml` is the only workflow family whose run produces the accepted
-`anywear_infra_deployment` v3 record, and record type and family are derived from
-the dispatched operation. The record covers the stacks Infra still produces
-(Foundation, the Beta stage base, Billing), the stage-contract parameters the run
-read and a derived schema content hash; it contains no `selection`. Service
-produces `anywear_service_deployment` for `AnyWearWorkloadStack-beta` from the
-same generic contract, so neither producer can claim the other's stacks.
-Other operations emit `anywear_infra_family_observation` with their actual
-workflow path (`mutate.yml` for the absorbed families); this is not an accepted
-E2E deployment input. A `deploy-platform` run is therefore qualified only by a
-following fixed `runtime.yml` `observe` run at
-reviewed main, which uploads `infra-deployment-<run-id>-<attempt>` containing
-`deployment-record.json`. A mutate run cannot produce that record: the
-`deploy-platform` operation session carries no task family of its own, and the
-observation step of the same run stamps the run's own
-`mutate.yml` path and record type
-`anywear_infra_family_observation`, while the accepted record pins both
-`anywear_infra_deployment` and the `runtime.yml` workflow path, which the E2E
-consumer pins too. The mutate run still requires and uploads its own family
-observation. Read-only `state` emits sanitized `anywear_infra_state` inside
+Both manual entries share `anywear-infra-runtime` without cancellation. A run of
+either entry can produce the accepted `anywear_infra_deployment` v3 record, and
+record type and family are derived from the dispatched operation: `runtime.yml`
+`observe` and the deployment chain's `observe` job both write it, each bound to its
+own run, attempt, source SHA and workflow path. The record covers the stacks Infra
+still produces (Foundation, the Beta stage base, Billing), the stage-contract
+parameters the run read and a derived schema content hash; it contains no
+`selection`. Service produces `anywear_service_deployment` for
+`AnyWearRuntimeStack-beta` from the same generic contract, so neither producer can
+claim the other's stacks. Other operations emit `anywear_infra_family_observation`
+with their actual workflow path (`mutate.yml` for the absorbed families); this is
+not an accepted E2E deployment input. A deployment chain uploads the accepted
+record as `infra-deployment-<run-id>-<attempt>` containing
+`deployment-record.json`, and its mutation job's family observation as
+`infra-family-observation-<run-id>-<attempt>`, so the accepted contract and the
+chain's own evidence never share an artifact name. When the accepted record is
+missing after a completed mutation, the credential-free `record` job marks the
+operation record `partial` with `requires-explicit-recovery` and an
+`accepted-deployment-record` event, preserves it through its `if: always()` upload
+and fails the run. Read-only `state` emits sanitized `anywear_infra_state` inside
 its operation record and makes no DB/policy/schema claim. See the [Beta
 runbook](docs/runbooks/beta-infrastructure.md) for dispatch schemas, permissions,
 lifecycle authority and recovery.

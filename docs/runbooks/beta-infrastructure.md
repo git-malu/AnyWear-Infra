@@ -156,7 +156,7 @@ or authorization to deploy.
 ## Entry points
 
 Infra exposes three entries and two manual dispatch surfaces. `check.yml` is
-automatic; `runtime.yml` (`state`, `observe`) and `mutate.yml` (the ten
+automatic; `runtime.yml` (`state`, `observe`) and `mutate.yml` (the twelve
 mutation operations) are the only manual dispatch surfaces; `production.yml` is
 `workflow_call`-only and not an entry. Both manual entries use exact reviewed
 main, the `beta` environment and shared non-cancelling queue
@@ -177,8 +177,8 @@ gates.
 | Workflow | Dispatch operation | Additional inputs / AWS boundary |
 | --- | --- | --- |
 | [check.yml](../../.github/workflows/check.yml) | none (PR / push main) | Source checks only; no dispatch surface |
-| [runtime.yml](../../.github/workflows/runtime.yml) | `state`, `observe` | `state`: CFN and SSM read-only session, no tasks/PassRole/deploy role or schema assertion, works with the switch closed. `observe`: qualified observation of the stacks Infra produces; the accepted `anywear_infra_deployment` v3 producer |
-| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission` | Chain: `preflight` → `verify` → `deploy` (only job with `environment: beta` and `id-token: write`) → `record` (no credentials). Explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks; `deploy-platform` is qualified only by a following fixed `runtime.yml` `observe` |
+| [runtime.yml](../../.github/workflows/runtime.yml) | `state`, `observe` | `state`: CFN and SSM read-only session, no tasks/PassRole/deploy role or schema assertion, works with the switch closed. `observe`: the manual qualified observation of the stacks Infra produces; the manual accepted `anywear_infra_deployment` v3 producer |
+| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission` | Chain: `preflight` (no credentials; publishes `requires_accepted_observation` from the shared trigger set) → `verify` (read-only release token only) → `deploy` (the only job holding the mutation role) → `observe` (only when the operation changes a configured stack and the mutation succeeded; read-only runtime role only) → `record` (no credentials). Explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
 | [production.yml](../../.github/workflows/production.yml) | none (`workflow_call` only) | Future Production scaffold; source-disabled pre-AWS blocker; not an entry |
 
 `deploy-platform` and `restore-release` require the reviewed Service release tag
@@ -216,13 +216,13 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | --- | --- |
 | `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; takes no Service release identity and no committed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
-| `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job downloads that sealed release's Lambda bundles, runtime policy and manifest with a read-only token and proves every byte against the manifest before any credential. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; qualified only by a following fixed `runtime.yml` `observe` run, because this run's own observation record is a family observation |
+| `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job downloads that sealed release's Lambda bundles, runtime policy and manifest with a read-only token and proves every byte against the manifest before any credential. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; the same run's `observe` job then produces the accepted `anywear_infra_deployment` v3 record with producer `mutate.yml` and that run's id/attempt/source |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention, closed admission and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice |
 | ~~`deploy-workload`~~ | Removed in #158 step C; the slice was renamed to Runtime in #166 and is deployed only by AnyWear-Service's release chain |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
-| `observe` | Collect authenticated active-Beta deployment evidence by launching a verification task; not AWS read-only |
+| `observe` | Collect authenticated deployment evidence with the restricted read-only runtime session (no task, no deploy role); the manual accepted `anywear_infra_deployment` v3 producer |
 | `state` | Record Base/Runtime status and Runtime existence plus sanitized SSM admission state; no DB/schema/policy qualification |
 | `admission-status` | Read the admission mode, the record's key set, the tester list and the database status through the selected existing Service lifecycle command. The record publishes the effective decision every gate uses, the recorded mode each surface stores and whether those raw records disagree |
 | `add-testers`, `set-testers` | Update the exact normalized tester list using the selected lifecycle `set-testers` command, which refuses while admission is not provably closed. The write changes no admission state and cannot open admission: no admission operation may run `resume` except `open-admission`, and the record's admission read-back shows the mode and key set unchanged. Open admission separately with `open-admission` |
@@ -242,9 +242,11 @@ with the stage switch closed. For mutation select `mutate.yml` and its operation
 adding identity/retention only for `deploy-*`/`restore-release`, tester payload
 only for `add-testers`/`set-testers`, and the release identity only for
 `deploy-platform`/`restore-release`. Admission takes no additional input.
-`observe` is dispatched through
-`runtime.yml`; the workflow path that produces the accepted deployment record does
-not change. Initial role bootstrap uses the
+A deployment that changes a configured stack needs no separate observation
+dispatch: the same run's `observe` job produces the accepted record. A manual
+`observe` through `runtime.yml` remains the only way to document live state
+outside a deployment run, and its record is bound to its own run, so it cannot
+complete an earlier deployment. Initial role bootstrap uses the
 [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
 because no sealed Service release is needed to create the artifact publisher role.
 
@@ -666,27 +668,56 @@ with restricted sessions against the retained tuple, then obtain E2E acceptance 
 the exact resulting legacy record. This source split does not imply AWS resource or
 template deployment.
 
-A `deploy-platform` run has no accepted evidence step of its own. It is qualified
-only by a following fixed `runtime.yml` `observe` run at reviewed main, which
-uploads `infra-deployment-<run-id>-<attempt>` containing
-`deployment-record.json`. The deploy run cannot produce that record: it stamps the
-run's own `.github/workflows/mutate.yml` path and the record type
-`anywear_infra_family_observation`, while the accepted record pins both
-`anywear_infra_deployment` and the `runtime.yml` workflow path that the E2E
-consumer also pins, and the `deploy-platform` operation session carries no task
-family of its own. The deploy run still requires and uploads its own successful
-observation (`finalize-operation.mjs`): every non-state operation ends on a
-terminal Base readback plus an observed Runtime existence/status that must be
-accepted.
-That family record is evidence, but not the accepted record. That
-`deployment-record.json` is what advances the
-compatibility pin, which `AnyWear-E2E` owns; the routine is in that repository's
+A deployment that changes a configured stack has its accepted evidence step in the
+same run (#181). `deploy-foundation`, `deploy-billing`, `deploy-platform` and
+`restore-release` are followed automatically by the `observe` job: after the
+mutation succeeds it assumes `beta-infra-runtime-role` with the qualification
+read-only session policy, reads the three configured stacks' live
+`Original` templates and the Base-owned Lambdas, queues, Client and stage-contract
+parameters, and uploads `infra-deployment-<run-id>-<attempt>` containing
+`deployment-record.json` — record type `anywear_infra_deployment`, schema version
+3, producer `.github/workflows/mutate.yml`, this run's `run_id`/`run_attempt`/`sha`.
+The chain observation never reads or requires the Service-owned Runtime stack
+(`requireRuntime: false`), so a Foundation or Billing deploy while Beta is stopped
+is a complete deployment, not an incomplete one.
+
+`deploy-egress`, `delete-egress`, `migrate`, the admission operations and
+read-only `state` are outside that trigger set, which is derived from the frozen
+stack tables in `scripts/operation-stacks.mjs`: an operation requires the accepted
+record exactly when it changes a stack the record lists. The Egress stop/start
+drill changes only the operation-owned `AnyWearEgressStack-beta`, so a correctly
+executed drill is never marked incomplete; a migration or admission write changes
+no recorded stack; `state` claims no record. Those operations keep their
+`anywear_infra_family_observation` (uploaded as
+`infra-family-observation-<run-id>-<attempt>`) as their end-state evidence.
+
+A missing accepted record makes the deployment incomplete. The credential-free
+`record` job validates the operation record against the dispatch, validates the
+accepted and family records each against its own contract (producer path, source
+SHA, run id/attempt, stack set and observed tuple), and — when a trigger-set
+operation has no accepted record — marks the operation record `result: partial`
+(a completed mutation; `failed` when nothing was mutated) with
+`recovery: requires-explicit-recovery` and an
+`{ "type": "accepted-deployment-record", "result": "missing", "observation_job":
+"<result>", "expected_workflow": ".github/workflows/mutate.yml" }` event. It writes
+and checksums that record and exits non-zero, and the `if: always()` upload
+preserves `infra-record-<run-id>-<attempt>` with the operation record and its
+`.sha256` even though the accepted record never existed. The run is red and the
+deployment must not enter Acceptance; the operator re-dispatches the same chain
+(retry is a new run/attempt with its own accepted record) and a later manual
+`observe` documents current live state without completing the earlier run.
+
+A record that is present but for another run is invalid evidence rather than an
+incomplete deployment: the record job fails on the producer identity and preserves
+the failing artifact for inspection. That `deployment-record.json` is what advances
+the compatibility pin, which `AnyWear-E2E` owns; the routine is in that repository's
 [`docs/compatibility-pin.md`](https://github.com/git-malu/AnyWear-E2E/blob/main/docs/compatibility-pin.md).
 
-`runtime.yml` is the only workflow producer of the accepted record. This is a
-statement about workflow runs, not about all software: the standalone
-`observe-deployment.mjs` CLI can also emit an accepted-shaped record from ambient
-environment variables outside a workflow run.
+Two workflow producers can emit the accepted record — `runtime.yml`'s manual
+`observe` and a `mutate.yml` deployment chain — and each is bound to its own run,
+source SHA and workflow path. This is a statement about workflow runs, not about all
+software: the standalone `observe-deployment.mjs` CLI can also emit an
+accepted-shaped record from ambient environment variables outside a workflow run.
 
 The read-only observer emits `anywear_infra_state` inside its operation artifact,
 records final activity/status plus sanitized admission counts/hashes, and labels
@@ -708,8 +739,15 @@ exists, and a failure to satisfy either fails the operation. A still-running
 verification/helper task remains registered for explicit recovery. Inspect it and
 its owner before cleanup; expiry or task-runner failure is not task cessation.
 
-Upload `deployment-evidence/deployment-record.json` as
-`infra-deployment-<run-id>-<attempt>` with 90-day requested retention.
+Upload the accepted record as `infra-deployment-<run-id>-<attempt>` with 90-day
+requested retention: `runtime.yml`'s manual `observe` from its single job
+(`deployment-evidence/deployment-record.json`), and a `mutate.yml` deployment chain
+from its `observe` job under the same name. A mutation job's own observation is
+uploaded as `infra-family-observation-<run-id>-<attempt>` instead; the producer
+publishes the artifact name it wrote, and an unset name fails the upload rather
+than overwriting the accepted record. The `record` job preserves the accepted and
+family records it validated, plus the operation record, under
+`infra-record-<run-id>-<attempt>` together with their `.sha256` files.
 Record actual hashes and effective expiry; missing/expired
 artifacts cannot authorize qualification or rollback. SSM stage-contract/deployment
 values alone are not observed release proof. Final E2E v2 qualification runs in a
