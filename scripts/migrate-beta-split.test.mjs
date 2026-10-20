@@ -38,6 +38,10 @@ const origin = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
 const distributionDomain = 'd111111abcdef8.cloudfront.net';
 const verificationLogicalId = 'CleanupOperationVerificationTaskDefinition2283B142';
 const verificationValuePath = `/Resources/${verificationLogicalId}/Properties/ContainerDefinitions/0/Environment/13/Value`;
+const retainedPaths = [
+  `/Resources/${SOURCE_LOGICAL_ID}/DeletionPolicy`,
+  `/Resources/${SOURCE_LOGICAL_ID}/UpdateReplacePolicy`,
+];
 const distribution = template => template.Resources[SOURCE_LOGICAL_ID];
 const preMovedWorkload = () => preMoveWorkloadUpdate(liveWorkload(), {
   apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
@@ -63,7 +67,10 @@ test('(a) the pre-move update rewrites the literal origin, the verify URL and th
     `/Resources/${SOURCE_LOGICAL_ID}/DependsOn`,
     `/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`,
     verificationValuePath,
+    ...retainedPaths,
   ].sort());
+  assert.equal(distribution(plan.template).DeletionPolicy, 'Retain');
+  assert.equal(distribution(plan.template).UpdateReplacePolicy, 'Retain');
   // The verification value is the literal CloudFront URL at the same index and
   // the entry name is unchanged.
   const environment = plan.template.Resources[verificationLogicalId]
@@ -80,6 +87,8 @@ test('(a) the pre-move update rewrites the literal origin, the verify URL and th
   const after = structuredClone(plan.template);
   delete after.Resources[SOURCE_LOGICAL_ID].Properties.DistributionConfig.Origins[0].DomainName;
   delete after.Resources[SOURCE_LOGICAL_ID].DependsOn;
+  delete after.Resources[SOURCE_LOGICAL_ID].DeletionPolicy;
+  delete after.Resources[SOURCE_LOGICAL_ID].UpdateReplacePolicy;
   delete after.Resources[verificationLogicalId].Properties.ContainerDefinitions[0].Environment[13].Value;
   const original = structuredClone(before);
   delete original.Resources[SOURCE_LOGICAL_ID].Properties.DistributionConfig.Origins[0].DomainName;
@@ -94,7 +103,9 @@ test('(a) the pre-move update is idempotent on an already-literal origin and ref
   distribution(already).Properties.DistributionConfig.Origins[0].DomainName = origin;
   delete distribution(already).DependsOn;
   const plan = preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain });
-  assert.deepEqual(plan.changes, [verificationValuePath]);
+  assert.deepEqual(plan.changes.sort(), [verificationValuePath, ...retainedPaths].sort());
+  assert.equal(distribution(plan.template).DeletionPolicy, 'Retain');
+  assert.equal(distribution(plan.template).UpdateReplacePolicy, 'Retain');
   assert.throws(() => preMoveWorkloadUpdate(liveWorkload(), { apiDistributionDomain: distributionDomain }),
     /requires the live ApiLoadBalancerDnsName/);
   assert.throws(() => preMoveWorkloadUpdate(already, { apiLoadBalancerDnsName: 'other.example.com', apiDistributionDomain: distributionDomain }),
@@ -122,11 +133,12 @@ test('(a) the pre-move update refuses a missing, duplicate or foreign verify-url
   assert.throws(() => update((template) => {
     environmentOf(template).push({ Name: 'VERIFY_API_URL', Value: `https://${distributionDomain}` });
   }), /exactly one VERIFY_API_URL entry; got 2/);
-  // A literal or foreign value is not the expected reference.
-  for (const value of [`https://${distributionDomain}`, { 'Fn::GetAtt': ['ForeignKeyABCD1234', 'DomainName'] },
+  // A wrong literal or foreign value is not the expected reference. The exact
+  // recorded literal URL is accepted as already rewritten (idempotency).
+  for (const value of ['https://other.cloudfront.net', { 'Fn::GetAtt': ['ForeignKeyABCD1234', 'DomainName'] },
     { 'Fn::Join': ['', ['http://', { 'Fn::GetAtt': [SOURCE_LOGICAL_ID, 'DomainName'] }]] }]) {
     assert.throws(() => update((template) => { environmentOf(template)[13].Value = value; }),
-      /not the expected https:\/\/ \+ distribution GetAtt reference/);
+      /neither the expected https:\/\/ \+ distribution GetAtt reference nor the recorded literal URL/);
   }
   // A second verification task definition is refused.
   assert.throws(() => update((template) => {
@@ -160,6 +172,7 @@ test('(a) the pre-move update refuses any remaining distribution reference in re
   assert.deepEqual(plan.changes.sort(), [
     `/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`,
     verificationValuePath,
+    ...retainedPaths,
   ].sort());
   assert.deepEqual(plan.removedDependsOn, []);
 });
@@ -171,9 +184,53 @@ test('(a) the pre-move update makes exactly the origin and verify-URL changes wh
   assert.deepEqual(plan.changes.sort(), [
     `/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`,
     verificationValuePath,
+    ...retainedPaths,
   ].sort());
   assert.deepEqual(plan.removedDependsOn, []);
   assert.equal(distribution(plan.template).DependsOn, undefined);
+});
+
+test('(a) the current post-Stage-A live shape plans exactly the two Retain attributes', () => {
+  const current = liveWorkload();
+  distribution(current).Properties.DistributionConfig.Origins[0].DomainName = origin;
+  current.Resources[verificationLogicalId].Properties.ContainerDefinitions[0].Environment[13].Value =
+    `https://${distributionDomain}`;
+  delete distribution(current).DependsOn;
+  assert.equal(distribution(current).DeletionPolicy, undefined);
+  assert.equal(distribution(current).UpdateReplacePolicy, undefined);
+  const plan = preMoveWorkloadUpdate(current, { apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain });
+  assert.deepEqual(plan.changes.sort(), [...retainedPaths].sort());
+  assert.equal(distribution(plan.template).DeletionPolicy, 'Retain');
+  assert.equal(distribution(plan.template).UpdateReplacePolicy, 'Retain');
+  assert.equal(distribution(plan.template).Properties.DistributionConfig.Origins[0].DomainName, origin);
+  assert.equal(plan.template.Resources[verificationLogicalId].Properties.ContainerDefinitions[0].Environment[13].Value,
+    `https://${distributionDomain}`);
+});
+
+test('(a) the Retain attributes are idempotent and any other value refuses', () => {
+  const first = preMoveWorkloadUpdate(liveWorkload(), {
+    apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
+  });
+  const second = preMoveWorkloadUpdate(first.template, {
+    apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
+  });
+  assert.deepEqual(second.changes, []);
+  assert.deepEqual(distribution(second.template), distribution(first.template));
+  for (const [attribute, value] of [['DeletionPolicy', 'Delete'], ['UpdateReplacePolicy', 'Snapshot']]) {
+    const bad = liveWorkload();
+    distribution(bad)[attribute] = value;
+    assert.throws(() => preMoveWorkloadUpdate(bad, {
+      apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
+    }), new RegExp(`${attribute} is ${value}, not Retain`));
+  }
+  // One already-Retain attribute plus one absent: only the absent path changes.
+  const partial = liveWorkload();
+  distribution(partial).DeletionPolicy = 'Retain';
+  const plan = preMoveWorkloadUpdate(partial, {
+    apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
+  });
+  assert.ok(plan.changes.includes(`/Resources/${SOURCE_LOGICAL_ID}/UpdateReplacePolicy`));
+  assert.equal(plan.changes.includes(`/Resources/${SOURCE_LOGICAL_ID}/DeletionPolicy`), false);
 });
 
 test('(b) the refactor source has no distribution GetAtt and refuses any remaining reference', () => {
@@ -474,7 +531,8 @@ test('the preview apply uploads both refactor templates and sends TemplateURL de
     'base-synth-template': fixturePath('base-synth.template.json'),
     'distribution-type': fixturePath('distribution-type.json'),
     'template-bucket': bucket, 'template-region': 'ap-east-1',
-  }, { run, now: () => new Date('2026-10-19T13:00:00.000Z') });
+  }, { run, now: () => new Date('2026-10-19T13:00:00.000Z'),
+    sleep: async () => { throw new Error('an AVAILABLE preview must not sleep'); } });
   assert.equal(result.applied, true);
   assert.equal(result.templateBucket, bucket);
   assert.equal(result.sourceTemplateKey, sourceKey);
@@ -516,6 +574,93 @@ test('the preview apply refuses a missing or invalid template bucket before any 
     await assert.rejects(runStage(options, { run }), /valid S3 bucket name/);
     assert.deepEqual(calls, []);
   }
+});
+
+test('the preview polls CREATE_IN_PROGRESS to AVAILABLE before listing actions', async () => {
+  const preview = cleanPreview();
+  const calls = [];
+  const sleeps = [];
+  let describes = 0;
+  const run = async (command, args) => {
+    assert.equal(command, 'aws');
+    calls.push([...args]);
+    if (args[1] === 'cp') return '';
+    if (args[1] === 'create-stack-refactor') return JSON.stringify({ StackRefactorId: 're-1111' });
+    if (args[1] === 'describe-stack-refactor') {
+      describes += 1;
+      return JSON.stringify(describes === 1
+        ? { ...preview.describe, ExecutionStatus: 'CREATE_IN_PROGRESS', StatusReason: null }
+        : preview.describe);
+    }
+    if (args[1] === 'list-stack-refactor-actions') return JSON.stringify(preview.actions);
+    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+  };
+  const result = await runStage({ stage: 'preview', apply: true,
+    'workload-template': writeTemp(preMovedWorkload()),
+    'base-template': fixturePath('base-live.template.json'),
+    'base-synth-template': fixturePath('base-synth.template.json'),
+    'distribution-type': fixturePath('distribution-type.json'),
+    'template-bucket': 'cdk-hnb659fds-assets-650880818323-ap-east-1', 'template-region': 'ap-east-1',
+  }, { run, sleep: async (ms) => { sleeps.push(ms); } });
+  assert.equal(result.clean.clean, true);
+  assert.deepEqual(calls.map((args) => args[1]),
+    ['cp', 'cp', 'create-stack-refactor', 'describe-stack-refactor', 'describe-stack-refactor', 'list-stack-refactor-actions']);
+  assert.equal(calls.filter((args) => args[1] === 'describe-stack-refactor').length, 2);
+  assert.deepEqual(sleeps, [10_000]);
+  // Actions are read only after the terminal describe.
+  const describeIndexes = calls.map((args, index) => args[1] === 'describe-stack-refactor' ? index : -1).filter((index) => index >= 0);
+  const listIndex = calls.findIndex((args) => args[1] === 'list-stack-refactor-actions');
+  assert.ok(listIndex > describeIndexes.at(-1));
+});
+
+test('the preview refuses CREATE_FAILED without listing actions or sleeping', async () => {
+  const calls = [];
+  const sleeps = [];
+  const run = async (command, args) => {
+    assert.equal(command, 'aws');
+    calls.push([...args]);
+    if (args[1] === 'cp') return '';
+    if (args[1] === 'create-stack-refactor') return JSON.stringify({ StackRefactorId: 're-1111' });
+    if (args[1] === 'describe-stack-refactor') {
+      return JSON.stringify({ ...cleanPreview().describe, ExecutionStatus: 'CREATE_FAILED', StatusReason: 'conflict' });
+    }
+    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+  };
+  await assert.rejects(runStage({ stage: 'preview', apply: true,
+    'workload-template': writeTemp(preMovedWorkload()),
+    'base-template': fixturePath('base-live.template.json'),
+    'base-synth-template': fixturePath('base-synth.template.json'),
+    'distribution-type': fixturePath('distribution-type.json'),
+    'template-bucket': 'cdk-hnb659fds-assets-650880818323-ap-east-1',
+  }, { run, sleep: async (ms) => { sleeps.push(ms); } }), /Refactor preview ended CREATE_FAILED: conflict/);
+  assert.deepEqual(sleeps, []);
+  assert.equal(calls.some((args) => args[1] === 'list-stack-refactor-actions'), false);
+});
+
+test('the preview times out with a clear error and never lists actions', async () => {
+  const calls = [];
+  const sleeps = [];
+  const run = async (command, args) => {
+    assert.equal(command, 'aws');
+    calls.push([...args]);
+    if (args[1] === 'cp') return '';
+    if (args[1] === 'create-stack-refactor') return JSON.stringify({ StackRefactorId: 're-1111' });
+    if (args[1] === 'describe-stack-refactor') {
+      return JSON.stringify({ ...cleanPreview().describe, ExecutionStatus: 'CREATE_IN_PROGRESS', StatusReason: null });
+    }
+    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+  };
+  await assert.rejects(runStage({ stage: 'preview', apply: true,
+    'workload-template': writeTemp(preMovedWorkload()),
+    'base-template': fixturePath('base-live.template.json'),
+    'base-synth-template': fixturePath('base-synth.template.json'),
+    'distribution-type': fixturePath('distribution-type.json'),
+    'template-bucket': 'cdk-hnb659fds-assets-650880818323-ap-east-1',
+  }, { run, sleep: async (ms) => { sleeps.push(ms); } }),
+  /did not become AVAILABLE within 300 seconds \(last status CREATE_IN_PROGRESS\)/);
+  assert.equal(calls.filter((args) => args[1] === 'describe-stack-refactor').length, 30);
+  assert.equal(sleeps.length, 29);
+  assert.equal(calls.some((args) => args[1] === 'list-stack-refactor-actions'), false);
 });
 
 test('every stage defaults to validation-only and never calls AWS without --apply', async () => {

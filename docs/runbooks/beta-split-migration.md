@@ -54,10 +54,14 @@ distribution is also referenced by the cleanup verification task definition's
 `VERIFY_API_URL` environment entry (`CleanupOperationVerificationTaskDefinition*`,
 first container, the recorded index); resolve that `https://` + distribution
 `Fn::GetAtt` value to the literal `https://<apiDistributionDomain>` in the same
-update, so the refactor source does not keep a dangling reference. This is a
-minimal `update-stack` template delta: the in-place origin and verify-URL rewrites
-(CloudFront documents "No interruption" for the origin update) preserve the
-distribution ID and domain, and the stack keeps serving.
+update, so the refactor source does not keep a dangling reference. The MOVE
+compares source and destination resource properties/attributes, so the Workload
+distribution must also carry `DeletionPolicy: Retain` and
+`UpdateReplacePolicy: Retain` like the Base-pinned destination; absent attributes
+are added, existing `Retain` values stay unchanged, and any other value refuses.
+This is a minimal `update-stack` template delta: the in-place origin and
+verify-URL rewrites (CloudFront documents "No interruption" for the origin update)
+preserve the distribution ID and domain, and the stack keeps serving.
 
 The pre-move `update-stack` must carry every live Workload parameter: four of
 them (`ServiceImageDigest`, `ServiceCommitSha`, `VlmConfigArn`,
@@ -146,19 +150,22 @@ node scripts/migrate-beta-split.mjs --stage pre-move --apply \
 
 `--output <file>` writes the stage plan/result JSON; it requires a value.
 
-Accept only when the planned change list is exactly the two paths below, plus
-the distribution's `DependsOn` removal only when the live distribution has one:
+Accept only when the planned change list is exactly the paths below (the origin
+and verify rewrites are omitted for values already literal in a post-Stage-A
+retry; the current live plan is exactly the two Retain attributes):
 
 - `/Resources/<distributionLogicalId>/Properties/DistributionConfig/Origins/0/DomainName`
   (only when the live origin is the expected same-stack ALB `Fn::GetAtt`)
 - `/Resources/<cleanupVerificationTaskDefinition>/Properties/ContainerDefinitions/0/Environment/<index>/Value`
   (the one `VERIFY_API_URL` entry; the value becomes the literal `https://<apiDistributionDomain>`)
+- `/Resources/<distributionLogicalId>/DeletionPolicy` (added as `Retain` when absent)
+- `/Resources/<distributionLogicalId>/UpdateReplacePolicy` (added as `Retain` when absent)
 - `/Resources/<distributionLogicalId>/DependsOn` (removed; only when present)
 
 Any other difference, a missing or duplicate `VERIFY_API_URL` entry, a
-verification value that is not the expected `Fn::Join`/`Fn::GetAtt`, or any
-remaining reference to the distribution outside its moved outputs refuses the
-update.
+verification value that is neither the expected `Fn::Join`/`Fn::GetAtt` nor the
+recorded literal URL, a non-`Retain` policy value, or any remaining reference to
+the distribution outside its moved outputs refuses the update.
 
 Read back the distribution ID, domain and `Deployed` status and the public
 `/health` response. No other Workload property changes and no Service source
@@ -235,7 +242,18 @@ Before `create-stack-refactor`, the script recursively scans the constructed
 Workload source for any remaining `Fn::GetAtt` to the moved distribution outside
 the removed outputs and refuses with the offending path. Stage A's
 `VERIFY_API_URL` literal rewrite is what satisfies this guard; an unrewritten or
-foreign reference aborts before any API call.
+foreign reference aborts before any API call. The MOVE also requires the source
+distribution's `DeletionPolicy`/`UpdateReplacePolicy` to match the Base-pinned
+destination's `Retain`; Stage A adds those attributes, so a preview without them
+fails the source/destination comparison.
+
+`create-stack-refactor` returns `CREATE_IN_PROGRESS`; validation completes
+asynchronously. The apply path polls `describe-stack-refactor` every 10 seconds,
+up to 30 attempts (300 seconds total), and only after the status is `AVAILABLE`
+does it call `list-stack-refactor-actions` and validate the preview. A
+`CREATE_FAILED` status (or any other non-`CREATE_IN_PROGRESS`/`AVAILABLE` status),
+or the timeout, refuses with the status/`StatusReason` before any actions read or
+execute path.
 
 Require `describe-stack-refactor` to report no unsupported resource and no
 conflict, and `list-stack-refactor-actions` to show **exactly one MOVE** (the
