@@ -309,6 +309,11 @@ export function validateResourceMappings(mappings) {
 // DELETE or UPDATE. Anything else aborts before execution.
 export function validateRefactorPreview({ describe, actions: previewActions, resourceMappings }) {
   if (!describe || typeof describe !== 'object') throw new Error('Refactor preview description is required');
+  // `Status` is the lifecycle field on the live API; older recorded previews may
+  // omit it, in which case `ExecutionStatus` remains the authoritative check.
+  if (describe.Status !== undefined && describe.Status !== 'CREATE_COMPLETE') {
+    throw new Error(`Refactor preview is not complete: ${describe.Status}`);
+  }
   if (describe.ExecutionStatus !== 'AVAILABLE') throw new Error(`Refactor preview is not available: ${describe.ExecutionStatus ?? 'unavailable'}`);
   if (describe.StatusReason !== null && describe.StatusReason !== undefined) throw new Error('Refactor preview reports a status reason');
   if ((describe.UnsupportedResources ?? []).length) throw new Error('Refactor preview reports an unsupported resource');
@@ -320,11 +325,18 @@ export function validateRefactorPreview({ describe, actions: previewActions, res
   }
   const [action] = list;
   if (action.Action !== REFACTOR_ACTION.action) throw new Error(`Refactor preview action ${action.Action} is not the single MOVE`);
-  if (action.Entity !== undefined && action.Entity !== REFACTOR_ACTION.entity) throw new Error('Refactor preview action is not a resource action');
-  const identifier = action.ResourceIdentifier ?? {};
-  if (identifier.ResourceType !== REFACTOR_ACTION.resourceType) throw new Error('Refactor preview moves an unexpected resource type');
-  if (identifier.LogicalResourceId !== mapping.Source.LogicalResourceId && identifier.LogicalResourceId !== mapping.Destination.LogicalResourceId) {
-    throw new Error('Refactor preview does not move the mapped distribution');
+  if (action.Entity !== REFACTOR_ACTION.entity) throw new Error('Refactor preview action is not a RESOURCE action');
+  // The live action has no resource-type field; it identifies the moved resource
+  // by physical ID and carries the explicit source/destination mapping.
+  if (action.PhysicalResourceId !== API_DISTRIBUTION.physicalId) {
+    throw new Error(`Refactor preview physical resource ${action.PhysicalResourceId ?? 'missing'} is not the reviewed distribution ${API_DISTRIBUTION.physicalId}`);
+  }
+  for (const side of ['Source', 'Destination']) {
+    const observed = action.ResourceMapping?.[side];
+    const expected = mapping[side];
+    if (observed?.StackName !== expected.StackName || observed?.LogicalResourceId !== expected.LogicalResourceId) {
+      throw new Error(`Refactor preview ${side} mapping does not match ${expected.StackName}/${expected.LogicalResourceId}`);
+    }
   }
   return { clean: true, action, mapping };
 }
@@ -554,13 +566,19 @@ export async function runStage(options, { run = defaultRun, now = () => new Date
     for (let attempt = 1; attempt <= REFACTOR_PREVIEW_MAX_ATTEMPTS; attempt += 1) {
       describe = await runAws(['cloudformation', 'describe-stack-refactor',
         '--stack-refactor-id', created.StackRefactorId], { run });
-      const status = describe.ExecutionStatus;
-      if (status === 'AVAILABLE') break;
+      const status = describe.Status;
+      if (status === 'CREATE_COMPLETE') {
+        if (describe.ExecutionStatus !== 'AVAILABLE') {
+          throw new Error(`Refactor preview CREATE_COMPLETE is not AVAILABLE: `
+            + `${describe.ExecutionStatus ?? 'unavailable'}${describe.StatusReason ? ` (${describe.StatusReason})` : ''}`);
+        }
+        break;
+      }
       if (status !== 'CREATE_IN_PROGRESS') {
         throw new Error(`Refactor preview ended ${status ?? 'unavailable'}: ${describe.StatusReason ?? 'no status reason'}`);
       }
       if (attempt === REFACTOR_PREVIEW_MAX_ATTEMPTS) {
-        throw new Error(`Refactor preview did not become AVAILABLE within `
+        throw new Error(`Refactor preview did not reach CREATE_COMPLETE within `
           + `${(REFACTOR_PREVIEW_MAX_ATTEMPTS * REFACTOR_PREVIEW_INTERVAL_MS) / 1000} seconds `
           + `(last status ${status})`);
       }

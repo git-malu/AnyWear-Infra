@@ -47,11 +47,14 @@ const preMovedWorkload = () => preMoveWorkloadUpdate(liveWorkload(), {
   apiLoadBalancerDnsName: origin, apiDistributionDomain: distributionDomain,
 }).template;
 const cleanPreview = () => ({
-  describe: { StackRefactorId: 're-1111', Description: 'beta API distribution move', ExecutionStatus: 'AVAILABLE',
-    StatusReason: null, UnsupportedResources: [], Conflicts: [] },
-  actions: { StackRefactorActions: [{ Action: 'MOVE', Entity: 'RESOURCE', PhysicalResourceId: 'E2ABCDEFGHIJKL',
-    ResourceIdentifier: { ResourceType: 'AWS::CloudFront::Distribution', LogicalResourceId: SOURCE_LOGICAL_ID },
-    Description: 'Move resource to its destination stack' }] },
+  describe: { StackRefactorId: 're-1111', Description: 'beta API distribution move', Status: 'CREATE_COMPLETE',
+    ExecutionStatus: 'AVAILABLE', StatusReason: null, UnsupportedResources: [], Conflicts: [] },
+  actions: { StackRefactorActions: [{ Action: 'MOVE', Entity: 'RESOURCE', PhysicalResourceId: 'E3U35871TUO53L',
+    Description: 'Move resource to its destination stack',
+    ResourceMapping: {
+      Source: { StackName: WORKLOAD_STACK, LogicalResourceId: SOURCE_LOGICAL_ID },
+      Destination: { StackName: BASE_STACK, LogicalResourceId: DESTINATION_LOGICAL_ID },
+    } }] },
   resourceMappings: buildRefactorTemplates({ liveWorkload: preMovedWorkload(), liveBase: liveBase(), baseSynth: baseSynth() }).resourceMappings,
 });
 
@@ -310,8 +313,8 @@ test('(b) a clean preview is exactly one MOVE of the API distribution', () => {
 
 test('(b) a second action, a configuration change, a CREATE/DELETE or an ineligible preview is refused', () => {
   const second = cleanPreview();
-  second.actions.StackRefactorActions.push({ Action: 'MOVE', Entity: 'RESOURCE', PhysicalResourceId: 'E2OTHER',
-    ResourceIdentifier: { ResourceType: 'AWS::CloudFront::Distribution', LogicalResourceId: 'OtherDistribution' } });
+  second.actions.StackRefactorActions.push({ ...cleanPreview().actions.StackRefactorActions[0],
+    PhysicalResourceId: 'E3OTHERDISTRIB' });
   assert.throws(() => validateRefactorPreview(second), /exactly one action/);
 
   for (const Action of ['UPDATE', 'CREATE', 'DELETE']) {
@@ -325,15 +328,28 @@ test('(b) a second action, a configuration change, a CREATE/DELETE or an ineligi
   const conflict = cleanPreview();
   conflict.describe.Conflicts = ['stack policy differs'];
   assert.throws(() => validateRefactorPreview(conflict), /conflict/);
+  const incomplete = cleanPreview();
+  incomplete.describe.Status = 'CREATE_IN_PROGRESS';
+  assert.throws(() => validateRefactorPreview(incomplete), /not complete: CREATE_IN_PROGRESS/);
   const notAvailable = cleanPreview();
   notAvailable.describe.ExecutionStatus = 'EXECUTE_IN_PROGRESS';
   assert.throws(() => validateRefactorPreview(notAvailable), /not available/);
   const reason = cleanPreview();
   reason.describe.StatusReason = 'blocked';
   assert.throws(() => validateRefactorPreview(reason), /status reason/);
-  const wrongType = cleanPreview();
-  wrongType.actions.StackRefactorActions[0].ResourceIdentifier.ResourceType = 'AWS::S3::Bucket';
-  assert.throws(() => validateRefactorPreview(wrongType), /unexpected resource type/);
+  const wrongEntity = cleanPreview();
+  wrongEntity.actions.StackRefactorActions[0].Entity = 'STACK';
+  assert.throws(() => validateRefactorPreview(wrongEntity), /not a RESOURCE action/);
+  const wrongPhysical = cleanPreview();
+  wrongPhysical.actions.StackRefactorActions[0].PhysicalResourceId = 'E3FOREIGNDIST';
+  assert.throws(() => validateRefactorPreview(wrongPhysical), /is not the reviewed distribution/);
+  for (const side of ['Source', 'Destination']) {
+    for (const field of ['StackName', 'LogicalResourceId']) {
+      const wrong = cleanPreview();
+      wrong.actions.StackRefactorActions[0].ResourceMapping[side][field] = 'OtherValue';
+      assert.throws(() => validateRefactorPreview(wrong), new RegExp(`${side} mapping does not match`));
+    }
+  }
   const wrongMapping = cleanPreview();
   wrongMapping.resourceMappings[0].Destination.LogicalResourceId = 'OtherLogicalId';
   assert.throws(() => validateRefactorPreview(wrongMapping), /differs|CDK-pinned/);
@@ -589,7 +605,7 @@ test('the preview polls CREATE_IN_PROGRESS to AVAILABLE before listing actions',
     if (args[1] === 'describe-stack-refactor') {
       describes += 1;
       return JSON.stringify(describes === 1
-        ? { ...preview.describe, ExecutionStatus: 'CREATE_IN_PROGRESS', StatusReason: null }
+        ? { ...preview.describe, Status: 'CREATE_IN_PROGRESS', ExecutionStatus: 'UNAVAILABLE', StatusReason: null }
         : preview.describe);
     }
     if (args[1] === 'list-stack-refactor-actions') return JSON.stringify(preview.actions);
@@ -622,7 +638,8 @@ test('the preview refuses CREATE_FAILED without listing actions or sleeping', as
     if (args[1] === 'cp') return '';
     if (args[1] === 'create-stack-refactor') return JSON.stringify({ StackRefactorId: 're-1111' });
     if (args[1] === 'describe-stack-refactor') {
-      return JSON.stringify({ ...cleanPreview().describe, ExecutionStatus: 'CREATE_FAILED', StatusReason: 'conflict' });
+      return JSON.stringify({ ...cleanPreview().describe, Status: 'CREATE_FAILED',
+        ExecutionStatus: 'UNAVAILABLE', StatusReason: 'conflict' });
     }
     throw new Error(`Unexpected AWS call ${args.join(' ')}`);
   };
@@ -646,7 +663,8 @@ test('the preview times out with a clear error and never lists actions', async (
     if (args[1] === 'cp') return '';
     if (args[1] === 'create-stack-refactor') return JSON.stringify({ StackRefactorId: 're-1111' });
     if (args[1] === 'describe-stack-refactor') {
-      return JSON.stringify({ ...cleanPreview().describe, ExecutionStatus: 'CREATE_IN_PROGRESS', StatusReason: null });
+      return JSON.stringify({ ...cleanPreview().describe, Status: 'CREATE_IN_PROGRESS',
+        ExecutionStatus: 'UNAVAILABLE', StatusReason: null });
     }
     throw new Error(`Unexpected AWS call ${args.join(' ')}`);
   };
@@ -657,9 +675,34 @@ test('the preview times out with a clear error and never lists actions', async (
     'distribution-type': fixturePath('distribution-type.json'),
     'template-bucket': 'cdk-hnb659fds-assets-650880818323-ap-east-1',
   }, { run, sleep: async (ms) => { sleeps.push(ms); } }),
-  /did not become AVAILABLE within 300 seconds \(last status CREATE_IN_PROGRESS\)/);
+  /did not reach CREATE_COMPLETE within 300 seconds \(last status CREATE_IN_PROGRESS\)/);
   assert.equal(calls.filter((args) => args[1] === 'describe-stack-refactor').length, 30);
   assert.equal(sleeps.length, 29);
+  assert.equal(calls.some((args) => args[1] === 'list-stack-refactor-actions'), false);
+});
+
+test('the preview refuses CREATE_COMPLETE without AVAILABLE and never lists actions', async () => {
+  const calls = [];
+  const sleeps = [];
+  const run = async (command, args) => {
+    assert.equal(command, 'aws');
+    calls.push([...args]);
+    if (args[1] === 'cp') return '';
+    if (args[1] === 'create-stack-refactor') return JSON.stringify({ StackRefactorId: 're-1111' });
+    if (args[1] === 'describe-stack-refactor') {
+      return JSON.stringify({ ...cleanPreview().describe, ExecutionStatus: 'UNAVAILABLE', StatusReason: 'validating' });
+    }
+    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+  };
+  await assert.rejects(runStage({ stage: 'preview', apply: true,
+    'workload-template': writeTemp(preMovedWorkload()),
+    'base-template': fixturePath('base-live.template.json'),
+    'base-synth-template': fixturePath('base-synth.template.json'),
+    'distribution-type': fixturePath('distribution-type.json'),
+    'template-bucket': 'cdk-hnb659fds-assets-650880818323-ap-east-1',
+  }, { run, sleep: async (ms) => { sleeps.push(ms); } }),
+  /Refactor preview CREATE_COMPLETE is not AVAILABLE: UNAVAILABLE \(validating\)/);
+  assert.deepEqual(sleeps, []);
   assert.equal(calls.some((args) => args[1] === 'list-stack-refactor-actions'), false);
 });
 
