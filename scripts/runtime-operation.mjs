@@ -16,6 +16,7 @@ import { runCloseAdmission, runOpenAdmission, assertMigrationAdmissionClosed } f
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertTerminalRuntime, assertRuntimeAbsent, assertRuntimeReady, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
+import { runAuthorizationCanary } from './authorization-canary.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { account, region } from './deployment-contract.mjs';
 
@@ -174,7 +175,8 @@ export function cleanAwsEnvironment(env) {
     'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONTAINER_AUTHORIZATION_TOKEN', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE']) delete result[key];
   return { ...result, AWS_CONFIG_FILE: '/dev/null', AWS_SHARED_CREDENTIALS_FILE: '/dev/null', AWS_EC2_METADATA_DISABLED: 'true' };
 }
-export async function credentialEnvironment(kind, env = process.env, purpose = 'operation', { requestToken = fetch, run = execute } = {}) {
+export async function credentialEnvironment(kind, env = process.env, purpose = 'operation',
+  { requestToken = fetch, run = execute, sessionMarker } = {}) {
   validateOperationInputs(env);
   const policy = sessionPolicy(kind, env, purpose);
   const role = `arn:aws:iam::650880818323:role/beta-infra-${kind}-role`;
@@ -188,16 +190,19 @@ export async function credentialEnvironment(kind, env = process.env, purpose = '
   if (!response.ok) throw new Error('OIDC token retrieval failed');
   const token = (await response.json()).value;
   if (typeof token !== 'string' || !token) throw new Error('OIDC token missing');
+  // D2: the canary requests its own session name (`infra-<kind>-canary-<run>`),
+  // so the CloudTrail reconciliation can exclude the sensor's own probes.
+  const sessionName = `infra-${kind}${sessionMarker ? `-${sessionMarker}` : ''}-${env.GITHUB_RUN_ID}`;
   let assumed;
   try {
     assumed = parseJson((await run('aws', ['sts', 'assume-role-with-web-identity', '--role-arn', role,
-      '--role-session-name', `infra-${kind}-${env.GITHUB_RUN_ID}`, '--web-identity-token', token, '--policy', policy, '--duration-seconds', '3600', '--output', 'json'],
+      '--role-session-name', sessionName, '--web-identity-token', token, '--policy', policy, '--duration-seconds', '3600', '--output', 'json'],
       { env: cleanAwsEnvironment(env), timeout: 60_000, maxBuffer: 1024 * 1024 })).stdout);
   } catch {
     // execFile errors include token-bearing arguments; keep them out of logs.
     throw new Error('Dedicated restricted STS assumption failed');
   }
-  if (!assumed.AssumedRoleUser?.Arn?.startsWith(`arn:aws:sts::650880818323:assumed-role/beta-infra-${kind}-role/`)) throw new Error('Dedicated assumed principal mismatch');
+  if (!assumed.AssumedRoleUser?.Arn?.startsWith(`arn:aws:sts::650880818323:assumed-role/beta-infra-${kind}-role/${sessionName}`)) throw new Error('Dedicated assumed principal mismatch');
   const credentials = assumed.Credentials;
   return { ...cleanAwsEnvironment(env), AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
@@ -277,6 +282,11 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       assertDeployAllowed(env, stack);
       const apiOriginDomainName = stack === baseStack ? await readApiOrigin(io) : undefined;
       const awsEnv = await roleEnv('deploy');
+      // Pre-mutation interlock (#165): after the restricted sessions are
+      // available and before CDK changes anything, call each derived read once.
+      // An authorization denial throws here with zero changes; a resource
+      // absence is classified separately and does not stop the deploy.
+      await runAuthorizationCanary({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       // Record the completed mutation immediately: a later retention failure must

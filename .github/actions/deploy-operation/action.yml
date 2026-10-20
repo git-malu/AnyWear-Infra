@@ -41,6 +41,28 @@ runs:
         path: deployment-evidence/deployment-record.json
         retention-days: 90
         if-no-files-found: error
+    # The observed layer (#165): a CloudTrail lookup over the reconciled roles'
+    # run window, under the same restricted runtime session. The record is
+    # report-only narrowing input; the credential-free `record` job validates it
+    # and fails on an observed action the declared surface does not contain.
+    - name: Reconcile the observed authorization surface from CloudTrail
+      id: permissions
+      if: steps.operation.outputs.requires_qualification == 'true'
+      shell: bash
+      # Best-effort: the read requires the Platform deploy that carries this
+      # issue's `cloudtrail:LookupEvents` grant, so a first deployment that has
+      # not yet applied it must not fail after successful mutation. The artifact
+      # is validated when it exists; its absence is recorded by the record job.
+      continue-on-error: true
+      run: node scripts/observe-authorization-usage.mjs
+    - name: Preserve the observed authorization surface
+      if: always() && steps.permissions.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: infra-permissions-observed-${{ github.run_id }}-${{ github.run_attempt }}
+        path: deployment-evidence/permissions-observed.json
+        retention-days: 90
+        if-no-files-found: warn
     - name: Record final observation outcome
       if: always()
       shell: bash

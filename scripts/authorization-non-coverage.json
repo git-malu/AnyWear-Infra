@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "record_type": "anywear_authorization_non_coverage",
+  "source": "Issue #165 (D4). The declared authorization check ships its stated limits in the repository and a test pins this list exactly. A limit that is removed from the check must be removed here in the same reviewed diff.",
+  "entries": [
+    {
+      "id": "runtime-sdk-calls",
+      "layer": "declared",
+      "summary": "SDK calls inside Lambda and Service runtime code, and CDK custom resources, are outside the call-site scan.",
+      "consequence": "The resource-type table covers the reads a synthesized template type implies; everything else is covered only by the observed layer."
+    },
+    {
+      "id": "resource-less-actions",
+      "layer": "declared",
+      "summary": "Resource-less actions need an explicit reviewed wildcard marker; their resource cannot narrow.",
+      "consequence": "ecs:ListTasks, ecs:DescribeTaskDefinition, logs:DescribeLogGroups (list form) and the ELBv2 Describe* set are pinned in REVIEWED_WILDCARDS with a reason. A `*` grant without a marker fails."
+    },
+    {
+      "id": "cdk-exec-role",
+      "layer": "declared",
+      "summary": "The CDK bootstrap cfn-exec role holds AdministratorAccess and no permissions boundary; it is a stated exception, not an asserted principal.",
+      "consequence": "Effective permission on the Infra deploy path is account-wide. Only the Service deploy role, the Service CloudFormation role and the Infra runtime role are asserted; the administrator principal is recorded, never claimed as reviewed."
+    },
+    {
+      "id": "condition-satisfaction",
+      "layer": "enforced",
+      "summary": "A Condition can be asserted present, never satisfied at runtime.",
+      "consequence": "The pre-mutation canary owns whether the condition lets the call through; the declared check only proves the condition exists."
+    },
+    {
+      "id": "service-release-chain",
+      "layer": "declared",
+      "summary": "The Service release chain's own call sites live in AnyWear-Service and are outside this repository's scan.",
+      "consequence": "The Service deploy role's required reads here are the Service-sourced bake fixture; its residual grants are checked by the reviewed-set direction, not by a derived call-site set."
+    },
+    {
+      "id": "create-path",
+      "layer": "enforced",
+      "summary": "The canary samples the resource set as it exists before mutation, so create-path authorization is outside its reach.",
+      "consequence": "The declared assertion and the post-run observation own create-path authorization."
+    },
+    {
+      "id": "conditional-fallback",
+      "layer": "declared",
+      "summary": "cloudfront:GetDistribution is a conditional legacy fallback whose base grant the runtime role may deny by design; the session policy never adds grants.",
+      "consequence": "It is excluded from the canary probes and from the runtime role's required set; the fallback must surface through the observed layer if it is ever taken."
+    },
+    {
+      "id": "observed-layer-coverage",
+      "layer": "observed",
+      "summary": "CloudTrail cannot see calls that never happened, and the audit only covers the four reconciled role sessions.",
+      "consequence": "Declared-but-unused is report-only with a minimum window and a recorded retention reason; it is narrowing input, not a narrowing decision."
+    }
+  ]
+}

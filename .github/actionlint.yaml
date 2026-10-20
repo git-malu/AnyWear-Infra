@@ -1,0 +1,13 @@
+# actionlint configuration. The check itself is a workflow step in
+# `.github/workflows/check.yml`; this file only records reviewed false positives.
+paths:
+  .github/workflows/production.yml:
+    ignore:
+      # actionlint 1.7.12 bundles action metadata captured before
+      # actions/create-github-app-token v3.3.0 added the `permission-attestations`
+      # input (the v3.3.0 release is newer than actionlint 1.7.12). The input is
+      # valid on the pinned `@v3` major tag, and
+      # `scripts/authorization-canary.test.mjs` pins that the app token carries
+      # the attestations read the release-verification path needs. The ignore
+      # covers only this stale-metadata message for this one file.
+      - 'input "permission-attestations" is not defined in action "actions/create-github-app-token@v3"'
