@@ -547,6 +547,17 @@ export class FoundationStack extends cdk.Stack {
         actions: ['cloudwatch:PutMetricAlarm', 'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms'],
         resources: [alarms],
       }));
+      // The Runtime template's two CDK-auto-named queue-depth alarms carry the
+      // `AnyWearRuntimeStack-beta-` prefix, not `beta-anywear-*`; the existing
+      // alarm statement above does not match them, which is the same evaluation
+      // that made them undeletable at M3. The nine explicitly named
+      // `beta-anywear-*` alarms stay covered by that statement; this one is
+      // confined to the auto-named prefix.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['cloudwatch:PutMetricAlarm', 'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms'],
+        resources: [colonArn('cloudwatch', 'alarm', 'AnyWearRuntimeStack-beta-*')],
+        sid: 'RuntimeQueueDepthAlarms',
+      }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy'],
         resources: [logGroup(`/anywear/beta/${unique('api')}`), logGroup(`/anywear/beta/${unique('worker')}`)],

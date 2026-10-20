@@ -1363,6 +1363,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*',
       'arn:aws:cloudfront::650880818323:distribution/*',
       'arn:aws:cloudfront::650880818323:function/*',
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*',
       'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
       'arn:aws:ec2:ap-east-1:650880818323:security-group/*',
       'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
@@ -1634,6 +1635,52 @@ describe('Explicit infrastructure identity cutover', () => {
       .some((action: string) => action === 'elasticloadbalancing:*'))).toBe(false);
   });
 
+  // Issue #166 M6 Runtime auto-named alarms: the Runtime template's two CDK
+  // queue-depth alarms use the `AnyWearRuntimeStack-beta-` prefix, which the
+  // existing `beta-anywear-*` alarm statement does not match. This is the same
+  // evaluation gap that made them undeletable at M3.
+  it('grants the M6 Runtime queue-depth alarm prefix without broadening the named alarms', () => {
+    const app = new cdk.App();
+    const template = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env: { account: '650880818323', region: 'ap-east-1' }, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = template.Resources as Record<string, any>;
+    const roleId = Object.entries(resources).find(([, resource]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-cfn-role'))![0];
+    const statements = (Object.values(resources) as any[])
+      .filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const resolve = (value: any): any => {
+      if (Array.isArray(value)) return value.map(resolve);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) return value['Fn::Join'][1].map(resolve).join(value['Fn::Join'][0]);
+      if (value?.Ref === 'AWS::Partition') return 'aws';
+      return value;
+    };
+    const runtimeAlarmArn = 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*';
+    const namedAlarmArn = 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*';
+    const prefixStatement = statements.filter((statement) => statement.Sid === 'RuntimeQueueDepthAlarms');
+    expect(prefixStatement).toHaveLength(1);
+    expect([prefixStatement[0].Action].flat().sort())
+      .toEqual(['cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm']);
+    expect(prefixStatement[0].Effect).toBe('Allow');
+    expect(resolve(prefixStatement[0].Resource)).toBe(runtimeAlarmArn);
+    // The nine explicitly named alarms keep the original statement.
+    const namedStatements = statements.filter((statement) => statement.Sid === undefined
+      && [statement.Action].flat().includes('cloudwatch:PutMetricAlarm')
+      && resolve(statement.Resource) === namedAlarmArn);
+    expect(namedStatements).toHaveLength(1);
+    expect([namedStatements[0].Action].flat().sort())
+      .toEqual(['cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm']);
+    // No broader CloudWatch action or prefix.
+    expect(statements.some((statement) => [statement.Action].flat()
+      .some((action: string) => action === 'cloudwatch:*'))).toBe(false);
+    expect(statements.some((statement) => [statement.Action].flat()
+      .some((action: string) => action.startsWith('cloudwatch:'))
+      && JSON.stringify(statement.Resource).includes('alarm:*'))).toBe(false);
+  });
+
   // Regression for the #162 Testing failure: a CloudWatch alarm ARN is
   // `arn:aws:cloudwatch:<region>:<account>:alarm:<AlarmName>`. A slash resource
   // form (`...:alarm/<AlarmName>`) matches no alarm, so `DescribeAlarms` in the
@@ -1664,7 +1711,8 @@ describe('Explicit infrastructure identity cutover', () => {
     const canonical = 'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*';
     for (const [roleName, action] of [['beta-service-deploy-role', 'cloudwatch:DescribeAlarms'],
       ['beta-service-deploy-cfn-role', 'cloudwatch:PutMetricAlarm']] as const) {
-      const matching = statementsFor(roleName).filter((statement) => [statement.Action].flat().includes(action));
+      const matching = statementsFor(roleName).filter((statement) => [statement.Action].flat().includes(action)
+        && [statement.Resource].flat().map(render).includes(canonical));
       expect(matching).toHaveLength(1);
       expect([matching[0].Resource].flat().map(render)).toEqual([canonical]);
     }
@@ -1731,10 +1779,11 @@ describe('Explicit infrastructure identity cutover', () => {
       'arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker',
     ]);
     const alarmStatements = statements.filter((statement) => [statement.Action].flat().includes('cloudwatch:PutMetricAlarm'));
-    expect(alarmStatements).toHaveLength(1);
-    expect([alarmStatements[0].Resource].flat().map(render)).toEqual([
+    expect(alarmStatements).toHaveLength(2);
+    expect(alarmStatements.flatMap((statement) => [statement.Resource].flat().map(render)).sort()).toEqual([
+      'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*',
       'arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*',
-    ]);
+    ].sort());
   });
 
   it('grants every declared bake AWS call on the API resource form inside its target', () => {

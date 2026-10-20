@@ -307,6 +307,12 @@ For **M6**, the Foundation deploy must carry these grants on
 - `ecs:DeregisterTaskDefinition` on `*` because the ECS API evaluates that action
   against `*` regardless of the task-definition ARN, so a family-scoped grant does
   not authorize rollback or stack deletion;
+- `cloudwatch:PutMetricAlarm`/`DescribeAlarms`/`DeleteAlarms` on
+  `arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*`
+  because the Runtime template's two CDK-auto-named queue-depth alarms use that
+  prefix, which the existing `alarm:beta-anywear-*` statement does not match (the
+  same evaluation that made them undeletable at M3); the nine explicitly named
+  `beta-anywear-*` alarms stay covered by that existing statement;
 - `elasticloadbalancing:CreateListener`/`DeleteListener`/`ModifyListener` on the
   load-balancer ARN `arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*`
   because ELB evaluates `CreateListener` against the load balancer, and the

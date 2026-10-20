@@ -112,7 +112,7 @@ describe('Foundation reviewed service set (CDK context)', () => {
     // extensions. The comparison normalizes only the declared CDK diagnostic
     // metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('909be9a8b30d972481d8cf69a3a567badb14e78920954647b5fd4c1d783cbd1e');
+      .toBe('f4ec41e66c00e81a712b2fe01a4d6023e71fa8afec9200e3628cecfcea966c45');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();
