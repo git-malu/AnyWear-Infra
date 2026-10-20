@@ -36,11 +36,16 @@ export class EgressStack extends cdk.Stack {
     const importBase = (exportName: string): string => cdk.Fn.importValue(exportName);
     const vpcId = importBase(BASE_EXPORTS.vpcId);
 
-    this.natEip = new ec2.CfnEIP(this, 'NatEip', {
+    // Issue #166 new-EIP experiment: replacing the construct logical IDs makes
+    // CloudFormation create a new EIP/allocation and NAT, update the two default
+    // routes to the new NAT, then delete and release the old NAT/EIP. It is
+    // reversible, but a revert replaces again and allocates yet another EIP. The
+    // old pre-split address 16.163.218.252 was released and must not be reused.
+    this.natEip = new ec2.CfnEIP(this, 'NatEipNext', {
       domain: 'vpc',
       tags: [{ key: 'Name', value: 'beta-anywear-egress-nat' }],
     });
-    this.natGateway = new ec2.CfnNatGateway(this, 'NatGateway', {
+    this.natGateway = new ec2.CfnNatGateway(this, 'NatGatewayNext', {
       allocationId: this.natEip.attrAllocationId,
       subnetId: importBase(BASE_EXPORTS.natSubnetId),
       connectivityType: 'public',

@@ -2289,6 +2289,20 @@ describe('Disposable Beta Egress stack', () => {
 
     expect(ofType('AWS::EC2::NatGateway')).toHaveLength(1);
     expect(ofType('AWS::EC2::EIP')).toHaveLength(1);
+    // Issue #166 new-EIP experiment: the logical IDs changed so CloudFormation
+    // replaces the EIP/allocation and NAT and points the routes at the new NAT.
+    expect(template.Resources.NatEipNext).toBeDefined();
+    expect(template.Resources.NatGatewayNext).toBeDefined();
+    expect(template.Resources.NatEip).toBeUndefined();
+    expect(template.Resources.NatGateway).toBeUndefined();
+    expect(template.Resources.NatGatewayNext.Properties.AllocationId)
+      .toEqual({ 'Fn::GetAtt': ['NatEipNext', 'AllocationId'] });
+    expect(template.Resources.NatEipNext.Properties.Tags).toEqual([
+      { Key: 'Name', Value: 'beta-anywear-egress-nat' },
+    ]);
+    expect(template.Resources.NatGatewayNext.Properties.Tags).toEqual([
+      { Key: 'Name', Value: 'beta-anywear-egress-nat' },
+    ]);
     // AWS allows one association per subnet and Base owns it: Egress creates no
     // route table and no association, only routes in the imported Base tables.
     expect(ofType('AWS::EC2::RouteTable')).toHaveLength(0);
@@ -2299,6 +2313,8 @@ describe('Disposable Beta Egress stack', () => {
       BASE_EXPORTS.privateRouteTableIds.map((name) => ({ 'Fn::ImportValue': name })));
     expect(routes.every((route) => route.Properties.DestinationCidrBlock === '0.0.0.0/0'
       && route.Properties.NatGatewayId !== undefined)).toBe(true);
+    expect(routes.map((route) => route.Properties.NatGatewayId))
+      .toEqual([{ Ref: 'NatGatewayNext' }, { Ref: 'NatGatewayNext' }]);
     const endpoint = ofType('AWS::EC2::VPCEndpoint');
     expect(endpoint).toHaveLength(1);
     expect(String(endpoint[0].Properties.ServiceName)).toContain('s3');
@@ -2320,6 +2336,9 @@ describe('Disposable Beta Egress stack', () => {
     expect(Object.keys(template.Outputs).sort()).toEqual([
       'EgressNatEipAllocationId', 'EgressNatGatewayId', 'EgressPrivateRouteTableIds',
     ]);
+    expect(template.Outputs.EgressNatGatewayId.Value).toEqual({ Ref: 'NatGatewayNext' });
+    expect(template.Outputs.EgressNatEipAllocationId.Value)
+      .toEqual({ 'Fn::GetAtt': ['NatEipNext', 'AllocationId'] });
   });
 
   it('synthesizes from the egress-only app scope without Service artifacts', () => {
