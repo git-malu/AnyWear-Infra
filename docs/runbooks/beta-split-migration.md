@@ -247,21 +247,25 @@ distribution's `DeletionPolicy`/`UpdateReplacePolicy` to match the Base-pinned
 destination's `Retain`; Stage A adds those attributes, so a preview without them
 fails the source/destination comparison.
 
-`create-stack-refactor` returns `CREATE_IN_PROGRESS`; validation completes
-asynchronously. The apply path polls `describe-stack-refactor` every 10 seconds,
-up to 30 attempts (300 seconds total), and only after the status is `AVAILABLE`
-does it call `list-stack-refactor-actions` and validate the preview. A
-`CREATE_FAILED` status (or any other non-`CREATE_IN_PROGRESS`/`AVAILABLE` status),
-or the timeout, refuses with the status/`StatusReason` before any actions read or
-execute path.
+`create-stack-refactor` returns lifecycle `Status=CREATE_IN_PROGRESS`; the
+`ExecutionStatus` may remain `UNAVAILABLE` until validation finishes. The apply
+path polls `describe-stack-refactor` every 10 seconds, up to 30 attempts (300
+seconds total). It proceeds only when `Status` is `CREATE_COMPLETE` **and**
+`ExecutionStatus` is `AVAILABLE`; a `CREATE_COMPLETE` with any other execution
+status, `CREATE_FAILED`, any other non-`CREATE_IN_PROGRESS` status, or the
+timeout refuses with the status/`StatusReason` before any actions read or execute
+path. Only after that terminal success does it call `list-stack-refactor-actions`
+and validate the preview.
 
 Require `describe-stack-refactor` to report no unsupported resource and no
 conflict, and `list-stack-refactor-actions` to show **exactly one MOVE** (the
-distribution) with no configuration change and **no CREATE or DELETE**. Any other
-action, any reported difference or any eligibility failure aborts before
-execution: the Workload keeps serving, the environment is untouched, the
-migration returns for redesign, and a one-time endpoint change remains an
-explicit user decision rather than a silent fallback.
+distribution) with `Entity=RESOURCE`, the reviewed `PhysicalResourceId
+E3U35871TUO53L`, and `ResourceMapping.Source`/`Destination` equal to the
+Workload/Base stack and logical-ID pair; no configuration change and **no CREATE
+or DELETE**. Any other action, any reported difference or any eligibility failure
+aborts before execution: the Workload keeps serving, the environment is
+untouched, the migration returns for redesign, and a one-time endpoint change
+remains an explicit user decision rather than a silent fallback.
 
 ## Stage C — Execute and read back
 
