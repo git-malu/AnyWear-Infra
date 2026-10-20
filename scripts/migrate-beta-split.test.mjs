@@ -311,6 +311,48 @@ test('(b) a clean preview is exactly one MOVE of the API distribution', () => {
   assert.equal(result.mapping.Destination.LogicalResourceId, API_DISTRIBUTION.logicalId);
 });
 
+test('(b) the live stack-ARN mapping form and bare names both validate', () => {
+  const sourceArn = 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/3b3fc840-1111-4111-8111-111111111111';
+  const destinationArn = 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/e1f46de0-2222-4222-8222-222222222222';
+  const arnPreview = cleanPreview();
+  arnPreview.actions.StackRefactorActions[0].ResourceMapping.Source.StackName = sourceArn;
+  arnPreview.actions.StackRefactorActions[0].ResourceMapping.Destination.StackName = destinationArn;
+  assert.equal(validateRefactorPreview(arnPreview).clean, true);
+  // The recorded clean shape with bare names still passes.
+  assert.equal(validateRefactorPreview(cleanPreview()).clean, true);
+
+  // Wrong stack name in ARN or bare form refuses.
+  for (const [side, wrong] of [['Source', sourceArn.replace('AnyWearWorkloadStack-beta', 'AnyWearOtherStack-beta')],
+    ['Destination', destinationArn.replace('AnyWearPlatformStack-beta', 'AnyWearOtherStack-beta')]]) {
+    const preview = cleanPreview();
+    preview.actions.StackRefactorActions[0].ResourceMapping[side].StackName = wrong;
+    assert.throws(() => validateRefactorPreview(preview), new RegExp(`${side} mapping does not match`));
+  }
+  for (const [side, wrong] of [['Source', 'AnyWearOtherStack-beta'], ['Destination', 'AnyWearOtherStack-beta']]) {
+    const preview = cleanPreview();
+    preview.actions.StackRefactorActions[0].ResourceMapping[side].StackName = wrong;
+    assert.throws(() => validateRefactorPreview(preview), new RegExp(`${side} mapping does not match`));
+  }
+  // Wrong logical ID in ARN form refuses on either side.
+  for (const side of ['Source', 'Destination']) {
+    const preview = arnPreview;
+    const changed = structuredClone(preview);
+    changed.actions.StackRefactorActions[0].ResourceMapping[side].LogicalResourceId = 'OtherDistribution';
+    assert.throws(() => validateRefactorPreview(changed), new RegExp(`${side} mapping does not match`));
+  }
+  // A malformed/foreign ARN is never treated as a bare name.
+  for (const foreign of [
+    sourceArn.replace('ap-east-1', 'us-east-1'),
+    sourceArn.replace('650880818323', '111111111111'),
+    destinationArn.replace(/\/[0-9a-f-]{36}$/, ''),
+    destinationArn.replace(/\/[0-9a-f-]{36}$/, '/not-a-uuid'),
+  ]) {
+    const preview = cleanPreview();
+    preview.actions.StackRefactorActions[0].ResourceMapping.Source.StackName = foreign;
+    assert.throws(() => validateRefactorPreview(preview), /malformed or foreign/);
+  }
+});
+
 test('(b) a second action, a configuration change, a CREATE/DELETE or an ineligible preview is refused', () => {
   const second = cleanPreview();
   second.actions.StackRefactorActions.push({ ...cleanPreview().actions.StackRefactorActions[0],

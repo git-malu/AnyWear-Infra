@@ -261,11 +261,13 @@ Require `describe-stack-refactor` to report no unsupported resource and no
 conflict, and `list-stack-refactor-actions` to show **exactly one MOVE** (the
 distribution) with `Entity=RESOURCE`, the reviewed `PhysicalResourceId
 E3U35871TUO53L`, and `ResourceMapping.Source`/`Destination` equal to the
-Workload/Base stack and logical-ID pair; no configuration change and **no CREATE
-or DELETE**. Any other action, any reported difference or any eligibility failure
-aborts before execution: the Workload keeps serving, the environment is
-untouched, the migration returns for redesign, and a one-time endpoint change
-remains an explicit user decision rather than a silent fallback.
+Workload/Base stack and logical-ID pair (the live action uses full stack ARNs;
+the script normalises the reviewed `arn:aws:cloudformation:ap-east-1:650880818323:stack/<name>/<uuid>`
+form to the bare name, and also accepts bare names); no configuration change and
+**no CREATE or DELETE**. Any other action, any reported difference or any
+eligibility failure aborts before execution: the Workload keeps serving, the
+environment is untouched, the migration returns for redesign, and a one-time
+endpoint change remains an explicit user decision rather than a silent fallback.
 
 ## Stage C — Execute and read back
 
