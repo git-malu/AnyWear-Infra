@@ -297,16 +297,28 @@ distribution (pre-MOVE) — and validates each as a domain. Base is read before
 Workload so the stopped state after M4 never needs the transitional Workload
 read. M7 then rewires the same distribution to the new Runtime ALB DNS.
 
-For **M6**, the Foundation deploy must carry two grants on
-`beta-service-deploy-cfn-role`: `states:TagResource` and `states:UntagResource` on
-the fixed cleanup state machine
-`arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup`
-because CDK applies the stack's tags on state-machine create/rollback, and
-`ecs:DeregisterTaskDefinition` on `*` because the ECS API evaluates that action
-against `*` regardless of the task-definition ARN, so a family-scoped grant does
-not authorize rollback or stack deletion. Both are separate Sid-tagged statements;
-every other Foundation statement and the family-scoped task-definition statement
-stay unchanged.
+For **M6**, the Foundation deploy must carry these grants on
+`beta-service-deploy-cfn-role`:
+
+- `states:TagResource` and `states:UntagResource` on the fixed cleanup state
+  machine
+  `arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup`
+  because CDK applies the stack's tags on state-machine create/rollback;
+- `ecs:DeregisterTaskDefinition` on `*` because the ECS API evaluates that action
+  against `*` regardless of the task-definition ARN, so a family-scoped grant does
+  not authorize rollback or stack deletion;
+- `elasticloadbalancing:CreateListener`/`DeleteListener`/`ModifyListener` on the
+  load-balancer ARN `arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*`
+  because ELB evaluates `CreateListener` against the load balancer, and the
+  listener ARN does not exist at create time;
+- `elasticloadbalancing:CreateRule`/`DeleteRule`/`ModifyRule` on the listener ARN
+  `arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener/app/beta-anywear-api/*`
+  because ELB evaluates `CreateRule` against the listener, and the listener-rule
+  ARN does not exist at create time.
+
+All are separate Sid-tagged statements; the existing listener/listener-rule
+statements remain for the update/delete paths, and every other Foundation
+statement and the family-scoped task-definition statement stay unchanged.
 
 ## Abort behavior
 

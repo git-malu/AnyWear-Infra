@@ -1579,6 +1579,61 @@ describe('Explicit infrastructure identity cutover', () => {
       action === 'states:*' || action === 'ecs:*')))).toBe(false);
   });
 
+  // Issue #166 M6 ELB create path: ELB authorizes CreateListener on the load
+  // balancer ARN (the listener ARN does not exist yet) and CreateRule on the
+  // listener ARN (the listener-rule ARN does not exist yet). The existing
+  // listener/listener-rule-scoped statements stay for update/delete.
+  it('grants the M6 ELB create actions on the load-balancer and listener ARNs', () => {
+    const app = new cdk.App();
+    const template = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env: { account: '650880818323', region: 'ap-east-1' }, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = template.Resources as Record<string, any>;
+    const roleId = Object.entries(resources).find(([, resource]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-service-deploy-cfn-role'))![0];
+    const statements = (Object.values(resources) as any[])
+      .filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === roleId))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const resolve = (value: any): any => {
+      if (Array.isArray(value)) return value.map(resolve);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) return value['Fn::Join'][1].map(resolve).join(value['Fn::Join'][0]);
+      if (value?.Ref === 'AWS::Partition') return 'aws';
+      return value;
+    };
+    const loadBalancerArn = 'arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*';
+    const listenerArn = 'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener/app/beta-anywear-api/*';
+    const listenerRuleArn = 'arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener-rule/app/beta-anywear-api/*';
+    const bySid = (sid: string) => statements.filter((statement) => statement.Sid === sid);
+    const listenerCreate = bySid('CreateListenerOnLoadBalancer');
+    expect(listenerCreate).toHaveLength(1);
+    expect([listenerCreate[0].Action].flat().sort())
+      .toEqual(['elasticloadbalancing:CreateListener', 'elasticloadbalancing:DeleteListener',
+        'elasticloadbalancing:ModifyListener']);
+    expect(listenerCreate[0].Effect).toBe('Allow');
+    expect(resolve(listenerCreate[0].Resource)).toBe(loadBalancerArn);
+    const ruleCreate = bySid('CreateRuleOnListener');
+    expect(ruleCreate).toHaveLength(1);
+    expect([ruleCreate[0].Action].flat().sort())
+      .toEqual(['elasticloadbalancing:CreateRule', 'elasticloadbalancing:DeleteRule',
+        'elasticloadbalancing:ModifyRule']);
+    expect(ruleCreate[0].Effect).toBe('Allow');
+    expect(resolve(ruleCreate[0].Resource)).toBe(listenerArn);
+    // The pre-existing listener/listener-rule statements remain for update/delete.
+    const listenerScoped = statements.filter((statement) => statement.Sid === undefined
+      && [statement.Action].flat().includes('elasticloadbalancing:CreateListener')
+      && resolve(statement.Resource) === listenerArn);
+    expect(listenerScoped).toHaveLength(1);
+    const ruleScoped = statements.filter((statement) => statement.Sid === undefined
+      && [statement.Action].flat().includes('elasticloadbalancing:CreateRule')
+      && resolve(statement.Resource) === listenerRuleArn);
+    expect(ruleScoped).toHaveLength(1);
+    // No broad ELB action anywhere.
+    expect(statements.some((statement) => [statement.Action].flat()
+      .some((action: string) => action === 'elasticloadbalancing:*'))).toBe(false);
+  });
+
   // Regression for the #162 Testing failure: a CloudWatch alarm ARN is
   // `arn:aws:cloudwatch:<region>:<account>:alarm:<AlarmName>`. A slash resource
   // form (`...:alarm/<AlarmName>`) matches no alarm, so `DescribeAlarms` in the

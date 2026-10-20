@@ -505,9 +505,26 @@ export class FoundationStack extends cdk.Stack {
           'elasticloadbalancing:ModifyListener'],
         resources: [listener],
       }));
+      // ELB authorizes CreateListener on the load balancer ARN: the listener ARN
+      // does not exist until the create returns. The existing listener-scoped
+      // statement above stays for the update/delete paths.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['elasticloadbalancing:CreateListener', 'elasticloadbalancing:DeleteListener',
+          'elasticloadbalancing:ModifyListener'],
+        resources: [loadBalancer],
+        sid: 'CreateListenerOnLoadBalancer',
+      }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['elasticloadbalancing:CreateRule', 'elasticloadbalancing:DeleteRule', 'elasticloadbalancing:ModifyRule'],
         resources: [listenerRule],
+      }));
+      // ELB authorizes CreateRule on the listener ARN: the listener-rule ARN does
+      // not exist until the create returns. The existing listener-rule-scoped
+      // statement above stays for the update/delete paths.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['elasticloadbalancing:CreateRule', 'elasticloadbalancing:DeleteRule', 'elasticloadbalancing:ModifyRule'],
+        resources: [listener],
+        sid: 'CreateRuleOnListener',
       }));
       // ELBv2 read actions have no resource-level scope in IAM.
       serviceCfn.addToPolicy(new iam.PolicyStatement({

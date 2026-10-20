@@ -12,8 +12,8 @@
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
-  "dedicated_candidate_canonical_sha256": "08e54f6121f539d3c3628f98638e909458228733012c5de72526337b6e7b5567",
-  "dedicated_additions_sha256": "68482afaa87c696a686a62e7adf54023cee032f1ff7baa0a4b72ee0fd468c504",
+  "dedicated_candidate_canonical_sha256": "4b50c91327361fcf2738edcd73a5f7e84665667efb43951ba61b8532de39d4b8",
+  "dedicated_additions_sha256": "70e8af239a54e775e0aa4ad97f2686f14bc7eef36fc828478a6e710134abd0d7",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -87,6 +87,13 @@
       "source_branch": "issue/166-deploy-role-grants",
       "scope": "M6 rollback grants on beta-service-deploy-cfn-role: cleanup state-machine tagging and any-resource ECS task-definition deregistration",
       "detail": "CDK applies the stack tags on state-machine create/rollback, so the Service CloudFormation execution role needs states:TagResource and states:UntagResource on the fixed cleanup state machine arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup. ECS evaluates ecs:DeregisterTaskDefinition against * regardless of the task-definition ARN, so the existing family-scoped statement never authorizes rollback or stack deletion; a separate ecs:DeregisterTaskDefinition statement on * covers only that path. Both statements carry Sids so CDK policy minimization cannot merge them with unrelated wildcard/state-machine statements. No other action, role or wildcard; every existing statement is unchanged and the family-scoped task-definition statement stays. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation. The grants are needed only for rollback/stack deletion and remain until a later reviewed Foundation deploy removes them."
+    },
+    {
+      "issue": 166,
+      "recorded_at": "2026-10-20",
+      "source_branch": "issue/166-elb-grants",
+      "scope": "M6 ELB create grants on beta-service-deploy-cfn-role: listener actions on the load-balancer ARN and rule actions on the listener ARN",
+      "detail": "ELB authorizes CreateListener against the load balancer ARN because the listener ARN does not exist until creation returns, and CreateRule against the listener ARN because the listener-rule ARN does not exist until creation returns. Foundation adds exactly two statements: elasticloadbalancing:CreateListener/DeleteListener/ModifyListener on arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*, and CreateRule/DeleteRule/ModifyRule on arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener/app/beta-anywear-api/*. Both carry Sids so policy minimization cannot merge them; the existing listener- and listener-rule-scoped statements stay for the update/delete paths. No other action, role or wildcard. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
     }
   ]
 }
