@@ -149,9 +149,11 @@ Keep that reviewed main fixed through the protected deployment and subsequent
 observation. The map is valid for later `observe` at the same SHA after both
 deployments; using it at a newer main would wrongly relabel unchanged stacks.
 Observation from newer main requires a separately reviewed fixed map preserving the
-actual deployed Platform/Workload SHAs. Final E2E binds the actual record-producing
-Infra source and deployment record. This source map alone is not runtime proof
-or authorization to deploy.
+actual deployed Platform/Workload SHAs. E2E v3 qualification consumes no deployment
+record and binds no Infra source: it observes the platform itself (three stacks, the
+SSM inputs, both Lambdas, both queues and the Client domain, before and after the
+suite). Deployment-record lineage belongs to #181. This source map alone is not
+runtime proof or authorization to deploy.
 
 ## Entry points
 
@@ -657,13 +659,14 @@ not prove the applied DB version.
 
 Other task families retain the same strict final snapshot but emit
 `anywear_infra_family_observation` with their actual workflow path, not fabricated
-`runtime.yml` provenance. Existing E2E accepts only the legacy v2 producer;
-consumer expansion needs a separately reviewed pin/contract. Run fixed qualified
-observation after coordinated family changes to produce that compatible input.
+`runtime.yml` provenance. E2E v3 qualification consumes no Infra record, so the
+legacy-producer and compatibility-pin acceptance rule is inert and retires in
+Wave 2 (#180); deployment-record lineage belongs to #181. Run fixed qualified
+observation after coordinated family changes to retain that deployment evidence.
 Offline source checks do not establish new runtime-interface acceptance. After
 integration, run gate-disabled read-only observation and fixed qualified observation
-with restricted sessions against the retained tuple, then obtain E2E acceptance of
-the exact resulting legacy record. This source split does not imply AWS resource or
+with restricted sessions against the retained tuple, and keep the resulting record
+with the operation evidence. This source split does not imply AWS resource or
 template deployment.
 
 A `deploy-platform` run has no accepted evidence step of its own. It is qualified
@@ -672,12 +675,12 @@ uploads `infra-deployment-<run-id>-<attempt>` containing
 `deployment-record.json`. The deploy run cannot produce that record: it stamps the
 run's own `.github/workflows/mutate.yml` path and the record type
 `anywear_infra_family_observation`, while the accepted record pins both
-`anywear_infra_deployment` and the `runtime.yml` workflow path that the E2E
-consumer also pins, and the `deploy-platform` operation session carries no task
-family of its own. The deploy run still requires and uploads its own successful
-observation (`finalize-operation.mjs`): every non-state operation ends on a
-terminal Base readback plus an observed Runtime existence/status that must be
-accepted.
+`anywear_infra_deployment` and the `runtime.yml` workflow path. That record is
+deployment evidence for lineage and rollback, not a qualification input, and the
+`deploy-platform` operation session carries no task family of its own. The deploy
+run still requires and uploads its own successful observation
+(`finalize-operation.mjs`): every non-state operation ends on a terminal Base
+readback plus an observed Runtime existence/status that must be accepted.
 That family record is evidence, but not the accepted record. That
 `deployment-record.json` remains the accepted deployment evidence; it no longer
 advances a compatibility pin, since qualification reads the live state and its own
