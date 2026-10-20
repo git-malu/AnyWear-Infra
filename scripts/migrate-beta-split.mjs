@@ -304,6 +304,22 @@ export function validateResourceMappings(mappings) {
   return mapping;
 }
 
+// The live action's `ResourceMapping` stack identifier is a full stack ARN, not a
+// bare name: `arn:aws:cloudformation:<region>:<account>:stack/<name>/<uuid>`.
+// Accept that exact shape (reviewed account/region, UUID suffix) or a bare stack
+// name; a malformed or foreign ARN is refused rather than treated as a name.
+const STACK_ARN = /^arn:aws:cloudformation:ap-east-1:650880818323:stack\/([A-Za-z0-9-]+)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const normalizeStackIdentifier = (value) => {
+  if (typeof value !== 'string' || !value) throw new Error('Refactor preview stack identifier is missing');
+  if (value.startsWith('arn:')) {
+    const match = STACK_ARN.exec(value);
+    if (!match) throw new Error(`Refactor preview stack ARN is malformed or foreign: ${value}`);
+    return match[1];
+  }
+  if (!/^[A-Za-z][A-Za-z0-9-]{0,127}$/.test(value)) throw new Error(`Refactor preview stack name is malformed: ${value}`);
+  return value;
+};
+
 // (b) Validate the recorded preview. A clean preview is exactly one resource
 // MOVE of the API distribution with no configuration change and no CREATE,
 // DELETE or UPDATE. Anything else aborts before execution.
@@ -334,7 +350,8 @@ export function validateRefactorPreview({ describe, actions: previewActions, res
   for (const side of ['Source', 'Destination']) {
     const observed = action.ResourceMapping?.[side];
     const expected = mapping[side];
-    if (observed?.StackName !== expected.StackName || observed?.LogicalResourceId !== expected.LogicalResourceId) {
+    if (normalizeStackIdentifier(observed?.StackName) !== expected.StackName
+      || observed?.LogicalResourceId !== expected.LogicalResourceId) {
       throw new Error(`Refactor preview ${side} mapping does not match ${expected.StackName}/${expected.LogicalResourceId}`);
     }
   }
