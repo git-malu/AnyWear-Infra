@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { CANARY_MARKER, REGION, canaryPlan, classifyAwsFailure } from './authorization-inventory.mjs';
+import { CANARY_MARKER, REGION, canaryPlan, classifyAwsFailure, deriveAuthorizationSurface } from './authorization-inventory.mjs';
 
 const execute = promisify(execFile);
 
@@ -55,11 +55,14 @@ async function probe({ session, probe: entry, credentials, run, timeout }) {
 // `assume` must be credentialEnvironment(); a dedicated marked session is
 // requested so no other runtime read shares the canary's CloudTrail identity.
 export async function runAuthorizationCanary({ sessions, env, purpose = 'operation',
-  assume, run = execute, timeout = 120_000 } = {}) {
+  assume, run = execute, timeout = 120_000, root = process.cwd() } = {}) {
   if (!Array.isArray(sessions) || sessions.length === 0) throw new Error('The canary needs at least one Infra session');
+  // The derived surface supplies the credential-path filter: a read whose only
+  // call site is the operator CLI is not executed by the deployed session.
+  const surface = deriveAuthorizationSurface(root);
   const results = [];
   for (const session of sessions) {
-    const plan = canaryPlan(session);
+    const plan = canaryPlan(session, surface);
     // A separate assumption per session kind: the canary's own invocations must
     // be distinguishable from the operation's ordinary reads (D2).
     const credentials = await assume(session === 'deploy' ? 'deploy' : 'runtime', env, purpose,

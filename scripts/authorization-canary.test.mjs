@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import yaml from 'js-yaml';
 import { runAuthorizationCanary, AuthorizationDenialError, canaryCommand } from './authorization-canary.mjs';
+import { createRuntimeIo } from './runtime-operation.mjs';
 
 // The pre-mutation interlock's contract (#165): a denial stops the operation
 // before any mutation, a resource absence is classified separately and does not,
@@ -104,4 +105,64 @@ test('production.yml pins the app-token attestations read it needs', async () =>
     'the app token must carry attestations read for the release-verification read');
   assert.equal(token.with['permission-contents'], 'read');
   assert.equal(token.with['permission-actions'], 'read');
+});
+
+// The remaining mutation paths (Fix 4): a migration/admission one-shot and the
+// Egress delete run the same marked, read-only canary before their mutation, so a
+// denial stops them with zero changes.
+
+const wiringEnv = (operation) => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
+  GITHUB_REPOSITORY_ID: '1409047265', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40),
+  GITHUB_EVENT_NAME: 'workflow_dispatch',
+  GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
+  GITHUB_RUN_ID: '39100318242', GITHUB_RUN_ATTEMPT: '1', ENABLE_BETA_MUTATION: 'true',
+  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired',
+  INFRA_RETENTION_PROTECTION: 'true', INFRA_OPERATION: operation, TESTER_EMAILS: '[]' });
+
+const denialIo = async (operation) => {
+  const calls = [];
+  const io = await createRuntimeIo(wiringEnv(operation), undefined, {
+    purpose: 'operation',
+    assume: async () => credentials,
+    run: async (command, args) => {
+      calls.push({ command, args });
+      const error = new Error('command failed');
+      error.stderr = 'An error occurred (AccessDenied) when calling the GetCallerIdentity operation: User is not authorized';
+      throw error;
+    },
+  });
+  return { io, calls };
+};
+
+test('a denied canary probe stops a migration one-shot before the task script runs', async () => {
+  const { io, calls } = await denialIo('migrate');
+  const revision = { digest: `sha256:${'a'.repeat(64)}`, commit: 'b'.repeat(40) };
+  await assert.rejects(io.oneShot('migrate', revision), (error) => {
+    assert.ok(error instanceof AuthorizationDenialError);
+    assert.equal(error.denial, true);
+    return true;
+  });
+  assert.equal(calls.some((call) => call.command === 'bash'), false,
+    'the one-shot script must not run after a denied probe');
+  assert.ok(calls.every((call) => call.command === 'aws'));
+});
+
+test('a denied canary probe stops an admission one-shot before the task script runs', async () => {
+  const { io, calls } = await denialIo('add-testers');
+  const revision = { digest: `sha256:${'a'.repeat(64)}`, commit: 'b'.repeat(40) };
+  await assert.rejects(io.oneShot('lifecycle', revision, 'set-testers', '[]'), (error) => {
+    assert.ok(error instanceof AuthorizationDenialError);
+    return true;
+  });
+  assert.equal(calls.some((call) => call.command === 'bash'), false);
+});
+
+test('a denied canary probe stops an Egress destroy before npx cdk destroy', async () => {
+  const { io, calls } = await denialIo('delete-egress');
+  await assert.rejects(io.destroy('AnyWearEgressStack-beta'), (error) => {
+    assert.ok(error instanceof AuthorizationDenialError);
+    return true;
+  });
+  assert.equal(calls.some((call) => call.command === 'npx'), false,
+    'cdk destroy must not run after a denied probe');
 });

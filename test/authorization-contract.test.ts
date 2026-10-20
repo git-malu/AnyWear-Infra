@@ -98,7 +98,11 @@ function assertDerivedCoverage(principal: string, actions: string[]): void {
   for (const action of actions) {
     if (NO_GRANT_REQUIRED.has(action)) continue;
     expect({ action, granted: grants(rows, action) }).toEqual({ action, granted: true });
-    for (const arn of inventory.RESOURCE_FORMS[action] ?? []) {
+    // Fail closed on a derived action with no reviewed resource form rather than
+    // silently covering nothing.
+    expect({ action, reviewedForm: Object.hasOwn(inventory.RESOURCE_FORMS, action) })
+      .toEqual({ action, reviewedForm: true });
+    for (const arn of inventory.RESOURCE_FORMS[action]) {
       expect({ action, arn, covered: covers(rows, action, arn) }).toEqual({ action, arn, covered: true });
     }
   }
@@ -190,6 +194,11 @@ describe('derived authorization inventory (#165)', () => {
       }
       expect(wildcardActions(rows)).toEqual([...reviewedWildcards].sort());
     }
+    // The observed layer's new read stays region-scoped: no blanket grant.
+    const cloudtrail = statements('beta-infra-runtime-role').filter((row: any) => row.actions.includes('cloudtrail:LookupEvents'));
+    expect(cloudtrail).toHaveLength(1);
+    expect(cloudtrail[0].resources).toEqual(['*']);
+    expect(cloudtrail[0].condition).toEqual({ StringEquals: { 'aws:RequestedRegion': REGION } });
   });
 
   it('keeps the reviewed-wildcard policy explicit for the deploy roles', () => {
@@ -271,5 +280,43 @@ describe('generated session policies (#165)', () => {
     }
     expect(() => boundaries.sessionPolicy('deploy', operationEnvironment('migrate'), 'operation'))
       .toThrow(/Deploy credentials are forbidden/);
+  });
+
+  it('every canary probe action is granted by the restricted session it runs under', () => {
+    const surface = inventory.deriveAuthorizationSurface(base);
+    const cases: Array<{ kind: string; purpose: string; operation: string; workflow: string }> = [];
+    // Runtime-session canary paths: deploy (before cdk deploy), one-shot
+    // (migration/admission) and observe (operation and qualification purposes).
+    for (const operation of MUTATE_OPERATIONS) {
+      cases.push({ kind: 'runtime', purpose: 'operation', operation, workflow: 'mutate' });
+    }
+    for (const purpose of ['operation', 'qualification']) {
+      cases.push({ kind: 'runtime', purpose, operation: 'observe', workflow: 'runtime' });
+    }
+    // Deploy-session canary paths: every deploy and the Egress destroy.
+    for (const operation of ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'deploy-egress',
+      'delete-egress', 'restore-release']) {
+      cases.push({ kind: 'deploy', purpose: 'operation', operation, workflow: 'mutate' });
+    }
+    for (const testCase of cases) {
+      const document = JSON.parse(boundaries.sessionPolicy(testCase.kind,
+        operationEnvironment(testCase.operation, testCase.workflow), testCase.purpose));
+      const granted = new Set(document.Statement.flatMap((statement: any) => [statement.Action].flat()));
+      const plan = inventory.canaryPlan(testCase.kind, surface);
+      for (const probe of plan.probes) {
+        for (const action of probe.actions) {
+          expect({ operation: testCase.operation, kind: testCase.kind, purpose: testCase.purpose, action,
+            granted: granted.has(action) })
+            .toEqual({ operation: testCase.operation, kind: testCase.kind, purpose: testCase.purpose, action,
+              granted: true });
+        }
+      }
+    }
+    // A pair whose only call site is the operator CLI is never probed: the
+    // deployed session does not execute it.
+    const operatorOnly = surface.pairs.filter((entry: any) => entry.credential_paths.length === 1
+      && entry.credential_paths[0] === 'operator-cli').map((entry: any) => entry.pair);
+    const probed = new Set(inventory.canaryPlan('runtime', surface).probes.map((probe: any) => probe.pair));
+    expect(operatorOnly.filter((pair: string) => probed.has(pair))).toEqual([]);
   });
 });

@@ -242,6 +242,10 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
     async oneShot(role, revision, argument = '', payload) {
       if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
       assertOneShotAllowed(env, role, argument, payload);
+      // Pre-mutation interlock (#165): a migration or admission one-shot changes
+      // data, so the same marked, read-only probes run first. A denial stops the
+      // operation before the task is registered or started.
+      await runAuthorizationCanary({ sessions: ['runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('runtime');
       let result;
       try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
@@ -304,6 +308,9 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       if (purpose !== 'operation') throw new Error('Qualification cannot destroy');
       assertDeployAllowed(env, stack);
       if (env.INFRA_OPERATION !== 'delete-egress' || stack !== egressStack) throw new Error('Only delete-egress may destroy a stack');
+      // Pre-mutation interlock (#165): prove the deploy and runtime sessions'
+      // reads before the Egress stack is deleted.
+      await runAuthorizationCanary({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });

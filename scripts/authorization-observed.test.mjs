@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { deriveAuthorizationSurface, PINNED_SURFACE, nonCoverageList, CREDENTIAL_PATHS, CANARY_MARKER,
   canaryPlan, classifyAwsFailure, IAM_ACTIONS, NON_DERIVED_REVIEWED_OPERATIONS, OBSERVED_SURFACE } from './authorization-inventory.mjs';
 import { reconcileObserved, buildObservedRecord, validateObservedRecord, assertObservedDeclared,
-  assertObservationWindow, isCanaryInvocation } from './authorization-observed.mjs';
+  assertObservationWindow, isCanaryInvocation, eventAction } from './authorization-observed.mjs';
 
 const root = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
@@ -40,13 +40,26 @@ test('the derived surface matches the pinned call-site counts and operations', (
 });
 
 test('every derived operation has a canary decision, and the deploy session is fully probed', () => {
-  const runtime = canaryPlan('runtime');
+  const surface = deriveAuthorizationSurface(root);
+  const runtime = canaryPlan('runtime', surface);
   const derived = Object.keys(IAM_ACTIONS);
   const decided = [...runtime.probes.map((probe) => probe.pair), ...runtime.skipped.map((skip) => skip.pair)];
   for (const pair of derived) assert.ok(decided.includes(pair), `${pair} has a canary decision`);
   for (const skip of runtime.skipped) assert.ok(skip.reason, `${skip.pair} records a skip reason`);
   assert.ok(runtime.probes.length > 0);
   assert.equal(runtime.session_marker, CANARY_MARKER);
+  // The operator-CLI retention reads are not executed by the deployed session and
+  // the restricted runtime session does not grant the lifecycle reads: they are
+  // skipped with a recorded reason, never probed (and the session is not widened).
+  for (const pair of ['ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
+    'ecr/start-lifecycle-policy-preview', 'ecr/describe-images']) {
+    assert.ok(runtime.skipped.some((skip) => skip.pair === pair), `${pair} is skipped`);
+    assert.ok(!runtime.probes.some((probe) => probe.pair === pair), `${pair} is not probed`);
+  }
+  const operatorOnly = surface.pairs.filter((entry) => entry.credential_paths.length === 1
+    && entry.credential_paths[0] === 'operator-cli').map((entry) => entry.pair);
+  const probed = new Set(runtime.probes.map((probe) => probe.pair));
+  assert.deepEqual(operatorOnly.filter((pair) => probed.has(pair)), []);
   const deploy = canaryPlan('deploy');
   assert.deepEqual(deploy.probes.map((probe) => probe.pair), ['sts/get-caller-identity',
     'cloudformation/describe-stacks', 'ssm/get-parameter', 'ec2/describe-managed-prefix-lists']);
@@ -74,6 +87,37 @@ test('the non-coverage list ships in the repository and pins its required limits
   assert.match(cdk.summary, /AdministratorAccess/);
   assert.match(cdk.summary, /permissions boundary/);
   assert.ok(NON_COVERAGE.some((entry) => /Condition/.test(entry.summary)));
+});
+
+test('a service-wide declaration covers observed actions and monitoring maps to cloudwatch', () => {
+  const declared = ['cloudformation:*', 'cloudwatch:GetMetricStatistics'];
+  const window = { start: '2026-10-20T10:00:00Z', end: '2026-10-20T13:00:00Z' };
+  const changeSet = cloudTrailEvent('beta-service-deploy-role', 'cloudformation:ExecuteChangeSet');
+  const metric = { EventTime: '2026-10-20T12:00:00Z', EventSource: 'monitoring.amazonaws.com',
+    EventName: 'GetMetricStatistics',
+    CloudTrailEvent: JSON.stringify({ userIdentity: { type: 'AssumedRole',
+      arn: 'arn:aws:sts::650880818323:assumed-role/beta-service-deploy-role/infra-deploy-1' } }) };
+  assert.equal(eventAction(metric), 'cloudwatch:GetMetricStatistics');
+  const record = buildObservedRecord({ events: [changeSet, metric], window, declared, env: {} });
+  assert.deepEqual(record.undeclared_actions, []);
+  assert.deepEqual(record.observed_actions, ['cloudformation:ExecuteChangeSet', 'cloudwatch:GetMetricStatistics']);
+  // Both declared entries were exercised, so neither is reported unused; the
+  // wildcard comparison is expansion-aware, not literal.
+  assert.deepEqual(record.declared_but_unused, []);
+  // An undeclared observed action still fails with the same semantics.
+  const foreign = buildObservedRecord({ events: [cloudTrailEvent('beta-service-deploy-role', 's3:GetObject')],
+    window, declared, env: {} });
+  assert.deepEqual(foreign.undeclared_actions, ['s3:GetObject']);
+  assert.throws(() => assertObservedDeclared(foreign), /undeclared AWS action/);
+});
+
+test('a declared wildcard is reported unused only when no action under it was observed', () => {
+  const window = { start: '2026-10-20T10:00:00Z', end: '2026-10-20T13:00:00Z' };
+  const declared = ['cloudformation:*', 'logs:DescribeLogGroups'];
+  const record = buildObservedRecord({ events: [cloudTrailEvent('beta-infra-runtime-role', 'cloudformation:DescribeStacks')],
+    window, declared, env: {} });
+  assert.deepEqual(record.declared_but_unused, ['logs:DescribeLogGroups']);
+  assert.equal(validateObservedRecord(record).retention.narrowing, 'report-only');
 });
 
 test('the canary excludes its own marked invocations from reconciliation', () => {

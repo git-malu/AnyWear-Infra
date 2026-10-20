@@ -1,4 +1,4 @@
-import { OBSERVED_SURFACE, declaredActions } from './authorization-inventory.mjs';
+import { OBSERVED_SURFACE, actionCovered, declaredActions } from './authorization-inventory.mjs';
 
 // The observed surface (D3). CloudTrail is read over the reconciled roles' run
 // window, an observed action outside the declared set fails, and
@@ -11,6 +11,11 @@ const SESSION_ACQUISITION_ACTIONS = Object.freeze(['sts:AssumeRole', 'sts:Assume
   'sts:GetSessionToken', 'sts:GetFederationToken']);
 const SESSION_ACQUISITION_SOURCES = Object.freeze(['sts.amazonaws.com']);
 const IGNORED_EVENT_SOURCES = Object.freeze(['signin.amazonaws.com']);
+
+// CloudTrail event sources are not IAM service prefixes: CloudWatch events are
+// recorded under `monitoring.amazonaws.com` while the IAM action is
+// `cloudwatch:...`. The alias map is reviewed, never inferred.
+export const EVENT_SOURCE_ALIASES = Object.freeze({ monitoring: 'cloudwatch' });
 
 export function eventDetail(event) {
   try {
@@ -44,7 +49,8 @@ export function isCanaryInvocation(event, marker = OBSERVED_SURFACE.canary_marke
 
 export function eventAction(event) {
   if (typeof event?.EventSource !== 'string' || typeof event?.EventName !== 'string') return undefined;
-  return `${event.EventSource.replace(/\.amazonaws\.com$/, '')}:${event.EventName}`;
+  const source = event.EventSource.replace(/\.amazonaws\.com$/, '');
+  return `${EVENT_SOURCE_ALIASES[source] ?? source}:${event.EventName}`;
 }
 
 export function assertObservationWindow({ start, end,
@@ -86,10 +92,16 @@ export function reconcileObserved({ events, declared = declaredActions(),
     observed.add(action);
     perRole.get(role).add(action);
   }
-  const declaredSet = new Set(declared);
+  const declaredList = [...declared];
   const observedActions = [...observed].sort();
-  const undeclared = observedActions.filter((action) => !declaredSet.has(action));
-  const declaredButUnused = declared.filter((action) => !observed.has(action)).sort();
+  // A declaration is a grant pattern: `cloudformation:*` declares any observed
+  // CloudFormation action, and `*` declares everything, so the same wildcard
+  // semantics the contract test uses apply here. The reverse direction is
+  // report-only and also expansion-aware, so `cloudformation:*` is not reported
+  // unused merely because no single literal action matched it.
+  const isDeclared = (action) => actionCovered(declaredList, action);
+  const undeclared = observedActions.filter((action) => !isDeclared(action));
+  const declaredButUnused = declared.filter((entry) => !observedActions.some((action) => actionCovered([entry], action))).sort();
   return {
     observed_actions: observedActions,
     undeclared_actions: undeclared,

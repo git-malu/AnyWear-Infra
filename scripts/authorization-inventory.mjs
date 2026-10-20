@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { reads as sessionReads } from './operation-boundaries.mjs';
 
 // One derived authorization surface for issue #165 (D1). The declared contract
 // test, the pre-mutation canary and the CloudTrail reconciliation all read this
@@ -389,9 +390,6 @@ export const CANARY_PROBES = Object.freeze({
     'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/00000000000000000000000000000000']),
   'ecs/describe-task-definition': Object.freeze(['--task-definition', 'beta-anywear-lifecycle']),
   'ecs/list-tasks': Object.freeze(['--cluster', 'beta-anywear']),
-  'ecr/describe-images': Object.freeze(['--repository-name', 'beta-anywear-service']),
-  'ecr/get-lifecycle-policy': Object.freeze(['--repository-name', 'beta-anywear-service']),
-  'ecr/get-lifecycle-policy-preview': Object.freeze(['--repository-name', 'beta-anywear-service']),
   'logs/get-log-events': Object.freeze(['--log-group-name', '/anywear/beta/one-shot',
     '--log-stream-name', 'beta-anywear-lifecycle/OneShot/canary-probe']),
   'logs/describe-log-groups': Object.freeze(['--log-group-name-prefix', '/anywear/beta/']),
@@ -405,11 +403,22 @@ export const CANARY_PROBES = Object.freeze({
 // reason. A new non-probed operation must be recorded here.
 export const CANARY_SKIPS = Object.freeze({
   'ecs/wait': 'A waiter is not an action; its polling reads are probed through ecs/describe-tasks and ecs/describe-services.',
+  'ecs/register-task-definition': 'A mutation, not a read; the canary runs before mutation and must not register a task definition.',
+  'ecs/run-task': 'A mutation, not a read; the canary runs before mutation and must not start a task.',
+  'ecr/batch-get-image': 'A reviewed mapping with no Infra call site; there is no operation to probe.',
+  'ecr/describe-images': 'An operator-CLI read (scripts/ecr-retention.mjs) whose only call site is outside the deployed session; the deployed runtime role grants it, but the canary does not probe CLI-only pairs.',
+  'ecr/get-lifecycle-policy': 'An operator-CLI read (scripts/ecr-retention.mjs); the restricted runtime session policy does not grant it and the canary must not widen the session.',
+  'ecr/get-lifecycle-policy-preview': 'An operator-CLI read (scripts/ecr-retention.mjs); the restricted runtime session policy does not grant it and the canary must not widen the session.',
   'ecr/start-lifecycle-policy-preview': 'A mutation, not a read; the canary runs before mutation and must not start it.',
   'logs/put-retention-policy': 'A mutation, not a read; it is the deployment step the canary protects.',
   'cloudfront/get-distribution': 'A conditional legacy fallback whose base grant the runtime role may deny by design (operation-boundaries.mjs reads table); the session never adds grants.',
   'cloudtrail/lookup-events': 'The observed layer reading CloudTrail for the run window; it is not part of the operation\'s read surface and its own invocations are not reconciled.',
 });
+
+// The action set the restricted runtime session actually grants (the session
+// policy is generated from this table). A probe outside it would be denied by the
+// session even when the base role allows it, so it is never probed.
+const RUNTIME_SESSION_ACTIONS = Object.freeze(new Set(Object.values(sessionReads)));
 
 // The deploy session's own read surface, exercised through the CDK CLI after the
 // session is assumed. Rendered from sessionPolicy("deploy").
@@ -589,16 +598,30 @@ export function declaredActions() {
   return [...actions].sort();
 }
 
-export function canaryPlan(kind) {
+// The runtime probe plan is filtered by the credential path that executes the
+// call and by the restricted session's own grant. A pair whose only call site is
+// the operator CLI is not executed by the deployed session; a pair whose actions
+// the session policy does not carry would be denied by the session even when the
+// base role allows it. Neither is probed, and each skip records why.
+export function canaryPlan(kind, surface) {
   if (kind === 'deploy') {
     return { kind, session_marker: CANARY_MARKER, probes: DEPLOY_SESSION_PROBES.map((probe) => ({ ...probe })), skipped: [] };
   }
   if (kind !== 'runtime') throw new Error(`Unknown canary session ${kind}`);
+  const operatorCliOnly = (pair) => {
+    const entry = surface?.pairs?.find((candidate) => candidate.pair === pair);
+    return Boolean(entry) && entry.credential_paths.length === 1 && entry.credential_paths[0] === 'operator-cli';
+  };
   const probes = [];
   const skipped = [];
   for (const pair of Object.keys(IAM_ACTIONS)) {
-    if (!(pair in CANARY_PROBES)) { skipped.push({ pair, reason: CANARY_SKIPS[pair] ?? 'No reviewed read-only probe.' }); continue; }
-    probes.push({ pair, args: CANARY_PROBES[pair], actions: IAM_ACTIONS[pair] });
+    const actions = IAM_ACTIONS[pair];
+    if (!(pair in CANARY_PROBES) || operatorCliOnly(pair)
+      || !actions.every((action) => RUNTIME_SESSION_ACTIONS.has(action))) {
+      skipped.push({ pair, reason: CANARY_SKIPS[pair] ?? 'Not a restricted-session read; the canary must not widen the session.' });
+      continue;
+    }
+    probes.push({ pair, args: CANARY_PROBES[pair], actions });
   }
   return { kind, session_marker: CANARY_MARKER, probes, skipped };
 }
