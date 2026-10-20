@@ -5,9 +5,11 @@
 //
 //   (a) pre-move  — rewrite the live Workload distribution origin from a
 //                   same-stack `Fn::GetAtt` to the literal ALB DNS name the stack
-//                   already resolves, and remove the distribution's `DependsOn`
-//                   residue on resources that stay behind. This is a minimal
-//                   in-place `update-stack` delta: the distribution ID and its
+//                   already resolves, rewrite the cleanup verification task
+//                   definition's `VERIFY_API_URL` to the literal distribution URL,
+//                   and remove the distribution's `DependsOn` residue on
+//                   resources that stay behind. This is a minimal in-place
+//                   `update-stack` delta: the distribution ID and its
 //                   `*.cloudfront.net` domain are preserved.
 //   (b) preview   — read both live templates, build the Workload source and Base
 //                   target, and call `create-stack-refactor`. Creation validates
@@ -72,14 +74,39 @@ const distributionResource = (template, logicalId, stack) => {
 
 const originDomainName = resource => resource?.Properties?.DistributionConfig?.Origins?.[0]?.DomainName;
 
+const API_DISTRIBUTION_DOMAIN = /^[a-z0-9]+\.cloudfront\.net$/;
+export function validateApiDistributionDomain(value) {
+  if (typeof value !== 'string' || !API_DISTRIBUTION_DOMAIN.test(value)) {
+    throw new Error('--api-distribution-domain must be a CloudFront domain such as d111111abcdef8.cloudfront.net (no scheme or path)');
+  }
+  return value;
+}
+
+// A moved distribution may not remain referenced anywhere in the refactor
+// source outside its own resource and the two outputs removed with it. Stage A
+// rewrites the one known `VERIFY_API_URL` reference; this guard fails closed for
+// any other (or unrewritten) `Fn::GetAtt` before `create-stack-refactor`.
+const distributionReferences = (value, at = '') => {
+  if (Array.isArray(value)) return value.flatMap((item, index) => distributionReferences(item, `${at}/${index}`));
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value['Fn::GetAtt']) && value['Fn::GetAtt'][0] === SOURCE_LOGICAL_ID) return [at];
+    return Object.entries(value).flatMap(([key, child]) => distributionReferences(child, `${at}/${key}`));
+  }
+  return [];
+};
+
 // (a) The pre-move Workload update. The only permitted changes are the first
-// origin's `DomainName` (GetAtt -> live literal) and removal of the
-// distribution's `DependsOn` entries. Outputs, parameters, conditions and every
-// other resource stay byte-identical, so the stack keeps serving.
-export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName } = {}) {
+// origin's `DomainName` (GetAtt -> live literal), the cleanup verification task
+// definition's `VERIFY_API_URL` value (distribution GetAtt -> literal URL), and
+// removal of the distribution's `DependsOn` entries. Outputs, parameters,
+// conditions and every other resource stay byte-identical, so the stack keeps
+// serving. The verify-URL rewrite is the option-1 plan bridge: without it the
+// refactor source would keep a dangling reference after the distribution moves.
+export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName, apiDistributionDomain } = {}) {
   if (typeof apiLoadBalancerDnsName !== 'string' || !apiLoadBalancerDnsName) {
     throw new Error('The pre-move update requires the live ApiLoadBalancerDnsName value');
   }
+  validateApiDistributionDomain(apiDistributionDomain);
   const source = clone(liveWorkload);
   const resource = distributionResource(source, SOURCE_LOGICAL_ID, WORKLOAD_STACK);
   const domain = originDomainName(resource);
@@ -94,6 +121,37 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName } =
   } else if (domain !== apiLoadBalancerDnsName) {
     throw new Error('The live distribution origin is neither the expected GetAtt nor the recorded literal ALB DNS name');
   }
+  // Exactly one cleanup verification task definition and exactly one
+  // VERIFY_API_URL entry; the live value must be the expected distribution
+  // GetAtt, never a literal to be overwritten or a foreign reference.
+  const verificationIds = Object.keys(source.Resources ?? {})
+    .filter((id) => id.startsWith('CleanupOperationVerificationTaskDefinition'));
+  if (verificationIds.length !== 1) {
+    throw new Error('The pre-move update requires exactly one CleanupOperationVerificationTaskDefinition resource');
+  }
+  const verificationId = verificationIds[0];
+  const verification = source.Resources[verificationId];
+  if (verification.Type !== 'AWS::ECS::TaskDefinition') {
+    throw new Error(`${verificationId} is not an ECS task definition`);
+  }
+  const environment = verification.Properties?.ContainerDefinitions?.[0]?.Environment;
+  if (!Array.isArray(environment)) {
+    throw new Error('The cleanup verification task definition has no first-container environment');
+  }
+  const entries = environment.map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry?.Name === 'VERIFY_API_URL');
+  if (entries.length !== 1) {
+    throw new Error(`The cleanup verification task definition must have exactly one VERIFY_API_URL entry; got ${entries.length}`);
+  }
+  const [{ entry: verifyEntry, index: verifyIndex }] = entries;
+  const parts = verifyEntry.Value?.['Fn::Join'];
+  const expectedReference = { 'Fn::GetAtt': [SOURCE_LOGICAL_ID, 'DomainName'] };
+  if (!Array.isArray(parts) || parts[0] !== '' || !Array.isArray(parts[1]) || parts[1].length !== 2
+    || parts[1][0] !== 'https://' || JSON.stringify(canonical(parts[1][1])) !== JSON.stringify(canonical(expectedReference))) {
+    throw new Error('The live VERIFY_API_URL is not the expected https:// + distribution GetAtt reference');
+  }
+  const previousVerifyValue = clone(verifyEntry.Value);
+  verifyEntry.Value = `https://${apiDistributionDomain}`;
   const removedDependsOn = [];
   if (resource.DependsOn !== undefined) {
     if (!Array.isArray(resource.DependsOn)) throw new Error('Unreviewed DependsOn shape on the live distribution');
@@ -103,8 +161,17 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName } =
     }
     delete resource.DependsOn;
   }
+  // The moved outputs legitimately reference the distribution until the refactor,
+  // so scan only the resources: any other remaining `Fn::GetAtt` would dangle
+  // once the distribution moves. Refuse here, before the plan is returned.
+  const resourceReferences = distributionReferences(source.Resources);
+  if (resourceReferences.length) {
+    throw new Error(`The pre-move Workload template still references ${SOURCE_LOGICAL_ID} outside the moved outputs at /Resources${resourceReferences[0]}`);
+  }
+  const verifyPath = `/Resources/${verificationId}/Properties/ContainerDefinitions/0/Environment/${verifyIndex}/Value`;
   const allowedPaths = [
     ...(getAtt ? [`/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`] : []),
+    verifyPath,
     ...(removedDependsOn.length ? [`/Resources/${SOURCE_LOGICAL_ID}/DependsOn`] : []),
   ];
   const changes = differences(liveWorkload, source);
@@ -115,7 +182,8 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName } =
     if (!source.Outputs?.[output]) throw new Error(`The pre-move Workload template must keep its ${output} output`);
   }
   return { template: source, changes: changes.map(change => change.path), removedDependsOn,
-    origin: { from: getAtt ? { 'Fn::GetAtt': getAtt } : domain, to: apiLoadBalancerDnsName } };
+    origin: { from: getAtt ? { 'Fn::GetAtt': getAtt } : domain, to: apiLoadBalancerDnsName },
+    verifyUrl: { resource: verificationId, index: verifyIndex, from: previousVerifyValue, to: verifyEntry.Value } };
 }
 
 // The refactor is only eligible when every documented condition holds.
@@ -161,6 +229,10 @@ export function buildRefactorTemplates({ liveWorkload, liveBase, baseSynth }) {
   const allowedSource = [`/Resources/${SOURCE_LOGICAL_ID}`, ...MOVED_OUTPUTS.map(output => `/Outputs/${output}`)];
   const unexpectedSource = sourceChanges.filter(change => !allowedSource.includes(change));
   if (unexpectedSource.length) throw new Error(`The refactor source changed unexpected paths: ${unexpectedSource.join(', ')}`);
+  const remaining = distributionReferences(source);
+  if (remaining.length) {
+    throw new Error(`The refactor source still references ${SOURCE_LOGICAL_ID} outside the moved outputs at ${remaining[0]}`);
+  }
 
   const movedDistribution = distributionResource(baseSynth, DESTINATION_LOGICAL_ID, `${BASE_STACK} synthesis`);
   const target = clone(liveBase);
@@ -319,7 +391,8 @@ export function templateObjectUrl(bucket, region, key) {
 // CLI -----------------------------------------------------------------------
 const OPTIONS = Object.freeze({
   '--stage': true, '--workload-template': true, '--base-template': true, '--base-synth-template': true,
-  '--api-load-balancer-dns-name': true, '--distribution-type': true, '--workload-stack-policy': true,
+  '--api-load-balancer-dns-name': true, '--api-distribution-domain': true,
+  '--distribution-type': true, '--workload-stack-policy': true,
   '--base-stack-policy': true, '--describe': true, '--actions': true, '--resource-mappings': true,
   '--workload-parameters': true, '--template-bucket': true, '--template-region': true,
   '--output': true, '--apply': false,
@@ -362,6 +435,7 @@ export async function runStage(options, { run = defaultRun, now = () => new Date
   if (stage === 'pre-move') {
     const plan = preMoveWorkloadUpdate(readJson(options['workload-template']), {
       apiLoadBalancerDnsName: options['api-load-balancer-dns-name'],
+      apiDistributionDomain: options['api-distribution-domain'],
     });
     if (!options.apply) return { stage, applied: false, ...plan };
     // Refuse an unusable template bucket before any AWS call (including the live
