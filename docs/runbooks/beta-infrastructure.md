@@ -38,6 +38,23 @@ terminal first (one writer), and a missing Runtime is the stopped state rather
 than an inactive variant to maintain. The one-time Base/Runtime split migration
 is Deployment-gated: see [beta-split-migration.md](beta-split-migration.md).
 
+### Egress NAT/EIP replacement experiment
+
+The Egress stack's NAT/EIP constructs are renamed `NatGatewayNext`/`NatEipNext`
+(formerly `NatGateway`/`NatEip`) so the next `deploy-egress` gives the provider a
+new source address. CloudFormation creates a new EIP/allocation and NAT, updates
+both 0.0.0.0/0 routes to the new NAT, then deletes the old NAT and releases its
+EIP. The `EgressNatGatewayId` and `EgressNatEipAllocationId` output logical
+IDs/names stay unchanged; only their values change.
+
+The current old physical IDs are `18.162.201.142` (EIP) and
+`nat-0bf635c13de95e370` (NAT). Record the new EIP/allocation and NAT IDs from the
+deploy readback; the source revision does not claim them before deployment. The
+old pre-split address `16.163.218.252` was released and must not be reused. The
+change is reversible, but a revert replaces again and allocates another EIP.
+This experiment is source-only until the scheduler allocates the Beta writer; no
+deploy is authorized by the source change.
+
 ## Step C: the release slice left this repository
 
 After #158 step C, Infra owns Foundation, the Beta Base stack, Egress and Billing
