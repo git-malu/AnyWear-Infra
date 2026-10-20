@@ -79,9 +79,11 @@ jobs:
           path: .qualification-verifier
           token: ${{ steps.app.outputs.token }}
           persist-credentials: false
-      - name: Verify qualification v2 integrity and exact artifact/run/attempt/release binding
+      - name: Verify the qualification record v3 integrity and exact artifact/run/attempt/release binding
         run: node scripts/production-preflight.mjs verify
       # Execution stays source-disabled in scripts/promote-production.mjs, which
       # runs before credentials and cannot be bypassed by an activation variable.
+      # The preflight consumes the flat v3 record (`revisions`/`service_artifacts`/
+      # `observations`); it no longer downloads or validates deployment records.
       # A future reviewed onboarding PR must supply scoped cross-account credentials,
       # Production DB observation, scan/retention evidence and compute-only recovery.

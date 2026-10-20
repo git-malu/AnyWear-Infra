@@ -29,34 +29,55 @@ const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID:
   SERVICE_SOURCE_SHA: serviceSha, SERVICE_IMAGE_DIGEST: imageDigest };
 const release = () => readReviewedRelease(env);
 
-// The deployment record the qualification embeds is a v3 Infra record: producer
-// identity, the configured stack set, the consumed stage-contract inputs, the
-// observation and the derived schema hash. There is no selection.
-function deploymentRecord() {
-  const inputs = [{ parameter: '/anywear/beta/vpc_id', version: '2', value_sha256: 'd'.repeat(64) }];
-  return { schema_version: 3, record_type: 'anywear_infra_deployment',
-    producer: { repository: 'git-malu/AnyWear-Infra', sha: infraSha, workflow_path: '.github/workflows/runtime.yml',
-      workflow_ref: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main', run_id: 41, run_attempt: 1 },
-    stacks: configuredStacks.map(stack => ({ name: stack.stack_name, region: stack.region,
-      producer_repository: 'git-malu/AnyWear-Infra', producer_sha: infraSha, template_sha256: 'f'.repeat(64) })),
-    inputs,
-    observed: { lambdas: {
-      'pre-sign-up': { code_sha256: `${'A'.repeat(43)}=`, configuration_sha256: '1'.repeat(64) },
+const clientSha = '2'.repeat(40);
+const clientVersion = 7; const minimumClientVersion = 5;
+const clientDomain = 'd111111abcdef8.cloudfront.net'; const clientUrl = `https://${clientDomain}`;
+const serviceUrl = 'https://api.beta.anywear.example';
+const platformInputs = [{ parameter: '/anywear/beta/vpc_id', version: '2', value_sha256: 'd'.repeat(64) }];
+
+// One independent authenticated read of the deployed system. v3 carries the live
+// Client/Service identity plus the platform content: every configured Beta stack's
+// Original template hash, the stage-contract inputs, the two Service-built Lambdas,
+// the queue configuration and the Client distribution domain. This replaces the v2
+// `deployment.record` chain: it proves the deployed content, not the Infra commit.
+function observedPlatform() {
+  return { stacks: configuredStacks.map(stack => ({ name: stack.stack_name, region: stack.region, template_sha256: 'f'.repeat(64) })),
+    inputs: structuredClone(platformInputs), schema_sha256: stageContractSchemaHash(platformInputs),
+    lambdas: { 'pre-sign-up': { code_sha256: `${'A'.repeat(43)}=`, configuration_sha256: '1'.repeat(64) },
       'post-confirmation': { code_sha256: `${'B'.repeat(43)}=`, configuration_sha256: '2'.repeat(64) } },
-    queue_config_sha256: '3'.repeat(64), client_sha: '4'.repeat(40), endpoints: { client: 'https://d111111abcdef8.cloudfront.net' } },
-    schema: { content_sha256: stageContractSchemaHash(inputs) } };
+    queue_config_sha256: '3'.repeat(64), client_domain: clientDomain };
 }
 
-// This fixture exercises the consumer's additional cross-binding. E2E validates
-// the entire v2 schema/integrity/observations through its pinned verifier API.
+function observation(collectedAt) {
+  return { collected_at: collectedAt, authenticated: true,
+    client: { url: clientUrl, source_commit: clientSha, built_at: '2026-10-01T00:00:00Z' },
+    service: { url: serviceUrl, service_commit: serviceSha, image_digest: imageDigest },
+    platform: observedPlatform() };
+}
+
+// Flat qualification record v3: no `compatibility` pin, no `deployment` records and
+// no `revisions.infra`. The consumer's additional cross-binding is asserted here;
+// the pinned E2E verifier validates the whole schema, integrity and observations.
 function qualificationFixture() {
-  const record = deploymentRecord();
-  return { schema_version: 2, record_type: 'anywear_beta_qualification',
-    revisions: { infra: { repository: 'git-malu/AnyWear-Infra', sha: infraSha },
-      service: { repository: 'git-malu/AnyWear-Service', sha: serviceSha, image_digest: imageDigest } },
-    service_artifacts: { repository: 'git-malu/AnyWear-Service', release_id: 76,
+  const payload = { schema_version: 3, record_type: 'anywear_beta_qualification',
+    qualification_id: 'beta-77-2', result: 'passed', operation: 'full', qualified_at: '2026-10-08T00:25:00Z',
+    environment: { stage: 'beta', aws_account_id: '650880818323', aws_region: 'ap-east-1', client_url: clientUrl, service_url: serviceUrl },
+    expected: { service_commit: serviceSha, client_commit: null, source: 'trigger' },
+    revisions: { e2e: { repository: 'git-malu/AnyWear-E2E', sha: e2eSha },
+      client: { repository: 'git-malu/AnyWear-Client', sha: clientSha, client_version: clientVersion },
+      service: { repository: 'git-malu/AnyWear-Service', sha: serviceSha, image_digest: imageDigest,
+        minimum_client_version: minimumClientVersion } },
+    service_artifacts: { repository: 'git-malu/AnyWear-Service', release_id: 76, tag: `service-artifacts-${serviceSha}`,
       manifest_asset_id: 1, manifest_sha256: 'e'.repeat(64) },
-    deployment: { record } };
+    observations: { before: observation('2026-10-08T00:05:00Z'), after: observation('2026-10-08T00:20:00Z') },
+    test: { runner: 'playwright', result: 'passed', selection: { invocation: 'pnpm test:regression', tag: '@regression' },
+      scenarios: [{ file: 'tests/wardrobe-lifecycle.spec.ts', outcome: 'passed', collected: 3, skipped: 0 }],
+      report_sha256: 'c'.repeat(64) },
+    workflow: { repository: 'git-malu/AnyWear-E2E', path: '.github/workflows/beta-qualification.yml',
+      ref: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
+      run_id: 77, run_attempt: 2, run_url: 'https://github.com/git-malu/AnyWear-E2E/actions/runs/77',
+      trigger: 'release-qualify', dispatched_by: 'https://github.com/git-malu/AnyWear-Service/actions/runs/80' } };
+  return { ...payload, integrity: { algorithm: 'sha256', payload_sha256: sha256(canonicalJson(payload)) } };
 }
 
 test('future Production context binds protected source, account, IDs and the reviewed release identity', () => {
@@ -117,14 +138,48 @@ test('authenticated input resolver keeps metadata outside the download directory
   } }), /sealed stable/);
 });
 
-test('qualification v2 binds the reviewed release identity and a valid v3 deployment record', () => {
+test('qualification v3 binds the reviewed release identity and the independent observation', () => {
   assert.equal(assertQualifiedRelease(qualificationFixture(), release(), env), imageDigest);
-  for (const mutate of [r => r.schema_version = 1, r => r.payload = {}, r => r.revisions.infra.sha = e2eSha,
-    r => r.revisions.service.sha = '9'.repeat(40), r => r.revisions.service.image_digest = `sha256:${'9'.repeat(64)}`,
-    r => r.service_artifacts.release_id = 75, r => r.deployment.record.producer.sha = e2eSha,
-    r => delete r.deployment.record.schema]) {
+  const rejections = [
+    ['v2 schema', r => r.schema_version = 2, /flat qualification record v3/],
+    ['payload envelope', r => r.payload = {}, /flat qualification record v3/],
+    ['v1 schema', r => r.schema_version = 1, /flat qualification record v3/],
+    ['missing expected', r => delete r.expected, /Invalid qualification record fields/],
+    ['extra member', r => r.unexpected = true, /Invalid qualification record fields/],
+    ['removed compatibility member', r => r.compatibility = {}, /Invalid qualification record fields/],
+    ['removed deployment member', r => r.deployment = {}, /Invalid qualification record fields/],
+    ['revisions.infra present', r => r.revisions.infra = { repository: 'git-malu/AnyWear-Infra', sha: infraSha },
+      /Invalid qualification revisions fields/],
+    ['another Service source', r => r.revisions.service.sha = '9'.repeat(40), /identity differs from promotion/],
+    ['another image digest', r => r.revisions.service.image_digest = `sha256:${'9'.repeat(64)}`, /identity differs from promotion/],
+    ['another Service repository', r => r.revisions.service.repository = 'git-malu/AnyWear-E2E', /identity differs from promotion/],
+    ['another release id', r => r.service_artifacts.release_id = 75, /artifact identity differs/],
+    ['another release tag', r => r.service_artifacts.tag = `service-artifacts-${'9'.repeat(40)}`, /artifact identity differs/],
+    ['another artifact repository', r => r.service_artifacts.repository = 'git-malu/AnyWear-E2E', /artifact identity differs/],
+    ['Client below the enforced floor', r => r.revisions.service.minimum_client_version = clientVersion + 1, /below the minimum/],
+    ['another Client commit', r => r.revisions.client.sha = '9'.repeat(40), /differs from the recorded revisions/],
+    ['another expected Service commit', r => r.expected.service_commit = '9'.repeat(40), /differs from the recorded revisions/],
+    ['another observed Service commit', r => {
+      r.observations.before.service.service_commit = '9'.repeat(40);
+      r.observations.after.service.service_commit = '9'.repeat(40);
+    }, /differs from the recorded revisions/],
+    ['another observed Client commit', r => {
+      r.observations.before.client.source_commit = '9'.repeat(40);
+      r.observations.after.client.source_commit = '9'.repeat(40);
+    }, /differs from the recorded revisions/],
+    ['observation changed during the suite', r => r.observations.before.platform.queue_config_sha256 = '9'.repeat(64), /different system before and after/],
+    ['missing platform observation', r => delete r.observations.after.platform, /Invalid after observation fields/],
+    ['missing authenticated mark', r => delete r.observations.after.authenticated, /Invalid after observation fields/],
+    ['non-boolean authenticated mark', r => r.observations.after.authenticated = 'true', /not an authenticated read/],
+    ['incomplete stack set', r => r.observations.after.platform.stacks.pop(), /must list every configured Beta stack/],
+    ['foreign stack identity', r => r.observations.after.platform.stacks[0].name = 'AnyWearEgressStack-beta', /stack identity differs/],
+    ['unrecomputed schema hash', r => r.observations.after.platform.schema_sha256 = '9'.repeat(64), /schema hash differs/],
+    ['non-CloudFront Client domain', r => r.observations.after.platform.client_domain = 'example.com', /Client distribution domain/],
+    ['another E2E run', r => r.workflow.run_id = 80, /another E2E run\/attempt/],
+  ];
+  for (const [label, mutate, pattern] of rejections) {
     const value = structuredClone(qualificationFixture()); mutate(value);
-    assert.throws(() => assertQualifiedRelease(value, release(), env));
+    assert.throws(() => assertQualifiedRelease(value, release(), env), pattern, label);
   }
 });
 

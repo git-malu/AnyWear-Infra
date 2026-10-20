@@ -3,13 +3,15 @@ import { promisify } from 'node:util';
 import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { parseJson, sha256, HASH, SHA, DIGEST, canonicalJson, matches, integer } from './json-contract.mjs';
-import { validateDeploymentRecord } from './deployment-contract.mjs';
+import { parseJson, sha256, HASH, SHA, DIGEST, canonicalJson, exact, matches, integer } from './json-contract.mjs';
+import { stageContractSchemaHash, validateStageInputs } from './deployment-contract.mjs';
+import { configuredStacks } from './operation-stacks.mjs';
 
 const execute = promisify(execFile);
 const INFRA = 'git-malu/AnyWear-Infra';
 const E2E = 'git-malu/AnyWear-E2E';
 const SERVICE = 'git-malu/AnyWear-Service';
+const CLIENT = 'git-malu/AnyWear-Client';
 const QUALIFICATION_WORKFLOW = '.github/workflows/beta-qualification.yml';
 export const PRODUCTION_WORKFLOW = '.github/workflows/production.yml';
 
@@ -17,6 +19,9 @@ export const PRODUCTION_WORKFLOW = '.github/workflows/production.yml';
 // preflight below stays source-reviewed but no longer reads a committed selection:
 // the reviewed Service release identity is explicit (`SERVICE_RELEASE_ID`,
 // `SERVICE_SOURCE_SHA`, `SERVICE_IMAGE_DIGEST`), exactly like the Beta release path.
+// Nothing below executes a Production mutation: the workflow is `workflow_call`-only
+// and the source blocker fails before any credential even when an activation
+// variable changes.
 export function validateProductionContext(env = process.env) {
   if (env.GITHUB_REPOSITORY !== INFRA
     || env.GITHUB_REPOSITORY_ID !== '1409047265' || env.GITHUB_REF !== 'refs/heads/main'
@@ -68,23 +73,143 @@ export function assertStableRelease(stable, commit, mainComparison, release, env
   }
 }
 
-// The qualification record binds the reviewed release identity; the deployment
-// record it embeds is a v3 record and is validated as one.
+// Schema v3 of the Beta qualification record: flat, self-contained, and written
+// only by the E2E `full` operation. It removes the `compatibility` pin and the
+// two downloaded deployment records (`deployment`) that v2 embedded.
+const QUALIFICATION_MEMBERS = Object.freeze(['schema_version', 'record_type', 'qualification_id', 'result', 'operation',
+  'qualified_at', 'environment', 'expected', 'revisions', 'service_artifacts', 'observations', 'test', 'workflow', 'integrity']);
+const OBSERVATION_MEMBERS = Object.freeze(['collected_at', 'client', 'service', 'platform', 'authenticated']);
+const OBSERVATION_CLIENT_MEMBERS = Object.freeze(['url', 'source_commit', 'built_at']);
+const OBSERVATION_SERVICE_MEMBERS = Object.freeze(['url', 'service_commit', 'image_digest']);
+const OBSERVATION_PLATFORM_MEMBERS = Object.freeze(
+  ['stacks', 'inputs', 'schema_sha256', 'lambdas', 'queue_config_sha256', 'client_domain']);
+const OBSERVATION_STACK_MEMBERS = Object.freeze(['name', 'region', 'template_sha256']);
+const LAMBDA_NAMES = Object.freeze(['pre-sign-up', 'post-confirmation']);
+
+function httpsUrl(value, label) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error(`${label} is not a valid URL`); }
+  if (url.protocol !== 'https:') throw new Error(`${label} must use HTTPS`);
+  return url;
+}
+
+// One independent read of the deployed system, made by the qualification run with
+// its own Beta credentials. It replaces the v2 `deployment.record` chain: it proves
+// the deployed content (templates, stage inputs, Lambdas, queues, Client domain),
+// not which Infra commit deployed the platform.
+function assertObservation(observation, phase) {
+  exact(observation, OBSERVATION_MEMBERS, `${phase} observation`);
+  if (!Number.isFinite(Date.parse(observation.collected_at))) throw new Error(`${phase} observation time is invalid`);
+  if (observation.authenticated !== true) throw new Error(`${phase} observation is not an authenticated read`);
+  exact(observation.client, OBSERVATION_CLIENT_MEMBERS, `${phase} observed Client`);
+  matches(observation.client.source_commit, SHA, `${phase} observed Client commit`);
+  if (!Number.isFinite(Date.parse(observation.client.built_at))) throw new Error(`${phase} observed Client build time is invalid`);
+  const clientUrl = httpsUrl(observation.client.url, `${phase} observed Client URL`);
+  exact(observation.service, OBSERVATION_SERVICE_MEMBERS, `${phase} observed Service`);
+  matches(observation.service.service_commit, SHA, `${phase} observed Service commit`);
+  matches(observation.service.image_digest, DIGEST, `${phase} observed Service image digest`);
+  httpsUrl(observation.service.url, `${phase} observed Service URL`);
+  const platform = exact(observation.platform, OBSERVATION_PLATFORM_MEMBERS, `${phase} observed platform`);
+  if (!Array.isArray(platform.stacks) || platform.stacks.length !== configuredStacks.length) {
+    throw new Error(`${phase} observed platform must list every configured Beta stack`);
+  }
+  const names = new Set();
+  for (const row of platform.stacks) {
+    exact(row, OBSERVATION_STACK_MEMBERS, `${phase} observed stack`);
+    const configured = configuredStacks.find(stack => stack.stack_name === row.name);
+    if (!configured || names.has(row.name) || row.region !== configured.region) {
+      throw new Error(`${phase} observed stack identity differs from the configured Beta stack set`);
+    }
+    matches(row.template_sha256, HASH, `${phase} observed stack template hash`);
+    names.add(row.name);
+  }
+  validateStageInputs(platform.inputs);
+  if (platform.schema_sha256 !== stageContractSchemaHash(platform.inputs)) {
+    throw new Error(`${phase} observed schema hash differs from its stage inputs`);
+  }
+  exact(platform.lambdas, LAMBDA_NAMES, `${phase} observed Lambdas`);
+  for (const lambda of Object.values(platform.lambdas)) {
+    exact(lambda, ['code_sha256', 'configuration_sha256'], `${phase} observed Lambda identity`);
+    matches(lambda.code_sha256, /^[A-Za-z0-9+/]{43}=$/, `${phase} observed Lambda code hash`);
+    matches(lambda.configuration_sha256, HASH, `${phase} observed Lambda configuration hash`);
+  }
+  matches(platform.queue_config_sha256, HASH, `${phase} observed queue configuration hash`);
+  matches(platform.client_domain, /^[a-z0-9]+\.cloudfront\.net$/, `${phase} observed Client distribution domain`);
+  if (clientUrl.host !== platform.client_domain) {
+    throw new Error(`${phase} observed Client URL and distribution domain disagree`);
+  }
+  return observation;
+}
+
+const observedIdentity = observation => ({
+  client: { url: observation.client.url, source_commit: observation.client.source_commit },
+  service: observation.service,
+  platform: observation.platform,
+});
+
+// The qualification record binds the reviewed release identity. v3 carries it in
+// `revisions.service` and `service_artifacts`; the independent observation under
+// `observations.after` states what was tested. `revisions.infra` does not exist:
+// Infra source lineage belongs to the deployment records (#181), so nothing here
+// compares the qualification to `GITHUB_SHA`. Production remains closed by the
+// source blocker in `promote-production.mjs`; no accepted record can execute it.
 export function assertQualifiedRelease(record, release, env = process.env) {
   readReviewedRelease(env);
-  // Qualification v2 is a flat record with an integrity member, not a payload envelope.
-  if (record.schema_version !== 2 || record.record_type !== 'anywear_beta_qualification' || record.payload !== undefined) {
-    throw new Error('Production requires flat qualification v2');
+  if (record?.schema_version !== 3 || record.record_type !== 'anywear_beta_qualification' || record.payload !== undefined) {
+    throw new Error('Production requires a flat qualification record v3; v2/v1 and payload envelopes are not inputs');
   }
-  if (record.revisions?.infra?.repository !== INFRA || record.revisions.infra.sha !== env.GITHUB_SHA
-    || record.revisions?.service?.repository !== SERVICE || record.revisions.service.sha !== release.source_sha
-    || record.revisions.service.image_digest !== release.image_digest || record.service_artifacts?.repository !== SERVICE
-    || record.service_artifacts.release_id !== release.release_id) {
-    throw new Error('Qualified Infra/release/image identity differs from promotion');
+  exact(record, QUALIFICATION_MEMBERS, 'qualification record');
+  if (record.result !== 'passed' || record.operation !== 'full') throw new Error('Qualification record is not a passed full run');
+  if (!Number.isFinite(Date.parse(record.qualified_at))) throw new Error('Qualification record time is invalid');
+  if (record.environment?.stage !== 'beta' || record.environment.aws_account_id !== '650880818323'
+    || record.environment.aws_region !== 'ap-east-1') throw new Error('Qualification record describes another stage/account/region');
+  exact(record.expected, ['service_commit', 'client_commit', 'source'], 'qualification expectation');
+  matches(record.expected.service_commit, SHA, 'expected Service commit');
+  if (record.expected.client_commit !== null) matches(record.expected.client_commit, SHA, 'expected Client commit');
+  if (!['trigger', 'live'].includes(record.expected.source)) throw new Error('Qualification expectation source must be trigger or live');
+  if (record.workflow?.run_id !== Number(env.QUALIFICATION_RUN_ID) || record.workflow.run_attempt !== Number(env.QUALIFICATION_RUN_ATTEMPT)) {
+    throw new Error('Qualification record describes another E2E run/attempt than the reviewed metadata');
   }
-  const deployed = record.deployment?.record;
-  validateDeploymentRecord(deployed);
-  if (deployed.producer?.sha !== env.GITHUB_SHA) throw new Error('Qualified deployment record describes another Infra source');
+  exact(record.revisions, ['e2e', 'client', 'service'], 'qualification revisions');
+  exact(record.revisions.e2e, ['repository', 'sha'], 'e2e revision');
+  exact(record.revisions.client, ['repository', 'sha', 'client_version'], 'client revision');
+  exact(record.revisions.service, ['repository', 'sha', 'image_digest', 'minimum_client_version'], 'service revision');
+  if (record.revisions.e2e.repository !== E2E || record.revisions.e2e.sha !== env.QUALIFICATION_E2E_SHA) {
+    throw new Error('Qualified E2E revision differs from the authenticated E2E source');
+  }
+  matches(record.revisions.e2e.sha, SHA, 'qualified E2E commit');
+  if (record.revisions.client.repository !== CLIENT) throw new Error('Qualified Client repository differs from the reviewed Client');
+  matches(record.revisions.client.sha, SHA, 'qualified Client commit');
+  integer(record.revisions.client.client_version, 'qualified Client version', 0);
+  if (record.revisions.service.repository !== SERVICE || record.revisions.service.sha !== release.source_sha
+    || record.revisions.service.image_digest !== release.image_digest) {
+    throw new Error('Qualified Service/release/image identity differs from promotion');
+  }
+  integer(record.revisions.service.minimum_client_version, 'qualified minimum Client version', 0);
+  if (record.revisions.client.client_version < record.revisions.service.minimum_client_version) {
+    throw new Error('Qualified Client version is below the minimum Client version the qualified Service enforces');
+  }
+  exact(record.service_artifacts, ['repository', 'release_id', 'tag', 'manifest_asset_id', 'manifest_sha256'], 'Service artifacts');
+  if (record.service_artifacts.repository !== SERVICE || record.service_artifacts.release_id !== release.release_id
+    || record.service_artifacts.tag !== `service-artifacts-${release.source_sha}`) {
+    throw new Error('Qualified Service artifact identity differs from the reviewed release');
+  }
+  integer(record.service_artifacts.manifest_asset_id, 'qualified manifest asset');
+  matches(record.service_artifacts.manifest_sha256, HASH, 'qualified manifest hash');
+  exact(record.observations, ['before', 'after'], 'qualification observations');
+  assertObservation(record.observations.before, 'before');
+  const after = assertObservation(record.observations.after, 'after');
+  if (canonicalJson(observedIdentity(record.observations.before)) !== canonicalJson(observedIdentity(after))) {
+    throw new Error('Qualification observed a different system before and after the suite');
+  }
+  if (after.client.source_commit !== record.revisions.client.sha
+    || after.service.service_commit !== record.revisions.service.sha
+    || after.service.image_digest !== record.revisions.service.image_digest
+    || record.expected.service_commit !== record.revisions.service.sha
+    || (record.expected.client_commit !== null && record.expected.client_commit !== record.revisions.client.sha)
+    || record.environment.client_url !== after.client.url || record.environment.service_url !== after.service.url) {
+    throw new Error('Qualified observation identity differs from the recorded revisions and expectation');
+  }
   return release.image_digest;
 }
 
@@ -117,7 +242,7 @@ export async function verifyProductionRecord({ recordBytes, run, artifact, verif
   assertTrustedQualificationMetadata(run, artifact, env, now);
   if (sha256(recordBytes) !== env.QUALIFICATION_RECORD_SHA256) throw new Error('Pinned qualification exact-byte checksum mismatch');
   assertQualifiedRelease(record, release, env);
-  if (typeof verifier !== 'function') throw new Error('Pinned E2E v2 qualification verifier unavailable');
+  if (typeof verifier !== 'function') throw new Error('Pinned E2E v3 qualification verifier unavailable');
   const accepted = await verifier(record, { trustedRun: run, trustedArtifact: artifact, recordBytes, now, expected: {
     run_id: Number(env.QUALIFICATION_RUN_ID), run_attempt: Number(env.QUALIFICATION_RUN_ATTEMPT), artifact_id: Number(env.QUALIFICATION_ARTIFACT_ID),
     record_sha256: env.QUALIFICATION_RECORD_SHA256, e2e_sha: env.QUALIFICATION_E2E_SHA } });
