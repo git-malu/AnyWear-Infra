@@ -108,10 +108,11 @@ describe('Foundation reviewed service set (CDK context)', () => {
     // of the #158 rounds (read-only bake grants on both worker log-group forms,
     // colon-form CloudWatch alarm ARNs, worker metric-filter grants, and main's
     // DescribeLogGroups/Step Functions/CleanupOperation-role grants), plus the
-    // #166 Runtime-scope and CFN dynamic-reference read extensions. The
-    // comparison normalizes only the declared CDK diagnostic metadata.
+    // #166 Runtime-scope, CFN dynamic-reference read and M6 rollback-grant
+    // extensions. The comparison normalizes only the declared CDK diagnostic
+    // metadata.
     expect(comparison.normalized_canonical_sha256)
-      .toBe('1617f150b7c31a4156ec015a712158851d210b11589b206bf376c98397635a67');
+      .toBe('276115780819dffa17de5e1dddcbbefb55bb4fb8da95dedd4d3c56d26d942f8f');
     for (const id of provenance.addition_allowlist) expect(template.Resources[id]).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-role')).toBeDefined();
     expect(roleName(template, 'beta-service-deploy-cfn-role')).toBeDefined();

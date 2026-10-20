@@ -12,8 +12,8 @@
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
-  "dedicated_candidate_canonical_sha256": "9af52d4af44bbde2ae806bbe0706b36704e3c27a4d85f13a399d9de7cec4a60a",
-  "dedicated_additions_sha256": "a240d27a6800c6e2405299b13764dba9ebb37fa7b1a651aed3b6b564acaf9ae0",
+  "dedicated_candidate_canonical_sha256": "08e54f6121f539d3c3628f98638e909458228733012c5de72526337b6e7b5567",
+  "dedicated_additions_sha256": "68482afaa87c696a686a62e7adf54023cee032f1ff7baa0a4b72ee0fd468c504",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -80,6 +80,13 @@
       "source_branch": "issue/166-cfn-secret-grant",
       "scope": "beta-service-deploy-cfn-role Secrets Manager dynamic-reference read for the API distribution OriginCustomHeaders (cloudfront_origin_header)",
       "detail": "Stage A first updates the moved API distribution, whose OriginCustomHeaders carries a {{resolve:secretsmanager:/anywear/beta/cloudfront_origin_header}} dynamic reference. CloudFormation re-resolves that reference on every update of the resource under the Workload stack execution role; the role had no Secrets Manager action, so the update rolled back. Foundation adds exactly secretsmanager:GetSecretValue on arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*; no other secret, action, wildcard, condition, managed policy or role. Source-side only, not live: publication_verified and deployment_qualified stay false. The statement is removed by a later reviewed Foundation deploy after the MOVE deletes the Workload stack."
+    },
+    {
+      "issue": 166,
+      "recorded_at": "2026-10-20",
+      "source_branch": "issue/166-deploy-role-grants",
+      "scope": "M6 rollback grants on beta-service-deploy-cfn-role: cleanup state-machine tagging and any-resource ECS task-definition deregistration",
+      "detail": "CDK applies the stack tags on state-machine create/rollback, so the Service CloudFormation execution role needs states:TagResource and states:UntagResource on the fixed cleanup state machine arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup. ECS evaluates ecs:DeregisterTaskDefinition against * regardless of the task-definition ARN, so the existing family-scoped statement never authorizes rollback or stack deletion; a separate ecs:DeregisterTaskDefinition statement on * covers only that path. Both statements carry Sids so CDK policy minimization cannot merge them with unrelated wildcard/state-machine statements. No other action, role or wildcard; every existing statement is unchanged and the family-scoped task-definition statement stays. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation. The grants are needed only for rollback/stack deletion and remain until a later reviewed Foundation deploy removes them."
     }
   ]
 }
