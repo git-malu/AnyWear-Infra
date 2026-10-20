@@ -38,6 +38,9 @@ export const DESTINATION_LOGICAL_ID = API_DISTRIBUTION.logicalId;
 export const MOVED_OUTPUTS = Object.freeze(['ApiDistributionDomainName', 'ApiBaseUrl']);
 export const REFACTOR_ACTION = Object.freeze({ action: 'MOVE', entity: 'RESOURCE', resourceType: 'AWS::CloudFront::Distribution' });
 export const STAGES = Object.freeze(['pre-move', 'preview', 'execute']);
+// `create-stack-refactor` returns CREATE_IN_PROGRESS; validation finishes later.
+export const REFACTOR_PREVIEW_INTERVAL_MS = 10_000;
+export const REFACTOR_PREVIEW_MAX_ATTEMPTS = 30;
 
 const clone = value => structuredClone(value);
 const canonical = value => {
@@ -95,13 +98,16 @@ const distributionReferences = (value, at = '') => {
   return [];
 };
 
-// (a) The pre-move Workload update. The only permitted changes are the first
-// origin's `DomainName` (GetAtt -> live literal), the cleanup verification task
-// definition's `VERIFY_API_URL` value (distribution GetAtt -> literal URL), and
-// removal of the distribution's `DependsOn` entries. Outputs, parameters,
-// conditions and every other resource stay byte-identical, so the stack keeps
-// serving. The verify-URL rewrite is the option-1 plan bridge: without it the
-// refactor source would keep a dangling reference after the distribution moves.
+// (a) The pre-move Workload update. The permitted changes are the first origin's
+// `DomainName` (GetAtt -> live literal), the cleanup verification task
+// definition's `VERIFY_API_URL` value (distribution GetAtt -> literal URL),
+// removal of the distribution's `DependsOn` entries, and adding the `Retain`
+// deletion/update-replacement attributes the Base-pinned destination carries.
+// Outputs, parameters, conditions and every other resource stay byte-identical,
+// so the stack keeps serving. The verify-URL rewrite is the option-1 plan bridge:
+// without it the refactor source would keep a dangling reference after the
+// distribution moves. Stage A may already be applied, so already-literal origin
+// and verify values are accepted without a change; any other value still refuses.
 export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName, apiDistributionDomain } = {}) {
   if (typeof apiLoadBalancerDnsName !== 'string' || !apiLoadBalancerDnsName) {
     throw new Error('The pre-move update requires the live ApiLoadBalancerDnsName value');
@@ -121,9 +127,22 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName, ap
   } else if (domain !== apiLoadBalancerDnsName) {
     throw new Error('The live distribution origin is neither the expected GetAtt nor the recorded literal ALB DNS name');
   }
+  // The MOVE compares source and destination resource properties/attributes, so
+  // the Workload distribution must carry the same Retain policies as the
+  // Base-pinned destination. Absent attributes are added; an existing Retain is
+  // left alone; any other value refuses.
+  const retainPaths = [];
+  for (const attribute of ['DeletionPolicy', 'UpdateReplacePolicy']) {
+    if (resource[attribute] === undefined) {
+      resource[attribute] = 'Retain';
+      retainPaths.push(`/Resources/${SOURCE_LOGICAL_ID}/${attribute}`);
+    } else if (resource[attribute] !== 'Retain') {
+      throw new Error(`The live Workload distribution ${attribute} is ${resource[attribute]}, not Retain`);
+    }
+  }
   // Exactly one cleanup verification task definition and exactly one
   // VERIFY_API_URL entry; the live value must be the expected distribution
-  // GetAtt, never a literal to be overwritten or a foreign reference.
+  // GetAtt or the already-rewritten literal URL.
   const verificationIds = Object.keys(source.Resources ?? {})
     .filter((id) => id.startsWith('CleanupOperationVerificationTaskDefinition'));
   if (verificationIds.length !== 1) {
@@ -146,12 +165,15 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName, ap
   const [{ entry: verifyEntry, index: verifyIndex }] = entries;
   const parts = verifyEntry.Value?.['Fn::Join'];
   const expectedReference = { 'Fn::GetAtt': [SOURCE_LOGICAL_ID, 'DomainName'] };
-  if (!Array.isArray(parts) || parts[0] !== '' || !Array.isArray(parts[1]) || parts[1].length !== 2
-    || parts[1][0] !== 'https://' || JSON.stringify(canonical(parts[1][1])) !== JSON.stringify(canonical(expectedReference))) {
-    throw new Error('The live VERIFY_API_URL is not the expected https:// + distribution GetAtt reference');
+  const literalVerifyUrl = `https://${apiDistributionDomain}`;
+  const expectedJoin = Array.isArray(parts) && parts[0] === '' && Array.isArray(parts[1])
+    && parts[1].length === 2 && parts[1][0] === 'https://'
+    && JSON.stringify(canonical(parts[1][1])) === JSON.stringify(canonical(expectedReference));
+  if (!expectedJoin && verifyEntry.Value !== literalVerifyUrl) {
+    throw new Error('The live VERIFY_API_URL is neither the expected https:// + distribution GetAtt reference nor the recorded literal URL');
   }
   const previousVerifyValue = clone(verifyEntry.Value);
-  verifyEntry.Value = `https://${apiDistributionDomain}`;
+  if (expectedJoin) verifyEntry.Value = literalVerifyUrl;
   const removedDependsOn = [];
   if (resource.DependsOn !== undefined) {
     if (!Array.isArray(resource.DependsOn)) throw new Error('Unreviewed DependsOn shape on the live distribution');
@@ -171,7 +193,8 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName, ap
   const verifyPath = `/Resources/${verificationId}/Properties/ContainerDefinitions/0/Environment/${verifyIndex}/Value`;
   const allowedPaths = [
     ...(getAtt ? [`/Resources/${SOURCE_LOGICAL_ID}/Properties/DistributionConfig/Origins/0/DomainName`] : []),
-    verifyPath,
+    ...(expectedJoin ? [verifyPath] : []),
+    ...retainPaths,
     ...(removedDependsOn.length ? [`/Resources/${SOURCE_LOGICAL_ID}/DependsOn`] : []),
   ];
   const changes = differences(liveWorkload, source);
@@ -183,7 +206,8 @@ export function preMoveWorkloadUpdate(liveWorkload, { apiLoadBalancerDnsName, ap
   }
   return { template: source, changes: changes.map(change => change.path), removedDependsOn,
     origin: { from: getAtt ? { 'Fn::GetAtt': getAtt } : domain, to: apiLoadBalancerDnsName },
-    verifyUrl: { resource: verificationId, index: verifyIndex, from: previousVerifyValue, to: verifyEntry.Value } };
+    verifyUrl: { resource: verificationId, index: verifyIndex, from: previousVerifyValue, to: verifyEntry.Value },
+    retained: retainPaths };
 }
 
 // The refactor is only eligible when every documented condition holds.
@@ -430,7 +454,8 @@ async function defaultRun(command, args) {
 
 // Runs one explicitly selected stage. Validation-only unless `--apply` is given.
 // This is the only place that can call AWS, and it never does so implicitly.
-export async function runStage(options, { run = defaultRun, now = () => new Date() } = {}) {
+export async function runStage(options, { run = defaultRun, now = () => new Date(),
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const stage = options.stage;
   if (stage === 'pre-move') {
     const plan = preMoveWorkloadUpdate(readJson(options['workload-template']), {
@@ -522,8 +547,26 @@ export async function runStage(options, { run = defaultRun, now = () => new Date
     const inputFile = path.join(directory, 'create-stack-refactor.json');
     await writeFile(inputFile, `${JSON.stringify(input)}\n`);
     const created = await runAws(['cloudformation', 'create-stack-refactor', '--cli-input-json', `file://${inputFile}`], { run });
-    const preview = { describe: await runAws(['cloudformation', 'describe-stack-refactor',
-      '--stack-refactor-id', created.StackRefactorId], { run }),
+    // Poll the asynchronous preview to a terminal state before reading actions.
+    // Only AVAILABLE is success; CREATE_FAILED (or any other status) and the
+    // bounded timeout refuse before the execute path.
+    let describe;
+    for (let attempt = 1; attempt <= REFACTOR_PREVIEW_MAX_ATTEMPTS; attempt += 1) {
+      describe = await runAws(['cloudformation', 'describe-stack-refactor',
+        '--stack-refactor-id', created.StackRefactorId], { run });
+      const status = describe.ExecutionStatus;
+      if (status === 'AVAILABLE') break;
+      if (status !== 'CREATE_IN_PROGRESS') {
+        throw new Error(`Refactor preview ended ${status ?? 'unavailable'}: ${describe.StatusReason ?? 'no status reason'}`);
+      }
+      if (attempt === REFACTOR_PREVIEW_MAX_ATTEMPTS) {
+        throw new Error(`Refactor preview did not become AVAILABLE within `
+          + `${(REFACTOR_PREVIEW_MAX_ATTEMPTS * REFACTOR_PREVIEW_INTERVAL_MS) / 1000} seconds `
+          + `(last status ${status})`);
+      }
+      await sleep(REFACTOR_PREVIEW_INTERVAL_MS);
+    }
+    const preview = { describe,
     actions: await runAws(['cloudformation', 'list-stack-refactor-actions',
       '--stack-refactor-id', created.StackRefactorId], { run }) };
     const clean = validateRefactorPreview({ ...preview, resourceMappings: templates.resourceMappings });
