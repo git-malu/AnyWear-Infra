@@ -505,9 +505,26 @@ export class FoundationStack extends cdk.Stack {
           'elasticloadbalancing:ModifyListener'],
         resources: [listener],
       }));
+      // ELB authorizes CreateListener on the load balancer ARN: the listener ARN
+      // does not exist until the create returns. The existing listener-scoped
+      // statement above stays for the update/delete paths.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['elasticloadbalancing:CreateListener', 'elasticloadbalancing:DeleteListener',
+          'elasticloadbalancing:ModifyListener'],
+        resources: [loadBalancer],
+        sid: 'CreateListenerOnLoadBalancer',
+      }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['elasticloadbalancing:CreateRule', 'elasticloadbalancing:DeleteRule', 'elasticloadbalancing:ModifyRule'],
         resources: [listenerRule],
+      }));
+      // ELB authorizes CreateRule on the listener ARN: the listener-rule ARN does
+      // not exist until the create returns. The existing listener-rule-scoped
+      // statement above stays for the update/delete paths.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['elasticloadbalancing:CreateRule', 'elasticloadbalancing:DeleteRule', 'elasticloadbalancing:ModifyRule'],
+        resources: [listener],
+        sid: 'CreateRuleOnListener',
       }));
       // ELBv2 read actions have no resource-level scope in IAM.
       serviceCfn.addToPolicy(new iam.PolicyStatement({
@@ -529,6 +546,17 @@ export class FoundationStack extends cdk.Stack {
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['cloudwatch:PutMetricAlarm', 'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms'],
         resources: [alarms],
+      }));
+      // The Runtime template's two CDK-auto-named queue-depth alarms carry the
+      // `AnyWearRuntimeStack-beta-` prefix, not `beta-anywear-*`; the existing
+      // alarm statement above does not match them, which is the same evaluation
+      // that made them undeletable at M3. The nine explicitly named
+      // `beta-anywear-*` alarms stay covered by that statement; this one is
+      // confined to the auto-named prefix.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['cloudwatch:PutMetricAlarm', 'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms'],
+        resources: [colonArn('cloudwatch', 'alarm', 'AnyWearRuntimeStack-beta-*')],
+        sid: 'RuntimeQueueDepthAlarms',
       }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy'],

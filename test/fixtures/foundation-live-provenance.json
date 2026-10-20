@@ -12,8 +12,8 @@
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
-  "dedicated_candidate_canonical_sha256": "08e54f6121f539d3c3628f98638e909458228733012c5de72526337b6e7b5567",
-  "dedicated_additions_sha256": "68482afaa87c696a686a62e7adf54023cee032f1ff7baa0a4b72ee0fd468c504",
+  "dedicated_candidate_canonical_sha256": "bf444567178e329063aeb1112c21d84fffa46efacee256e1991c1ad8186bf074",
+  "dedicated_additions_sha256": "fe1387786162dbe5594e411ba83342cfc7e25f7ac6b7f38a8265e33a8c41e0b9",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -87,6 +87,20 @@
       "source_branch": "issue/166-deploy-role-grants",
       "scope": "M6 rollback grants on beta-service-deploy-cfn-role: cleanup state-machine tagging and any-resource ECS task-definition deregistration",
       "detail": "CDK applies the stack tags on state-machine create/rollback, so the Service CloudFormation execution role needs states:TagResource and states:UntagResource on the fixed cleanup state machine arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup. ECS evaluates ecs:DeregisterTaskDefinition against * regardless of the task-definition ARN, so the existing family-scoped statement never authorizes rollback or stack deletion; a separate ecs:DeregisterTaskDefinition statement on * covers only that path. Both statements carry Sids so CDK policy minimization cannot merge them with unrelated wildcard/state-machine statements. No other action, role or wildcard; every existing statement is unchanged and the family-scoped task-definition statement stays. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation. The grants are needed only for rollback/stack deletion and remain until a later reviewed Foundation deploy removes them."
+    },
+    {
+      "issue": 166,
+      "recorded_at": "2026-10-20",
+      "source_branch": "issue/166-elb-grants",
+      "scope": "M6 ELB create grants on beta-service-deploy-cfn-role: listener actions on the load-balancer ARN and rule actions on the listener ARN",
+      "detail": "ELB authorizes CreateListener against the load balancer ARN because the listener ARN does not exist until creation returns, and CreateRule against the listener ARN because the listener-rule ARN does not exist until creation returns. Foundation adds exactly two statements: elasticloadbalancing:CreateListener/DeleteListener/ModifyListener on arn:aws:elasticloadbalancing:ap-east-1:650880818323:loadbalancer/app/beta-anywear-api/*, and CreateRule/DeleteRule/ModifyRule on arn:aws:elasticloadbalancing:ap-east-1:650880818323:listener/app/beta-anywear-api/*. Both carry Sids so policy minimization cannot merge them; the existing listener- and listener-rule-scoped statements stay for the update/delete paths. No other action, role or wildcard. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
+    },
+    {
+      "issue": 166,
+      "recorded_at": "2026-10-20",
+      "source_branch": "issue/166-elb-grants",
+      "scope": "M6 Runtime queue-depth alarm prefix grant on beta-service-deploy-cfn-role",
+      "detail": "The Runtime template creates two CDK-auto-named queue-depth alarms whose names carry the AnyWearRuntimeStack-beta- prefix, so the existing cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms grant on alarm:beta-anywear-* does not match them (the same evaluation gap that made them undeletable at M3). Foundation adds exactly cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms on arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*, Sid RuntimeQueueDepthAlarms. The nine explicitly named beta-anywear-* alarms stay covered by the existing statement; no broader prefix, action or role. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
     }
   ]
 }
