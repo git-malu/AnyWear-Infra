@@ -1191,6 +1191,7 @@ describe('Explicit infrastructure identity cutover', () => {
       'ssm:GetParameter', 'ssm:GetParameters',
       'states:CreateStateMachine', 'states:DeleteStateMachine', 'states:DeleteStateMachineVersion',
       'states:DescribeStateMachine', 'states:ListStateMachineVersions', 'states:PublishStateMachineVersion',
+      'states:TagResource', 'states:UntagResource',
       'states:UpdateStateMachine',
     ].sort();
     expect([...new Set(actions(cfn))].sort()).toEqual(expectedCfnActions);
@@ -1285,16 +1286,16 @@ describe('Explicit infrastructure identity cutover', () => {
       Action: 'states:CreateStateMachine', Effect: 'Allow', Resource: '*',
     });
     expect(cfn.filter((statement) => [statement.Action].flat()
-      .some((action: string) => action.startsWith('states:')))).toHaveLength(2);
+      .some((action: string) => action.startsWith('states:')))).toHaveLength(3);
     expect([...new Set(actions(cfn).filter((action) => action.startsWith('states:')))].sort())
-      .toEqual([...stateActions, 'states:CreateStateMachine'].sort());
+      .toEqual([...stateActions, 'states:CreateStateMachine', 'states:TagResource', 'states:UntagResource'].sort());
     for (const action of ['states:StartExecution', 'states:StartSyncExecution', 'states:StopExecution',
       'states:RedriveExecution', 'states:DescribeExecution', 'states:DescribeStateMachineForExecution',
       'states:GetExecutionHistory', 'states:ListExecutions', 'states:ListMapRuns', 'states:DescribeMapRun',
       'states:ListActivities', 'states:DescribeActivity', 'states:GetActivityTask',
       'states:ListStateMachines',
       'states:CreateStateMachineAlias', 'states:UpdateStateMachineAlias', 'states:DeleteStateMachineAlias',
-      'states:ListStateMachineAliases', 'states:ListTagsForResource', 'states:TagResource', 'states:UntagResource',
+      'states:ListStateMachineAliases', 'states:ListTagsForResource',
       'states:TestState', 'states:RevealSecrets', 'states:InvokeHTTPEndpoint', 'states:SendTaskSuccess',
       'states:SendTaskFailure', 'states:SendTaskHeartbeat', 'states:ValidateStateMachineDefinition', 'states:*']) {
       expect(actions(cfn)).not.toContain(action);
@@ -1524,6 +1525,58 @@ describe('Explicit infrastructure identity cutover', () => {
       .filter((statement) => [statement.Action].flat()
         .some((action: string) => action.startsWith('secretsmanager:')));
     expect(allSecretStatements).toHaveLength(1);
+  });
+
+  // Issue #166 M6 rollback grants: CDK tags the cleanup state machine on
+  // create/rollback, and ECS evaluates DeregisterTaskDefinition against `*`
+  // regardless of the task-definition ARN. The two grants are separate
+  // statements with Sids (policy minimization would otherwise merge them into
+  // unrelated statements), and no broader states:*/ecs:* action is added.
+  it('grants the CloudFormation execution role exactly the two M6 rollback statements', () => {
+    const app = new cdk.App();
+    const template = Template.fromStack(new FoundationStack(app, 'AnyWearFoundationStack', {
+      env: { account: '650880818323', region: 'ap-east-1' }, identityPhase: 'roles-added', legacyRoleSource: 'cdk',
+    })).toJSON();
+    const resources = template.Resources as Record<string, any>;
+    const roleId = (name: string): string => Object.entries(resources).find(([, resource]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === name))![0];
+    const statementsFor = (name: string): any[] => (Object.values(resources) as any[])
+      .filter((resource) => ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'].includes(resource.Type)
+        && resource.Properties.Roles?.some((role: any) => role.Ref === roleId(name)))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const resourceOfForTest = (value: any): any => {
+      if (Array.isArray(value)) return value.map(resourceOfForTest);
+      if (typeof value === 'string') return value;
+      if (value?.['Fn::Join']) return value['Fn::Join'][1].map(resourceOfForTest).join(value['Fn::Join'][0]);
+      if (value?.Ref === 'AWS::Partition') return 'aws';
+      return value;
+    };
+    const cfn = statementsFor('beta-service-deploy-cfn-role');
+    const tagStatements = cfn.filter((statement) => [statement.Action].flat().includes('states:TagResource'));
+    expect(tagStatements).toHaveLength(1);
+    expect([tagStatements[0].Action].flat().sort()).toEqual(['states:TagResource', 'states:UntagResource']);
+    expect(tagStatements[0].Effect).toBe('Allow');
+    expect(resourceOfForTest(tagStatements[0].Resource)).toBe(
+      'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup');
+    expect(tagStatements[0].Sid).toBe('TagCleanupStateMachine');
+    const deregister = cfn.filter((statement) => [statement.Action].flat().includes('ecs:DeregisterTaskDefinition')
+      && statement.Resource === '*');
+    expect(deregister).toHaveLength(1);
+    expect([deregister[0].Action].flat()).toEqual(['ecs:DeregisterTaskDefinition']);
+    expect(deregister[0].Effect).toBe('Allow');
+    expect(deregister[0].Resource).toBe('*');
+    expect(deregister[0].Sid).toBe('DeregisterTaskDefinitionAnyResource');
+    // The family-scoped register/describe statement remains unchanged.
+    const family = cfn.filter((statement) => [statement.Action].flat().includes('ecs:RegisterTaskDefinition'));
+    expect(family).toHaveLength(1);
+    expect([family[0].Action].flat().sort())
+      .toEqual(['ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition', 'ecs:RegisterTaskDefinition']);
+    expect(([family[0].Resource].flat() as any[]).map(resourceOfForTest).every((resource: string) => (
+      resource.startsWith('arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-')))).toBe(true);
+    // No broad family-wide action anywhere: the exact expected action inventory
+    // above is the other guard; this pins there is no literal states:*/ecs:*.
+    expect(cfn.some((statement) => [statement.Action].flat().some((action: string) => (
+      action === 'states:*' || action === 'ecs:*')))).toBe(false);
   });
 
   // Regression for the #162 Testing failure: a CloudWatch alarm ARN is

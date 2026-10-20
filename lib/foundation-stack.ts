@@ -467,6 +467,14 @@ export class FoundationStack extends cdk.Stack {
         actions: ['ecs:RegisterTaskDefinition', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition'],
         resources: taskDefinitions,
       }));
+      // ECS evaluates DeregisterTaskDefinition against `*`, so the family-scoped
+      // statement above never authorizes rollback or stack deletion. This separate
+      // `*` grant covers only that rollback/deletion path; the family-scoped
+      // statement stays for register/describe.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['ecs:DeregisterTaskDefinition'], resources: ['*'],
+        sid: 'DeregisterTaskDefinitionAnyResource',
+      }));
       serviceCfn.addToPolicy(new iam.PolicyStatement({
         actions: ['ecs:CreateService', 'ecs:UpdateService', 'ecs:DeleteService', 'ecs:DescribeServices'],
         resources: workloadServices,
@@ -563,6 +571,14 @@ export class FoundationStack extends cdk.Stack {
           'states:UpdateStateMachine', 'states:DeleteStateMachine',
           'states:PublishStateMachineVersion', 'states:DeleteStateMachineVersion'],
         resources: [cleanupStateMachine],
+      }));
+      // CDK applies the stack's tags on state-machine create/rollback, so the
+      // execution role needs exactly these two tagging actions on the fixed cleanup
+      // state machine.
+      serviceCfn.addToPolicy(new iam.PolicyStatement({
+        actions: ['states:TagResource', 'states:UntagResource'],
+        resources: [cleanupStateMachine],
+        sid: 'TagCleanupStateMachine',
       }));
       // CreateStateMachine has no resource type in the Step Functions service
       // authorization table, so it cannot be scoped to the state-machine ARN.

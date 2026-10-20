@@ -65,7 +65,8 @@
     },
     {
       "type": "AWS::ECS::TaskDefinition",
-      "actions": ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:DeregisterTaskDefinition"]
+      "actions": ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:DeregisterTaskDefinition"],
+      "wildcard_actions": ["ecs:DeregisterTaskDefinition"]
     },
     {
       "type": "AWS::ElasticLoadBalancingV2::Listener",
