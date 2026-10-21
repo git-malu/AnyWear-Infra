@@ -2275,10 +2275,10 @@ describe('Explicit infrastructure identity cutover', () => {
 });
 
 describe('Disposable Beta Egress stack', () => {
-  function synthesizeEgress(): Record<string, any> {
+  function synthesizeEgress(props: { natEipAllocationId?: string } = {}): Record<string, any> {
     const app = new cdk.App();
     return Template.fromStack(new EgressStack(app, 'AnyWearEgressStack-beta', {
-      env: { account: '650880818323', region: 'ap-east-1' },
+      env: { account: '650880818323', region: 'ap-east-1' }, ...props,
     })).toJSON();
   }
 
@@ -2289,6 +2289,24 @@ describe('Disposable Beta Egress stack', () => {
 
     expect(ofType('AWS::EC2::NatGateway')).toHaveLength(1);
     expect(ofType('AWS::EC2::EIP')).toHaveLength(1);
+    // Issue #166 new-EIP experiment: the logical IDs changed so CloudFormation
+    // replaces the EIP/allocation and NAT and points the routes at the new NAT.
+    expect(template.Resources.NatEipNext).toBeDefined();
+    expect(template.Resources.NatGatewayNext).toBeDefined();
+    expect(template.Resources.NatEip).toBeUndefined();
+    expect(template.Resources.NatGateway).toBeUndefined();
+    // The stack-owned EIP is retained so deleting Egress for a stop does not
+    // release the allocation the drill wants to reuse on the next start.
+    expect(template.Resources.NatEipNext.DeletionPolicy).toBe('Retain');
+    expect(template.Resources.NatEipNext.UpdateReplacePolicy).toBe('Retain');
+    expect(template.Resources.NatGatewayNext.Properties.AllocationId)
+      .toEqual({ 'Fn::GetAtt': ['NatEipNext', 'AllocationId'] });
+    expect(template.Resources.NatEipNext.Properties.Tags).toEqual([
+      { Key: 'Name', Value: 'beta-anywear-egress-nat' },
+    ]);
+    expect(template.Resources.NatGatewayNext.Properties.Tags).toEqual([
+      { Key: 'Name', Value: 'beta-anywear-egress-nat' },
+    ]);
     // AWS allows one association per subnet and Base owns it: Egress creates no
     // route table and no association, only routes in the imported Base tables.
     expect(ofType('AWS::EC2::RouteTable')).toHaveLength(0);
@@ -2299,6 +2317,8 @@ describe('Disposable Beta Egress stack', () => {
       BASE_EXPORTS.privateRouteTableIds.map((name) => ({ 'Fn::ImportValue': name })));
     expect(routes.every((route) => route.Properties.DestinationCidrBlock === '0.0.0.0/0'
       && route.Properties.NatGatewayId !== undefined)).toBe(true);
+    expect(routes.map((route) => route.Properties.NatGatewayId))
+      .toEqual([{ Ref: 'NatGatewayNext' }, { Ref: 'NatGatewayNext' }]);
     const endpoint = ofType('AWS::EC2::VPCEndpoint');
     expect(endpoint).toHaveLength(1);
     expect(String(endpoint[0].Properties.ServiceName)).toContain('s3');
@@ -2320,6 +2340,33 @@ describe('Disposable Beta Egress stack', () => {
     expect(Object.keys(template.Outputs).sort()).toEqual([
       'EgressNatEipAllocationId', 'EgressNatGatewayId', 'EgressPrivateRouteTableIds',
     ]);
+    expect(template.Outputs.EgressNatGatewayId.Value).toEqual({ Ref: 'NatGatewayNext' });
+    expect(template.Outputs.EgressNatEipAllocationId.Value)
+      .toEqual({ 'Fn::GetAtt': ['NatEipNext', 'AllocationId'] });
+  });
+
+  it('reuses a retained EIP allocation when natEipAllocationId is provided', () => {
+    const allocationId = 'eipalloc-0a5198fb91b876949';
+    const template = synthesizeEgress({ natEipAllocationId: allocationId });
+    // No EIP resource is created; the NAT and output use the retained allocation.
+    expect(template.Resources.NatEipNext).toBeUndefined();
+    expect(template.Resources.NatGatewayNext).toBeDefined();
+    expect(template.Resources.NatGatewayNext.Properties.AllocationId).toBe(allocationId);
+    expect(template.Outputs.EgressNatEipAllocationId.Value).toBe(allocationId);
+    expect(template.Outputs.EgressNatGatewayId.Value).toEqual({ Ref: 'NatGatewayNext' });
+    const routes = Object.values(template.Resources).filter((resource: any) => resource.Type === 'AWS::EC2::Route') as any[];
+    expect(routes.map((route) => route.Properties.NatGatewayId))
+      .toEqual([{ Ref: 'NatGatewayNext' }, { Ref: 'NatGatewayNext' }]);
+    expect(template.Resources.NatGatewayNext.Properties.SubnetId)
+      .toEqual({ 'Fn::ImportValue': BASE_EXPORTS.natSubnetId });
+    expect(template.Resources.NatGatewayNext.Properties.Tags).toEqual([
+      { Key: 'Name', Value: 'beta-anywear-egress-nat' },
+    ]);
+    expect(template.Resources.S3GatewayEndpoint.Properties.RouteTableIds).toEqual(
+      BASE_EXPORTS.privateRouteTableIds.map((name) => ({ 'Fn::ImportValue': name })));
+    // A malformed allocation is refused at synthesis.
+    expect(() => synthesizeEgress({ natEipAllocationId: 'eipalloc-NOTHEX' }))
+      .toThrow(/natEipAllocationId must be an Elastic IP allocation id/);
   });
 
   it('synthesizes from the egress-only app scope without Service artifacts', () => {
