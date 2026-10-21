@@ -188,8 +188,8 @@ describe('IaC policy lint (#165)', () => {
     const reviewedScoped = { ...scoped, actions: ['cloudformation:DescribeStacks'],
       resources: [`arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/AnyWearRuntimeStack-beta/*`] };
     expect(SUPPRESSIONS.some((suppression) => statementMatches(reviewedScoped, suppression))).toBe(true);
-    // The synthesized roles carry no managed policies; an attachment must be in
-    // the reviewed list (currently empty by design).
+    // The synthesized roles carry one reviewed managed policy (CDK's overflow
+    // policy); any other attachment fails.
     expect(managedPolicies.filter((entry) => !MANAGED_POLICY_REVIEW.some((reviewedPolicy) => (
       reviewedPolicy.role === entry.role && reviewedPolicy.policy === entry.policy)))).toEqual([]);
     const unreviewedPolicy = { role: 'beta-infra-runtime-role',
@@ -248,7 +248,7 @@ describe('IaC policy lint (#165)', () => {
     }
     const runtime = preflight.simulationRequests('runtime', env);
     const ssm = runtime.find((request: any) => request.pair === 'ssm/get-parameters');
-    expect(ssm.resources.length).toBeGreaterThanOrEqual(35);
+    expect(ssm.resources.length).toBe(39);
     expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/tester_allowlist`);
     expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/api_base_url`);
     const lambda = runtime.find((request: any) => request.pair === 'lambda/get-function');
@@ -256,6 +256,36 @@ describe('IaC policy lint (#165)', () => {
     const deploy = preflight.simulationRequests('deploy', env) as any[];
     expect(deploy.map((request) => request.pair)).toEqual(['cloudformation/describe-stacks', 'ssm/get-parameter',
       'ec2/describe-managed-prefix-lists']);
+  });
+
+  it('every deploy-plan read is covered by the deploy role grant and the deploy session policy', () => {
+    const opEnv = {
+      GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
+      GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40), GITHUB_EVENT_NAME: 'workflow_dispatch',
+      GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
+      GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', ENABLE_BETA_MUTATION: 'true', AWS_ACCOUNT_ID: ACCOUNT,
+      AWS_REGION: REGION, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
+      INFRA_OPERATION: 'deploy-platform',
+    };
+    const boundary = require('../scripts/operation-boundaries.mjs');
+    const sessionActions = new Set(JSON.parse(boundary.sessionPolicy('deploy', opEnv, 'operation'))
+      .Statement.flatMap((statement: any) => [statement.Action].flat()));
+    const deployRoleStatements = statements.filter((statement) => statement.principal === 'beta-infra-deploy-role');
+    const plan = preflight.simulationRequests('deploy', { INFRA_OPERATION: 'deploy-platform' }) as any[];
+    for (const request of plan) {
+      for (const action of request.actions as string[]) {
+        expect({ action, inSession: sessionActions.has(action) }).toEqual({ action, inSession: true });
+        const covered = deployRoleStatements.some((statement) => actionCovered(statement.actions, action)
+          && (request.resources as string[]).every((resource) => statement.resources
+            .some((pattern) => resourceMatches([pattern], resource))));
+        expect({ action, covered }).toEqual({ action, covered: true });
+      }
+    }
+    const ssm = plan.find((request) => request.pair === 'ssm/get-parameter');
+    expect(ssm.resources.length).toBe(9);
+    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/cognito_user_pool_id`);
+    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/infra_selection`);
+    expect(ssm.resources.some((resource: string) => resource.endsWith('/api_base_url'))).toBe(false);
   });
 
   it('records every reviewed not-in-plan read with a reason', () => {

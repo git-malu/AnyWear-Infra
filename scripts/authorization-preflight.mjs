@@ -30,6 +30,15 @@ const TASK_FUNCTIONS = Object.freeze(['beta-anywear-pre-sign-up', 'beta-anywear-
 // The runtime role reads the full published stage contract plus the admission and
 // tester parameter surface; the simulator plan uses every reviewed name rather
 // than a representative subset.
+// The deploy role reads only the public platform names, the admission names and
+// the two record parameters (lib/beta-role-grants.ts); the stage-contract prefix is
+// granted to the runtime and E2E roles, not to the deploy role.
+const DEPLOY_PARAMETER_NAMES = Object.freeze(['cognito_user_pool_id', 'cognito_client_id', 'aws_region',
+  's3_bucket_name', 'qweather_api_host', 'admission_mode', 'tester_allowlist',
+  'infra_selection', 'infra_deployment']);
+const DEPLOY_PARAMETER_ARNS = Object.freeze(DEPLOY_PARAMETER_NAMES.map((name) =>
+  `arn:aws:ssm:${region}:${account}:parameter/anywear/beta/${name}`));
+
 const STAGE_PARAMETER_ARNS = Object.freeze([...new Set([...STAGE_CONTRACT_PARAMETERS,
   '/anywear/beta/admission_mode', '/anywear/beta/tester_allowlist',
   '/anywear/beta/infra_selection', '/anywear/beta/infra_deployment']
@@ -105,7 +114,7 @@ export function simulationRequests(kind, env, purpose = 'operation') {
   if (kind === 'deploy') {
     return [
       { pair: 'cloudformation/describe-stacks', actions: ['cloudformation:DescribeStacks'], resources: [STACKS[1]] },
-      { pair: 'ssm/get-parameter', actions: ['ssm:GetParameter'], resources: READ_RESOURCES['ssm/get-parameter'].slice(0, 1) },
+      { pair: 'ssm/get-parameter', actions: ['ssm:GetParameter'], resources: DEPLOY_PARAMETER_ARNS },
       { pair: 'ec2/describe-managed-prefix-lists', actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'] },
     ];
   }

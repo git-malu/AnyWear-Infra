@@ -13,7 +13,7 @@
       "id": "lint-rules",
       "layer": "lint",
       "summary": "The lint fails on wildcard actions, wildcard resource ARNs (including scoped ARNs such as stack or prefix forms), unreviewed managed-policy attachments and the repository's condition expectations. It evaluates statement text, not effective permission or condition values.",
-      "consequence": "Whether a reviewed form is sufficient at run time is the simulator's and the observed layer's question, not the lint's."
+      "consequence": "The lint evaluates statement text. The simulator checks the plan's ARNs, the deployment itself exercises the real resource, and the observed layer reconciles actions, not resource forms."
     },
     {
       "id": "bootstrap-role",
