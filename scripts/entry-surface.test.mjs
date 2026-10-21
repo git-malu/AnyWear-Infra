@@ -88,6 +88,16 @@ test('mutate.yml keeps one preflight → verify → deploy → record chain and 
 
   assert.deepEqual(mutate.on.workflow_dispatch.inputs.operation.options, mutateOperations);
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.required, true);
+  // #166 drill precondition: the retained Egress EIP allocation is an optional
+  // string input passed to the operation env; its pattern is enforced by
+  // check-operation/validateOperationInputs, not by a workflow_dispatch pattern.
+  const natEipInput = mutate.on.workflow_dispatch.inputs.nat_eip_allocation_id;
+  assert.equal(natEipInput.type, 'string');
+  assert.equal(natEipInput.default, '');
+  assert.match(natEipInput.description, /deploy-egress/);
+  assert.match(natEipInput.description, /eipalloc-/);
+  assert.equal(Object.hasOwn(natEipInput, 'pattern'), false);
+  assert.equal(mutate.env.NAT_EIP_ALLOCATION_ID, '${{ inputs.nat_eip_allocation_id }}');
   // #158 step C: the Service-owned release slice is not an Infra operation. No
   // operation, input or step may reintroduce its deploy chain here.
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.options.includes('deploy-workload'), false);
