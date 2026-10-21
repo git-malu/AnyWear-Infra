@@ -2443,6 +2443,28 @@ describe('Issue #166 runtime-role CloudFormation read surface', () => {
     .filter((resource) => resource.Type === 'AWS::IAM::Policy'
       && resource.Properties.Roles?.some((role: any) => (roleId ? role.Ref === roleId : role === roleName)));
 
+  it('grants only the runtime principal read access to the disposable Egress stack', () => {
+    const { base } = synthesis();
+    const egressArn = 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearEgressStack-beta/*';
+    const policiesFor = (template: any, name: string): any[] => (Object.values(template.Resources) as any[])
+      .filter((resource) => resource.Type === 'AWS::IAM::Policy'
+        && resource.Properties.Roles?.includes(name));
+    const grantsFor = (template: any, name: string): any[] => policiesFor(template, name)
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const egressGrants = (name: string) => grantsFor(base, name)
+      .filter((statement: any) => [statement.Resource].flat().map(render).includes(egressArn));
+    const runtimeGrants = egressGrants('beta-infra-runtime-role');
+    expect(runtimeGrants).toHaveLength(1);
+    expect([runtimeGrants[0].Action].flat().sort())
+      .toEqual(['cloudformation:DescribeStacks', 'cloudformation:GetTemplate', 'cloudformation:ListStackResources']);
+    expect([runtimeGrants[0].Resource].flat().map(render)).toEqual([egressArn]);
+    // No other dedicated principal reads the Egress stack.
+    for (const name of ['beta-infra-deploy-role', 'beta-client-publish-role', 'beta-service-data-role',
+      'beta-e2e-qualification-role']) {
+      expect(egressGrants(name)).toHaveLength(0);
+    }
+  });
+
   it('authorizes DescribeStacks and GetTemplate on Runtime and Workload before the Base update', () => {
     const { foundation, base } = synthesis();
     const roleId = Object.entries(foundation.Resources).find(([, resource]: [string, any]) => (
