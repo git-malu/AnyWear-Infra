@@ -1,15 +1,14 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { credentialEnvironment } from './runtime-operation.mjs';
 import { region } from './deployment-contract.mjs';
 import { OBSERVED_SURFACE, buildObservedRecord } from './authorization-observed.mjs';
+import { loadDeclaredActions } from './authorization-declared.mjs';
 
 const execute = promisify(execFile);
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
-const DECLARATION_FILE = path.join(root, 'test', 'fixtures', 'authorization-declared.json');
 
 // The observed layer's producer. It runs in the credentialed deploy job after the
 // operation, under the same restricted runtime session, and writes
@@ -39,14 +38,6 @@ export function observerArguments(argv = []) {
     options[name.slice(2)] = value;
   }
   return options;
-}
-
-export async function loadDeclaredActions(file = DECLARATION_FILE) {
-  const parsed = JSON.parse(await readFile(file, 'utf8'));
-  if (parsed?.record_type !== 'anywear_authorization_declared_actions' || !parsed.roles) {
-    throw new Error('The declared authorization artifact has an unknown shape');
-  }
-  return parsed.roles;
 }
 
 export async function lookupEvents({ credentials, start, end, run = execute, maxPages = 200 } = {}) {

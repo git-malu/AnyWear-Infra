@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { reads, sessionPolicy } from './operation-boundaries.mjs';
+import { STAGE_CONTRACT_PARAMETERS } from './stage-contract-parameters.mjs';
 import { account, region } from './deployment-contract.mjs';
 
 const execute = promisify(execFile);
@@ -24,8 +25,15 @@ const STACKS = Object.freeze([stack('AnyWearFoundationStack'), stack('AnyWearPla
   stack('AnyWearBillingStack-beta', 'us-east-1'), stack('AnyWearRuntimeStack-beta'),
   stack('AnyWearWorkloadStack-beta')]);
 const ONE_SHOT_FAMILIES = Object.freeze(['migrate', 'verify', 'lifecycle', 'artifact-verify']);
-const TASK_FUNCTIONS = Object.freeze(['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync']
-  .map((name) => arn('lambda', `function:${name}`)));
+const TASK_FUNCTIONS = Object.freeze(['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync',
+  'AnyWearPlatformStack-beta-*'].map((name) => arn('lambda', `function:${name}`)));
+// The runtime role reads the full published stage contract plus the admission and
+// tester parameter surface; the simulator plan uses every reviewed name rather
+// than a representative subset.
+const STAGE_PARAMETER_ARNS = Object.freeze([...new Set([...STAGE_CONTRACT_PARAMETERS,
+  '/anywear/beta/admission_mode', '/anywear/beta/tester_allowlist',
+  '/anywear/beta/infra_selection', '/anywear/beta/infra_deployment']
+  .map((name) => `arn:aws:ssm:${region}:${account}:parameter${name}`))]);
 const BASE_QUEUES = Object.freeze(['beta-anywear-vto', 'beta-anywear-vto-dlq',
   'beta-anywear-auto-tagging', 'beta-anywear-auto-tagging-dlq'].map((name) => arn('sqs', name)));
 
@@ -37,10 +45,8 @@ export const READ_RESOURCES = Object.freeze({
   'cloudformation/describe-stacks': STACKS,
   'cloudformation/get-template': STACKS,
   'cloudformation/list-stack-resources': Object.freeze([STACKS[1]]),
-  'ssm/get-parameter': Object.freeze([arn('ssm', 'parameter/anywear/beta/admission_mode'),
-    arn('ssm', 'parameter/anywear/beta/infra_deployment')]),
-  'ssm/get-parameters': Object.freeze([arn('ssm', 'parameter/anywear/beta/admission_mode'),
-    arn('ssm', 'parameter/anywear/beta/infra_deployment')]),
+  'ssm/get-parameter': STAGE_PARAMETER_ARNS,
+  'ssm/get-parameters': STAGE_PARAMETER_ARNS,
   'ecs/describe-services': Object.freeze(['beta-anywear-api', 'beta-anywear-worker']
     .map((name) => arn('ecs', `service/beta-anywear/${name}`))),
   'ecs/describe-tasks': Object.freeze([arn('ecs', 'task/beta-anywear/00000000000000000000000000000000')]),
@@ -61,6 +67,14 @@ export const SIMULATION_SKIPS = Object.freeze({
   'sts/get-caller-identity': 'No IAM permission is required; the call is allowed to every principal.',
   'ecr/batch-get-image': 'The reviewed mapping also needs ecr:BatchCheckLayerAvailability and ecr:GetDownloadUrlForLayer, which the restricted runtime role does not grant; the operation has no Infra call site (operator CLI only) and is not simulated.',
   'cloudfront/get-distribution': 'A conditional legacy fallback whose base grant the runtime role may deny by design; the session never adds grants and the fallback must surface through the observed layer if it is ever taken.',
+  'ecr/describe-images': 'An operator-CLI read (scripts/ecr-retention.mjs); the deployed runtime session does not execute it and the preflight plan does not include operator-only reads.',
+  'ecr/get-lifecycle-policy': 'An operator-CLI lifecycle read (scripts/ecr-retention.mjs); not executed by the deployed session.',
+  'ecr/get-lifecycle-policy-preview': 'An operator-CLI lifecycle read (scripts/ecr-retention.mjs); not executed by the deployed session.',
+  'ecr/start-lifecycle-policy-preview': 'An operator-CLI mutation (scripts/ecr-retention.mjs); the preflight covers reads only.',
+  'ecs/wait': 'A waiter is not an action; its polling reads are simulated through ecs/describe-tasks and ecs/describe-services.',
+  'ecs/register-task-definition': 'A mutation, not a read; the preflight runs before the task script and must not register a task definition.',
+  'ecs/run-task': 'A mutation, not a read; the preflight runs before the task script and must not start a task.',
+  'logs/put-retention-policy': 'A mutation, not a read; it is the deployment step the preflight protects.',
 });
 
 // One reviewed context for every simulation. The conditions in the deployment

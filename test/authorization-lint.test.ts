@@ -8,12 +8,16 @@ import { PlatformStack } from '../lib/platform-stack';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import declared from './fixtures/authorization-declared.json';
+import { SUPPRESSIONS, MANAGED_POLICY_REVIEW, STATED_EXCEPTIONS } from './support/authorization-lint-policy';
+import type { Suppression } from './support/authorization-lint-policy';
 
-// The IaC policy lint (#165). cdk-nag's AwsSolutions-IAM5 is the rule source for
-// wildcard actions and bare `*` resources; this test pins a reviewed suppression
-// policy (every accepted wildcard carries a reason), the repository's own
-// condition expectations, and the declaration artifact the observed layer
-// reconciles against. It is credential-free and runs in-process in `npm run check`.
+// The IaC policy lint (#165). cdk-nag's AwsSolutions-IAM5 supplies the wildcard
+// rule source; this test extends it with a statement scan that covers wildcard
+// actions, wildcard resource ARNs (including scoped ones), managed-policy
+// attachments and the repository's condition expectations. Every accepted form
+// matches the reviewed suppression policy in test/support/, and every entry must
+// still match a statement. The lint is credential-free and runs in-process in
+// `npm run check`.
 /* eslint-disable @typescript-eslint/no-var-requires */
 const preflight = require('../scripts/authorization-preflight.mjs');
 
@@ -28,70 +32,6 @@ const artifactInputs: ArtifactInputs = {
   },
   runtimePolicy: runtimePolicies,
 };
-
-interface Suppression {
-  template: string; principal: string; actions: string[]; resource: string;
-  conditionRequired: boolean; reason: string;
-}
-
-// Reviewed suppression policy. Every accepted wildcard action or bare-* resource
-// names the principal and the reason; a suppression that no longer matches a
-// statement fails the test, so a stale entry cannot hide a regression.
-const SUPPRESSIONS: Suppression[] = [
-  { template: 'foundation', principal: 'beta-infra-runtime-role',
-    actions: ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate'],
-    resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*',
-    conditionRequired: false,
-    reason: 'The runtime role reads the Service-owned Runtime stack terminal before a Base mutation; the stack UUID is the only wildcard position.' },
-  { template: 'foundation', principal: 'beta-service-deploy-role', actions: ['cloudformation:*'],
-    resource: 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*',
-    conditionRequired: false,
-    reason: 'The Service release chain drives change sets for its own runtime stack only; the wildcard action is confined to that stack ARN.' },
-  { template: 'foundation', principal: 'beta-service-deploy-role', actions: ['cloudwatch:GetMetricStatistics'],
-    resource: '*', conditionRequired: true,
-    reason: 'CloudWatch metrics have no resource scope; the grant is region-conditioned.' },
-  { template: 'foundation', principal: 'beta-service-deploy-cfn-role', actions: ['ecs:DeregisterTaskDefinition'],
-    resource: '*', conditionRequired: false,
-    reason: 'ECS evaluates deregistration against *; the statement is the single action and is the reviewed rollback/deletion path.' },
-  { template: 'foundation', principal: 'beta-service-deploy-cfn-role',
-    actions: ['elasticloadbalancing:DescribeLoadBalancers', 'elasticloadbalancing:DescribeLoadBalancerAttributes',
-      'elasticloadbalancing:DescribeTargetGroups', 'elasticloadbalancing:DescribeTargetGroupAttributes',
-      'elasticloadbalancing:DescribeListeners', 'elasticloadbalancing:DescribeRules'],
-    resource: '*', conditionRequired: false,
-    reason: 'ELBv2 read actions have no resource-level scope in IAM.' },
-  { template: 'foundation', principal: 'beta-service-deploy-cfn-role', actions: ['logs:DescribeLogGroups'],
-    resource: '*', conditionRequired: false,
-    reason: 'IAM evaluates DescribeLogGroups in its list form with an empty log-group name; no named log-group ARN can match.' },
-  { template: 'foundation', principal: 'beta-service-deploy-cfn-role', actions: ['states:CreateStateMachine'],
-    resource: '*', conditionRequired: false,
-    reason: 'Step Functions has no resource type for CreateStateMachine in its service authorization table.' },
-  ...['beta-infra-deploy-role', 'beta-infra-runtime-role'].map((principal) => ({
-    template: 'platform', principal, actions: ['ecs:ListTasks'], resource: '*', conditionRequired: true,
-    reason: 'ECS ListTasks has no resource type; the grant is cluster-conditioned.' })),
-  ...['beta-infra-deploy-role', 'beta-infra-runtime-role'].map((principal) => ({
-    template: 'platform', principal, actions: ['ecs:DescribeTaskDefinition'], resource: '*', conditionRequired: true,
-    reason: 'ECS DescribeTaskDefinition has no resource type; the grant is region-conditioned.' })),
-  ...['beta-infra-deploy-role', 'beta-infra-runtime-role'].map((principal) => ({
-    template: 'platform', principal, actions: ['iam:SimulatePrincipalPolicy', 'iam:SimulateCustomPolicy'],
-    resource: '*', conditionRequired: false,
-    reason: 'The IAM policy simulator actions have no resource-level scope; the grant is those two actions alone and is executed only by the pre-mutation preflight.' })),
-  { template: 'platform', principal: 'beta-infra-deploy-role', actions: ['ec2:DescribeManagedPrefixLists'],
-    resource: '*', conditionRequired: true,
-    reason: 'EC2 prefix-list reads have no resource scope; the grant is region-conditioned.' },
-  { template: 'platform', principal: 'beta-infra-runtime-role', actions: ['ecs:DeregisterTaskDefinition'],
-    resource: '*', conditionRequired: true,
-    reason: 'ECS evaluates deregistration against *; the runtime role needs it for the rollback path and the grant is region-conditioned.' },
-  { template: 'platform', principal: 'beta-infra-runtime-role',
-    actions: ['rds:DescribeDBClusters', 'rds:DescribeEvents', 'cloudwatch:GetMetricStatistics'],
-    resource: '*', conditionRequired: true,
-    reason: 'RDS and CloudWatch reads have no resource scope; the grant is region-conditioned.' },
-  { template: 'platform', principal: 'beta-infra-runtime-role', actions: ['logs:DescribeLogGroups'],
-    resource: '*', conditionRequired: true,
-    reason: 'The list form cannot match a named log group; the grant is region-conditioned.' },
-  { template: 'platform', principal: 'beta-infra-runtime-role', actions: ['cloudtrail:LookupEvents'],
-    resource: '*', conditionRequired: true,
-    reason: 'The observed layer reads CloudTrail for the run window; LookupEvents has no resource scope and the grant is region-conditioned.' },
-];
 
 function renderResource(value: any, template: any): string {
   if (typeof value === 'string') return value;
@@ -135,8 +75,31 @@ function synthesize(): Array<{ name: string; stack: cdk.Stack; template: any }> 
 
 const entries = synthesize();
 const statements: ScopedStatement[] = [];
+const managedPolicies: Array<{ template: string; role: string; policy: string }> = [];
 for (const { name, template } of entries) {
   for (const [logicalId, resource] of Object.entries(template.Resources) as Array<[string, any]>) {
+    if (resource.Type === 'AWS::IAM::Role' && IN_SCOPE_PRINCIPALS.includes(resource.Properties?.RoleName)) {
+      for (const policy of resource.Properties?.ManagedPolicyArns ?? []) {
+        managedPolicies.push({ template: name, role: resource.Properties.RoleName,
+          policy: renderResource(policy, template) });
+      }
+      continue;
+    }
+    if (resource.Type === 'AWS::IAM::ManagedPolicy') {
+      const policyRoles = (resource.Properties.Roles ?? []).map((role: any) => (role?.Ref
+        ? template.Resources[role.Ref]?.Properties?.RoleName : role));
+      const principal = policyRoles.find((role: string) => IN_SCOPE_PRINCIPALS.includes(role));
+      if (principal) managedPolicies.push({ template: name, role: principal,
+        policy: String(resource.Properties.ManagedPolicyName ?? logicalId) });
+      if (!principal) continue;
+      for (const statement of resource.Properties.PolicyDocument.Statement) {
+        statements.push({ template: name, principal, policy: String(resource.Properties.ManagedPolicyName ?? logicalId),
+          actions: [statement.Action].flat(),
+          resources: [statement.Resource].flat().map((value: any) => renderResource(value, template)),
+          condition: statement.Condition });
+      }
+      continue;
+    }
     if (resource.Type !== 'AWS::IAM::Policy') continue;
     const roles = (resource.Properties.Roles ?? []).map((role: any) => (role?.Ref
       ? template.Resources[role.Ref]?.Properties?.RoleName : role));
@@ -156,18 +119,24 @@ function actionCovered(entryActions: string[], action: string): boolean {
     || (entry.endsWith(':*') && action.startsWith(`${entry.slice(0, -1)}`)));
 }
 
-const resourceMatches = (suppression: Suppression, resource: string): boolean => (
-  suppression.resource === resource
-  || (suppression.resource.endsWith('*') && resource.startsWith(suppression.resource.slice(0, -1))));
+const resourceMatches = (patterns: string[], resource: string): boolean => patterns.some((pattern) => (
+  pattern === resource || (pattern.endsWith('*') && resource.startsWith(pattern.slice(0, -1)))));
 
 const statementMatches = (statement: ScopedStatement, suppression: Suppression): boolean => (
   suppression.template === statement.template
-  && suppression.principal === statement.principal
+  && suppression.principals.includes(statement.principal)
   && statement.actions.every((action) => actionCovered(suppression.actions, action))
-  && statement.resources.some((resource) => resourceMatches(suppression, resource)));
+  && statement.resources.every((resource) => resourceMatches(suppression.resources, resource)));
+
+const hasWildcard = (statement: ScopedStatement): boolean => statement.actions.some((action) => action.includes('*'))
+  || statement.resources.some((resource) => resource.includes('*'));
+
+// The cdk-nag finding ids render partition tokens differently from the test's
+// statement renderer; normalize before comparing.
+const normalizeFinding = (finding: string): string => finding.replaceAll('arn:<AWS::Partition>', 'arn:aws');
 
 describe('IaC policy lint (#165)', () => {
-  it('cdk-nag and the statement scan agree on every policy-quality wildcard', () => {
+  it('cdk-nag confirms every wildcard the statement scan sees, including scoped ARNs', () => {
     const cdkFindings = new Set<string>();
     for (const { stack } of entries) {
       const report = new AwsSolutionsChecks(stack.node.root as cdk.App).validateScope(stack.node.root);
@@ -175,37 +144,61 @@ describe('IaC policy lint (#165)', () => {
         if (!violation.ruleName.startsWith('AwsSolutions-IAM5')) continue;
         const finding = violation.ruleName.includes('[')
           ? violation.ruleName.slice(violation.ruleName.indexOf('[') + 1, -1) : '';
-        if (finding === 'Resource::*' || finding.startsWith('Action::')) cdkFindings.add(finding);
+        if (finding.startsWith('Action::') || finding.startsWith('Resource::')) {
+          cdkFindings.add(normalizeFinding(finding));
+        }
       }
     }
     const scanned = new Set<string>();
     for (const statement of statements) {
-      if (statement.resources.includes('*')) scanned.add('Resource::*');
       for (const action of statement.actions) if (action.includes('*')) scanned.add(`Action::${action}`);
+      for (const resource of statement.resources) if (resource.includes('*')) scanned.add(`Resource::${resource}`);
     }
-    expect(scanned.size).toBeGreaterThan(0);
-    expect(cdkFindings.size).toBeGreaterThan(0);
-    // Every wildcard the in-scope scan sees is also a cdk-nag finding. Findings
-    // outside the deployment principals (the legacy pipeline role) are out of the
-    // lint scope and recorded in the non-coverage list.
-    for (const finding of scanned) expect(cdkFindings.has(finding)).toBe(true);
+    expect(scanned.size).toBeGreaterThan(20);
+    // Subset, not equality: cdk-nag also reports wildcards on roles outside the
+    // linted principals (the legacy pipeline role and CDK-generated service roles).
+    for (const finding of scanned) expect({ finding, confirmed: cdkFindings.has(finding) })
+      .toEqual({ finding, confirmed: true });
   });
 
-  it('every wildcard action or bare-* resource matches a reviewed suppression with a reason', () => {
+  it('every wildcard action or wildcard resource ARN matches a reviewed suppression with a reason', () => {
+    let reviewed = 0;
     for (const statement of statements) {
-      const wildcard = statement.resources.includes('*') || statement.actions.some((action) => action.includes('*'));
-      if (!wildcard) continue;
+      if (!hasWildcard(statement)) continue;
       const matches = SUPPRESSIONS.filter((suppression) => statementMatches(statement, suppression));
       expect({ statement: `${statement.template}/${statement.principal}/${statement.actions.join(',')}`,
         reviewed: matches.length > 0 }).toEqual({
         statement: `${statement.template}/${statement.principal}/${statement.actions.join(',')}`, reviewed: true });
       expect(matches.every((match) => match.reason.length > 20)).toBe(true);
+      reviewed += 1;
     }
+    expect(reviewed).toBeGreaterThan(40);
     // Suppressions stay honest: each one is exercised by a statement.
     for (const suppression of SUPPRESSIONS) {
-      expect({ reason: suppression.reason, exercised: statements.some((statement) => statementMatches(statement, suppression)) })
+      expect({ reason: suppression.reason,
+        exercised: statements.some((statement) => statementMatches(statement, suppression)) })
         .toEqual({ reason: suppression.reason, exercised: true });
     }
+  });
+
+  it('an unreviewed scoped-ARN wildcard or managed policy is a finding', () => {
+    const scoped = { template: 'platform', principal: 'beta-infra-runtime-role', policy: 'X',
+      actions: ['s3:GetObject'], resources: ['arn:aws:s3:::unreviewed-bucket/*'] };
+    expect(SUPPRESSIONS.some((suppression) => statementMatches(scoped, suppression))).toBe(false);
+    const reviewedScoped = { ...scoped, actions: ['cloudformation:DescribeStacks'],
+      resources: [`arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/AnyWearRuntimeStack-beta/*`] };
+    expect(SUPPRESSIONS.some((suppression) => statementMatches(reviewedScoped, suppression))).toBe(true);
+    // The synthesized roles carry no managed policies; an attachment must be in
+    // the reviewed list (currently empty by design).
+    expect(managedPolicies.filter((entry) => !MANAGED_POLICY_REVIEW.some((reviewedPolicy) => (
+      reviewedPolicy.role === entry.role && reviewedPolicy.policy === entry.policy)))).toEqual([]);
+    const unreviewedPolicy = { role: 'beta-infra-runtime-role',
+      policy: 'arn:aws:iam::aws:policy/AdministratorAccess' };
+    expect(MANAGED_POLICY_REVIEW.some((reviewedPolicy) => reviewedPolicy.role === unreviewedPolicy.role
+      && reviewedPolicy.policy === unreviewedPolicy.policy)).toBe(false);
+    // The CDK bootstrap role is a stated exception, not a construct in this app.
+    expect(STATED_EXCEPTIONS.map((exception) => exception.name)).toContain('cdk-hnb659fds-cfn-exec-role');
+    expect(STATED_EXCEPTIONS.every((exception) => exception.reason.length > 20)).toBe(true);
   });
 
   it('conditions the repository expects are present', () => {
@@ -239,17 +232,39 @@ describe('IaC policy lint (#165)', () => {
     expect((declared as any).roles).toEqual(expected);
   });
 
-  it('the preflight simulation plan stays inside the declared grants', () => {
+  it('the preflight simulation plan stays inside the declared grants and covers the reviewed forms', () => {
     const env = { INFRA_OPERATION: 'deploy-platform' };
     for (const [kind, role] of [['deploy', 'beta-infra-deploy-role'], ['runtime', 'beta-infra-runtime-role']]) {
       const declaredActions = (declared as any).roles[role] as string[];
-      for (const request of preflight.simulationRequests(kind, env)) {
+      for (const request of preflight.simulationRequests(kind, env) as any[]) {
         for (const action of request.actions) {
           expect({ kind, action, declared: actionCovered(declaredActions, action) })
             .toEqual({ kind, action, declared: true });
         }
+        for (const resource of request.resources as string[]) {
+          expect({ kind, pair: request.pair, resource: typeof resource }).toEqual({ kind, pair: request.pair, resource: 'string' });
+        }
       }
     }
+    const runtime = preflight.simulationRequests('runtime', env);
+    const ssm = runtime.find((request: any) => request.pair === 'ssm/get-parameters');
+    expect(ssm.resources.length).toBeGreaterThanOrEqual(35);
+    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/tester_allowlist`);
+    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/api_base_url`);
+    const lambda = runtime.find((request: any) => request.pair === 'lambda/get-function');
+    expect(lambda.resources).toContain(`arn:aws:lambda:${REGION}:${ACCOUNT}:function:AnyWearPlatformStack-beta-*`);
+    const deploy = preflight.simulationRequests('deploy', env) as any[];
+    expect(deploy.map((request) => request.pair)).toEqual(['cloudformation/describe-stacks', 'ssm/get-parameter',
+      'ec2/describe-managed-prefix-lists']);
+  });
+
+  it('records every reviewed not-in-plan read with a reason', () => {
+    const skips = preflight.SIMULATION_SKIPS;
+    expect(Object.keys(skips).sort()).toEqual(['cloudfront/get-distribution', 'ecr/batch-get-image',
+      'ecr/describe-images', 'ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
+      'ecr/start-lifecycle-policy-preview', 'ecs/register-task-definition', 'ecs/run-task', 'ecs/wait',
+      'logs/put-retention-policy', 'sts/get-caller-identity']);
+    for (const reason of Object.values(skips)) expect(String(reason).length).toBeGreaterThan(20);
   });
 
   it('keeps the CloudTrail observed-layer read region-scoped on the runtime role only', () => {
@@ -265,13 +280,14 @@ describe('IaC policy lint (#165)', () => {
     expect(list.record_type).toBe('anywear_authorization_non_coverage');
     const ids = list.entries.map((entry: any) => entry.id);
     expect(ids).toEqual(['lint-scope', 'lint-rules', 'bootstrap-role', 'runtime-stack', 'simulator-approximation',
-      'simulator-scope', 'preflight-reads', 'observed-scope']);
+      'simulator-scope', 'preflight-reads', 'simulate-disclosure', 'observed-scope']);
     for (const entry of list.entries) {
       expect(['lint', 'simulator', 'observed']).toContain(entry.layer);
       expect(entry.summary.length).toBeGreaterThan(20);
       expect(entry.consequence.length).toBeGreaterThan(20);
     }
     expect(list.entries.some((entry: any) => /AdministratorAccess/.test(entry.summary))).toBe(true);
-    expect(list.entries.some((entry: any) => /RuntimeStack/.test(entry.summary))).toBe(true);
+    expect(list.entries.some((entry: any) => /release slice|RuntimeStack|release-slice/i.test(entry.summary))).toBe(true);
+    expect(list.entries.some((entry: any) => /disclos/i.test(`${entry.summary} ${entry.consequence}`))).toBe(true);
   });
 });

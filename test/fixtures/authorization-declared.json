@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record_type": "anywear_authorization_declared_actions",
-  "source": "Allow actions in the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta IAM policy documents for the reconciled deployment and runtime roles. Generated from synthesis; pinned by test/authorization-lint.test.ts.",
+  "source": "Allow actions in the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta IAM policy and managed-policy documents for the reconciled deployment and runtime roles. Generated from synthesis; pinned by test/authorization-lint.test.ts.",
   "templates": [
     "AnyWearFoundationStack",
     "AnyWearPlatformStack-beta"
@@ -135,9 +135,11 @@
       "elasticloadbalancing:ModifyTargetGroupAttributes",
       "elasticloadbalancing:SetSecurityGroups",
       "elasticloadbalancing:SetSubnets",
+      "iam:AttachRolePolicy",
       "iam:CreateRole",
       "iam:DeleteRole",
       "iam:DeleteRolePolicy",
+      "iam:DetachRolePolicy",
       "iam:GetRole",
       "iam:GetRolePolicy",
       "iam:ListAttachedRolePolicies",
@@ -160,6 +162,9 @@
       "s3:GetBucketPublicAccessBlock",
       "s3:PutBucketPolicy",
       "s3:PutBucketPublicAccessBlock",
+      "secretsmanager:GetSecretValue",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
       "states:CreateStateMachine",
       "states:DeleteStateMachine",
       "states:DeleteStateMachineVersion",

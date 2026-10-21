@@ -75,8 +75,10 @@ test('the plan comes from the reviewed reads table and stays inside the declared
   for (const action of preflightActionSet('runtime', env, 'operation')) {
     assert.equal(sessionActions.has(action), true, `${action} is in the runtime session policy`);
   }
-  assert.deepEqual(Object.keys(SIMULATION_SKIPS).sort(), ['cloudfront/get-distribution',
-    'ecr/batch-get-image', 'sts/get-caller-identity']);
+  assert.deepEqual(Object.keys(SIMULATION_SKIPS).sort(), ['cloudfront/get-distribution', 'ecr/batch-get-image',
+    'ecr/describe-images', 'ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
+    'ecr/start-lifecycle-policy-preview', 'ecs/register-task-definition', 'ecs/run-task', 'ecs/wait',
+    'logs/put-retention-policy', 'sts/get-caller-identity']);
 });
 
 test('the preflight passes when both the base policies and the session policy allow every read', async () => {

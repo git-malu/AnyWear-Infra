@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { OBSERVED_SURFACE, validateObservedRecord } from './authorization-observed.mjs';
-import { loadDeclaredActions } from './observe-authorization-usage.mjs';
+import { loadDeclaredActions } from './authorization-declared.mjs';
 
 // Credential-free reader for the `record` job: validate exactly the artifact the
 // credentialed deploy job produced against the lint-produced declaration. An

@@ -190,8 +190,8 @@ export async function credentialEnvironment(kind, env = process.env, purpose = '
   if (!response.ok) throw new Error('OIDC token retrieval failed');
   const token = (await response.json()).value;
   if (typeof token !== 'string' || !token) throw new Error('OIDC token missing');
-  // D2: the canary requests its own session name (`infra-<kind>-canary-<run>`),
-  // so the CloudTrail reconciliation can exclude the sensor's own probes.
+  // D2: the preflight requests its own session name (`infra-<kind>-preflight-<run>`),
+  // so the CloudTrail reconciliation can exclude the sensor's own calls.
   const sessionName = `infra-${kind}${sessionMarker ? `-${sessionMarker}` : ''}-${env.GITHUB_RUN_ID}`;
   let assumed;
   try {
@@ -242,9 +242,9 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
     async oneShot(role, revision, argument = '', payload) {
       if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
       assertOneShotAllowed(env, role, argument, payload);
-      // Pre-mutation interlock (#165): a migration or admission one-shot changes
-      // data, so the same marked, read-only probes run first. A denial stops the
-      // operation before the task is registered or started.
+      // Pre-mutation preflight (#165): a migration or admission one-shot changes
+      // data, so the policy simulation runs first. A deny stops the operation
+      // before the task is registered or started.
       await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('runtime');
       let result;
@@ -286,10 +286,10 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       assertDeployAllowed(env, stack);
       const apiOriginDomainName = stack === baseStack ? await readApiOrigin(io) : undefined;
       const awsEnv = await roleEnv('deploy');
-      // Pre-mutation interlock (#165): after the restricted sessions are
-      // available and before CDK changes anything, call each derived read once.
-      // An authorization denial throws here with zero changes; a resource
-      // absence is classified separately and does not stop the deploy.
+      // Pre-mutation preflight (#165): after the restricted session is
+      // available and before CDK changes anything, simulate the deploy and
+      // runtime roles' effective authorization for the operation's reads. A
+      // deny or a simulation failure stops the deploy with zero changes.
       await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
@@ -308,8 +308,8 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       if (purpose !== 'operation') throw new Error('Qualification cannot destroy');
       assertDeployAllowed(env, stack);
       if (env.INFRA_OPERATION !== 'delete-egress' || stack !== egressStack) throw new Error('Only delete-egress may destroy a stack');
-      // Pre-mutation interlock (#165): prove the deploy and runtime sessions'
-      // reads before the Egress stack is deleted.
+      // Pre-mutation preflight (#165): simulate the deploy and runtime roles'
+      // authorization before the Egress stack is deleted.
       await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),

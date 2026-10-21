@@ -6,26 +6,26 @@
     {
       "id": "lint-scope",
       "layer": "lint",
-      "summary": "The lint inspects the synthesized Foundation and Platform policy statements for the four deployment and runtime principals only; legacy pipeline, CDK-generated service and other roles are outside its scope.",
+      "summary": "The lint inspects the synthesized Foundation and Platform policy statements for the four deployment and runtime principals only; the legacy pipeline role and CDK-generated service roles are outside its scope.",
       "consequence": "A wildcard grant added to an unscanned role is caught only by review, not by the check."
     },
     {
       "id": "lint-rules",
       "layer": "lint",
-      "summary": "The lint enables cdk-nag AwsSolutions-IAM5 for wildcard actions and bare * resources, plus the repository's condition expectations (iam:PassRole, region/cluster conditions); scoped ARN wildcards that narrow to a repository-owned resource family and managed-policy attachments are not findings.",
-      "consequence": "Scoped wildcard ARNs stay covered by the reviewed reads table and the observed layer; a managed-policy attachment is reviewed, not policy-linted."
+      "summary": "The lint fails on wildcard actions, wildcard resource ARNs (including scoped ARNs such as stack or prefix forms), unreviewed managed-policy attachments and the repository's condition expectations. It evaluates statement text, not effective permission or condition values.",
+      "consequence": "Whether a reviewed form is sufficient at run time is the simulator's and the observed layer's question, not the lint's."
     },
     {
       "id": "bootstrap-role",
       "layer": "lint",
-      "summary": "The CDK bootstrap cfn-exec role holds AdministratorAccess and no permissions boundary; no repository defines it.",
-      "consequence": "It is a stated exception, not an asserted principal; effective permission on the Infra deploy path remains account-wide."
+      "summary": "The CDK bootstrap cfn-exec role holds AdministratorAccess and no permissions boundary; no repository defines it. It is carried as a stated exception in the reviewed suppression table, not as a construct the lint can inspect.",
+      "consequence": "Effective permission on the Infra deploy path remains account-wide; the exception is recorded rather than asserted."
     },
     {
       "id": "runtime-stack",
       "layer": "lint",
-      "summary": "The AnyWearRuntimeStack-beta resource types are synthesized in AnyWear-Service and are not inspected by the Infra lint; the Service-sourced resource-type table remains in AnyWear-Infra until AnyWear #186 derives it across the repository boundary.",
-      "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the observed layer or by the deployment itself, not by the lint."
+      "summary": "The AnyWearRuntimeStack-beta resource types are synthesized in AnyWear-Service as the per-service release slice; the Infra lint does not inspect that template, and its resource-type identity remains the Service release chain's contract. The dropped declared layer would not have changed this: it never derived the Service template either.",
+      "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the observed layer or by the deployment itself, not by the Infra lint."
     },
     {
       "id": "simulator-approximation",
@@ -42,8 +42,14 @@
     {
       "id": "preflight-reads",
       "layer": "simulator",
-      "summary": "The preflight simulates only the reviewed reads table and the deploy session's read surface: mutations, waiter semantics, operator-CLI-only reads and the conditional CloudFront fallback are not simulated.",
-      "consequence": "Create-path and mutation authorization stay with the lint and the observed layer; the preflight samples the resources as they exist before mutation."
+      "summary": "The preflight evaluates policy against the reviewed ARNs in its plan; it does not sample live resources or make the real read calls. Mutations, waiter semantics, operator-CLI reads and the conditional CloudFront fallback are recorded as skips with reasons.",
+      "consequence": "Create-path authorization, resource existence and the real service semantics stay with the observed layer and the deployment itself."
+    },
+    {
+      "id": "simulate-disclosure",
+      "layer": "simulator",
+      "summary": "iam:SimulatePrincipalPolicy can enumerate any principal's effective permissions in the account. The grant is `*` because the simulator actions have no resource-level scope; it is limited to the two simulate actions, runs only in the restricted deploy/runtime session, and is used only by the preflight.",
+      "consequence": "The grant is read-only but is a permission-metadata disclosure surface; it is recorded here as an accepted reviewed wildcard."
     },
     {
       "id": "observed-scope",

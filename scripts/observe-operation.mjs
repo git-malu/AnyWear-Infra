@@ -15,9 +15,9 @@ if (boundary.readOnly) throw new Error('State observation cannot emit qualificat
 const operation = readOperationRecord(parseJson(await readFile('deployment-evidence/operation-record.json')));
 const io = await createRuntimeIo(env, operation, { purpose: 'qualification' });
 try {
-  // Pre-mutation interlock (#165) on the observe path: the qualification session
-  // is available, and the same derived reads are called once before the
-  // observation starts. A denial stops before the observation does any work.
+  // Pre-mutation preflight (#165) on the observe path: the qualification session
+  // is available, and the policy simulation runs before the observation starts.
+  // A deny or simulation failure stops before the observation does any work.
   await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose: 'qualification', assume: credentialEnvironment });
   // The authenticated observation covers the stacks Infra still produces and the
   // stage-contract surface it publishes. The release slice is observed by
