@@ -15,7 +15,9 @@ export function createOperationRecord({ env, release = null }) {
   return { schema_version: 4, record_type: 'anywear_infra_operation', operation: env.INFRA_OPERATION, family: boundary.family,
     executor: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA, workflow_path: boundary.workflow,
       run_id: Number(env.GITHUB_RUN_ID), run_attempt: Number(env.GITHUB_RUN_ATTEMPT) },
-    context: { account: env.AWS_ACCOUNT_ID, region: env.AWS_REGION, identity_phase: env.INFRA_IDENTITY_PHASE, retention_protection: env.INFRA_RETENTION_PROTECTION === 'true' },
+    context: { account: env.AWS_ACCOUNT_ID, region: env.AWS_REGION, identity_phase: env.INFRA_IDENTITY_PHASE, retention_protection: env.INFRA_RETENTION_PROTECTION === 'true',
+      ...(env.INFRA_OPERATION === 'deploy-egress' && env.NAT_EIP_ALLOCATION_ID
+        ? { nat_eip_allocation_id: env.NAT_EIP_ALLOCATION_ID } : {}) },
     service_release: release,
     lifecycle_implementation_origin: { repository: 'git-malu/AnyWear-Service', sha: '885b2989b0f908f050998329f5c97677cba2a242', path: '.github/scripts/beta-lifecycle.mjs' },
     stack_manifest: stackManifest, changed_stack_names: changedStackNames(env.INFRA_OPERATION), original_stack_templates: [], events: [], recovery: 'not-required', result: 'running' };

@@ -22,10 +22,16 @@ import { BASE_EXPORTS } from './base-exports';
 // needs no Base stack object and no Service artifact directory.
 export const EGRESS_STACK_NAME = 'AnyWearEgressStack-beta';
 
-export interface EgressStackProps extends cdk.StackProps {}
+export interface EgressStackProps extends cdk.StackProps {
+  // Drill precondition: reuse an existing retained EIP allocation instead of
+  // creating (and later replacing) the stack-owned EIP on a start.
+  natEipAllocationId?: string;
+}
+
+const NAT_EIP_ALLOCATION = /^eipalloc-[0-9a-f]+$/;
 
 export class EgressStack extends cdk.Stack {
-  readonly natEip: ec2.CfnEIP;
+  readonly natEip?: ec2.CfnEIP;
   readonly natGateway: ec2.CfnNatGateway;
   readonly defaultRoutes: ec2.CfnRoute[];
   readonly s3GatewayEndpoint: ec2.CfnVPCEndpoint;
@@ -35,17 +41,35 @@ export class EgressStack extends cdk.Stack {
 
     const importBase = (exportName: string): string => cdk.Fn.importValue(exportName);
     const vpcId = importBase(BASE_EXPORTS.vpcId);
+    if (props.natEipAllocationId !== undefined && !NAT_EIP_ALLOCATION.test(props.natEipAllocationId)) {
+      throw new Error('natEipAllocationId must be an Elastic IP allocation id (eipalloc-...)');
+    }
 
-    this.natEip = new ec2.CfnEIP(this, 'NatEip', {
-      domain: 'vpc',
-      tags: [{ key: 'Name', value: 'beta-anywear-egress-nat' }],
-    });
-    this.natGateway = new ec2.CfnNatGateway(this, 'NatGateway', {
-      allocationId: this.natEip.attrAllocationId,
-      subnetId: importBase(BASE_EXPORTS.natSubnetId),
-      connectivityType: 'public',
-      tags: [{ key: 'Name', value: 'beta-anywear-egress-nat' }],
-    });
+    // Issue #166 drill precondition: with an explicit retained allocation the
+    // stack creates no EIP, so a stop/start keeps the provider's source address.
+    // Without one it creates a fresh EIP (retained across stack deletion), which
+    // is the fallback when the pinned allocation is unavailable. A revert of the
+    // earlier new-EIP experiment still replaces the EIP and allocates another one.
+    if (props.natEipAllocationId) {
+      this.natGateway = new ec2.CfnNatGateway(this, 'NatGatewayNext', {
+        allocationId: props.natEipAllocationId,
+        subnetId: importBase(BASE_EXPORTS.natSubnetId),
+        connectivityType: 'public',
+        tags: [{ key: 'Name', value: 'beta-anywear-egress-nat' }],
+      });
+    } else {
+      this.natEip = new ec2.CfnEIP(this, 'NatEipNext', {
+        domain: 'vpc',
+        tags: [{ key: 'Name', value: 'beta-anywear-egress-nat' }],
+      });
+      this.natEip.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+      this.natGateway = new ec2.CfnNatGateway(this, 'NatGatewayNext', {
+        allocationId: this.natEip.attrAllocationId,
+        subnetId: importBase(BASE_EXPORTS.natSubnetId),
+        connectivityType: 'public',
+        tags: [{ key: 'Name', value: 'beta-anywear-egress-nat' }],
+      });
+    }
 
     // One default route per Base-owned private route table. No route table, no
     // subnet route-table association and no subnet is created here.
@@ -68,7 +92,9 @@ export class EgressStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'EgressNatGatewayId', { value: this.natGateway.ref });
-    new cdk.CfnOutput(this, 'EgressNatEipAllocationId', { value: this.natEip.attrAllocationId });
+    new cdk.CfnOutput(this, 'EgressNatEipAllocationId', {
+      value: props.natEipAllocationId ?? this.natEip!.attrAllocationId,
+    });
     new cdk.CfnOutput(this, 'EgressPrivateRouteTableIds', {
       value: cdk.Fn.join(',', BASE_EXPORTS.privateRouteTableIds.map(importBase)),
     });

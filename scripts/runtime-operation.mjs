@@ -61,6 +61,16 @@ export function validateOperationInputs(env = process.env) {
   if (!testerOperations.includes(operation) && normalizeTesterEmails(env.TESTER_EMAILS ?? '[]') !== '[]') {
     throw new Error('Tester payload belongs only to the tester operations');
   }
+  // The retained Egress EIP allocation is a deploy-egress start input only. An
+  // empty workflow_dispatch value is absence; any non-empty value must match the
+  // reviewed allocation form before credentials.
+  const natEipAllocationId = env.NAT_EIP_ALLOCATION_ID;
+  if (natEipAllocationId !== undefined && natEipAllocationId !== '') {
+    if (operation !== 'deploy-egress') throw new Error('NAT_EIP_ALLOCATION_ID belongs only to deploy-egress');
+    if (!/^eipalloc-[0-9a-f]+$/.test(natEipAllocationId)) {
+      throw new Error('NAT_EIP_ALLOCATION_ID must be an Elastic IP allocation id (eipalloc-...)');
+    }
+  }
   // Cross-repository boundary, not a local preference: these names remain live
   // outside Infra. Service's own .github/scripts/run-one-shot-task.sh:19,29,34 and
   // .github/scripts/runtime-checkpoint.test.mjs:97-98,148,161 read the evidence and
@@ -70,7 +80,8 @@ export function validateOperationInputs(env = process.env) {
   for (const key of ['RUNTIME_DRILL_RUN_SCOPE', 'RUNTIME_DRILL_CHECKPOINT_PROTOCOL', 'LIFECYCLE_EVIDENCE_RUN_SCOPE', 'LIFECYCLE_EVIDENCE_ASYNC']) {
     if (env[key]) throw new Error('Experimental task scopes are not ordinary Beta workflow inputs');
   }
-  return { source_sha: env.GITHUB_SHA, operation, service_release: release };
+  return { source_sha: env.GITHUB_SHA, operation, service_release: release,
+    ...(operation === 'deploy-egress' && natEipAllocationId ? { nat_eip_allocation_id: natEipAllocationId } : {}) };
 }
 const baseStack = 'AnyWearPlatformStack-beta';
 const egressStack = 'AnyWearEgressStack-beta';
@@ -134,12 +145,22 @@ export async function deployOperationStack(io, operation) {
 }
 // The stop sequence is Runtime (AnyWear-Service) then Egress. This operation is
 // the second step only: it refuses while the Runtime stack still exists.
-export async function deleteOperationStack(io, operation) {
+export async function deleteOperationStack(io, operation, record) {
   const [stack] = changedStackNames(operation);
   if (operation !== 'delete-egress' || stack !== egressStack) {
     throw new Error(`Operation ${operation} has no stack to delete`);
   }
   assertRuntimeAbsent(await stackRead(io, runtimeStack), operation);
+  if (record) {
+    // The retained EIP is the allocation the next start must reuse. Read it
+    // before the destroy removes the stack and its output.
+    const egress = await stackRead(io, egressStack);
+    const allocationId = outputOf(egress, 'EgressNatEipAllocationId');
+    if (typeof allocationId !== 'string' || !allocationId) {
+      throw new Error('delete-egress requires the EgressNatEipAllocationId output before deleting the stack');
+    }
+    record.events.push({ type: 'egress-nat-eip', action: 'delete', stack_name: egressStack, allocation_id: allocationId });
+  }
   await io.destroy(stack);
   return stack;
 }
@@ -152,13 +173,14 @@ function deployScopeFor(stack) {
   if (stack === egressStack) return 'egress';
   return 'foundation';
 }
-export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName } = {}) {
+export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId } = {}) {
   const deployScope = deployScopeFor(stack);
   if (deployScope === 'application' && !apiOriginDomainName) throw new Error('The Base deploy requires the API origin domain name');
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
     '-c', `deployScope=${deployScope}`, '-c', 'stage=beta', '-c', 'legacyRoleSource=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
     '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`,
-    ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`, '-c', `apiOriginDomainName=${apiOriginDomainName}`] : [])];
+    ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`, '-c', `apiOriginDomainName=${apiOriginDomainName}`] : []),
+    ...(deployScope === 'egress' && natEipAllocationId ? ['-c', `natEipAllocationId=${natEipAllocationId}`] : [])];
 }
 // The Egress destroy uses the same restricted deploy session and reviewed
 // context; `--force` is safe because the stack holds no retained resources.
@@ -276,8 +298,9 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
       assertDeployAllowed(env, stack);
       const apiOriginDomainName = stack === baseStack ? await readApiOrigin(io) : undefined;
+      const natEipAllocationId = stack === egressStack ? env.NAT_EIP_ALLOCATION_ID : undefined;
       const awsEnv = await roleEnv('deploy');
-      await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName }),
+      await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       // Record the completed mutation immediately: a later retention failure must
       // still leave `partial`/`requires-explicit-recovery` evidence, not `failed`
@@ -374,7 +397,7 @@ export async function runOperation(env = process.env) {
     record.observed_service_revision = { service_sha: revision.commit, image_digest: revision.digest };
     await io.oneShot('migrate', revision);
   } else if (operation === 'delete-egress') {
-    await deleteOperationStack(io, operation);
+    await deleteOperationStack(io, operation, record);
   } else if (operation !== 'observe') {
     // The Base and account-wide stacks take no release input; only the Base stack
     // consumes Service-built Lambda assets, and its deploy proves those bytes
