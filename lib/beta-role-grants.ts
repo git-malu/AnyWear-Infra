@@ -125,6 +125,11 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   oneShots(data, ['verify', 'tester-cleanup'], [
     p.verificationTaskRole.roleArn, p.cleanupTaskRole.roleArn, p.oneShotExecutionRole.roleArn,
   ]);
+  // Issue #185: the operator cleanup's caller-side identity phase preflights the
+  // captured identity with a read-only AdminGetUser and deletes exactly that
+  // user from the Beta pool. No ListUsers or account-wide listing, and the fixed
+  // cleanup task role stays DB/DLQ-only.
+  p.userPool.grant(data, 'cognito-idp:AdminGetUser', 'cognito-idp:AdminDeleteUser');
 
   for (const principal of [deploy, runtime, e2e]) {
     describeStacks(principal, stackArns);

@@ -2165,6 +2165,23 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(JSON.stringify(dataPassRoles)).not.toContain('LifecycleTaskRole');
     const cleanupPolicy = (Object.values(template.Resources) as any[]).find(resource => resource.Type === 'AWS::IAM::Policy' && JSON.stringify(resource.Properties.Roles).includes('CleanupTaskRole'));
     expect(JSON.stringify(cleanupPolicy)).not.toContain('ssm:');
+    expect(JSON.stringify(cleanupPolicy)).not.toContain('cognito-idp:');
+    // Issue #185: the operator cleanup's caller-side identity phase preflights
+    // the captured identity with a read-only AdminGetUser and deletes exactly
+    // that user, so the data role holds exactly the two Cognito actions on the
+    // Beta user pool. No ListUsers, no account-wide listing, and the fixed
+    // cleanup task role stays DB/DLQ-only.
+    const userPoolId = (Object.entries(template.Resources) as [string, any][])
+      .find(([, resource]) => resource.Type === 'AWS::Cognito::UserPool')?.[0];
+    expect(userPoolId).toBeDefined();
+    const cognitoGrants = grantsFor(template, 'service-data')
+      .filter((grant) => [grant.Action].flat().some((action) => action.startsWith('cognito-idp:')));
+    expect(cognitoGrants.length).toBeGreaterThan(0);
+    for (const grant of cognitoGrants) expect(grant.Effect).toBe('Allow');
+    expect([...new Set(cognitoGrants.flatMap((grant) => [grant.Action].flat()))].sort())
+      .toEqual(['cognito-idp:AdminDeleteUser', 'cognito-idp:AdminGetUser']);
+    expect([...new Set(cognitoGrants.flatMap((grant) => [grant.Resource].flat()))])
+      .toEqual([{ 'Fn::GetAtt': [userPoolId, 'Arn'] }]);
     const e2eRegistration = grantsFor(template, 'e2e-qualification')
       .find((grant) => [grant.Action].flat().includes('ecs:RegisterTaskDefinition'));
     expect(JSON.stringify(e2eRegistration.Resource)).not.toContain('beta-anywear-lifecycle:');
