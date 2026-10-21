@@ -72,6 +72,10 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # The trigger set is published before any credential, from the same predicate
+    # the record gate reads: the `observe` job's `if` cannot drift from it.
+    outputs:
+      requires_accepted_observation: ${{ steps.observation-requirement.outputs.requires_accepted_observation }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,6 +85,9 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
+      - name: Publish whether this operation requires the accepted record
+        id: observation-requirement
+        run: node scripts/observation-requirement.mjs
       - name: Validate operation family and reviewed Service release identity
         run: |
           mkdir -p deployment-evidence
@@ -129,10 +136,46 @@ jobs:
           name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: .
       - uses: ./.github/actions/deploy-operation
+  # The accepted `anywear_infra_deployment` v3 producer of this deployment run
+  # (#181). A separate credential job: the read-only runtime role only, no deploy
+  # role, no App token, no verified-inputs artifact and no verify artifact
+  # download, so the record type can never be written from the job that holds the
+  # mutation role. It waits for the mutation because the chain fails when either
+  # the deploy or this observation fails, and `record` fails closed when no
+  # accepted record exists.
+  observe:
+    needs: [preflight, deploy]
+    if: needs.deploy.result == 'success' && needs.preflight.outputs.requires_accepted_observation == 'true'
+    environment: beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Observe the accepted deployment record with the read-only runtime session
+        run: node scripts/observe-accepted-record.mjs
+      - name: Preserve the accepted deployment record
+        uses: actions/upload-artifact@v4
+        with:
+          name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-evidence/deployment-record.json
+          retention-days: 90
+          if-no-files-found: error
   # No environment, no OIDC, no write permission: validate and checksum exactly
-  # what the credential job produced.
+  # what the credential jobs produced.
   record:
-    needs: deploy
+    needs: [deploy, observe]
     if: always() && needs.deploy.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -140,6 +183,7 @@ jobs:
       contents: read
     env:
       DEPLOY_JOB_RESULT: ${{ needs.deploy.result }}
+      OBSERVE_JOB_RESULT: ${{ needs.observe.result }}
       REQUIRE_DEPLOYMENT_RECORD: 'true'
     steps:
       - uses: actions/checkout@v4
@@ -155,21 +199,34 @@ jobs:
         with:
           name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
           path: deployment-evidence
-      - name: Download the deployment record when the operation produced one
+      - name: Download the accepted record when this operation produced one
         uses: actions/download-artifact@v4
         with:
           name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence
+          path: deployment-evidence/accepted
+        continue-on-error: true
+      - name: Download the mutation job's family observation
+        uses: actions/download-artifact@v4
+        with:
+          name: infra-family-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-evidence/family
         continue-on-error: true
       - name: Validate, checksum and preserve the operation and deployment records
         run: node scripts/record-deployment.mjs
+      # `always()`: a missing accepted record marks the operation record incomplete
+      # and exits non-zero, and that mark is the evidence the operator needs. The
+      # operation record and its checksum are therefore uploaded even when the
+      # accepted record was never produced.
       - name: Preserve the validated records and their checksums
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: infra-record-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            deployment-evidence/deployment-record.json
-            deployment-evidence/deployment-record.json.sha256
+            deployment-evidence/accepted/deployment-record.json
+            deployment-evidence/accepted/deployment-record.json.sha256
+            deployment-evidence/family/deployment-record.json
+            deployment-evidence/family/deployment-record.json.sha256
             deployment-evidence/operation-record.json
             deployment-evidence/operation-record.json.sha256
           retention-days: 90

@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { finalizeOperationRecord } from './finalize-operation.mjs';
+import { finalizeOperationRecord, markDeploymentIncomplete } from './finalize-operation.mjs';
 import { canonicalJson, parseJson } from './json-contract.mjs';
 
 const fixture = operation => ({ record_type: 'anywear_infra_operation', schema_version: 2, operation,
@@ -77,6 +77,51 @@ test('final observation is required regardless of the observed final stack state
       record.events.push({ type: 'final-stack-state', base_status: 'UPDATE_COMPLETE', runtime_status: active === 'true' ? 'UPDATE_COMPLETE' : 'ABSENT', runtime_exists: active === 'true' });
       assert.equal(finalizeOperationRecord(record, 'success', 'skipped').result, 'partial', `${operation} ${active}`);
     }
+  }
+});
+
+test('a missing accepted record marks a completed mutation partial and keeps a pre-mutation failure failed', () => {
+  const completed = fixture('deploy-platform');
+  completed.result = 'succeeded';
+  completed.events.push({ type: 'stack-deploy', stack_name: 'AnyWearPlatformStack-beta', result: 'complete' });
+  const marked = markDeploymentIncomplete(completed, { observationJob: 'failure', expectedWorkflow: '.github/workflows/mutate.yml' });
+  assert.equal(marked, completed);
+  assert.equal(marked.result, 'partial');
+  assert.equal(marked.recovery, 'requires-explicit-recovery');
+  assert.deepEqual(marked.events.at(-1), { type: 'accepted-deployment-record', result: 'missing',
+    observation_job: 'failure', expected_workflow: '.github/workflows/mutate.yml' });
+
+  // Nothing was mutated: the record stays failed and claims no recovery.
+  const untouched = fixture('deploy-platform');
+  untouched.result = 'failed';
+  markDeploymentIncomplete(untouched, { observationJob: 'skipped', expectedWorkflow: '.github/workflows/mutate.yml' });
+  assert.equal(untouched.result, 'failed');
+  assert.equal(untouched.recovery, 'not-required');
+  assert.equal(untouched.events.at(-1).type, 'accepted-deployment-record');
+
+  // A began-but-not-complete stack event is not a completed mutation.
+  const begun = fixture('deploy-platform');
+  begun.result = 'failed';
+  begun.events.push({ type: 'stack-deploy', stack_name: 'AnyWearPlatformStack-beta', result: 'began' });
+  markDeploymentIncomplete(begun, { observationJob: 'skipped', expectedWorkflow: '.github/workflows/mutate.yml' });
+  assert.equal(begun.result, 'failed');
+  assert.equal(begun.recovery, 'not-required');
+
+  // A recovery decision already recorded is never downgraded or re-transitioned.
+  const restoring = fixture('restore-release');
+  restoring.result = 'partial';
+  restoring.recovery = 'requires-explicit-recovery';
+  restoring.events.push({ type: 'stack-deploy', stack_name: 'AnyWearPlatformStack-beta', result: 'complete' });
+  markDeploymentIncomplete(restoring, { observationJob: 'unavailable', expectedWorkflow: '.github/workflows/mutate.yml' });
+  assert.equal(restoring.recovery, 'requires-explicit-recovery');
+
+  for (const observationJob of ['unknown', undefined]) {
+    assert.throws(() => markDeploymentIncomplete(fixture('deploy-platform'),
+      { observationJob, expectedWorkflow: '.github/workflows/mutate.yml' }), /Invalid observation job outcome/);
+  }
+  for (const expectedWorkflow of ['mutate.yml', undefined, '.github/workflows/mutate.json']) {
+    assert.throws(() => markDeploymentIncomplete(fixture('deploy-platform'),
+      { observationJob: 'failure', expectedWorkflow }), /Expected deployment workflow required/);
   }
 });
 

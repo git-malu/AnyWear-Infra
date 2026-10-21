@@ -47,6 +47,29 @@ export function finalizeOperationRecord(record, operationOutcome, observationOut
   return record;
 }
 
+// A deployment is not complete until its accepted record exists (#181). The
+// credential-free `record` job owns this verdict: when the chain produced no
+// accepted `anywear_infra_deployment`, the operation record becomes `partial` with
+// an explicit recovery decision if a stack mutation already completed, and stays
+// `failed` when nothing was mutated. Either way the durable record carries the
+// missing-evidence event, so a reader never has to infer completeness from a run
+// conclusion alone. Pure: it mutates and returns only the record it was given.
+export function markDeploymentIncomplete(record, { observationJob, expectedWorkflow } = {}) {
+  readOperationRecord(record);
+  if (!['success', 'failure', 'cancelled', 'skipped', 'unavailable'].includes(observationJob)) {
+    throw new Error('Invalid observation job outcome');
+  }
+  if (typeof expectedWorkflow !== 'string' || !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(expectedWorkflow)) {
+    throw new Error('Expected deployment workflow required');
+  }
+  const completedMutation = hasCompletedMutation(record);
+  record.result = completedMutation ? 'partial' : 'failed';
+  if (completedMutation && record.recovery === 'not-required') recordRecovery(record, 'requires-explicit-recovery');
+  record.events.push({ type: 'accepted-deployment-record', result: 'missing',
+    observation_job: observationJob, expected_workflow: expectedWorkflow });
+  return record;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const file = 'deployment-evidence/operation-record.json';
   let bytes;

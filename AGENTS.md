@@ -79,10 +79,22 @@ and must not be relabeled as an Infra-produced deployment.
   [operations catalog](README.md#operations): `check.yml` is automatic;
   `runtime.yml` is the manual `state`/`observe` entry,
   where `state` is read-only with restricted STS credentials and works with
-  `ENABLE_BETA_MUTATION` closed, and `observe` is the qualified observation that
-  remains the only accepted `anywear_infra_deployment` v3 producer for E2E
+  `ENABLE_BETA_MUTATION` closed, and `observe` is the manual qualified observation
+  that produces the accepted `anywear_infra_deployment` v3 record for E2E
   compatibility; `mutate.yml` is the single manual mutation entry
-  and rejects cross-family or out-of-scope inputs before credentials. It now
+  and rejects cross-family or out-of-scope inputs before credentials. Since #181 a
+  deployment that changes a configured stack runs `preflight` → `verify` → `deploy`
+  → `observe` → `record` in one run: the read-only `observe` job holds only the
+  runtime role and writes the accepted v3 record with producer
+  `.github/workflows/mutate.yml` and that run's id/attempt/source, while the
+  mutation job keeps the write session and produces only its
+  `anywear_infra_family_observation`. A missing accepted record after a completed
+  mutation marks the operation record `partial`/`requires-explicit-recovery` and
+  fails the run, so a deployment cannot enter Acceptance without it.
+  `deploy-egress`/`delete-egress` change only the operation-owned
+  `AnyWearEgressStack-beta` and are outside that trigger set, as are `migrate`, the
+  admission operations and `state`; the trigger set is derived from the frozen
+  stack tables, not restated. It now
   includes `deploy-egress` / `delete-egress`: both are `beta-deploy` family,
   change only `AnyWearEgressStack-beta`, and `delete-egress` refuses unless the
   Runtime stack is absent. `production.yml`
