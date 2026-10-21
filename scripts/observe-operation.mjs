@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { validateOperationInputs, createRuntimeIo, credentialEnvironment } from './runtime-operation.mjs';
 import { observeDeployment } from './observe-deployment.mjs';
-import { runAuthorizationCanary } from './authorization-canary.mjs';
+import { runAuthorizationPreflight } from './authorization-preflight.mjs';
 import { validateDeploymentRecord, validateObservationRecord } from './deployment-contract.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
 import { deploymentRecordType, observationRecordType } from './observation-record.mjs';
@@ -18,7 +18,7 @@ try {
   // Pre-mutation interlock (#165) on the observe path: the qualification session
   // is available, and the same derived reads are called once before the
   // observation starts. A denial stops before the observation does any work.
-  await runAuthorizationCanary({ sessions: ['runtime'], env, purpose: 'qualification', assume: credentialEnvironment });
+  await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose: 'qualification', assume: credentialEnvironment });
   // The authenticated observation covers the stacks Infra still produces and the
   // stage-contract surface it publishes. The release slice is observed by
   // AnyWear-Service's release chain, never from here. Only the `runtime` family

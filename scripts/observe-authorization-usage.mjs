@@ -1,28 +1,30 @@
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { credentialEnvironment } from './runtime-operation.mjs';
-import { OBSERVED_SURFACE, REGION } from './authorization-inventory.mjs';
-import { buildObservedRecord } from './authorization-observed.mjs';
+import { region } from './deployment-contract.mjs';
+import { OBSERVED_SURFACE, buildObservedRecord } from './authorization-observed.mjs';
 
 const execute = promisify(execFile);
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
+const DECLARATION_FILE = path.join(root, 'test', 'fixtures', 'authorization-declared.json');
 
-// The observed layer's producer (D3). It runs in the credentialed deploy job
-// after the operation, under the same restricted runtime session, and writes
+// The observed layer's producer. It runs in the credentialed deploy job after the
+// operation, under the same restricted runtime session, and writes
 // `permissions-observed.json`. It makes no mutation and its output is report-only
-// narrowing input. The observed action set is reconciled against the one derived
-// inventory module, never against a second derivation.
-
+// narrowing input. The declared set is the lint-produced artifact of Allow actions
+// in the synthesized Foundation and Platform policy documents, not a second
+// derivation.
 const OPTIONS = Object.freeze({ '--start-time': true, '--end-time': true, '--window-minutes': true,
   '--minimum-window-minutes': true, '--output': true });
 const USAGE = `Usage: node scripts/observe-authorization-usage.mjs [--start-time <iso>] [--end-time <iso>]
   [--window-minutes <n>] [--minimum-window-minutes <n>] [--output <file>]
 
 Reads CloudTrail LookupEvents for the reconciled roles' run window and writes
-${OBSERVED_SURFACE.artifact_path}. An observed action outside the declared
-surface fails; declared-but-unused is reported, never applied.
+${OBSERVED_SURFACE.artifact_path}. An observed action outside the declaration fails
+in the credential-free record job; declared-but-unused is reported, never applied.
 `;
 
 export function observerArguments(argv = []) {
@@ -39,12 +41,20 @@ export function observerArguments(argv = []) {
   return options;
 }
 
+export async function loadDeclaredActions(file = DECLARATION_FILE) {
+  const parsed = JSON.parse(await readFile(file, 'utf8'));
+  if (parsed?.record_type !== 'anywear_authorization_declared_actions' || !parsed.roles) {
+    throw new Error('The declared authorization artifact has an unknown shape');
+  }
+  return parsed.roles;
+}
+
 export async function lookupEvents({ credentials, start, end, run = execute, maxPages = 200 } = {}) {
   const events = [];
   let token;
   for (let page = 0; page < maxPages; page += 1) {
     const command = ['cloudtrail', 'lookup-events', '--start-time', start, '--end-time', end,
-      '--max-results', String(OBSERVED_SURFACE.event_page_limit), '--region', REGION, '--output', 'json',
+      '--max-results', String(OBSERVED_SURFACE.event_page_limit), '--region', region, '--output', 'json',
       ...(token ? ['--next-token', token] : [])];
     const result = await run('aws', command, { env: credentials, timeout: 120_000, maxBuffer: 20 * 1024 * 1024 });
     const body = result.stdout?.trim() ? JSON.parse(result.stdout) : {};
@@ -69,9 +79,11 @@ export async function observeAuthorizationUsage({ env = process.env, argv = proc
   if (!Number.isFinite(minutes) || minutes <= 0) throw new Error('The window length must be a positive number of minutes');
   const start = options['start-time'] ? new Date(options['start-time']) : new Date(end.getTime() - minutes * 60_000);
   const minimumMinutes = Number(options['minimum-window-minutes'] ?? OBSERVED_SURFACE.minimum_window_minutes);
+  const declaredByRole = await loadDeclaredActions();
   const credentials = await assume('runtime', env, 'operation');
   const events = await lookupEvents({ credentials, start: start.toISOString(), end: end.toISOString(), run });
-  const record = buildObservedRecord({ events, window: { start: start.toISOString(), end: end.toISOString(), minimumMinutes }, env });
+  const record = buildObservedRecord({ events,
+    window: { start: start.toISOString(), end: end.toISOString(), minimumMinutes }, declaredByRole, env });
   await mkdir(path.dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(record, null, 2)}\n`);
   return { record, output };

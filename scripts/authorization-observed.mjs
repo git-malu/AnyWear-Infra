@@ -1,21 +1,51 @@
-import { OBSERVED_SURFACE, actionCovered, declaredActions } from './authorization-inventory.mjs';
-
-// The observed surface (D3). CloudTrail is read over the reconciled roles' run
-// window, an observed action outside the declared set fails, and
-// declared-but-unused stays report-only: a single run cannot justify narrowing a
+// The observed surface (#165). CloudTrail is read over the reconciled roles' run
+// window, and the actions actually used are compared with the actions the
+// synthesized Foundation and Platform policy documents declare. The declaration
+// artifact is produced by the lint check (test/authorization-lint.test.ts) and
+// committed as test/fixtures/authorization-declared.json, so the credential-free
+// reader can reconcile without synthesizing anything.
+//
+// Declared-but-unused is report-only (D3): a single run cannot justify narrowing a
 // grant, because a branch, a stopped stack or an operation family may simply not
-// have executed. The minimum window and the retention reason live in the
-// inventory module (OBSERVED_SURFACE), not in this file.
+// have executed. Narrowing needs a minimum window and a reviewed policy change.
+
+export const OBSERVED_SURFACE = Object.freeze({
+  schema_version: 1,
+  record_type: 'anywear_permissions_observed',
+  minimum_window_minutes: 60,
+  default_window_minutes: 180,
+  max_window_days: 90,
+  artifact_path: 'deployment-evidence/permissions-observed.json',
+  // The preflight's own session and its simulator calls are instrumentation, not
+  // operation permissions: reconciliation excludes both.
+  self_markers: Object.freeze(['preflight']),
+  self_instrumentation_actions: Object.freeze(['iam:SimulatePrincipalPolicy', 'iam:SimulateCustomPolicy']),
+  retention_reason: 'A declared action can be unused because a code branch, a stack state (stopped Beta) or an operation family did not execute in one run. The artifact is retained with the deployment evidence (90 days) and a narrowing needs a window covering at least one deploy and one observe run, so a single run cannot delete a grant it merely did not exercise.',
+  reconciled_roles: Object.freeze(['beta-infra-deploy-role', 'beta-infra-runtime-role',
+    'beta-service-deploy-role', 'beta-service-deploy-cfn-role']),
+  event_page_limit: 50,
+});
+
+// CloudTrail event sources are not IAM service prefixes: CloudWatch events are
+// recorded under `monitoring.amazonaws.com` while the IAM action is
+// `cloudwatch:...`. The alias map is reviewed, never inferred.
+export const EVENT_SOURCE_ALIASES = Object.freeze({ monitoring: 'cloudwatch' });
 
 const SESSION_ACQUISITION_ACTIONS = Object.freeze(['sts:AssumeRole', 'sts:AssumeRoleWithWebIdentity',
   'sts:GetSessionToken', 'sts:GetFederationToken']);
 const SESSION_ACQUISITION_SOURCES = Object.freeze(['sts.amazonaws.com']);
 const IGNORED_EVENT_SOURCES = Object.freeze(['signin.amazonaws.com']);
 
-// CloudTrail event sources are not IAM service prefixes: CloudWatch events are
-// recorded under `monitoring.amazonaws.com` while the IAM action is
-// `cloudwatch:...`. The alias map is reviewed, never inferred.
-export const EVENT_SOURCE_ALIASES = Object.freeze({ monitoring: 'cloudwatch' });
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const globRegExp = (pattern) => new RegExp(`^${pattern.split('*').map(escapeRegExp).join('.*')}$`);
+
+// A declaration is a grant pattern: `cloudformation:*` declares any observed
+// CloudFormation action and `*` declares everything.
+export function actionCovered(declaredActions, action) {
+  return declaredActions.some((granted) => granted === action
+    || granted === '*'
+    || (granted.endsWith(':*') && action.startsWith(`${granted.slice(0, -1)}`)));
+}
 
 export function eventDetail(event) {
   try {
@@ -41,10 +71,10 @@ export function eventRole(event) {
   return plain?.[1];
 }
 
-export function isCanaryInvocation(event, marker = OBSERVED_SURFACE.canary_marker) {
+export function isSelfInvocation(event, markers = OBSERVED_SURFACE.self_markers) {
   const detail = eventDetail(event);
   const session = detail.arn.split('/').pop() ?? '';
-  return session.split('-').includes(marker) || detail.arn.includes(`-${marker}-`);
+  return markers.some((marker) => session.split('-').includes(marker) || detail.arn.includes(`-${marker}-`));
 }
 
 export function eventAction(event) {
@@ -68,88 +98,116 @@ export function assertObservationWindow({ start, end,
   return { start: new Date(startTime).toISOString(), end: new Date(endTime).toISOString(), minutes };
 }
 
-// Reconcile one run's CloudTrail event page set. The canary's own invocations
-// (its marked session) are excluded so the sensor does not inject its own signal.
-export function reconcileObserved({ events, declared = declaredActions(),
-  roles = OBSERVED_SURFACE.reconciled_roles, canaryMarker = OBSERVED_SURFACE.canary_marker } = {}) {
+// declaredByRole is the lint-produced declaration: { role: [actions] }. Every
+// reconciled role must be declared; a missing role fails closed.
+export function declaredActionsFor(declaredByRole, role) {
+  const actions = declaredByRole?.[role];
+  if (!Array.isArray(actions) || actions.length === 0) throw new Error(`No declared actions for reconciled role ${role}`);
+  return actions;
+}
+
+export function reconcileObserved({ events, declaredByRole, roles = OBSERVED_SURFACE.reconciled_roles,
+  selfMarkers = OBSERVED_SURFACE.self_markers } = {}) {
   if (!Array.isArray(events)) throw new Error('CloudTrail events must be an array');
-  const observed = new Set();
-  const perRole = new Map(roles.map((role) => [role, new Set()]));
-  let canaryExcluded = 0;
+  for (const role of roles) declaredActionsFor(declaredByRole, role);
+  const observed = new Map(roles.map((role) => [role, new Set()]));
+  let selfExcluded = 0;
   let outOfScope = 0;
-  const ignored = [];
+  let ignored = 0;
   for (const event of events) {
     const action = eventAction(event);
     if (!action) continue;
     const source = `${event.EventSource}`;
-    if (IGNORED_EVENT_SOURCES.includes(source)) { ignored.push({ reason: 'ignored-event-source', source }); continue; }
-    if (SESSION_ACQUISITION_SOURCES.includes(source) && SESSION_ACQUISITION_ACTIONS.includes(action)) {
-      ignored.push({ reason: 'session-acquisition', action }); continue;
+    if (IGNORED_EVENT_SOURCES.includes(source)) { ignored += 1; continue; }
+    if (SESSION_ACQUISITION_SOURCES.includes(source) && SESSION_ACQUISITION_ACTIONS.includes(action)) { ignored += 1; continue; }
+    if (isSelfInvocation(event, selfMarkers)
+      || OBSERVED_SURFACE.self_instrumentation_actions.some((instrumentation) => actionCovered([instrumentation], action))) {
+      selfExcluded += 1;
+      continue;
     }
-    if (isCanaryInvocation(event, canaryMarker)) { canaryExcluded += 1; continue; }
     const role = eventRole(event);
     if (!role || !roles.includes(role)) { outOfScope += 1; continue; }
-    observed.add(action);
-    perRole.get(role).add(action);
+    observed.get(role).add(action);
   }
-  const declaredList = [...declared];
-  const observedActions = [...observed].sort();
-  // A declaration is a grant pattern: `cloudformation:*` declares any observed
-  // CloudFormation action, and `*` declares everything, so the same wildcard
-  // semantics the contract test uses apply here. The reverse direction is
-  // report-only and also expansion-aware, so `cloudformation:*` is not reported
-  // unused merely because no single literal action matched it.
-  const isDeclared = (action) => actionCovered(declaredList, action);
-  const undeclared = observedActions.filter((action) => !isDeclared(action));
-  const declaredButUnused = declared.filter((entry) => !observedActions.some((action) => actionCovered([entry], action))).sort();
+  const undeclared = [];
+  const declaredButUnused = {};
+  const perRole = {};
+  for (const role of roles) {
+    const declared = declaredActionsFor(declaredByRole, role);
+    const used = [...observed.get(role)].sort();
+    perRole[role] = used;
+    for (const action of used) if (!actionCovered(declared, action)) undeclared.push({ role, action });
+    declaredButUnused[role] = declared.filter((entry) => !used.some((action) => actionCovered([entry], action))).sort();
+  }
   return {
-    observed_actions: observedActions,
+    observed_actions: [...new Set(roles.flatMap((role) => perRole[role]))].sort(),
     undeclared_actions: undeclared,
+    per_role: perRole,
     declared_but_unused: declaredButUnused,
-    per_role: Object.fromEntries([...perRole].map(([role, actions]) => [role, [...actions].sort()])),
-    excluded_canary_events: canaryExcluded,
+    declared_but_unused_count: Object.values(declaredButUnused).reduce((total, actions) => total + actions.length, 0),
+    excluded_self_events: selfExcluded,
     out_of_scope_events: outOfScope,
-    ignored_events: ignored.length,
+    ignored_events: ignored,
   };
 }
 
-export function buildObservedRecord({ events, window, declared = declaredActions(), env = process.env } = {}) {
+export function buildObservedRecord({ events, window, declaredByRole, env = process.env } = {}) {
   const normalized = assertObservationWindow({
     ...window,
     minimumMinutes: window?.minimumMinutes ?? OBSERVED_SURFACE.minimum_window_minutes,
   });
-  const reconciliation = reconcileObserved({ events, declared });
+  const reconciliation = reconcileObserved({ events, declaredByRole });
   return {
     schema_version: OBSERVED_SURFACE.schema_version,
     record_type: OBSERVED_SURFACE.record_type,
     generated_at: new Date().toISOString(),
-    executor: { repository: env.GITHUB_REPOSITORY ?? 'git-malu/AnyWear-Infra', run_id: Number(env.GITHUB_RUN_ID) || null,
-      run_attempt: Number(env.GITHUB_RUN_ATTEMPT) || null, source_sha: env.GITHUB_SHA ?? null },
+    executor: { repository: env.GITHUB_REPOSITORY ?? 'git-malu/AnyWear-Infra',
+      run_id: Number(env.GITHUB_RUN_ID) || null, run_attempt: Number(env.GITHUB_RUN_ATTEMPT) || null,
+      source_sha: env.GITHUB_SHA ?? null },
     window: { ...normalized, minimum_minutes: OBSERVED_SURFACE.minimum_window_minutes },
     retention: { reason: OBSERVED_SURFACE.retention_reason, narrowing: 'report-only' },
     reconciled_roles: OBSERVED_SURFACE.reconciled_roles,
-    canary_marker: OBSERVED_SURFACE.canary_marker,
+    self_markers: OBSERVED_SURFACE.self_markers,
+    declaration_source: 'test/fixtures/authorization-declared.json (Allow actions in the synthesized Foundation and Platform policy documents)',
     lookup: { api: 'cloudtrail:LookupEvents', consistency: 'event history is eventually consistent; the window ends at generation time' },
     ...reconciliation,
   };
 }
 
+export function undeclaredDetail(undeclared) {
+  return undeclared.map((entry) => `${entry.role}: ${entry.action}`).join(', ');
+}
+
 // A reader (or the credential-free record job) fails on an observed action the
-// declared surface does not contain. Declared-but-unused is printed, never fatal.
+// IaC does not declare. Declared-but-unused is printed, never fatal.
 export function assertObservedDeclared(record) {
   if (!record || record.record_type !== OBSERVED_SURFACE.record_type) throw new Error('Not an observed authorization record');
   if (!Array.isArray(record.undeclared_actions)) throw new Error('Observed record has no undeclared_actions list');
   if (record.undeclared_actions.length) {
-    throw new Error(`Observed undeclared AWS action(s): ${record.undeclared_actions.join(', ')}. Add a reviewed grant and inventory entry, or stop the operation.`);
+    throw new Error(`Observed undeclared AWS action(s): ${undeclaredDetail(record.undeclared_actions)}. Add a reviewed grant and declaration, or stop the operation.`);
   }
   return record;
 }
 
-export function validateObservedRecord(record) {
-  assertObservedDeclared(record);
-  if (!Array.isArray(record.observed_actions) || !Array.isArray(record.declared_but_unused)) throw new Error('Observed record lists are missing');
+export function validateObservedRecord(record, declaredByRole) {
+  if (!record || record.record_type !== OBSERVED_SURFACE.record_type) throw new Error('Not an observed authorization record');
+  if (!Array.isArray(record.observed_actions) || !record.per_role || !record.declared_but_unused) {
+    throw new Error('Observed record lists are missing');
+  }
   if (!record.window?.start || !record.window?.end) throw new Error('Observed record has no run window');
   assertObservationWindow(record.window);
   if (record.retention?.narrowing !== 'report-only') throw new Error('Declared-but-unused may not narrow automatically (D3)');
+  // Recompute the undeclared set from the recorded per-role usage and the current
+  // declaration artifact; never trust a possibly stale field alone.
+  const undeclared = [];
+  for (const role of OBSERVED_SURFACE.reconciled_roles) {
+    const declared = declaredActionsFor(declaredByRole, role);
+    for (const action of record.per_role[role] ?? []) {
+      if (!actionCovered(declared, action)) undeclared.push({ role, action });
+    }
+  }
+  if (undeclared.length || record.undeclared_actions.length) {
+    throw new Error(`Observed undeclared AWS action(s): ${undeclaredDetail(undeclared.length ? undeclared : record.undeclared_actions)}. Add a reviewed grant and declaration, or stop the operation.`);
+  }
   return record;
 }

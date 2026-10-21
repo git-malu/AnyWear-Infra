@@ -16,7 +16,7 @@ import { runCloseAdmission, runOpenAdmission, assertMigrationAdmissionClosed } f
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertTerminalRuntime, assertRuntimeAbsent, assertRuntimeReady, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
-import { runAuthorizationCanary } from './authorization-canary.mjs';
+import { runAuthorizationPreflight } from './authorization-preflight.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { account, region } from './deployment-contract.mjs';
 
@@ -245,7 +245,7 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       // Pre-mutation interlock (#165): a migration or admission one-shot changes
       // data, so the same marked, read-only probes run first. A denial stops the
       // operation before the task is registered or started.
-      await runAuthorizationCanary({ sessions: ['runtime'], env, purpose, assume, run });
+      await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('runtime');
       let result;
       try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
@@ -290,7 +290,7 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       // available and before CDK changes anything, call each derived read once.
       // An authorization denial throws here with zero changes; a resource
       // absence is classified separately and does not stop the deploy.
-      await runAuthorizationCanary({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
+      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       // Record the completed mutation immediately: a later retention failure must
@@ -310,7 +310,7 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       if (env.INFRA_OPERATION !== 'delete-egress' || stack !== egressStack) throw new Error('Only delete-egress may destroy a stack');
       // Pre-mutation interlock (#165): prove the deploy and runtime sessions'
       // reads before the Egress stack is deleted.
-      await runAuthorizationCanary({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
+      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
