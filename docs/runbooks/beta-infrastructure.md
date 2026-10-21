@@ -193,9 +193,11 @@ Keep that reviewed main fixed through the protected deployment and subsequent
 observation. The map is valid for later `observe` at the same SHA after both
 deployments; using it at a newer main would wrongly relabel unchanged stacks.
 Observation from newer main requires a separately reviewed fixed map preserving the
-actual deployed Platform/Workload SHAs. Final E2E binds the actual record-producing
-Infra source and deployment record. This source map alone is not runtime proof
-or authorization to deploy.
+actual deployed Platform/Workload SHAs. E2E v3 qualification consumes no deployment
+record and binds no Infra source: it observes the platform itself (three stacks, the
+SSM inputs, both Lambdas, both queues and the Client domain, before and after the
+suite). Deployment-record lineage belongs to #181. This source map alone is not
+runtime proof or authorization to deploy.
 
 ## Entry points
 
@@ -703,13 +705,14 @@ not prove the applied DB version.
 
 Other task families retain the same strict final snapshot but emit
 `anywear_infra_family_observation` with their actual workflow path, not fabricated
-`runtime.yml` provenance. Existing E2E accepts only the legacy v2 producer;
-consumer expansion needs a separately reviewed pin/contract. Run fixed qualified
-observation after coordinated family changes to produce that compatible input.
+`runtime.yml` provenance. E2E v3 qualification consumes no Infra record, so the
+legacy-producer and compatibility-pin acceptance rule is inert and retires in
+Wave 2 (#180); deployment-record lineage belongs to #181. Run fixed qualified
+observation after coordinated family changes to retain that deployment evidence.
 Offline source checks do not establish new runtime-interface acceptance. After
 integration, run gate-disabled read-only observation and fixed qualified observation
-with restricted sessions against the retained tuple, then obtain E2E acceptance of
-the exact resulting legacy record. This source split does not imply AWS resource or
+with restricted sessions against the retained tuple, and keep the resulting record
+with the operation evidence. This source split does not imply AWS resource or
 template deployment.
 
 A deployment that changes a configured stack has its accepted evidence step in the
@@ -753,9 +756,14 @@ deployment must not enter Acceptance; the operator re-dispatches the same chain
 
 A record that is present but for another run is invalid evidence rather than an
 incomplete deployment: the record job fails on the producer identity and preserves
-the failing artifact for inspection. That `deployment-record.json` is what advances
-the compatibility pin, which `AnyWear-E2E` owns; the routine is in that repository's
-[`docs/compatibility-pin.md`](https://github.com/git-malu/AnyWear-E2E/blob/main/docs/compatibility-pin.md).
+the failing artifact for inspection. That `deployment-record.json` is deployment
+evidence for lineage and rollback; it is not a qualification input. `AnyWear-E2E`'s
+record v3 qualification consumes no Infra record and observes the platform itself
+(#180), so the legacy-producer and compatibility-pin acceptance rule is inert and
+retires in Wave 2 (#180); deployment-record lineage belongs to #181. The pin routine
+in
+[`docs/compatibility-pin.md`](https://github.com/git-malu/AnyWear-E2E/blob/main/docs/compatibility-pin.md)
+retires with the first live `full`.
 
 Two workflow producers can emit the accepted record — `runtime.yml`'s manual
 `observe` and a `mutate.yml` deployment chain — and each is bound to its own run,
@@ -794,9 +802,10 @@ family records it validated, plus the operation record, under
 `infra-record-<run-id>-<attempt>` together with their `.sha256` files.
 Record actual hashes and effective expiry; missing/expired
 artifacts cannot authorize qualification or rollback. SSM stage-contract/deployment
-values alone are not observed release proof. Final E2E v2 qualification runs in a
-separate scheduled window and compares authenticated observations before/after
-against the exact deployment record.
+values alone are not observed release proof. Final E2E v3 qualification runs in a
+separate scheduled window: it reads the live Client/Service identity, takes its own
+authenticated before/after observation, and writes a self-contained record (no
+committed pin and no deployment-record download).
 
 ## Admission-mode migration and rollout (historical, pre-#158 step C)
 
