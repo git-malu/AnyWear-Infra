@@ -10,8 +10,8 @@ const packageJson = JSON.parse(read('package.json'));
 
 test('the package identity is the reviewed name, version and tag', () => {
   assert.equal(packageJson.name, '@git-malu/stage-contracts');
-  assert.equal(packageJson.version, '0.4.0');
-  assert.equal(`stage-contracts-v${packageJson.version}`, 'stage-contracts-v0.4.0');
+  assert.equal(packageJson.version, '0.5.0');
+  assert.equal(`stage-contracts-v${packageJson.version}`, 'stage-contracts-v0.5.0');
   assert.equal(packageJson.type, 'module');
   assert.equal(packageJson.license, 'UNLICENSED');
   assert.equal(packageJson.engines.node, '>=24');

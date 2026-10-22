@@ -265,7 +265,7 @@ identify their actual workflow (`mutate.yml`). E2E v3 qualification consumes no
 deployment record and observes the platform itself, so the legacy-producer/pin
 acceptance rule is inert and retires in Wave 2 (#180); the record remains
 deployment evidence and #181's lineage. The Runtime slice's own record is produced
-by this repository's `deploy-runtime` operation (`anywear_service_deployment` v5).
+by this repository's `deploy-runtime` operation (`anywear_service_deployment` v6).
 Read-only
 `runtime.yml` `state` remains available with the stage switch closed, including
 recovery diagnosis, and cannot start tasks or qualify database/schema state.

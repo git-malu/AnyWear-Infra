@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseJson, sha256, canonicalJson, exact, matches, integer, DIGEST, SHA } from './json-contract.mjs';
+import { SCHEMA_ASSET_NAME } from './schema-asset.mjs';
 
 // The reviewed Service release identity that replaces the committed `selection`:
 // the tag names one sealed release; the commit names the Service source it was
@@ -18,23 +19,37 @@ export const SERVICE_REPOSITORY = 'git-malu/AnyWear-Service';
 export const RELEASE_ASSET_NAMES = Object.freeze(['pre-sign-up.zip', 'post-confirmation.zip',
   'runtime-policy.json', 'service-schema.json']);
 // The three this repository's stage base consumes. `service-schema.json` belongs
-// to the Service runtime: it must be present in the release, and Infra never
-// downloads it.
+// to the Service runtime: `deploy-platform`/`restore-release` never download it.
 export const STAGE_BASE_ASSETS = Object.freeze(['pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json']);
-// The one directory the CDK stage-base deploy consumes. The verify job downloads
-// the three released files into it and the deploy job re-hashes them before any
+// The one asset `deploy-runtime` consumes: the sealed release's schema boundary,
+// which the deploy job re-hashes and strictly validates before any credential and
+// the gate compares against the live applied journal before any stack mutation.
+export const RUNTIME_RELEASE_ASSETS = Object.freeze([SCHEMA_ASSET_NAME]);
+// The one directory the CDK stage-base deploy consumes and the Runtime deploy
+// reads the travelled schema asset from. The verify job downloads the operation's
+// consumed set into it and the deploy job re-hashes those bytes before any
 // credential, so both sides name the same bytes.
 export const SELECTED_RELEASE_DIRECTORY = path.join(root, '.service-artifacts', 'selected');
 // Both operations deploy the stage base, which consumes the Service-built Lambda
 // bundles and runtime policy; `deploy-runtime` consumes the sealed release's
-// identity only (commit, tag and the ECR image the tag names) and downloads no
-// asset. A release identity supplied to any other operation is rejected instead
-// of silently ignored.
+// schema asset (its tag, commit and ECR image are resolved separately from the
+// same identity). A release identity supplied to any other operation is rejected
+// instead of silently ignored.
 export const RELEASE_IDENTITY_OPERATIONS = Object.freeze(['deploy-platform', 'deploy-runtime', 'restore-release']);
 const GH_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // An annotated tag names a tag object that names the commit. The bound keeps a
 // malformed or cyclic chain from issuing unbounded REST reads.
 const MAX_TAG_DEPTH = 4;
+
+/**
+ * The release assets one operation consumes. Every other operation takes no
+ * release at all, so an unknown operation is a caller error, never an empty set.
+ */
+export function releaseAssetsFor(operation) {
+  if (operation === 'deploy-runtime') return RUNTIME_RELEASE_ASSETS;
+  if (operation === 'deploy-platform' || operation === 'restore-release') return STAGE_BASE_ASSETS;
+  throw new Error(`Operation ${operation} consumes no Service release assets`);
+}
 
 // One reviewed input per stage-base deploy path. `deploy-platform` and
 // `restore-release` both take Service-built Lambda assets; every other operation
@@ -51,10 +66,10 @@ export function validateReleaseInput(env = process.env, operation = env.INFRA_OP
   return { releaseTag, serviceCommit };
 }
 
-export function releaseInputsRecord({ release, assets }) {
+export function releaseInputsRecord({ release, assets, assetNames = STAGE_BASE_ASSETS }) {
   return { schema_version: 2, record_type: 'anywear_infra_release_inputs', repository: SERVICE_REPOSITORY,
     release: { id: release.id, tag: release.tag, source_sha: release.sourceSha },
-    assets: Object.fromEntries(STAGE_BASE_ASSETS.map(name => [name, assets[name]])) };
+    assets: Object.fromEntries([...assetNames].map(name => [name, assets[name]])) };
 }
 
 const releaseApiPath = releaseTag => `repos/${SERVICE_REPOSITORY}/releases/tags/${encodeURIComponent(releaseTag)}`;
@@ -63,9 +78,10 @@ const tagApiPath = sha => `repos/${SERVICE_REPOSITORY}/git/tags/${sha}`;
 
 // The release API's documented representation is the authority: `immutable` and
 // each asset's `sha256:<hex>` digest come from REST, never from a manifest. Only
-// the names the stage base consumes are required; any other published asset (the
-// legacy manifest asset in a pre-change release, or the schema asset) is ignored.
-export function assertPublishedRelease(release, releaseTag) {
+// the names this operation consumes are required; any other published asset (a
+// pre-change release's legacy manifest, or the schema asset for a stage-base
+// operation) is ignored.
+export function assertPublishedRelease(release, releaseTag, assetNames = STAGE_BASE_ASSETS) {
   if (!release || typeof release !== 'object' || Array.isArray(release)) throw new Error('Invalid Service release response');
   integer(release.id, 'release ID');
   if (release.tag_name !== releaseTag) throw new Error(`Service release response names ${release.tag_name}, not ${releaseTag}`);
@@ -82,7 +98,7 @@ export function assertPublishedRelease(release, releaseTag) {
   }
   const observed = [...published.keys()].sort().join(', ') || 'no assets';
   const assets = {};
-  for (const name of STAGE_BASE_ASSETS) {
+  for (const name of assetNames) {
     const entries = published.get(name) ?? [];
     if (entries.length === 0) throw new Error(`Service release ${releaseTag} lacks ${name}; observed ${observed}`);
     if (entries.length > 1) throw new Error(`Service release ${releaseTag} duplicates ${name}; observed ${observed}`);
@@ -115,35 +131,36 @@ export async function resolveTagCommit(releaseTag, api) {
   return matches(target.sha, SHA, `Service tag ${releaseTag} commit`);
 }
 
-// Download only the three assets the stage base consumes, after proving the
-// release identity through the API. The bytes are not hashed here: the deploy job
-// hashes each consumed byte exactly once against the recorded published digest
-// before it requests a credential.
+// Download only the assets this operation consumes, after proving the release
+// identity through the API. The bytes are not hashed here: the deploy job hashes
+// each consumed byte exactly once against the recorded published digest before it
+// requests a credential.
 export async function downloadReleaseInputs({ releaseTag, serviceCommit, directory = SELECTED_RELEASE_DIRECTORY,
-  token, run = execute }) {
+  token, run = execute, assetNames = STAGE_BASE_ASSETS }) {
   if (typeof token !== 'string' || !token) throw new Error('A read-only Service token is required to read the Service release');
   await mkdir(directory, { recursive: true });
   const env = { ...process.env, GH_TOKEN: token, GH_TELEMETRY: 'disabled' };
   const api = async endpoint => parseJson((await run('gh', ['api', endpoint],
     { env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
-  const { id, assets } = assertPublishedRelease(await api(releaseApiPath(releaseTag)), releaseTag);
+  const { id, assets } = assertPublishedRelease(await api(releaseApiPath(releaseTag)), releaseTag, assetNames);
   const sourceSha = await resolveTagCommit(releaseTag, api);
   if (sourceSha !== serviceCommit) {
     throw new Error(`Service tag ${releaseTag} resolves to ${sourceSha}, not the reviewed commit ${serviceCommit}`);
   }
   await run('gh', ['release', 'download', releaseTag, '--repo', SERVICE_REPOSITORY, '--dir', directory, '--clobber',
-    ...STAGE_BASE_ASSETS.flatMap(name => ['--pattern', name])], { env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
-  const record = releaseInputsRecord({ assets, release: { id, tag: releaseTag, sourceSha } });
+    ...[...assetNames].flatMap(name => ['--pattern', name])], { env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
+  const record = releaseInputsRecord({ assets, assetNames, release: { id, tag: releaseTag, sourceSha } });
   await writeFile(path.join(directory, 'release-inputs.json'), canonicalJson(record));
   return record;
 }
 
 // Deploy-side proof. The verify job's artifact travelled between jobs, so the
-// deploy job hashes each of the three consumed files exactly once here, against
-// the digests the release published, before the restricted session is requested.
-export async function assertSelectedReleaseBytes(assets, directory = SELECTED_RELEASE_DIRECTORY) {
-  exact(assets, [...STAGE_BASE_ASSETS], 'travelled release assets');
-  for (const name of STAGE_BASE_ASSETS) {
+// deploy job hashes each consumed file exactly once here, against the digests the
+// release published, before the restricted session is requested.
+export async function assertSelectedReleaseBytes(assets, directory = SELECTED_RELEASE_DIRECTORY,
+  assetNames = STAGE_BASE_ASSETS) {
+  exact(assets, [...assetNames], 'travelled release assets');
+  for (const name of assetNames) {
     matches(assets[name], DIGEST, `travelled release asset ${name}`);
     let bytes;
     try { bytes = await readFile(path.join(directory, name)); }
@@ -161,25 +178,8 @@ export async function runVerifyInputs({ env = process.env, run = execute, token 
   directory = SELECTED_RELEASE_DIRECTORY } = {}) {
   const release = validateReleaseInput(env);
   if (!release) return null;
-  return downloadReleaseInputs({ ...release, token, run, directory });
-}
-
-// Issue #195: `deploy-runtime` consumes the sealed release's identity only (its
-// tag, the commit it names and the ECR image the tag was built into). It still
-// proves the immutable release and every published asset over REST before any AWS
-// credential, but it downloads none of them: the Runtime template carries no
-// Service-built file.
-export async function verifyReleaseIdentity({ env = process.env, run = execute, token = env.GH_TOKEN } = {}) {
-  const release = validateReleaseInput(env);
-  if (!release) return null;
-  if (typeof token !== 'string' || !token) throw new Error('A read-only Service token is required to read the Service release');
-  const apiEnv = { ...process.env, GH_TOKEN: token, GH_TELEMETRY: 'disabled' };
-  const api = async endpoint => parseJson((await run('gh', ['api', endpoint],
-    { env: apiEnv, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
-  const { id, assets } = assertPublishedRelease(await api(releaseApiPath(release.releaseTag)), release.releaseTag);
-  const sourceSha = await resolveTagCommit(release.releaseTag, api);
-  if (sourceSha !== release.serviceCommit) {
-    throw new Error(`Service tag ${release.releaseTag} resolves to ${sourceSha}, not the reviewed commit ${release.serviceCommit}`);
-  }
-  return { release: { id, tag: release.releaseTag, source_sha: sourceSha }, assets };
+  // Since #194 the verify job also downloads `deploy-runtime`'s schema asset, so
+  // the operation's consumed set is what travels and what the record binds.
+  return downloadReleaseInputs({ ...release, token, run, directory,
+    assetNames: releaseAssetsFor(env.INFRA_OPERATION) });
 }

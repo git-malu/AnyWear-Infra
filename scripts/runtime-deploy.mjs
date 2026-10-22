@@ -16,6 +16,8 @@ import { describeStack, runtimeExists, runtimeStack, terminalStackStatuses } fro
 import { synthStage } from './recovery-contract.mjs';
 import { readRuntimeDeployValues, readRuntimeStageContract, runtimeBakeQueueUrls, runtimeEcsClusterName } from './runtime-stage-inputs.mjs';
 import { runBakeGate } from './bake-gate.mjs';
+import { SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
+import { runSchemaBoundaryGate } from './schema-gate.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const RUNTIME_STACK = runtimeStack;
@@ -325,13 +327,14 @@ export async function readRuntimeHealth(apiBaseUrl, release, { fetchImpl = fetch
 }
 
 /**
- * Build and validate the v5 record. The template hash is the canonical deployed
+ * Build and validate the v6 record. The template hash is the canonical deployed
  * hash after the declared normalisation, so it is directly comparable with the
- * recorded baseline.
+ * recorded baseline; `schemaBoundary` is the comparison the gate admitted before
+ * any mutation.
  */
-export function buildRuntimeDeploymentRecord({ env, inputs, templateSha256, observed, gate }) {
+export function buildRuntimeDeploymentRecord({ env, inputs, templateSha256, observed, gate, schemaBoundary }) {
   const record = {
-    schema_version: 5,
+    schema_version: 6,
     record_type: 'anywear_service_deployment',
     producer: {
       repository: env.GITHUB_REPOSITORY,
@@ -352,6 +355,7 @@ export function buildRuntimeDeploymentRecord({ env, inputs, templateSha256, obse
     observed,
     schema: { content_sha256: stageContractSchemaHash(inputs) },
     gate,
+    schema_boundary: schemaBoundary,
   };
   return validateServiceDeploymentRecord(record);
 }
@@ -371,10 +375,20 @@ export function deployedParameterMap(stack) {
   return map;
 }
 
-/** `deploy-runtime`: one converged-or-additive mutation that produces the v5 record. */
+/** The pinned revision the live Runtime stack carries, when both halves are valid. */
+export function runtimePinnedRevision(stack) {
+  const parameters = deployedParameterMap(stack);
+  const serviceCommit = parameters.get('ServiceCommitSha');
+  const imageDigest = parameters.get('ServiceImageDigest');
+  if (typeof serviceCommit !== 'string' || !SHA.test(serviceCommit)
+    || typeof imageDigest !== 'string' || !DIGEST.test(imageDigest)) return undefined;
+  return { serviceCommit, imageDigest };
+}
+
+/** `deploy-runtime`: one converged-or-additive mutation that produces the v6 record. */
 export async function deployRuntime({ io, env, record, release,
   synthesize = synthesizeRuntimeTemplate, health = readRuntimeHealth, bake = runBakeGate,
-  outputPath = SERVICE_DEPLOYMENT_PATH }) {
+  schemaGate = runSchemaBoundaryGate, outputPath = SERVICE_DEPLOYMENT_PATH }) {
   assertRuntimePhase('deploy-runtime', env);
   const base = await describeStack(io, BASE_STACK);
   if (!terminalStackStatuses.has(base?.StackStatus)) {
@@ -388,9 +402,13 @@ export async function deployRuntime({ io, env, record, release,
   const deployed = deployedParameterMap(runtime);
   const identityUnchanged = stackExists && deployed.get('ServiceCommitSha') === release.serviceCommit
     && deployed.get('ServiceImageDigest') === release.imageDigest;
+  const deployedRevision = runtimePinnedRevision(runtime);
   const roleArnBefore = runtime?.RoleARN ?? 'absent';
+  // The pre-state event states the stack's last-update time so a refusal in this
+  // same record proves the stack was not touched.
   record?.events.push({ type: 'runtime-pre-state', base_status: base?.StackStatus, runtime_status: runtime?.StackStatus ?? 'absent',
-    runtime_exists: stackExists, stack_role_arn: roleArnBefore, release_identity_unchanged: identityUnchanged });
+    runtime_exists: stackExists, runtime_last_updated_time: runtime?.LastUpdatedTime ?? 'absent',
+    stack_role_arn: roleArnBefore, release_identity_unchanged: identityUnchanged });
 
   const deployValues = await readRuntimeDeployValues(io);
   // The bake's queue URLs and ECS cluster are contract values from the same
@@ -402,6 +420,13 @@ export async function deployRuntime({ io, env, record, release,
   const cluster = runtimeEcsClusterName(contract.values);
   const queueUrls = runtimeBakeQueueUrls(contract.values);
   const parameters = runtimeDeployParameters({ liveParameters: runtime?.Parameters ?? [], deployValues, release });
+  // Issue #194: the schema-boundary gate runs after the stage-contract read and
+  // parameter resolution and before synthesis, the change set or any other
+  // mutation. A SchemaBoundaryError propagates: nothing after this line runs.
+  const schemaBoundary = await schemaGate({ io, env, record, deployedRevision,
+    release: { releaseTag: release.releaseTag, serviceCommit: release.serviceCommit,
+      imageDigest: release.imageDigest },
+    directory: SELECTED_RELEASE_DIRECTORY });
   const synthesized = await synthesize(env);
   record?.events.push({ type: 'runtime-synthesized-template', raw_sha256: synthesized.raw_sha256,
     normalised_sha256: synthesized.normalised_sha256, recorded_phase_sha256: synthesized.expected, identity_phase: PHASE });
@@ -519,7 +544,7 @@ export async function deployRuntime({ io, env, record, release,
       minimum_client_version: minimumClientVersion,
       ecs,
       endpoints: { api: apiBaseUrl },
-    }, gate });
+    }, gate, schemaBoundary });
   const file = await writeServiceDeployment(deployment, outputPath);
   if (record) {
     record.service_deployment = { path: file, template_sha256: templateSha256,
@@ -546,7 +571,8 @@ export async function stopRuntime({ io, env, record }) {
     throw new Error(`stop-runtime requires a terminal Runtime stack; observed ${runtime.StackStatus}`);
   }
   record?.events.push({ type: 'runtime-pre-state', base_status: base?.StackStatus, runtime_status: runtime.StackStatus,
-    runtime_exists: true, stack_role_arn: runtime.RoleARN ?? 'absent' });
+    runtime_exists: true, runtime_last_updated_time: runtime.LastUpdatedTime ?? 'absent',
+    stack_role_arn: runtime.RoleARN ?? 'absent' });
   await io.destroy(RUNTIME_STACK);
   record?.events.push({ type: 'runtime-stack-role', before: runtime.RoleARN ?? 'absent', after: 'absent',
     execution_role_source: 'stack deleted' });

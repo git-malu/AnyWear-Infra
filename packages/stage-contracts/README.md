@@ -2,14 +2,14 @@
 
 Versioned, dependency-free source of the AnyWear Beta stage contract, the
 Base/Egress/Runtime stack identities, the deployed-template normalisation, and
-the v5 `anywear_service_deployment` record and bake-gate validators that
-AnyWear-Infra's `deploy-runtime` operation produces.
+the v6 `anywear_service_deployment` record, bake-gate and schema-boundary
+validators that AnyWear-Infra's `deploy-runtime` operation produces.
 
 | | |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.4.0` |
-| Tag | `stage-contracts-v0.4.0` (a post-merge publication step; `0.1.0` is the last tagged release) |
+| Version | `0.5.0` |
+| Tag | `stage-contracts-v0.5.0` (created at Deployment, not by the change that bumps the version; `0.3.0` is the newest published tag — the `0.4.0` tag was never created) |
 | Registry | GitHub Packages (`https://npm.pkg.github.com`) |
 | Runtime | Node.js 24+, plain ESM (`.mjs`) with `.d.ts`; no build step, no runtime dependency |
 
@@ -45,19 +45,44 @@ AnyWear-Infra's `deploy-runtime` operation produces.
   the result is hashed as canonical JSON. The producer and any verifier call the
   same helper, so a synthesized baseline and a live read-back are directly
   comparable.
-- **Service record v5** — `DEPLOYMENT_RECORD_MEMBERS` (the seven-member v3 core
+- **Service record v6** — `DEPLOYMENT_RECORD_MEMBERS` (the seven-member v3 core
   Infra still produces), `SERVICE_DEPLOYMENT_RECORD_MEMBERS` (the same core plus
-  the required `gate`), `SERVICE_DEPLOYMENT_RECORD_SCHEMA`, the required
+  the required `gate` and `schema_boundary`), `SERVICE_DEPLOYMENT_RECORD_SCHEMA`,
+  the required
   `SERVICE_OBSERVED_FIELDS` tuple (`service_sha`, `image_digest`,
   `minimum_client_version`, `ecs`, `endpoints`), `SERVICE_ECS_IDENTITY_FIELDS`,
   `stableTaskDefinition`, `taskDefinitionContentHash`,
   `validateServiceDeploymentRecord`. The producer is
-  `git-malu/AnyWear-Infra`'s `deploy-runtime` operation; v4 and earlier records
+  `git-malu/AnyWear-Infra`'s `deploy-runtime` operation; v5 and earlier records
   are historical shapes and are rejected as unknown schemas.
   `minimum_client_version` is a required non-negative safe integer: it is the
   minimum Client version floor the observed Service enforces, read back from the
   deployed Service instead of being defaulted by the record producer. All pure:
   no AWS, network, filesystem or clock.
+- **Schema boundary (v6)** — `SERVICE_SCHEMA_BOUNDARY_FIELDS`,
+  `SCHEMA_BOUNDARY_ASSET_FIELDS`, `SCHEMA_BOUNDARY_APPLIED_FIELDS`,
+  `SCHEMA_BOUNDARY_COMPARISON_FIELDS`, `SCHEMA_BOUNDARY_READER_FIELDS`,
+  `SCHEMA_BOUNDARY_READER_SOURCES` (`selected-image`, `deployed-image`),
+  `SCHEMA_BOUNDARY_RESULTS` (`compatible`), `schemaBoundaryPrefixHash(entries)`
+  and `validateSchemaBoundary(boundary)`. The member is
+  `{ result, asset: { sha256, current_version, minimum_version,
+  minimum_migration_count, journal_length }, applied: { schema_version,
+  journal_length }, comparison: { checked_entries, prefix_sha256,
+  pending_migrations }, reader: { source, service_sha, image_digest } }`.
+  `validateSchemaBoundary` proves the exact member sets, the admitted result,
+  `minimum_version <= current_version`, `minimum_migration_count <=
+  journal_length`, equal versions implying the whole journal,
+  `applied.schema_version >= asset.minimum_version`, `checked_entries ===
+  applied.journal_length <= asset.journal_length`, `pending_migrations ===
+  asset.journal_length - checked_entries`, `minimum_migration_count <=
+  checked_entries` and the reader identity. A `selected-image` reader is the
+  release under test, so `validateServiceDeploymentRecord` additionally requires
+  it to equal `observed.service_sha`/`observed.image_digest`; a `deployed-image`
+  reader is the pre-existing image and is recorded as read.
+  `prefix_sha256` is the RFC 8785 canonical hash of the compared
+  `{ created_at, sha256 }` prefix (`sha256(<drizzle/<tag>.sql bytes>)` and the
+  Drizzle journal `when`), so a consumer holding the operation record's full
+  applied rows can recompute it.
 - **Deployment bake gate** — `DEPLOYMENT_GATE_SIGNAL_NAMES` (the six fixed
   names, in order), `DEPLOYMENT_GATE_THRESHOLDS` and
   `DEPLOYMENT_GATE_COMPARISONS` (one stage-free table), `deploymentAlarmNames`
@@ -85,14 +110,14 @@ The conditional `cleanup_task_role_arn` definition is included in
 
 ```sh
 npm test    # node --test test/*.test.mjs
-npm pack    # git-malu-stage-contracts-0.4.0.tgz
+npm pack    # git-malu-stage-contracts-0.5.0.tgz
 ```
 
 ## Publishing
 
 Publishing is a separate, tag-triggered workflow
 (`.github/workflows/publish-stage-contracts.yml`) with `packages: write`. Pushing
-the annotated tag `stage-contracts-v0.4.0` runs the package tests, asserts the
+the annotated tag `stage-contracts-v0.5.0` runs the package tests, asserts the
 tag equals `stage-contracts-v<package version>`, and publishes with
 `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` to
 `https://npm.pkg.github.com`. It holds no AWS credential and no deployment

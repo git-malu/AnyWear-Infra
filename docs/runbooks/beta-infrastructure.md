@@ -89,7 +89,7 @@ context and the delete event.
 > slice's CDK source, baselines and deploy chain are in this repository, and
 > `deploy-runtime` / `stop-runtime` are its only mutation paths. The slice deploys
 > through the existing `beta-infra-deploy-role` and the standard CDK bootstrap
-> path, writes the v5 `anywear_service_deployment` record from the mutating job,
+> path, writes the v6 `anywear_service_deployment` record from the mutating job,
 > and no Foundation per-service role exists.
 
 After #158 step C, Infra owned Foundation, the Beta Base stack, Egress and Billing
@@ -166,24 +166,30 @@ authenticated observation and a derived schema content hash.
 
 Before App credentials, source guards require the exact Infra Git origin/full
 HEAD, main runtime workflow/account/region and clean tracked/untracked checkout.
-`deploy-platform` and `restore-release` additionally carry the reviewed Service
+All three release operations additionally carry the reviewed Service
 release tag and source commit. Before AWS OIDC, a read-only Service token reads
 the release identity over REST (the tag resolves to the reviewed commit,
-`draft=false`, `immutable=true`, and the two Lambda bundles and the runtime policy
-are present, uploaded and carry a `sha256` digest; extras such as the retired
-legacy manifest are ignored) and downloads only those three
-(`pre-sign-up.zip`, `post-confirmation.zip`, `runtime-policy.json`). The deploy job
-re-hashes each travelled byte once against those published digests before it
-requests a session, then records the release tag, Service commit and the ECR
-digest of the immutable `service-artifacts-<service_commit>` tag. There is no
+`draft=false`, `immutable=true`, and every consumed asset is present, uploaded
+and carries a `sha256` digest; extras such as the retired
+legacy manifest are ignored) and downloads the operation's consumed set:
+`deploy-platform`/`restore-release` take the two Lambda bundles and the runtime
+policy (`pre-sign-up.zip`, `post-confirmation.zip`, `runtime-policy.json`), while
+`deploy-runtime` takes only the sealed release's `service-schema.json` (#194). The
+deploy job re-hashes each travelled byte once against those published digests
+before it requests a session, then records the release tag, Service commit and the
+ECR digest of the immutable `service-artifacts-<service_commit>` tag.
+`deploy-runtime` additionally validates the travelled schema asset strictly before
+the credential and again in the gate. There is no
 selection schema, native attestation, release manifest, vendored parser or
 publisher-run identity check on this path. See
 [direct release identity](cutover-and-recovery.md#direct-release-identity).
 
-Runtime uses the reviewed main workspace and `GITHUB_SHA`. Every deployment record
-is v3 and carries the authenticated Original template hashes, the stage-contract
-parameter versions/value hashes it read and the derived schema content hash.
-`APP_PRIVATE_KEY` stays in protected secrets and is used only by the two
+Runtime uses the reviewed main workspace and `GITHUB_SHA`. The Infra deployment
+record is v3 and carries the authenticated Original template hashes, the
+stage-contract parameter versions/value hashes it read and the derived schema
+content hash; `deploy-runtime` writes the v6 `anywear_service_deployment` record
+instead (the same core plus the passed bake and the admitted `schema_boundary`).
+`APP_PRIVATE_KEY` stays in protected secrets and is used only by the three
 operations that take a release. Publication ZIP/receipt/handshake ceremony stays
 retired.
 
@@ -223,8 +229,9 @@ main, the `beta` environment and shared non-cancelling queue
 `anywear-infra-runtime`. Their local composites split verification from
 execution: [verify-operation](../../.github/actions/verify-operation/action.yml)
 rejects cross-family operations, validates the reviewed Service release identity
-for the two operations that take one, and reads that release and its tag ref over
-REST and downloads only the three files it consumes before App credentials;
+for the three operations that take one, and reads that release and its tag ref over
+REST and downloads only the operation's consumed files (three stage-base files, or
+only `service-schema.json` for `deploy-runtime`) before App credentials;
 [deploy-operation](../../.github/actions/deploy-operation/action.yml) binds the
 verified-inputs artifact, re-hashes each travelled release byte once, obtains the
 operation-specific restricted STS session, runs the operation and finalizes the
@@ -241,7 +248,8 @@ gates.
 | [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission` | Chain: `preflight` (no credentials; publishes `requires_accepted_observation` from the shared trigger set) → `verify` (read-only release token only) → `deploy` (the only job holding the mutation role) → `observe` (only when the operation changes a configured stack and the mutation succeeded; read-only runtime role only) → `record` (no credentials). Explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
 | [production.yml](../../.github/workflows/production.yml) | none (`workflow_call` only) | Future Production scaffold; source-disabled pre-AWS blocker; not an entry |
 
-`deploy-platform` and `restore-release` require the reviewed Service release tag
+`deploy-platform`, `deploy-runtime` and `restore-release` require the reviewed
+Service release tag
 and source commit; every other operation rejects them.
 Because one dispatch surface now hosts several operations, the per-operation
 input scope is enforced in `scripts/runtime-operation.mjs` preflight rather than
@@ -278,7 +286,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job re-hashes each travelled byte once against those published digests before any credential and records the release tag, Service commit and ECR image digest. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; the same run's `observe` job then produces the accepted `anywear_infra_deployment` v3 record with producer `mutate.yml` and that run's id/attempt/source |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
-| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service release identity, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, records the change set as evidence, executes it or records the converged no-op, bakes the unchanged 600-second six-signal gate under the read-only runtime session, reads `/health` and writes the v5 `anywear_service_deployment` record in the mutating job. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
+| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service release identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed release's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is recorded, then the operation records the change set as evidence, executes it or records the converged no-op, bakes the unchanged 600-second six-signal gate under the read-only runtime session, reads `/health` and writes the v6 `anywear_service_deployment` record with `schema_boundary` in the mutating job. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention, closed admission and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice |
 | ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
@@ -289,6 +297,77 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `add-testers`, `set-testers` | Update the exact normalized tester list using the selected lifecycle `set-testers` command, which refuses while admission is not provably closed. The write changes no admission state and cannot open admission: no admission operation may run `resume` except `open-admission`, and the record's admission read-back shows the mode and key set unchanged. Open admission separately with `open-admission` |
 | `open-admission` | Refuse before resuming unless the selected Service's status proves effective closure and DB/SSM agreement, the database decision is closed and the mirror holds a `closed` record; then resume with **no payload**, re-read SSM and require the database status to report `testers`, matching policy and **no** `admission_window_expires_at` field. Records `admission-open-proof` (mode, source, tester count/hash, SSM record key set, database status field absence, SSM/DB agreement). The tester list is unchanged. Its only extra lifecycle action is the recovery-only `suspend` a failed open issues; no operator input can request it |
 | `close-admission` | Close admission through its pinned lifecycle `suspend`, then prove effective DB/SSM agreement and preserve the observed tester list; The Runtime stack must exist and be terminal. Records whether it ended an open admission (`ordinary`) or one already closed (`already-closed`) from the database status |
+
+### Schema-boundary gate and applied evidence
+
+`deploy-runtime` refuses before any mutation unless the live database is inside the
+sealed release's declared range. The gate runs after the stage-contract read and
+the parameter resolution and before template synthesis, so a refusal leaves the
+Runtime stack's `LastUpdatedTime`, template and parameters unchanged, creates no
+change set and writes no v6 record.
+
+- **The release declaration.** `service-schema.json` (verified-inputs v4 binds it
+  as `deploy-runtime`'s only asset, and the deploy job re-hashes and strictly
+  validates it before any credential) states the release's ordered Drizzle
+  journal, `current_version`, `minimum_version`, `minimum_migration_count` and one
+  `{id, idx, created_at, sha256}` row per migration. An unknown `schema_version`,
+  a changed member or an internal misalignment refuses as `asset-invalid` before
+  any AWS call.
+- **The live read.** One bounded, read-only `schema-journal` one-shot from the
+  existing `verify` task family prints exactly one canonical-JSON
+  `anywear_applied_schema` line (applied version or null, journal-table presence,
+  at most 256 ordered `{id, hash, created_at, tag}` rows, local journal length).
+  The gate reads the stopped task's CloudWatch stream with the reviewed bound (16
+  pages x 1000 events, 4096 messages, five two-second attempts, two matching
+  complete scans), proves the task/definition/log identity and command, and
+  refuses `reader-evidence-unavailable` on malformed, ambiguous or changing
+  evidence.
+- **The reader rule.** The selected release image is read first. A non-zero exit
+  is `reader-failed` with the exit code recorded and is never retried on another
+  image. Exit 0 without a marker (a release image that predates the reader)
+  triggers exactly one fallback read from the deployed image and records
+  `reader.source=deployed-image`; if neither image reports the journal the run
+  refuses `reader-unavailable`. At most two one-shot launches happen, at the
+  existing Fargate size and under the existing one-shot timeout.
+- **The comparison.** Every violation is collected: no recorded live version
+  (`live-version-unproven`), an applied version below `minimum_version`
+  (`below-minimum-version`), a differing `{sha256, created_at}` at a shared index
+  (`journal-entry-differs`), an applied row the release does not contain
+  (`applied-beyond-release` — the #156 defect: the old predicate compared only
+  `min(selected, applied)` entries and reported an ahead database compatible),
+  and a shortfall below `minimum_migration_count`
+  (`below-minimum-migration-count`). A shortfall at or above the count boundary
+  is compatible and records `pending_migrations`; an applied version ahead of the
+  release with a contained journal is an observation (`version_ahead`), not a
+  separate refusal. The comparison is positional against the release journal, so
+  a duplicate or out-of-order live row cannot be absorbed.
+- **The evidence.** The operation record gets one `schema-boundary` event. On
+  success: `result=compatible`, the asset digest (`asset.sha256`, bare 64 hex),
+  the release identity (`{tag, service_commit}`), the reader identity
+  (`{source, service_sha, image_digest}`) and every task identity, the compared
+  `applied_rows` and the boundary body. On refusal: `result=refused`, the reason,
+  every violation with both sides, the rows that were read and the
+  reader/task identity. The `runtime-pre-state` event carries
+  `runtime_last_updated_time`, so the same record proves the stack was not
+  touched. The admitted body is the v6 `schema_boundary` member:
+
+  ```json
+  {"result":"compatible",
+   "asset":{"sha256":"<64 hex>","current_version":22,"minimum_version":20,
+            "minimum_migration_count":24,"journal_length":26},
+   "applied":{"schema_version":22,"journal_length":26},
+   "comparison":{"checked_entries":26,"prefix_sha256":"<64 hex>","pending_migrations":0},
+   "reader":{"source":"selected-image","service_sha":"<40 hex>","image_digest":"sha256:<64 hex>"}}
+  ```
+
+  `prefix_sha256` is `sha256(canonicalJson(appliedRows.slice(0, checked_entries)
+  .map(({created_at, hash}) => ({created_at, sha256: hash}))))`; a consumer holding
+  the event's `applied_rows` can recompute it.
+- **The consequence.** A refused run has no change-set events, no
+  `deployment-evidence/service-deployment.json`, and the credential-free `record`
+  job fails because no accepted v6 record exists. A database migrated by a newer
+  image is no longer rollback-compatible: the journal comparison refuses it and a
+  reviewed forward fix is required.
 
 A dispatch uses explicit inputs, for example:
 
@@ -796,8 +875,11 @@ The unchanged image's one-shot inspection embeds Infra's reviewed read-only
 command; it does not assume newly added Service code. Evidence binds command hash,
 Infra source, original image/Service source, executor run/attempt and actual ECS
 task/definition. Selected image migrations and observed applied migrations are
-separate histories. A compatible older image may run against a later applied
-schema; rollback never runs down migrations.
+separate histories. `deploy-runtime` compares them positionally before any stack
+mutation: a database carrying a migration the release does not contain is refused
+(`applied-beyond-release`), so an older image may not run against a journal ahead
+of its release. Rollback never runs down migrations; a database migrated by a
+newer image needs a reviewed forward fix rather than an older image.
 
 Read-only `state` is the only operation that can observe the stopped state
 (Runtime absent) without failing. Every protected mutation requires a terminal

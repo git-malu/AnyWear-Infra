@@ -4,11 +4,12 @@ import { contentHash } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 import {
   DEPLOYMENT_RECORD_MEMBERS, SERVICE_DEPLOYMENT_RECORD_MEMBERS, SERVICE_DEPLOYMENT_RECORD_SCHEMA,
-  SERVICE_ECS_IDENTITY_FIELDS, validateDeploymentGate,
+  SERVICE_ECS_IDENTITY_FIELDS, SERVICE_SCHEMA_BOUNDARY_FIELDS, SCHEMA_BOUNDARY_READER_SOURCES,
+  validateDeploymentGate, validateSchemaBoundary, schemaBoundaryPrefixHash,
   stageContractSchemaHash, taskDefinitionContentHash, stableTaskDefinition,
   validateDeploymentRecord, validateInfraDeploymentRecord, validateServiceDeploymentRecord,
 } from './deployment-contract.mjs';
-import { gateBlock } from '../packages/stage-contracts/test/gate-fixture.mjs';
+import { gateBlock, schemaBoundaryBlock } from '../packages/stage-contracts/test/gate-fixture.mjs';
 
 const infraSha = 'a'.repeat(40); const serviceSha = 'b'.repeat(40);
 const imageDigest = `sha256:${'c'.repeat(64)}`;
@@ -36,7 +37,7 @@ function serviceRecord({ revision = 12, digest = imageDigest } = {}) {
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-api-execution', networkMode: 'awsvpc', cpu: '512', memory: '1024',
     containerDefinitions: [{ name: 'ApiContainer', image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@${imageDigest}`,
       command: ['node', 'dist/index.js'], environment: [{ name: 'B', value: '2' }, { name: 'A', value: '1' }] }] };
-  return { schema_version: 5, record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
+  return { schema_version: 6, record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
     producer: producer('git-malu/AnyWear-Infra', '.github/workflows/mutate.yml'),
     stacks: [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Infra',
       producer_sha: infraSha, template_sha256: '5'.repeat(64) }],
@@ -51,7 +52,8 @@ function serviceRecord({ revision = 12, digest = imageDigest } = {}) {
           taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-worker-task' }), image_digest: digest } },
       endpoints: { api: endpoint } },
     schema: { content_sha256: stageContractSchemaHash(inputs) },
-    gate: gateBlock() };
+    gate: gateBlock(),
+    schema_boundary: schemaBoundaryBlock() };
 }
 
 test('a complete Infra v3 record validates', () => {
@@ -61,15 +63,23 @@ test('a complete Infra v3 record validates', () => {
   assert.deepEqual([...DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
 });
 
-test('a complete Infra-produced v5 record validates, lists only the Runtime stack and carries the gate', () => {
+test('a complete Infra-produced v6 record validates, lists only the Runtime stack and carries the gate and boundary', () => {
   const record = serviceRecord();
   assert.deepEqual(validateServiceDeploymentRecord(record), record);
   assert.deepEqual(validateDeploymentRecord(record), record);
   assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks, [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }]);
-  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 5);
+  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 6);
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
-  assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), [...DEPLOYMENT_RECORD_MEMBERS, 'gate'].sort());
+  assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(),
+    [...DEPLOYMENT_RECORD_MEMBERS, 'gate', 'schema_boundary'].sort());
   assert.deepEqual(validateDeploymentGate(record.gate, 'beta'), record.gate);
+  assert.deepEqual(validateSchemaBoundary(record.schema_boundary), record.schema_boundary);
+  assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_boundary, SERVICE_SCHEMA_BOUNDARY_FIELDS);
+  assert.deepEqual([...SCHEMA_BOUNDARY_READER_SOURCES], ['selected-image', 'deployed-image']);
+  // The re-exported prefix helper is the package's canonical hash, not a local copy.
+  const pairs = [{ created_at: 1773041075909, sha256: 'a'.repeat(64) },
+    { created_at: 1775482276416, sha256: 'b'.repeat(64) }];
+  assert.equal(schemaBoundaryPrefixHash(pairs), contentHash(pairs));
 });
 
 test('a mutate-produced accepted record validates with the chain producer path', () => {
@@ -101,10 +111,11 @@ test('both record types reject an extra or missing member', () => {
     const wrongProducer = structuredClone(build()); wrongProducer.producer.repository = 'git-malu/AnyWear-Client';
     assert.throws(() => validateDeploymentRecord(wrongProducer));
   }
-  // A record may not borrow the other producer's stacks; the v4 Service record
-  // additionally requires the gate member, so the member set is refused first.
+  // A record may not borrow the other producer's type. The v3 infra record
+  // renamed to the Service type is a version mismatch, so it is refused as an
+  // unknown schema before the member check (v6 is the only Service version).
   const crossed = infraRecord(); crossed.record_type = SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type;
-  assert.throws(() => validateServiceDeploymentRecord(crossed), /Invalid deployment record fields/);
+  assert.throws(() => validateServiceDeploymentRecord(crossed), /Unknown anywear_service_deployment schema/);
 });
 
 test('the Service record producer is Infra mutate.yml and nothing else', () => {
@@ -120,6 +131,18 @@ test('the Service record producer is Infra mutate.yml and nothing else', () => {
   const v4 = structuredClone(record);
   v4.schema_version = 4;
   assert.throws(() => validateServiceDeploymentRecord(v4), /Unknown anywear_service_deployment schema/);
+  // A genuine v5 record (its exact eight members and version 5) is refused as an
+  // unknown schema, not as a missing `schema_boundary` member: the version check
+  // comes first, which is the acceptance wording.
+  const v5 = structuredClone(record);
+  v5.schema_version = 5;
+  delete v5.schema_boundary;
+  assert.throws(() => validateServiceDeploymentRecord(v5), /Unknown anywear_service_deployment schema/);
+  assert.equal(Object.keys(v5).length, 8);
+  // A v6-shaped record with a wrong member still fails the member check.
+  const extra = structuredClone(record);
+  extra.note = 'unexpected';
+  assert.throws(() => validateServiceDeploymentRecord(extra), /Invalid deployment record fields/);
 });
 
 test('a task-definition revision-only change is not an identity failure', () => {

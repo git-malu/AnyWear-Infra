@@ -17,20 +17,29 @@ import {
   DEPLOYMENT_RECORD_MEMBERS,
   DEPLOYMENT_STACK_FIELDS,
   INFRA_REPOSITORY,
+  SCHEMA_BOUNDARY_APPLIED_FIELDS,
+  SCHEMA_BOUNDARY_ASSET_FIELDS,
+  SCHEMA_BOUNDARY_COMPARISON_FIELDS,
+  SCHEMA_BOUNDARY_READER_FIELDS,
+  SCHEMA_BOUNDARY_READER_SOURCES,
+  SCHEMA_BOUNDARY_RESULTS,
   SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_OBSERVED_FIELDS,
   SERVICE_REPOSITORY,
   SERVICE_RUNTIME_STACK,
+  SERVICE_SCHEMA_BOUNDARY_FIELDS,
   deploymentAlarmName,
   deploymentAlarmNames,
   deploymentBakeName,
   runtimeStageFromStack,
+  schemaBoundaryPrefixHash,
   stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
   validateDeploymentGate,
+  validateSchemaBoundary,
   validateServiceDeploymentRecord,
   validateServiceStacks,
   validateStageInputs,
@@ -39,9 +48,10 @@ import { canonicalJson, exact, matches, integer, SHA, HASH } from './json-contra
 import { configuredStacks } from './operation-stacks.mjs';
 
 // The Service record schema, its field lists, the stage-contract validators, the
-// v4 bake-gate constants/validator and the task-definition identity are the
-// versioned package's exports. This module re-exports them and keeps the
-// Infra-only record schema, producer/stack validation and observation helpers.
+// v6 bake-gate and schema-boundary constants/validators and the task-definition
+// identity are the versioned package's exports. This module re-exports them and
+// keeps the Infra-only record schema, producer/stack validation and observation
+// helpers.
 export {
   DEPLOYMENT_GATE_ALARM_STATES,
   DEPLOYMENT_GATE_COMPARISONS,
@@ -61,20 +71,29 @@ export {
   DEPLOYMENT_RECORD_MEMBERS,
   DEPLOYMENT_STACK_FIELDS,
   INFRA_REPOSITORY,
+  SCHEMA_BOUNDARY_APPLIED_FIELDS,
+  SCHEMA_BOUNDARY_ASSET_FIELDS,
+  SCHEMA_BOUNDARY_COMPARISON_FIELDS,
+  SCHEMA_BOUNDARY_READER_FIELDS,
+  SCHEMA_BOUNDARY_READER_SOURCES,
+  SCHEMA_BOUNDARY_RESULTS,
   SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_OBSERVED_FIELDS,
   SERVICE_REPOSITORY,
   SERVICE_RUNTIME_STACK,
+  SERVICE_SCHEMA_BOUNDARY_FIELDS,
   deploymentAlarmName,
   deploymentAlarmNames,
   deploymentBakeName,
   runtimeStageFromStack,
+  schemaBoundaryPrefixHash,
   stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
   validateDeploymentGate,
+  validateSchemaBoundary,
   validateServiceDeploymentRecord,
   validateServiceStacks,
   validateStageInputs,

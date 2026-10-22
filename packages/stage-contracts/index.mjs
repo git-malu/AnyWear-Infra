@@ -2,7 +2,7 @@
 //
 // The versioned, dependency-free source of the AnyWear Beta stage contract:
 // the SSM parameter surface the stage base publishes, the stack identities, the
-// deployed-template normalisation, and the pure v5 `anywear_service_deployment`
+// deployed-template normalisation, and the pure v6 `anywear_service_deployment`
 // record validators. AnyWear-Infra consumes it directly from
 // `file:packages/stage-contracts`; since #195 it is also the record producer, so
 // no other repository pins a packed tarball. Nothing here reads AWS,
@@ -212,7 +212,7 @@ export function runtimeStackName(stage) {
 
 // The release slice's one stack and the workflow that now deploys it. Since #195
 // the producer is AnyWear-Infra's single mutation entry (`deploy-runtime`); the
-// v5 record schema and validators below pin that producer.
+// v6 record schema and validators below pin that producer.
 export const SERVICE_RUNTIME_STACK = Object.freeze({
   name: runtimeStackName(STAGE_CONTRACT_STAGE),
   region: 'ap-east-1',
@@ -286,7 +286,8 @@ export function canonicalDeployedTemplateHash(template) {
 }
 
 // ---------------------------------------------------------------------------
-// v3 deployment record core (the v5 Infra Service record adds the bake gate)
+// v3 deployment record core (the v6 Infra Service record adds the bake gate and
+// the schema boundary)
 //
 //   producer  the repository/commit/workflow that produced this record
 //   stacks    every stack this record's producer owns, each with its producer
@@ -295,7 +296,7 @@ export function canonicalDeployedTemplateHash(template) {
 //   observed  the authenticated observation that producer made
 //   schema    a content hash of the consumed stage-contract schema surface
 //
-// AnyWear-Infra produces `anywear_service_deployment` v5 for
+// AnyWear-Infra produces `anywear_service_deployment` v6 for
 // `AnyWearRuntimeStack-beta` only, from the `deploy-runtime` operation.
 // `validateServiceDeploymentRecord` is the consumer-side validator: a record it
 // accepts is a record another producer can verify without trusting the writer.
@@ -323,9 +324,9 @@ export const SERVICE_ECS_IDENTITY_FIELDS = Object.freeze(
 //
 // A Service deployment records success only after a bounded 600-second bake read
 // the six named signals live from the deployed state. The gate block is a
-// required top-level member of the v5 `anywear_service_deployment` record; the
-// Infra `anywear_infra_deployment` v3 record keeps the seven-member core and is
-// never forced to produce one.
+// required top-level member of the v5 and v6 `anywear_service_deployment` record;
+// the Infra `anywear_infra_deployment` v3 record keeps the seven-member core and
+// is never forced to produce one.
 //
 // The table below is one stage-free threshold set: `<stage>` appears only in
 // resource and alarm names, never in a threshold, so Beta and Production share
@@ -700,7 +701,7 @@ function validateGateSignal(signal, expectedName, stage) {
 /**
  * Validate one passed deployment gate block for `stage`.
  *
- * The gate is the v4 record's evidence that a 600-second bake read all six named
+ * The gate is the record's evidence that a 600-second bake read all six named
  * signals live. Every signal must be `not-breaching`, carry its fixed threshold
  * and comparison, record the deployed alarm names/observed states, its exact
  * read identity and at least the minimum data points.
@@ -739,10 +740,141 @@ export function validateDeploymentGate(gate, stage) {
   return gate;
 }
 
-export const SERVICE_DEPLOYMENT_RECORD_MEMBERS = Object.freeze([...DEPLOYMENT_RECORD_MEMBERS, 'gate']);
+// ---------------------------------------------------------------------------
+// Service record v6: the schema boundary (Issue #194)
+//
+// Before `deploy-runtime` mutates the Runtime stack it reads the sealed release's
+// `service-schema.json` and the live applied Drizzle journal from one bounded
+// read-only verification task. v6 records the comparison that admitted the
+// deployment: the asset digest and versions, the live version and journal
+// length, the compared prefix hash and the reader identity. The member is exact;
+// a v5 record is a historical shape and is rejected as an unknown schema like
+// every earlier one.
+//
+// The prefix hash is the RFC 8785 canonical hash of the compared
+// `{ created_at, sha256 }` pairs, so a consumer holding the full applied rows
+// (the operation record carries them) can recompute it.
+
+export const SERVICE_SCHEMA_BOUNDARY_FIELDS = Object.freeze(
+  ['result', 'asset', 'applied', 'comparison', 'reader']);
+export const SCHEMA_BOUNDARY_ASSET_FIELDS = Object.freeze(
+  ['sha256', 'current_version', 'minimum_version', 'minimum_migration_count', 'journal_length']);
+export const SCHEMA_BOUNDARY_APPLIED_FIELDS = Object.freeze(['schema_version', 'journal_length']);
+export const SCHEMA_BOUNDARY_COMPARISON_FIELDS = Object.freeze(
+  ['checked_entries', 'prefix_sha256', 'pending_migrations']);
+export const SCHEMA_BOUNDARY_READER_FIELDS = Object.freeze(['source', 'service_sha', 'image_digest']);
+// `selected-image` is the release under test; `deployed-image` is the one bounded
+// fallback when the release image predates the `schema-journal` reader.
+export const SCHEMA_BOUNDARY_READER_SOURCES = Object.freeze(['selected-image', 'deployed-image']);
+// A deployment record only ever carries the admitted comparison.
+export const SCHEMA_BOUNDARY_RESULTS = Object.freeze(['compatible']);
+
+/**
+ * The canonical hash of the compared `{ created_at, sha256 }` prefix.
+ *
+ * `entries` are the compared release/live pairs in journal order, each with the
+ * migration creation time (the Drizzle journal `when`) and the 64-hex
+ * `sha256(<drizzle/<tag>.sql bytes>)`. A producer passes the first
+ * `checked_entries` pairs, so the hash identifies exactly what was compared and
+ * not the pending tail.
+ */
+export function schemaBoundaryPrefixHash(entries) {
+  if (!Array.isArray(entries) || entries.length > 256) throw new Error('Invalid schema boundary prefix');
+  const prefix = entries.map((entry) => {
+    exact(entry, ['created_at', 'sha256'], 'schema boundary prefix entry');
+    return {
+      created_at: integer(entry.created_at, 'schema boundary prefix migration time', 0),
+      sha256: matches(entry.sha256, HASH, 'schema boundary prefix migration hash'),
+    };
+  });
+  return contentHash(prefix);
+}
+
+function validateSchemaBoundaryAsset(asset) {
+  exact(asset, SCHEMA_BOUNDARY_ASSET_FIELDS, 'schema boundary asset');
+  matches(asset.sha256, HASH, 'schema boundary asset digest');
+  integer(asset.current_version, 'schema boundary current version');
+  integer(asset.minimum_version, 'schema boundary minimum version');
+  integer(asset.minimum_migration_count, 'schema boundary minimum migration count');
+  integer(asset.journal_length, 'schema boundary journal length');
+  if (asset.minimum_version > asset.current_version) throw new Error('Invalid schema boundary version range');
+  if (asset.minimum_migration_count > asset.journal_length) {
+    throw new Error('Schema boundary minimum migration count exceeds the release journal');
+  }
+  // Equal versions mean the release supports its whole journal: a minimum equal
+  // to the current version cannot exclude a migration the release itself applies.
+  if (asset.current_version === asset.minimum_version
+    && asset.minimum_migration_count !== asset.journal_length) {
+    throw new Error('Equal schema boundary versions must require the whole release journal');
+  }
+  return asset;
+}
+
+function validateSchemaBoundaryApplied(applied, asset) {
+  exact(applied, SCHEMA_BOUNDARY_APPLIED_FIELDS, 'schema boundary applied');
+  integer(applied.schema_version, 'schema boundary applied version', 0);
+  integer(applied.journal_length, 'schema boundary applied journal length', 0);
+  if (applied.schema_version < asset.minimum_version) {
+    throw new Error('Schema boundary applied version is below the release minimum');
+  }
+  if (applied.journal_length > asset.journal_length) {
+    throw new Error('Schema boundary applied journal is longer than the release journal');
+  }
+  return applied;
+}
+
+function validateSchemaBoundaryComparison(comparison, asset, applied) {
+  exact(comparison, SCHEMA_BOUNDARY_COMPARISON_FIELDS, 'schema boundary comparison');
+  integer(comparison.checked_entries, 'schema boundary checked entries', 0);
+  integer(comparison.pending_migrations, 'schema boundary pending migrations', 0);
+  matches(comparison.prefix_sha256, HASH, 'schema boundary prefix hash');
+  if (comparison.checked_entries !== applied.journal_length) {
+    throw new Error('Schema boundary checked entries differ from the applied journal length');
+  }
+  if (comparison.checked_entries > asset.journal_length) {
+    throw new Error('Schema boundary checked entries exceed the release journal');
+  }
+  if (comparison.pending_migrations !== asset.journal_length - comparison.checked_entries) {
+    throw new Error('Schema boundary pending migrations differ from the release journal tail');
+  }
+  if (comparison.checked_entries < asset.minimum_migration_count) {
+    throw new Error('Schema boundary checked entries are below the minimum migration count');
+  }
+  return comparison;
+}
+
+function validateSchemaBoundaryReader(reader) {
+  exact(reader, SCHEMA_BOUNDARY_READER_FIELDS, 'schema boundary reader');
+  if (!SCHEMA_BOUNDARY_READER_SOURCES.includes(reader.source)) throw new Error('Invalid schema boundary reader source');
+  matches(reader.service_sha, SHA, 'schema boundary reader Service');
+  matches(reader.image_digest, DIGEST, 'schema boundary reader image');
+  return reader;
+}
+
+/**
+ * Validate one v6 `schema_boundary` member.
+ *
+ * Every relation the record can prove is checked: the exact member sets, the
+ * admitted result, the version/count range, the journal/prefix arithmetic and
+ * the reader identity. Whether a `selected-image` reader really is the observed
+ * deployment is a record-level relation; `validateServiceDeploymentRecord`
+ * checks it against `observed`.
+ */
+export function validateSchemaBoundary(boundary) {
+  exact(boundary, SERVICE_SCHEMA_BOUNDARY_FIELDS, 'schema boundary');
+  if (!SCHEMA_BOUNDARY_RESULTS.includes(boundary.result)) throw new Error('Invalid schema boundary result');
+  const asset = validateSchemaBoundaryAsset(boundary.asset);
+  const applied = validateSchemaBoundaryApplied(boundary.applied, asset);
+  validateSchemaBoundaryComparison(boundary.comparison, asset, applied);
+  validateSchemaBoundaryReader(boundary.reader);
+  return boundary;
+}
+
+export const SERVICE_DEPLOYMENT_RECORD_MEMBERS = Object.freeze(
+  [...DEPLOYMENT_RECORD_MEMBERS, 'gate', 'schema_boundary']);
 
 export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
-  schema_version: 5,
+  schema_version: 6,
   record_type: 'anywear_service_deployment',
   members: SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   producer: DEPLOYMENT_PRODUCER_FIELDS,
@@ -752,7 +884,14 @@ export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
   gate: DEPLOYMENT_GATE_FIELDS,
   signal: DEPLOYMENT_GATE_SIGNAL_FIELDS,
   signals: DEPLOYMENT_GATE_SIGNAL_NAMES,
-  // The v5 producer is the Infra `deploy-runtime` operation; `template_sha256`
+  schema_boundary: SERVICE_SCHEMA_BOUNDARY_FIELDS,
+  schema_boundary_asset: SCHEMA_BOUNDARY_ASSET_FIELDS,
+  schema_boundary_applied: SCHEMA_BOUNDARY_APPLIED_FIELDS,
+  schema_boundary_comparison: SCHEMA_BOUNDARY_COMPARISON_FIELDS,
+  schema_boundary_reader: SCHEMA_BOUNDARY_READER_FIELDS,
+  schema_boundary_reader_sources: SCHEMA_BOUNDARY_READER_SOURCES,
+  schema_boundary_results: SCHEMA_BOUNDARY_RESULTS,
+  // The v6 producer is the Infra `deploy-runtime` operation; `template_sha256`
   // is the canonical deployed template hash after the declared normalisation.
   producer_repository: INFRA_REPOSITORY,
   template_normalisation: DEPLOYED_TEMPLATE_NORMALISATION,
@@ -839,11 +978,14 @@ function validateServiceObserved(observed) {
 }
 
 function validateServiceRecordBase(record) {
-  exact(record, SERVICE_DEPLOYMENT_RECORD_MEMBERS, 'deployment record');
-  if (record.schema_version !== SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version
+  // The version check runs first so a genuine v5 (or older) record is refused as
+  // an unknown schema, which is the acceptance wording, rather than as a member
+  // mismatch: v6 is the only direct-verification input.
+  if (record?.schema_version !== SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version
     || record.record_type !== SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type) {
     throw new Error(`Unknown ${SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type} schema; historical records are not direct-verification inputs`);
   }
+  exact(record, SERVICE_DEPLOYMENT_RECORD_MEMBERS, 'deployment record');
   validateStageInputs(record.inputs);
   validateSchemaMember(record);
   validateServiceStacks(record.stacks);
@@ -852,13 +994,14 @@ function validateServiceRecordBase(record) {
 }
 
 /**
- * Validate one v5 `anywear_service_deployment` record.
+ * Validate one v6 `anywear_service_deployment` record.
  *
  * Pure: no AWS, network or filesystem access. The record lists exactly the
  * producer's stack (`AnyWearRuntimeStack-beta`), the stage-contract SSM inputs
- * the deploy read, the authenticated Runtime observation, and the passed
- * 600-second six-signal bake gate bound to the same `service_sha`/`image_digest`.
- * A v4 or earlier record is a historical shape, not a direct-verification input.
+ * the deploy read, the authenticated Runtime observation, the passed
+ * 600-second six-signal bake gate bound to the same `service_sha`/`image_digest`,
+ * and the admitted `schema_boundary` comparison. A v5 or earlier record is a
+ * historical shape, not a direct-verification input.
  */
 export function validateServiceDeploymentRecord(record) {
   validateServiceRecordBase(record);
@@ -873,6 +1016,19 @@ export function validateServiceDeploymentRecord(record) {
   }
   if (record.gate.image_digest !== record.observed.image_digest) {
     throw new Error('Deployment gate image differs from the observed image');
+  }
+  // The boundary is evidence for this deployment too. A `selected-image` read is
+  // the release under test, so its identity must be the deployed observation; a
+  // `deployed-image` fallback is by definition the pre-existing image and is
+  // recorded as read.
+  validateSchemaBoundary(record.schema_boundary);
+  if (record.schema_boundary.reader.source === 'selected-image') {
+    if (record.schema_boundary.reader.service_sha !== record.observed.service_sha) {
+      throw new Error('Schema boundary reader Service differs from the observed Service');
+    }
+    if (record.schema_boundary.reader.image_digest !== record.observed.image_digest) {
+      throw new Error('Schema boundary reader image differs from the observed image');
+    }
   }
   return record;
 }

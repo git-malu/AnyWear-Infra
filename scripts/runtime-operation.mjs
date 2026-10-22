@@ -367,6 +367,57 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
         return status;
       }
     },
+    // Issue #194: a non-throwing variant of `oneShot` for the pre-mutation
+    // schema-journal probe. It performs the same authorization, launch, unique
+    // task/definition identity, STOPPED, image-digest and command-identity checks,
+    // but *returns* the container exit code so the schema gate can decide the
+    // refusal (a non-zero read is a `reader-failed`, not a launcher crash). A
+    // launch or identity failure still throws, as it invalidates the evidence.
+    async oneShotProbe(role, revision, argument = '') {
+      if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
+      assertOneShotAllowed(env, role, argument);
+      // Same pre-mutation preflight as `oneShot`: the runtime session's effective
+      // authorization is simulated before the task is registered or started.
+      await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose, assume, run });
+      const awsEnv = await roleEnv('runtime');
+      let result;
+      try {
+        result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument],
+          { cwd: root, env: { ...awsEnv, BASH_ENV: path.join(root, '.github/scripts/operation-hook.sh'), INFRA_REPOSITORY_DIRECTORY: root }, timeout: 4_200_000, maxBuffer: 10 * 1024 * 1024 });
+      } catch (error) {
+        // The task script exits non-zero after it prints the stopped task identity,
+        // so the runner can still read and judge the actual container result.
+        result = { stdout: String(error.stdout ?? ''), stderr: String(error.stderr ?? '') };
+      }
+      const tasks = [...new Set([...String(result.stdout ?? '').matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
+      const definitions = [...new Set([...String(result.stdout ?? '').matchAll(/^Task definition: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
+      if (tasks.length !== 1 || definitions.length !== 1) {
+        record?.events.push({ type: 'one-shot-probe', role, action: argument, service_sha: revision.commit,
+          image_digest: revision.digest, result: 'launch-failed' });
+        throw new Error('One-shot probe identity missing; inspect redacted run evidence');
+      }
+      record?.events.push({ type: 'one-shot-identity', role, action: argument, task_arn: tasks[0], task_definition_arn: definitions[0] });
+      const task = (await io.aws(['ecs', 'describe-tasks', '--cluster', 'beta-anywear', '--tasks', tasks[0]])).tasks?.[0];
+      const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', definitions[0]])).taskDefinition;
+      const actualContainer = task?.containers?.find(item => item.name === 'OneShot');
+      const container = definition?.containerDefinitions?.find(item => item.name === 'OneShot');
+      if (task?.lastStatus !== 'STOPPED' || task.taskDefinitionArn !== definitions[0]
+        || actualContainer?.imageDigest !== revision.digest) {
+        throw new Error('Actual one-shot image/result differs from the deployed revision');
+      }
+      if (role === 'verify'
+        && canonicalJson(container?.command) !== canonicalJson(['node', 'dist/verify.js', argument])) {
+        throw new Error('Actual verify command differs from the requested action');
+      }
+      const exitCode = Number.isSafeInteger(actualContainer.exitCode) ? actualContainer.exitCode : 'unavailable';
+      record?.events.push({ type: 'one-shot-probe', role, action: argument, service_sha: revision.commit,
+        image_digest: revision.digest, task_arn: tasks[0], task_definition_arn: definitions[0],
+        command_sha256: sha256(canonicalJson(container?.command)), exit_code: exitCode,
+        result: exitCode === 0 ? 'stopped-success' : 'stopped-failure' });
+      process.stdout.write(String(result.stdout ?? ''));
+      if (result.stderr) process.stderr.write(String(result.stderr));
+      return { exitCode, task, definition };
+    },
     async deploy(stack) {
       if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
       assertDeployAllowed(env, stack);

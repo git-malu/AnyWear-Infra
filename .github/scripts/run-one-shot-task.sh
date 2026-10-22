@@ -51,6 +51,13 @@ elif [[ "$role" == "lifecycle" ]]; then
     echo "Only set-testers accepts a lifecycle payload; resume, suspend and status take none" >&2
     exit 2
   fi
+elif [[ "$role" == "verify" ]]; then
+  # #194: the verify role carries either the existing deployment-verification URL
+  # or the read-only schema-journal action. The action is not a URL and must not
+  # become VERIFY_API_URL; anything else refuses before a task is registered.
+  [[ -z "$lifecycle_payload" ]] || { echo "Verify takes no payload" >&2; exit 2; }
+  [[ -z "$verify_api_url" || "$verify_api_url" == "schema-journal" || "$verify_api_url" =~ ^https://[^[:space:]]+$ ]] \
+    || { echo "Verify requires an https:// VERIFY_API_URL or the schema-journal action" >&2; exit 2; }
 elif [[ -n "$lifecycle_payload" ]]; then
   echo "Only lifecycle, tester-cleanup, and task-audit accept a payload" >&2
   exit 2
@@ -169,7 +176,7 @@ environment="$(jq -n \
     {name:"SQS_AUTO_TAGGING_QUEUE_URL",value:$tagging},
     {name:"SERVICE_COMMIT_SHA",value:$commit},
     {name:"IMAGE_DIGEST",value:$digest}
-  ] + (if $role == "verify" and $api != "" then [{name:"VERIFY_API_URL",value:$api}] else [] end)
+  ] + (if $role == "verify" and $api != "" and $api != "schema-journal" then [{name:"VERIFY_API_URL",value:$api}] else [] end)
     + (if $role == "lifecycle" or $role == "tester-cleanup" then [{name:"SQS_VTO_DLQ_URL",value:$vtoDlq},{name:"SQS_AUTO_TAGGING_DLQ_URL",value:$taggingDlq}] else [] end)')"
 
 family="${stage}-anywear-${role}"
@@ -198,6 +205,7 @@ task_definition="$(jq -n \
       image:$image,
       essential:true,
       command:(["node",$command] + (if $role == "lifecycle" or $role == "lifecycle-fixture" then [$action] else [] end)
+        + (if $role == "verify" and $action == "schema-journal" then ["schema-journal"] else [] end)
         + (if ($role == "lifecycle" and $action == "set-testers") or $role == "tester-cleanup" or $role == "lifecycle-fixture" or $role == "task-audit" then [$payload] else [] end)),
       environment:$environment,
       logConfiguration:{

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateOperationInputs, cdkDeploymentArguments, deleteOperationStack, resolveServiceImageDigest,
-  serviceImageTag } from './runtime-operation.mjs';
+import { createRuntimeIo, validateOperationInputs, cdkDeploymentArguments, deleteOperationStack,
+  resolveServiceImageDigest, serviceImageTag } from './runtime-operation.mjs';
 import { createOperationRecord } from './operation-record.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
@@ -95,4 +95,121 @@ test('a missing, ambiguous or malformed ECR tag fails before the deploy', async 
   for (const [label, response, pattern] of cases) {
     await assert.rejects(resolveServiceImageDigest({ aws: async () => response }, serviceCommit), pattern, label);
   }
+});
+
+// Issue #194: the non-throwing one-shot probe. `deploy-runtime` needs the verify
+// task's container exit code as a *result* (the gate refuses `reader-failed`), so
+// the probe returns it instead of turning a non-zero read into a launcher crash.
+// The launch, authorization, unique identity, STOPPED, image-digest and command
+// checks are the same ones `oneShot` performs and still throw.
+const verifyEnv = {
+  GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
+  GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '2',
+  GITHUB_EVENT_NAME: 'workflow_dispatch',
+  GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
+  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
+  INFRA_OPERATION: 'deploy-runtime', INFRA_IDENTITY_PHASE: 'roles-added', INFRA_RETENTION_PROTECTION: 'true',
+  SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit,
+};
+const revision = { commit: serviceCommit, digest: imageDigest };
+const verifyTaskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`;
+const verifyDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:7';
+const verifyTask = (exitCode, digest = imageDigest) => ({
+  taskArn: verifyTaskArn, clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
+  lastStatus: 'STOPPED', taskDefinitionArn: verifyDefinitionArn,
+  containers: [{ name: 'OneShot', exitCode, imageDigest: digest }],
+});
+const verifyDefinition = (command = ['node', 'dist/verify.js', 'schema-journal']) => ({
+  family: 'beta-anywear-verify', taskDefinitionArn: verifyDefinitionArn,
+  containerDefinitions: [{ name: 'OneShot', command }],
+});
+
+// The probe's launch surface: the preflight simulator answers allowed, the script
+// prints the two identities, and the two ECS describes return the stopped task.
+function probeIo({ exitCode = 0, scriptFailure = false, stdout, task = verifyTask(exitCode),
+  definition = verifyDefinition() } = {}) {
+  const calls = [];
+  const assumeCalls = [];
+  const run = async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'aws' && args[0] === 'iam') {
+      return { stdout: JSON.stringify({ EvaluationResults: [{ EvalActionName: 'x', EvalResourceName: '*',
+        EvalDecision: 'allowed' }] }) };
+    }
+    if (command === 'aws' && args[0] === 'ecs' && args[1] === 'describe-tasks') {
+      return { stdout: JSON.stringify({ tasks: [task] }) };
+    }
+    if (command === 'aws' && args[0] === 'ecs' && args[1] === 'describe-task-definition') {
+      return { stdout: JSON.stringify({ taskDefinition: definition }) };
+    }
+    if (command === 'bash') {
+      const printed = stdout ?? `Task ARN: ${verifyTaskArn}\nTask definition: ${verifyDefinitionArn}\n`;
+      if (scriptFailure) throw Object.assign(new Error('script exited 1'), { stdout: printed, stderr: '' });
+      return { stdout: printed, stderr: '' };
+    }
+    throw new Error(`unexpected run ${command} ${args.join(' ')}`);
+  };
+  const assume = async (kind, _env, _purpose, options = {}) => {
+    assumeCalls.push([kind, options.sessionMarker]);
+    return { AWS_ACCESS_KEY_ID: 'x', AWS_SECRET_ACCESS_KEY: 'y', AWS_SESSION_TOKEN: 'z' };
+  };
+  return { calls, assumeCalls, run, assume,
+    io: (record) => createRuntimeIo(verifyEnv, record, { purpose: 'operation', run, assume }) };
+}
+
+test('the one-shot probe returns a zero container exit and records the probe identity', async () => {
+  const surface = probeIo({ exitCode: 0 });
+  const record = { events: [] };
+  const io = await surface.io(record);
+  const result = await io.oneShotProbe('verify', revision, 'schema-journal');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.task.taskArn, verifyTaskArn);
+  assert.equal(result.definition.taskDefinitionArn, verifyDefinitionArn);
+  // The preflight and the runtime session were used, and the script received the
+  // exact action as its fifth argument.
+  assert.deepEqual(surface.assumeCalls, [['runtime', 'preflight'], ['runtime', undefined]]);
+  const script = surface.calls.find(([command]) => command === 'bash');
+  assert.deepEqual(script[1], ['.github/scripts/run-one-shot-task.sh', 'beta', 'verify', imageDigest,
+    serviceCommit, 'schema-journal']);
+  const probe = record.events.find((event) => event.type === 'one-shot-probe');
+  assert.equal(probe.result, 'stopped-success');
+  assert.equal(probe.exit_code, 0);
+  assert.equal(probe.task_arn, verifyTaskArn);
+  assert.equal(probe.task_definition_arn, verifyDefinitionArn);
+  assert.match(probe.command_sha256, /^[a-f0-9]{64}$/);
+});
+
+test('the one-shot probe returns a non-zero container exit instead of throwing, and records it', async () => {
+  const surface = probeIo({ exitCode: 3, scriptFailure: true });
+  const record = { events: [] };
+  const io = await surface.io(record);
+  // run-one-shot-task.sh exits 1 after printing the identity; the container exit
+  // code is the probe result the schema gate judges as reader-failed.
+  const result = await io.oneShotProbe('verify', revision, 'schema-journal');
+  assert.equal(result.exitCode, 3);
+  const probe = record.events.find((event) => event.type === 'one-shot-probe');
+  assert.equal(probe.result, 'stopped-failure');
+  assert.equal(probe.exit_code, 3);
+});
+
+test('the one-shot probe refuses a wrong action, command, image or missing identity', async () => {
+  const surface = probeIo();
+  const io = await surface.io({ events: [] });
+  // A verify role with any other action is forbidden before a launch.
+  await assert.rejects(io.oneShotProbe('verify', revision, 'status'), /One-shot role\/action is forbidden/);
+  // Another verify command is not the schema-journal read.
+  const wrongCommand = probeIo({ definition: verifyDefinition(['node', 'dist/verify.js']) });
+  await assert.rejects((await wrongCommand.io({ events: [] })).oneShotProbe('verify', revision, 'schema-journal'),
+    /Actual verify command differs from the requested action/);
+  // A task running another image is not the revision the gate asked for. (The
+  // existing file's `imageDigest` is `sha256:9…`, so the wrong image uses `8`.)
+  const wrongImage = probeIo({ task: verifyTask(0, `sha256:${'8'.repeat(64)}`) });
+  await assert.rejects((await wrongImage.io({ events: [] })).oneShotProbe('verify', revision, 'schema-journal'),
+    /Actual one-shot image\/result differs from the deployed revision/);
+  // A launch that prints no unique identity is a launch failure, not a result.
+  const noIdentity = probeIo({ stdout: 'no identity here' });
+  const record = { events: [] };
+  await assert.rejects((await noIdentity.io(record)).oneShotProbe('verify', revision, 'schema-journal'),
+    /One-shot probe identity missing/);
+  assert.equal(record.events.at(-1).result, 'launch-failed');
 });
