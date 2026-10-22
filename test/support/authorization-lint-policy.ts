@@ -13,6 +13,11 @@ export interface Suppression {
 }
 
 export const SUPPRESSIONS: Suppression[] = [
+  { template: "platform", principals: ["beta-infra-runtime-role"],
+    actions: ["cloudformation:DescribeStacks","cloudformation:GetTemplate","cloudformation:ListStackResources"],
+    resources: ["arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearEgressStack-beta/*"],
+    conditionRequired: false,
+    reason: "The runtime role reads the disposable Egress stack's terminal state to enforce the stop ordering (Runtime absent before the Egress delete) and the one-writer rule; the generated stack UUID is the only wildcard position." },
   { template: "foundation", principals: ["beta-infra-runtime-role"],
     actions: ["cloudformation:DescribeStacks","cloudformation:GetTemplate"],
     resources: ["arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*","arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*"],
