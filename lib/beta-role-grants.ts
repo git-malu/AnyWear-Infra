@@ -168,6 +168,15 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'], conditions: regional,
   }));
+  // Issue #165: the authorization preflight explains before the operation mutates
+  // whether the restricted sessions can perform their reads. The IAM policy
+  // simulator actions have no resource-level scope, so the grant is exactly these
+  // two actions on `*`, a read of policy evaluation rather than a mutation.
+  for (const principal of [deploy, runtime]) {
+    principal.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['iam:SimulatePrincipalPolicy', 'iam:SimulateCustomPolicy'], resources: ['*'],
+    }));
+  }
   // Runtime synth resolves the existing CloudFront origin header; this is the
   // only runtime secret read required by the deployment consumer itself.
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
