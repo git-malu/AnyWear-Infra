@@ -195,14 +195,30 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && difference.after.Properties.Type === 'String'
       && typeof difference.after.Properties.Description === 'string'
       && difference.after.Properties.Description
-        .startsWith('AnyWear-Service AnyWearRuntimeStack-beta stage contract: ');
+        .startsWith('AnyWear-Infra AnyWearRuntimeStack-beta stage contract: ');
+    // The stage-contract consumer rename (#201) changes only the
+    // `Properties/Description` text of a published stage-contract parameter. The
+    // baseline text is the pre-change deployed identity (`AnyWear-Service ...`);
+    // the candidate text names the post-merge consumer (`AnyWear-Infra ...`). This
+    // allowance accepts that description text only: a `Name`, `Type` or `Value`
+    // change on the same resource is still rejected.
+    const stageContractDescription = stackName === 'AnyWearPlatformStack-beta'
+      && resource?.Type === 'AWS::SSM::Parameter'
+      && typeof resource.Properties.Name === 'string'
+      && resource.Properties.Name.startsWith('/anywear/beta/')
+      && difference.path === `/Resources/${id}/Properties/Description`
+      && typeof difference.before === 'string'
+      && difference.before.startsWith('AnyWear-Service AnyWearRuntimeStack-beta stage contract: ')
+      && typeof difference.after === 'string'
+      && difference.after.startsWith('AnyWear-Infra AnyWearRuntimeStack-beta stage contract: ');
     if (codeLocation || assetMetadata || retirement || retiredFoundation || telemetry || protectedRetention
-      || recoveryDelta || cleanupContractParameter) {
+      || recoveryDelta || cleanupContractParameter || stageContractDescription) {
       allowed.push({ ...difference, reason: codeLocation || assetMetadata ? 'Verified prebuilt Lambda asset location'
         : retirement || retiredFoundation ? 'Reviewed old Beta identity retirement'
         : protectedRetention ? 'Explicit protected rollback retention activation'
           : recoveryDelta ? 'Issue #161 explicit database recovery targets'
-            : 'Phase-dependent stage-contract cleanup task role parameter' });
+            : stageContractDescription ? 'Stage-contract parameter description consumer rename'
+              : 'Phase-dependent stage-contract cleanup task role parameter' });
     } else rejected.push(difference);
   }
   return { phase, stage, stackName, accepted: rejected.length === 0, allowed, rejected };

@@ -8,19 +8,20 @@ import {
 } from '@git-malu/stage-contracts';
 import type { PlatformStack } from './platform-stack';
 
-// The stage base is published as plain SSM parameters so a release slice can be
-// deployed from a checkout that holds no Infra source. Values come from the
-// existing Base resources/attributes; nothing here reads SSM.
-export const STAGE_CONTRACT_CONSUMER = 'AnyWear-Service AnyWearRuntimeStack-beta';
+// The Base stack publishes the stage base as plain SSM parameters under
+// `/anywear/<stage>/`; the Runtime stack that `deploy-runtime` deploys is the
+// reader. Values come from the existing Base resources/attributes; nothing here
+// reads SSM.
+export const STAGE_CONTRACT_CONSUMER = 'AnyWear-Infra AnyWearRuntimeStack-beta';
 
-// Two stage-base values have no Platform attribute: they are today retained
-// `AnyWearWorkloadStack-beta` stack parameters. For Beta they are reviewed
-// constants read from the live stack on 2026-10-18 with
-// `aws cloudformation describe-stacks --stack-name AnyWearWorkloadStack-beta`
-// in account 650880818323 / region ap-east-1. Both are identifiers, not secret
-// values: the published ARN names the secret, it does not contain key material.
-// A deployment must still assert the live Workload parameters equal these
-// values before deploying Platform, so drift is caught instead of republished.
+// Two stage-base values have no Platform attribute. They were recorded on
+// 2026-10-18 from the then-live `AnyWearWorkloadStack-beta` parameters with
+// `aws cloudformation describe-stacks --stack-name AnyWearWorkloadStack-beta` in
+// account 650880818323 / region ap-east-1. That stack was retired and deleted by
+// #166's Base/Runtime split, so no live Workload read exists. Both values are
+// identifiers, not secret values: the published ARN names the secret, it does not
+// contain key material. A change to them is a reviewed source diff.
+// `deploy-runtime` passes them to the Runtime template as its two plain parameters.
 const REVIEWED_BETA_STAGE_BASE = Object.freeze({
   vlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ',
   cloudFrontPrefixListId: 'pl-14b2577d',
