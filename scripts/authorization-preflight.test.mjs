@@ -78,7 +78,7 @@ test('the plan comes from the reviewed reads table and stays inside the declared
   assert.deepEqual(Object.keys(SIMULATION_SKIPS).sort(), ['cloudfront/get-distribution', 'ecr/batch-get-image',
     'ecr/describe-images', 'ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
     'ecr/start-lifecycle-policy-preview', 'ecs/register-task-definition', 'ecs/run-task', 'ecs/wait',
-    'logs/put-retention-policy', 'sts/get-caller-identity']);
+    'logs/get-log-events', 'logs/put-retention-policy', 'sts/get-caller-identity']);
 });
 
 test('the preflight passes when both the base policies and the session policy allow every read', async () => {
@@ -199,6 +199,26 @@ test('account-level actions simulate on * and resource-level actions stay concre
   assert.deepEqual(taskDefinition.resources, ['*']);
   const logGroups = plan.find((request) => request.pair === 'logs/describe-log-groups');
   assert.deepEqual(logGroups.resources, ['*']);
+});
+
+test('the simulator-unevaluable log-stream read is skipped and the rest of the runtime plan remains', () => {
+  // Read-only validation at e3d2854: every log-group:...:log-stream:... form returns
+  // implicitDeny in the simulator, even under the session policy that grants the
+  // action on *. The reviewed grant is on log-stream ARNs, so the plan skips it.
+  const reason = SIMULATION_SKIPS['logs/get-log-events'];
+  assert.ok(reason, 'logs/get-log-events must be a reviewed skip');
+  assert.match(reason, /log-stream ARNs/);
+  assert.match(reason, /implicitDeny/);
+  assert.match(reason, /form probes 2026-10-22/);
+  const plan = simulationRequests('runtime', {});
+  const pairs = plan.map((request) => request.pair).sort();
+  assert.ok(!pairs.includes('logs/get-log-events'));
+  assert.equal(plan.length, 12);
+  assert.deepEqual(pairs, ['cloudformation/describe-stacks', 'cloudformation/get-template',
+    'cloudformation/list-stack-resources', 'ecs/describe-services', 'ecs/describe-task-definition',
+    'ecs/describe-tasks', 'ecs/list-tasks', 'lambda/get-function',
+    'logs/describe-log-groups', 'sqs/get-queue-attributes', 'ssm/get-parameter',
+    'ssm/get-parameters']);
 });
 
 test('production.yml pins the app-token attestations read it needs', async () => {

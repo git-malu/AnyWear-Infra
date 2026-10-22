@@ -299,7 +299,7 @@ describe('IaC policy lint (#165)', () => {
     expect(Object.keys(skips).sort()).toEqual(['cloudfront/get-distribution', 'ecr/batch-get-image',
       'ecr/describe-images', 'ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
       'ecr/start-lifecycle-policy-preview', 'ecs/register-task-definition', 'ecs/run-task', 'ecs/wait',
-      'logs/put-retention-policy', 'sts/get-caller-identity']);
+      'logs/get-log-events', 'logs/put-retention-policy', 'sts/get-caller-identity']);
     for (const reason of Object.values(skips)) expect(String(reason).length).toBeGreaterThan(20);
   });
 
