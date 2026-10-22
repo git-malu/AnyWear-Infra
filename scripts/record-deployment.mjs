@@ -93,9 +93,16 @@ export async function recordDeployment(env = process.env, { root = '.', stdout =
     report();
     throw new Error('The accepted deployment record is missing');
   }
-  // For an operation outside the trigger set the family observation stays the
-  // required record; `state` claims no record at all.
-  if (requireRecord && !requiresAccepted && operation.operation !== 'state' && !familyEntry) {
+  // For an operation outside the trigger set, the required evidence follows the
+  // operation record's own terminal result: only a `succeeded` operation can be
+  // followed by the family observation, so only it requires one. A `failed` or
+  // `partial` operation publishes its operation record, which already states the
+  // absent observation and the recovery decision; `state` claims no record at all.
+  const familyScope = requireRecord && !requiresAccepted && operation.operation !== 'state';
+  if (familyScope && !['succeeded', 'failed', 'partial'].includes(operation.result)) {
+    throw new Error('The operation record has no final result');
+  }
+  if (familyScope && operation.result === 'succeeded' && !familyEntry) {
     await checksum(operationRecordPath);
     report();
     throw new Error('A successful operation requires its family observation record');
