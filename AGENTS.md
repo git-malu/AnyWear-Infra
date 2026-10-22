@@ -167,21 +167,23 @@ and must not be relabeled as an Infra-produced deployment.
   `beta-anywear-*`; `logs:FilterLogEvents` on `/anywear/beta/worker`), and the
   deploy role gains only the change-set `Describe`/`Execute`/`Delete` statements
   scoped to the Runtime stack and its change-set ARNs. The two per-service
-  deployment roles are retired in source; the live remainder is recorded as
-  `pending_removal` in `test/fixtures/foundation-live-provenance.json`, including
-  that `beta-service-deploy-cfn-role` is still the live Runtime stack's
-  CloudFormation execution role until an executed update rebinds it to the
-  bootstrap execution role.
+  deployment roles are retired in source; issue #199's separately authorized
+  `deploy-foundation` removed the live remainder, so the live Foundation defines
+  neither role nor either default policy, and the live read-backs are recorded on
+  issue #199. The Runtime stack's CloudFormation execution role is the CDK
+  bootstrap execution role, because the executed update that rebound it preceded
+  the removal.
 - The `infraServices` CDK context and the Foundation per-service deploy roles were
   retired by #195. A stale `infraServices` context now fails synthesis explicitly
   in `bin/infra.ts`, the synthesized Foundation no longer defines
   `beta-service-deploy-role` or `beta-service-deploy-cfn-role`, and
   `@git-malu/stage-contracts` no longer exports the service-role naming helpers.
   `deploy-runtime`/`stop-runtime` are the replacement. The authenticated live
-  Foundation still carries the four retired resources;
-  `test/fixtures/foundation-live-provenance.json` records them as
-  `pending_removal` with `publication_verified` and `deployment_qualified` false
-  until a separately authorized `deploy-foundation` removes them.
+  Foundation carries none of the four retired resources: issue #199's separately
+  authorized `deploy-foundation` removed both roles and both default policies,
+  and the live read-backs are recorded on issue #199. The fixture no longer
+  records a pending removal, and its `publication_verified` and
+  `deployment_qualified` remain false.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`
