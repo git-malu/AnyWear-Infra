@@ -113,11 +113,21 @@ export function runtimeCdkDeployArguments({ parameters, changeSetName, identityP
     throw new Error('The Runtime deploy must pass exactly the six reviewed parameters');
   }
   if (!CHANGE_SET_NAME.test(changeSetName ?? '')) throw new Error('Invalid Runtime change-set name');
+  // The CDK CLI declares `--parameters` as an `array` option with `nargs: 1` and
+  // documents the `STACK:KEY=VALUE` form, so one flag consumes exactly one value.
+  // Prefixing six bare values with a single `--parameters` (the #195 form) kept
+  // only the first and let `--previous-parameters` (default true) silently retain
+  // the other five: the 2026-10-23 compatible dispatch advanced
+  // `ServiceImageDigest` while `ServiceCommitSha` stayed on the previous release.
+  // One stack-qualified flag per parameter plus `--previous-parameters=false`
+  // makes a dropped parameter fail the deploy instead of inheriting a stale value.
   return ['cdk', 'deploy', RUNTIME_STACK, '--exclusively', '--require-approval', 'never', '--no-execute',
     '--change-set-name', changeSetName,
     '-c', 'deployScope=runtime', '-c', 'stage=beta', '-c', 'legacyRoleSource=external',
     '-c', `identityPhase=${identityPhase}`, '-c', `ecrImageRetention=${retentionProtection}`,
-    '--parameters', ...RUNTIME_DEPLOY_PARAMETER_KEYS.map((key) => `${key}=${parameters[key]}`)];
+    '--previous-parameters=false',
+    ...RUNTIME_DEPLOY_PARAMETER_KEYS.flatMap((key) =>
+      ['--parameters', `${RUNTIME_STACK}:${key}=${parameters[key]}`])];
 }
 
 /** The CDK destroy arguments for `stop-runtime`. */
