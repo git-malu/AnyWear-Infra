@@ -836,9 +836,10 @@ requires its `anywear_infra_family_observation` (uploaded as
 which states the `result`, the `final_observation` and the `recovery` decision. The
 mutation job's observation step and its upload run only after the mutation step
 succeeded, so a failed or partial operation can never produce a family observation;
-its operation record is validated, checksummed and published unchanged. The `record`
-job refuses a record whose `result` is not one of `succeeded`, `failed` or `partial`
-with `The operation record has no final result`.
+its operation record is validated, checksummed and published unchanged. Outside the
+accepted-record trigger set, the `record` job refuses an operation record whose
+`result` is not one of `succeeded`, `failed` or `partial` with `The operation record
+has no final result`.
 
 A missing accepted record makes the deployment incomplete. The credential-free
 `record` job validates the operation record against the dispatch, validates the

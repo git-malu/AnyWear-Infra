@@ -274,12 +274,13 @@ parameters the run read and a derived schema content hash; it contains no
 `AnyWearRuntimeStack-beta` from the same generic contract, so neither producer can
 claim the other's stacks. Other operations emit `anywear_infra_family_observation`
 with their actual workflow path (`mutate.yml` for the absorbed families); this is
-not an accepted E2E deployment input. That family observation is required exactly
-when the operation record's `result` is `succeeded`; a `failed` or `partial`
-operation publishes its operation record alone, whose `result`, `final_observation`
-and `recovery` state what happened and what recovery the operator owes, and a
-succeeded operation whose observation never arrived still fails the `record` job.
-A deployment chain uploads the accepted
+not an accepted E2E deployment input. For an operation outside the accepted-record
+trigger set, that family observation is required exactly when the operation
+record's `result` is `succeeded`. Such an operation publishes its operation record
+alone when the result is `failed` or `partial` — the record's `result`,
+`final_observation` and `recovery` state what happened and what recovery the
+operator owes — while a succeeded one whose observation never arrived still fails
+the `record` job. A deployment chain uploads the accepted
 record as `infra-deployment-<run-id>-<attempt>` containing
 `deployment-record.json`, and a succeeded mutation job's family observation as
 `infra-family-observation-<run-id>-<attempt>`, so the accepted contract and the
