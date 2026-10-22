@@ -6,17 +6,18 @@ import { runVerifyInputs } from './release-inputs.mjs';
 
 // The `verify` job completes every immutable-input check before any job acquires
 // AWS credentials, and publishes exactly what it proved. The `deploy` job binds
-// that artifact back to its own dispatch inputs. `deploy-platform` and
-// `restore-release` both deploy the stage base, so both download and verify the
-// Service-built Lambda assets into `.service-artifacts/selected`; every other
-// operation publishes the binding with no release and deploys no Service code.
+// that artifact back to its own dispatch inputs and re-hashes the travelled bytes
+// once. `deploy-platform` and `restore-release` both deploy the stage base, so
+// both read the release identity over REST and download the three files it
+// consumes into `.service-artifacts/selected`; every other operation publishes the
+// binding with no release and deploys no Service code.
 const env = process.env;
 validateOperationInputs(env);
 const boundary = operationBoundary(env);
 const release = await runVerifyInputs({ env });
 await mkdir('deployment-evidence', { recursive: true });
 const record = {
-  schema_version: 2,
+  schema_version: 3,
   record_type: 'anywear_infra_verified_inputs',
   operation: env.INFRA_OPERATION,
   workflow: boundary.workflow,

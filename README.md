@@ -204,8 +204,9 @@ by [observation-record.mjs](scripts/observation-record.mjs), not restated in YAM
 
 Every Beta entry requires exact reviewed main and protected `beta`; the two
 operations that consume Service-built Lambda assets also require the reviewed
-Service release tag and commit. The sealed release download and every-byte proof
-happen before AWS credentials in both chains; the restricted STS sessions are
+Service release tag and commit. The release-identity read and the three-file
+download happen before AWS credentials, and each travelled file is re-hashed once
+in the deploy job before its restricted STS session; the sessions are
 operation-specific and the read-only session carries no ECS or PassRole
 permissions. Only mutation requires
 `ENABLE_BETA_MUTATION=true`; read-only `state` remains available when it is
@@ -319,9 +320,13 @@ correctness observation, not a latency guarantee.
 
 The stage base's Service-built Lambda assets come from a reviewed Service release
 identity: `deploy-platform`/`restore-release` take `service_release_tag` and
-`service_commit`, download the sealed release's two Lambda bundles, runtime policy
-and manifest with a read-only token, prove each byte against the manifest, and
-only then reach AWS. There is no committed selection, no vendored Service parser
+`service_commit`, read the sealed release and its tag ref over the REST API,
+require the two Lambda bundles and the runtime policy to be present, uploaded and
+digest-valid (extras such as the retired legacy manifest are ignored), download
+only those three, and re-hash each travelled byte once in the deploy job before
+any credential. The deploy records the release tag, Service commit and the ECR
+digest of the immutable `service-artifacts-<service_commit>` tag. There is no
+committed selection, no release manifest, no vendored Service parser
 and no cross-repository native-attestation path; publication ZIP/receipt/handshake
 ceremony stays retired. See the
 [direct release identity procedure](docs/runbooks/cutover-and-recovery.md#direct-release-identity).

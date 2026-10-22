@@ -74,18 +74,23 @@ permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 After #158 step C there is no committed selection and no cross-repository native
 asset verification. `deploy-platform` and `restore-release` take one reviewed
 Service release identity (`service_release_tag` + `service_commit`). A source PR
-reviews the tag and the Service commit; the sealed release is then downloaded
-(`service-artifacts.json`, `pre-sign-up.zip`, `post-confirmation.zip`,
-`runtime-policy.json`) with a read-only token, every byte is proved against the
-release manifest, and the manifest's image source must equal the reviewed commit.
-Every other operation rejects a release identity. Deployment records are v3 and
-contain no `selection`.
+reviews the tag and the Service commit; the release and its tag ref are then read
+over the REST API with a read-only token (the tag must resolve to that commit,
+`draft=false`, `immutable=true`, and the two Lambda bundles and the runtime policy
+must be present, uploaded and digest-valid; extras such as the retired legacy
+manifest are ignored), and only those three files (`pre-sign-up.zip`,
+`post-confirmation.zip`, `runtime-policy.json`) are downloaded. The deploy job
+re-hashes each travelled byte once against those published digests before any
+credential, then records the release tag, Service commit and the ECR digest of the
+immutable `service-artifacts-<service_commit>` tag. Every other operation rejects
+a release identity. Deployment records are v3 and contain no `selection`.
 
 The protected Beta job first checks exact main/workflow/account/region and
 operation, plus the release identity only for the two operations that take one,
 with explicit identity/retention only for CDK families and fixed protected source
-context for other entries. It then obtains the sealed release and immediately
-re-hashes the downloaded bytes before any credential, and only then obtains
+context for other entries. It then reads the release identity and downloads the
+three files it consumes, and the deploy job immediately re-hashes each downloaded
+byte once before any credential, and only then obtains
 operation-specific restricted AWS OIDC sessions. Final qualification also uses a restricted session, not a role-wide
 credential action. The CLI
 uses a fresh external empty config and fixes telemetry off, excluding ambient
@@ -103,7 +108,7 @@ gh workflow run mutate.yml --repo git-malu/AnyWear-Infra \
 
 There is no publication Actions ZIP, executable candidate/receipt/handshake,
 mandatory issue-comment URL, writer token or expiry field in this path. The
-reviewed release tag/commit and the manifest byte proof replace that ceremony. This source interface does not authorize the #54 cutover, which still
+reviewed release tag/commit and the release-digest byte proof replace that ceremony. This source interface does not authorize the #54 cutover, which still
 requires one rollout writer, resource cessation and the separately
 reviewed maintenance/recovery plan. Foundation-only bootstrap remains below its
 existing separately allocated operator boundary and requires no Service artifact.
@@ -215,7 +220,7 @@ the already deployed Lambda ZIP bytes, their `index.js` and source maps, exact
 bootstrap bucket/key, ZIP SHA-256/live `CodeSha256`, original protected build source,
 lock/toolchain inputs and original run/attempt. A later recovery or equal source
 contents does not invent build provenance. Keep imported image, policy and schema
-producer sources separate from the manifest publisher's workflow SHA/run.
+producer sources separate from the release publisher's workflow SHA/run.
 
 After roles and consumers are proved, freeze old Service infrastructure writers
 and conflicting Client/E2E operations, verify cessation, then assign Infra one

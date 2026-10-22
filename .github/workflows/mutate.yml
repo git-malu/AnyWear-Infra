@@ -92,9 +92,12 @@ jobs:
         run: |
           mkdir -p deployment-evidence
           node scripts/check-operation.mjs
-  # The only job that reads the sealed Service release. It holds a read-only App
-  # token (only when the operation takes a release) and never an OIDC identity or
-  # an environment.
+  # The only job that reads the Service release. It reads the release and its tag
+  # ref over the REST API, requires the three names the stage base consumes to be
+  # present, uploaded and digest-valid (extras such as a legacy manifest are
+  # ignored) and downloads only those three. It holds a read-only App token (only
+  # when the operation takes a release) and never an OIDC identity or an
+  # environment.
   verify:
     needs: preflight
     runs-on: ubuntu-latest
@@ -109,9 +112,10 @@ jobs:
       - uses: ./.github/actions/verify-operation
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-  # The only job that acquires AWS credentials. It is scheduled after `verify`
-  # and binds the downloaded verified-inputs artifact to this dispatch before the
-  # restricted session is requested.
+  # The only job that acquires AWS credentials. It is scheduled after `verify`,
+  # re-hashes the three travelled release files once against the verified record
+  # and only then binds the artifact to this dispatch and requests the restricted
+  # session; the operation records the ECR digest of the release's immutable tag.
   deploy:
     needs: verify
     environment: beta
@@ -130,7 +134,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Download verified inputs and the sealed release directory
+      - name: Download verified inputs and the selected release directory
         uses: actions/download-artifact@v4
         with:
           name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}

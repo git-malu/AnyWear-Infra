@@ -12,7 +12,7 @@ runs:
         node-version: 24
     - run: npm ci
       shell: bash
-    - name: Bind the verified-inputs artifact to this dispatch before any credential
+    - name: Bind the verified inputs and re-hash the three travelled release files before any credential
       if: inputs.verify_artifact == 'true'
       shell: bash
       run: node scripts/check-verified-inputs.mjs
