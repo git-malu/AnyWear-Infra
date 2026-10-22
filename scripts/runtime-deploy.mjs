@@ -35,6 +35,14 @@ const SIZING_PROFILES = Object.freeze(['s1', 's2-api']);
 const TELEMETRY_VALUES = Object.freeze(['false', 'true']);
 const CHANGE_SET_NAME = /^[A-Za-z][-A-Za-z0-9]{0,127}$/;
 const SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
+// Issue #195: the declared template normalisation (`normaliseDeployedTemplate` in
+// stage-contracts) drops the `CDKMetadata` resource and its condition before the
+// deployed template is hashed, because they are CDK diagnostic metadata, not
+// infrastructure. The change-set judgement applies the same declaration: an
+// `AWS::CDK::Metadata` change is evidence, never a stack change, a delta or a
+// replacement. Every other resource keeps the fail-closed guard unchanged.
+export const DECLARED_DIAGNOSTIC_RESOURCE_TYPES = Object.freeze(['AWS::CDK::Metadata']);
+export const DECLARED_DIAGNOSTIC_EXCLUSION = 'declared CDK diagnostic metadata';
 
 export function assertRuntimePhase(operation, env = process.env) {
   if (!['deploy-runtime', 'stop-runtime'].includes(operation)) {
@@ -123,37 +131,56 @@ export function runtimeCdkDestroyArguments(identityPhase, retentionProtection) {
  * A converged stack has no update to make. CloudFormation may answer that with an
  * empty change set, with a `FAILED` set whose reason is "didn't contain changes",
  * or with no change set at all (the CDK CLI short-circuits); all three are
- * `converged: true`. Any Add/Remove/Modify is a delta the caller must judge.
+ * `converged: true`. Any Add/Remove/Modify is a delta the caller must judge,
+ * except a change to an `AWS::CDK::Metadata` resource: that resource is the
+ * declared diagnostic metadata the template normalisation drops, so it is kept in
+ * `diagnostic_changes` as evidence and never counts as a real delta or
+ * replacement.
  */
 export function classifyChangeSet(changeSet) {
   if (changeSet === undefined || changeSet === null) {
-    return Object.freeze({ converged: true, status: 'absent', executionStatus: 'absent', reason: 'no change set', changes: [], replacement: false });
+    return Object.freeze({ converged: true, status: 'absent', executionStatus: 'absent', reason: 'no change set',
+      changes: [], resource_changes: [], diagnostic_changes: [], replacement: false });
   }
   const status = String(changeSet.Status ?? 'unknown');
   const executionStatus = String(changeSet.ExecutionStatus ?? 'unknown');
   const reason = String(changeSet.StatusReason ?? '');
-  const changes = (changeSet.Changes ?? []).map((row) => ({
-    action: String(row?.Type ?? 'unknown'),
-    logical_id: row?.ResourceChange?.LogicalResourceId ?? 'unavailable',
-    resource_type: row?.ResourceChange?.ResourceType ?? 'unavailable',
-    action_type: row?.ResourceChange?.Action ?? row?.Type ?? 'unknown',
-    replacement: row?.ResourceChange?.Replacement ?? 'False',
-  }));
+  const changes = (changeSet.Changes ?? []).map((row) => {
+    const resourceType = row?.ResourceChange?.ResourceType ?? 'unavailable';
+    return {
+      action: String(row?.Type ?? 'unknown'),
+      logical_id: row?.ResourceChange?.LogicalResourceId ?? 'unavailable',
+      resource_type: resourceType,
+      action_type: String(row?.ResourceChange?.Action ?? row?.Type ?? 'unknown'),
+      replacement: row?.ResourceChange?.Replacement ?? 'False',
+      ...(DECLARED_DIAGNOSTIC_RESOURCE_TYPES.includes(resourceType)
+        ? { declared_diagnostic: true, excluded: DECLARED_DIAGNOSTIC_EXCLUSION } : {}),
+    };
+  });
+  const resourceChanges = changes.filter((change) => change.declared_diagnostic !== true);
+  const diagnosticChanges = changes.filter((change) => change.declared_diagnostic === true);
   const noChanges = /didn'?t contain changes|did not contain changes/i.test(reason);
   const failed = status === 'FAILED' && !noChanges;
-  const converged = !failed && (noChanges || changes.length === 0);
+  // A set whose only changes are declared diagnostics is converged: the
+  // normalised templates are equal, and the deployment record hashes the same
+  // normalised identity. The diagnostic rows stay visible for the record.
+  const converged = !failed && (noChanges || resourceChanges.length === 0);
   return Object.freeze({
     converged, failed, status, execution_status: executionStatus, reason, changes,
-    replacement: changes.some((change) => change.replacement === 'True' || change.replacement === 'Conditional'),
+    resource_changes: resourceChanges, diagnostic_changes: diagnosticChanges,
+    replacement: resourceChanges.some((change) => change.replacement === 'True' || change.replacement === 'Conditional'),
   });
 }
 
-/** A converged release identity must not produce a delta; this fails closed. */
+/** A converged release identity must not produce a real delta; this fails closed. */
 export function assertConvergedChangeSet(classification) {
   if (classification.failed) throw new Error(`The Runtime change set failed: ${classification.reason || classification.status}`);
   if (!classification.converged) {
-    const summary = classification.changes.map((change) => `${change.action} ${change.logical_id} (${change.replacement})`).join(', ');
-    throw new Error(`A converged Runtime release must not change the stack; the change set lists ${classification.changes.length}: ${summary}`);
+    // Only real resources are named: a CDKMetadata diagnostic row is declared
+    // metadata and cannot be the reason a release fails closed.
+    const changes = classification.resource_changes ?? classification.changes;
+    const summary = changes.map((change) => `${change.action} ${change.logical_id} (${change.replacement})`).join(', ');
+    throw new Error(`A converged Runtime release must not change the stack; the change set lists ${changes.length}: ${summary}`);
   }
 }
 
@@ -176,6 +203,15 @@ async function describeChangeSet(io, stack, changeSetName) {
     if (/does not exist|ChangeSetNotFound/i.test(text)) return undefined;
     throw error;
   }
+}
+
+// The deploy session describes, executes or deletes this run's change set and
+// nothing else (#195). Both the converged no-op and the fail-closed delta leave no
+// AVAILABLE change set behind; the record keeps the classification instead, so no
+// later describe of a deleted set is required.
+async function deleteChangeSet(io, stack, changeSetName) {
+  await io.awsAs('deploy', ['cloudformation', 'delete-change-set', '--stack-name', stack,
+    '--change-set-name', changeSetName]);
 }
 
 async function waitForTerminalStack(io, stack, { timeoutMs = 3_600_000, intervalMs = 15_000 } = {}) {
@@ -394,15 +430,29 @@ export async function deployRuntime({ io, env, record, release,
 
   if (classification.converged) {
     if (changeSet !== undefined) {
-      await io.awsAs('deploy', ['cloudformation', 'delete-change-set', '--stack-name', RUNTIME_STACK,
-        '--change-set-name', changeSetName]);
+      await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
     }
     if (identityUnchanged) {
       // The reviewed converged no-op: nothing executes, and the read-back below
-      // still proves the deployed identity.
-      record?.events.push({ type: 'runtime-change-set-converged', executed: false });
+      // still proves the deployed identity. A declared diagnostic delta (the
+      // CDKMetadata Analytics payload) is recorded here as well as in the
+      // change-set event so the no-op's evidence names what it excluded.
+      record?.events.push({ type: 'runtime-change-set-converged', executed: false,
+        diagnostic_changes: classification.diagnostic_changes });
     }
   } else if (identityUnchanged) {
+    // The design's fail-closed path: preserve the reviewed delta as evidence and
+    // delete the change set rather than leave it AVAILABLE for a later
+    // `describe-change-set`. The `runtime-change-set` event above already holds
+    // the classification and the full changes list, so the record does not depend
+    // on the deleted set.
+    record?.events.push({ type: 'runtime-change-set-rejected', name: changeSetName, result: 'failed-closed',
+      reason: classification.failed ? 'change set failed' : 'a converged Runtime release must not change the stack',
+      changes: classification.resource_changes, diagnostic_changes: classification.diagnostic_changes });
+    if (changeSet !== undefined) {
+      await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
+      record?.events.push({ type: 'runtime-change-set-deleted', name: changeSetName, reason: 'fail-closed' });
+    }
     assertConvergedChangeSet(classification);
   } else if (!stackExists) {
     assertCreateOnlyChangeSet(classification);
