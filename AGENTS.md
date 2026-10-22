@@ -19,29 +19,30 @@ and must not be relabeled as an Infra-produced deployment.
   artifacts. Do not generate the shared API or read mutable peer `main` as a
   deployment input. Client publishes independently through deployed interfaces.
 - There is no committed selection and no cross-repository native-asset
-  verification path. `deploy-platform` and `restore-release` take one reviewed
-  Service release identity (`service_release_tag` + `service_commit`), read the
-  sealed release and its tag ref over the REST API, require the release's two
-  Lambda bundles and runtime policy to be present, uploaded and digest-valid
-  while ignoring extras such as the retired legacy manifest, download only those
-  three, and prove each travelled byte once in the deploy job before any
-  credential. The deploy records the release tag, Service commit and the ECR
-  digest of the immutable `service-artifacts-<service_commit>` tag. No
-  Service-built artifact is committed here. Every other operation rejects a
-  release identity.
+  verification path. `deploy-platform`, `deploy-runtime` and `restore-release`
+  take one reviewed Service release identity (`service_release_tag` +
+  `service_commit`), read the sealed release and its tag ref over the REST API,
+  require the release's two Lambda bundles and runtime policy to be present,
+  uploaded and digest-valid while ignoring extras such as the retired legacy
+  manifest, and prove the release before any credential. `deploy-platform` and
+  `restore-release` download those three files and prove each travelled byte once
+  in the deploy job; `deploy-runtime` consumes the identity only and downloads no
+  asset. The deploy records the release tag, Service commit and the ECR digest of
+  the immutable `service-artifacts-<service_commit>` tag. No Service-built
+  artifact is committed here. Every other operation rejects a release identity.
 - Deployment records are v3 (`anywear_infra_deployment`): producer identity, the
   exact stack set that producer owns, the stage-contract SSM parameters the run
   read (name, version, value hash), the authenticated observation and a content
   hash of the stage-contract schema surface. There is no `selection` member and
-  no pin to another repository's release. Service produces
-  `anywear_service_deployment` v4 from the same core plus a required 600-second
-  six-signal bake `gate`; an Infra record never carries one.
+  no pin to another repository's release. The `deploy-runtime` operation produces
+  `anywear_service_deployment` v5 from the same core plus a required 600-second
+  six-signal bake `gate`; the Infra `anywear_infra_deployment` v3 record never carries one.
 - The versioned `@git-malu/stage-contracts` package
   (`packages/stage-contracts/`) is the single source of the stage-contract
-  names/kinds, stack identities, v4 Service record and bake-gate validators and
-  Foundation service-role naming. `npm run check` runs its tests. Change it only
-  with a version bump and the matching `stage-contracts-v<version>` tag; Service
-  pins the packed tarball, never a mutable branch.
+  names/kinds, stack identities, the v5 Service record and bake-gate validators, the
+  deployed-template normalisation and no service-role naming. It is consumed from
+  `file:packages/stage-contracts`; `npm run check` runs its tests. Change it only
+  with a version bump and the matching `stage-contracts-v<version>` tag.
 - Do not claim repository branch protection when the private plan cannot enforce
   it. The configured Beta environment restricts the branch to main. Apply the
   independently reviewed exact source/inputs and operational coordination
@@ -62,7 +63,7 @@ and must not be relabeled as an Infra-produced deployment.
   `Egress` (`AnyWearEgressStack-beta`) holds the NAT, EIP, the 0.0.0.0/0 default
   routes in the Base-owned private route tables and the S3 gateway endpoint and
   is deleted on stop (it creates no route table and no subnet association);
-  `Runtime` (`AnyWearRuntimeStack-beta`, Service-owned) holds ALB, ECS
+  `Runtime` (`AnyWearRuntimeStack-beta`, Infra-owned since #195) holds ALB, ECS
   services/task definitions, log groups and the cleanup operation and is deleted
   on stop. There is no `environmentRunning` switch, no `BetaActive` output and no
   stopped template. Beta run state is one fact: whether the Runtime stack exists.
@@ -116,16 +117,20 @@ and must not be relabeled as an Infra-produced deployment.
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
-- Since #195 the only path that deploys the release slice is this repository's
-  `deploy-runtime` operation; AnyWear-Service carries no CDK source or deploy chain. Issue #166
-  renamed that slice to `AnyWearRuntimeStack-beta`; the historical runs below
-  still refer to it by its then-name `AnyWearWorkloadStack-beta`. The deferred
-  Foundation round has happened, so its two Service deploy roles from step A exist
-  and Service's own `ENABLE_BETA_MUTATION=true` can act: Service run 39137577023
-  ("Service release: deploy", `workflow_dispatch`, success, created
-  2026-10-18T14:47:35Z) deployed the Service-owned release slice, and
-  Infra `deploy-foundation` runs succeeded on 2026-10-18 at 12:48:21Z, 12:22:55Z,
-  11:02:38Z and 07:33:47Z. No Infra entry may deploy, verify or recover that slice.
+- Since #195 `deploy-runtime` and `stop-runtime` are the only mutation paths for
+  the release slice (`AnyWearRuntimeStack-beta`); AnyWear-Service carries no CDK
+  source or deploy chain. `deploy-runtime` takes one reviewed Service release
+  identity (`service_release_tag` + `service_commit`), resolves the immutable ECR
+  image digest, records the change set, runs the unchanged 600-second six-signal
+  bake under the read-only runtime session and writes the v5
+  `anywear_service_deployment` record from the mutating job itself; `stop-runtime`
+  deletes only that stack, and an absent stack is its accepted no-op. The
+  historical runs below evidence the pre-#195 path only: Service run 39137577023
+  ("Service release: deploy", `workflow_dispatch`, success, 2026-10-18T14:47:35Z)
+  and the Infra `deploy-foundation` runs at 12:48:21Z, 12:22:55Z, 11:02:38Z and
+  07:33:47Z belonged to the Service-owned slice and its release chain, which no
+  longer exists. Issue #166 renamed that slice to `AnyWearRuntimeStack-beta`;
+  older references use its then-name `AnyWearWorkloadStack-beta`.
 - Every CLI scope requires explicit `legacyRoleSource=cdk|external`.
   `cdk` reproduces the Service source fixture; never use it as the live
   account plan. Foundation in account `650880818323`/`ap-east-1` owns only its
@@ -138,41 +143,36 @@ and must not be relabeled as an Infra-produced deployment.
   has transitive account-wide authority, not Beta resource isolation. Review
   effective bootstrap/inline/managed policies, including unmanaged
   `AnyWearBetaPipelineBaseline`, before retirement; synth alone cannot prove IAM.
-- The Beta stage base is published as SSM parameters under `/anywear/beta/` so the
-  release slice used to be deployable from a checkout holding no Infra source;
+- The Beta stage base is published as SSM parameters under `/anywear/beta/`. Two
   of those values are reviewed constants, not Platform resources: the VLM config
   secret ARN and the AWS-managed CloudFront origin-facing prefix list id. Change
-  the constants only in a reviewed diff; the slice's own stack parameters are
-  Service's to assert. Service
-  deploys through `beta-service-deploy-role` (CloudFormation change sets for
-  `AnyWearRuntimeStack-beta` only; `ssm:GetParameter*` under `/anywear/beta/`;
-  the CDK CLI's own-credentials path: the `cdk-bootstrap/hnb659fds/version`
-  parameter, list/object/bucket-location access to the dedicated
-  `cdk-hnb659fds-assets-<account>-<region>` bucket)
-  and `beta-service-deploy-cfn-role` (CloudFormation trust only, the Runtime
-  stack's resource families and its four task roles). Neither assumes a
-  `cdk-hnb659fds-*` role, carries a managed policy or holds account-wide grants;
-  the policy-inventory tests keep the absent
-  VPC/Aurora/Cognito/bucket-configuration/SQS/ECR-configuration/Foundation/
-  other-stack grants absent. The roles, not this
-  repository, are now the Runtime stack's deployment authority.
-- Foundation's service set is reviewed CDK context, not source: `infraServices` is
-  an array of `{ service, repository, repositoryId, environment }` descriptors
-  defaulting to exactly the single `service` (`AnyWear-Service`, repository id
-  `1158460323`, environment `beta`). Both role names and the immutable OIDC
-  subject derive from the descriptor. The context is strict: an unknown key, a
-  malformed descriptor, a duplicate service, a missing default service or a
-  changed default descriptor fails synthesis before any resource is created. A
-  second service is that context value plus a Foundation deploy carrying it, never
-  an Infra source edit; the default context keeps the synthesized Foundation
-  template equal to the authenticated live Foundation plus the recorded
-  `test/fixtures/foundation-dedicated-additions.json` delta, whose #162 extension
-  and #166 Runtime-scope extension (including the Foundation-owned
-  `beta-infra-runtime-role` CloudFormation read grants for the M4 origin pre-read)
-  are recorded in the fixture provenance (`test/foundation-services.test.ts`).
-  The #166 extension is source-side only:
-  `publication_verified` and `deployment_qualified` remain false until the
-  Deployment gate deploys Foundation.
+  the constants only in a reviewed diff; `deploy-runtime` reads them from the
+  stage contract and passes them as the Runtime template's two plain parameters.
+  Since #195 the Runtime stack deploys through the existing
+  `beta-infra-deploy-role` and the standard CDK bootstrap path
+  (`cdk-hnb659fds-deploy-role`, `-file-publishing-role`, `-lookup-role` and the
+  `cdk-hnb659fds-cfn-exec-role-<account>-<region>` execution role), under the
+  operation's own change scope and preflight — not an IAM isolation claim the
+  bootstrap path does not provide. The bake's two read-only statements live on the
+  existing `beta-infra-runtime-role` (`cloudwatch:DescribeAlarms` on
+  `beta-anywear-*`; `logs:FilterLogEvents` on `/anywear/beta/worker`), and the
+  deploy role gains only the change-set `Describe`/`Execute`/`Delete` statements
+  scoped to the Runtime stack and its change-set ARNs. The two per-service
+  deployment roles are retired in source; the live remainder is recorded as
+  `pending_removal` in `test/fixtures/foundation-live-provenance.json`, including
+  that `beta-service-deploy-cfn-role` is still the live Runtime stack's
+  CloudFormation execution role until an executed update rebinds it to the
+  bootstrap execution role.
+- The `infraServices` CDK context and the Foundation per-service deploy roles were
+  retired by #195. A stale `infraServices` context now fails synthesis explicitly
+  in `bin/infra.ts`, the synthesized Foundation no longer defines
+  `beta-service-deploy-role` or `beta-service-deploy-cfn-role`, and
+  `@git-malu/stage-contracts` no longer exports the service-role naming helpers.
+  `deploy-runtime`/`stop-runtime` are the replacement. The authenticated live
+  Foundation still carries the four retired resources;
+  `test/fixtures/foundation-live-provenance.json` records them as
+  `pending_removal` with `publication_verified` and `deployment_qualified` false
+  until a separately authorized `deploy-foundation` removes them.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`
@@ -212,8 +212,8 @@ Also synthesize the live Foundation with `deployScope=foundation`,
 `identityPhase=roles-added`, `legacyRoleSource=external`, account `650880818323`
 and application region `ap-east-1`, then run `scripts/compare-live-foundation.mjs`
 against that output. CI preserves the actual CLI template and comparison. The
-authenticated Original fixture permits exactly eight dedicated roles/five policies
-(the fifth is the #166 runtime-role read grant);
+authenticated Original fixture permits exactly six dedicated roles/three policies
+(the runtime role's #195 bake reads live in its existing DedicatedPolicy);
 only fixed pseudo-parameter equivalence and declared CDK diagnostic metadata
 differences are normalized. Provider/helper code, output and IAM changes fail.
 

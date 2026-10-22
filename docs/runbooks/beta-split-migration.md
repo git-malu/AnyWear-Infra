@@ -1,5 +1,11 @@
 # Beta Base/Runtime split migration (one-time, Deployment-gated)
 
+> **Historical record (pre-#195).** This one-time #166 migration was executed and
+> is retained as evidence. Its `Owner` column and the two Foundation execution
+> roles it names (`beta-service-deploy-role`, `beta-service-deploy-cfn-role`) no
+> longer describe source: #195 retired both roles and moved the Runtime stack's
+> CDK source and deploy chain into AnyWear-Infra (`deploy-runtime`).
+
 Issue #166 turns Beta into three stacks with disjoint lifetimes:
 
 | Stack | CloudFormation stack | Owner | Lifetime |

@@ -231,10 +231,11 @@ Verify stable independent Client publication through existing CFN/SSM outputs.
 Retain the original templates, selected assets and usable recovery writer.
 
 Exercise reviewed `restore-release` as the Base recovery path; it deploys only
-`AnyWearPlatformStack-beta` and leaves the Service-owned Runtime slice to
-AnyWear-Service's own release chain. It does not run down migrations and it never
+`AnyWearPlatformStack-beta` and leaves the Runtime slice to this repository's
+`deploy-runtime` operation. It does not run down migrations and it never
 verifies a candidate release. (The former `deploy-workload` path no longer exists
-in Infra; #166 renamed the slice to `AnyWearRuntimeStack-beta`.)
+in Infra; #166 renamed the slice to `AnyWearRuntimeStack-beta`, and since #195 the
+slice's CDK source and deploy chain are in this repository.)
 `restore-release` requires a provably closed admission record
 (`{"mode":"closed"}`) and an existing terminal Runtime stack ("start first")
 before CFN, reads the Runtime terminal before and after its own deploy, and
@@ -264,7 +265,8 @@ identify their actual workflow (`mutate.yml`). E2E v3 qualification consumes no
 deployment record and observes the platform itself, so the legacy-producer/pin
 acceptance rule is inert and retires in Wave 2 (#180); the record remains
 deployment evidence and #181's lineage. The Runtime slice's own record is produced
-by AnyWear-Service's release chain (`anywear_service_deployment`). Read-only
+by this repository's `deploy-runtime` operation (`anywear_service_deployment` v5).
+Read-only
 `runtime.yml` `state` remains available with the stage switch closed, including
 recovery diagnosis, and cannot start tasks or qualify database/schema state.
 
