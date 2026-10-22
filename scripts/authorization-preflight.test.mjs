@@ -93,6 +93,36 @@ test('the plan comes from the reviewed reads table and stays inside the declared
     'logs/get-log-events', 'logs/put-retention-policy', 'sts/get-caller-identity']);
 });
 
+// Run 39787035530: `deploy-runtime` simulated its DescribeChangeSet read on a
+// change-set ARN, and the IAM policy simulator returns implicitDeny for that action
+// on every change-set ARN form even under an allow-* policy, while the Runtime stack
+// ARN is evaluable. The action stays in the plan on the evaluable form — a simulated
+// gate, not a skip — and the generated session policy carries the real stack and
+// change-set forms the operation calls.
+test('deploy-runtime simulates DescribeChangeSet on the Runtime stack ARN', () => {
+  const env = operationEnvironment('deploy-runtime');
+  const platformEnv = operationEnvironment('deploy-platform');
+  const request = simulationRequests('deploy', env, 'operation')
+    .find((entry) => entry.pair === 'cloudformation/describe-change-set');
+  assert.ok(request, 'the change-set read must stay in the deploy plan');
+  assert.deepEqual(request.actions, ['cloudformation:DescribeChangeSet']);
+  assert.deepEqual(request.resources,
+    ['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*']);
+  assert.equal(preflightActionSet('deploy', env, 'operation').includes('cloudformation:DescribeChangeSet'), true);
+  assert.equal('cloudformation/describe-change-set' in SIMULATION_SKIPS, false);
+  // No other operation's deploy plan gains the request.
+  assert.equal(simulationRequests('deploy', platformEnv, 'operation')
+    .some((entry) => entry.pair === 'cloudformation/describe-change-set'), false);
+  // The custom-policy half of the intersection matches the same real forms; an
+  // ARN with `changeSet` in the region position would deny every real resource.
+  const policy = JSON.parse(sessionPolicy('deploy', env, 'operation'));
+  const statement = policy.Statement.find((entry) => [entry.Action].flat().includes('cloudformation:DescribeChangeSet'));
+  assert.ok(statement, 'the deploy-runtime session must grant the change-set read');
+  assert.deepEqual([statement.Resource].flat().sort(), [
+    'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
+    'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*']);
+});
+
 // Issue #195: the runtime session's plan, its session policy and its call
 // allow-list are scoped to the reads the dispatched operation performs. The bake
 // reads are Platform-installed grants, so requiring them from every operation
