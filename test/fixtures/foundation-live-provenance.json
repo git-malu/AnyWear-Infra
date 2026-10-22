@@ -98,23 +98,5 @@
       "scope": "M6 Runtime queue-depth alarm prefix grant on beta-service-deploy-cfn-role",
       "detail": "The Runtime template creates two CDK-auto-named queue-depth alarms whose names carry the AnyWearRuntimeStack-beta- prefix, so the existing cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms grant on alarm:beta-anywear-* does not match them (the same evaluation gap that made them undeletable at M3). Foundation adds exactly cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms on arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*, Sid RuntimeQueueDepthAlarms. The nine explicitly named beta-anywear-* alarms stay covered by the existing statement; no broader prefix, action or role. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
     }
-  ],
-  "pending_removal": {
-    "recorded_at": "2026-10-22",
-    "issue": 195,
-    "reason": "The two Foundation per-service deployment roles were removed from source with #195: the Runtime stack is deployed by the existing beta-infra-deploy-role through the standard CDK bootstrap path, so no consumer remains. The live Foundation still carries these four resources (added by the 2026-10-18 Foundation deploy); a later, separately authorized deploy-foundation removes them. This issue neither designs nor runs that update.",
-    "resources": [
-      "BetaServiceDeployRole4CA9D485",
-      "BetaServiceDeployRoleDefaultPolicyC2C5B50D",
-      "BetaServiceDeployCfnRoleB6333451",
-      "BetaServiceDeployCfnRoleDefaultPolicy7FF124FD"
-    ],
-    "live_role_names": [
-      "beta-service-deploy-role",
-      "beta-service-deploy-cfn-role"
-    ],
-    "live_effect": "beta-service-deploy-role is consumerless once Service's deploy job retired: its only trust is the AnyWear-Service service-artifacts/beta OIDC subject and no workflow assumes it. beta-service-deploy-cfn-role is still named as the live AnyWearRuntimeStack-beta CloudFormation execution role (RoleARN), so it is not inert; the first executed Runtime update after this issue rebinds the stack to cdk-hnb659fds-cfn-exec-role-650880818323-ap-east-1, and the role deletion must follow that rebind.",
-    "publication_verified": false,
-    "deployment_qualified": false
-  }
+  ]
 }
