@@ -69,8 +69,6 @@ export const READ_RESOURCES = Object.freeze({
   'ecr/describe-images': Object.freeze([arn('ecr', 'repository/beta-anywear-service')]),
   'lambda/get-function': TASK_FUNCTIONS,
   'sqs/get-queue-attributes': BASE_QUEUES,
-  'logs/get-log-events': Object.freeze([arn('logs',
-    'log-group:/anywear/beta/one-shot:log-stream:beta-anywear-lifecycle/OneShot/probe')]),
   // DescribeLogGroups is account-level: its list form has no resource type, so a
   // log-group/log-stream ARN (even an empty-name form) is an implicit deny.
   'logs/describe-log-groups': Object.freeze(['*']),
@@ -90,6 +88,12 @@ export const SIMULATION_SKIPS = Object.freeze({
   'ecs/register-task-definition': 'A mutation, not a read; the preflight runs before the task script and must not register a task definition.',
   'ecs/run-task': 'A mutation, not a read; the preflight runs before the task script and must not start a task.',
   'logs/put-retention-policy': 'A mutation, not a read; it is the deployment step the preflight protects.',
+  // The IAM policy simulator cannot evaluate CloudWatch Logs log-stream ARNs:
+  // every `log-group:...:log-stream:...` form returns implicitDeny even under a
+  // session policy that grants `logs:GetLogEvents` on `*` (form probes 2026-10-22).
+  // The reviewed runtime grant is on log-stream ARNs and the operation's own read
+  // exercises it, so the plan does not simulate this pair.
+  'logs/get-log-events': 'CloudWatch Logs log-stream ARNs cannot be evaluated by the IAM policy simulator: every `log-group:...:log-stream:...` form returns implicitDeny even under the session policy that grants `logs:GetLogEvents` on `*` (form probes 2026-10-22). The reviewed runtime grant is on `beta-anywear-<family>/OneShot/*` log-stream ARNs, so the plan cannot prove this read by simulation; the operation\'s own read is the check.',
 });
 
 // One reviewed context for every simulation. The conditions in the deployment
