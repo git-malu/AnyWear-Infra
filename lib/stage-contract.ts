@@ -173,7 +173,7 @@ export class StageContract extends Construct {
     }
     // The versioned `@git-malu/stage-contracts` package is the single source of
     // the published surface. Drift here is a stage-contract change that must
-    // update the package (and the Service consumer pin), never a local edit.
+    // update the package (and the package's declared surface), never a local edit.
     const expectedNames = cleanupTaskRole ? STAGE_CONTRACT_READ_PARAMETERS : STAGE_CONTRACT_PARAMETERS;
     const publishedNames = [...publishedKinds.keys()].sort();
     const unexpectedName = publishedNames.find((name, index) => name !== expectedNames[index]);
