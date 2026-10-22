@@ -32,7 +32,6 @@
       "cloudformation:DescribeStacks",
       "cloudformation:GetTemplate",
       "cloudformation:ListStackResources",
-      "cloudtrail:LookupEvents",
       "cloudwatch:GetMetricStatistics",
       "ecr:BatchGetImage",
       "ecr:DescribeImages",

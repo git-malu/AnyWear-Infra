@@ -303,27 +303,20 @@ describe('IaC policy lint (#165)', () => {
     for (const reason of Object.values(skips)) expect(String(reason).length).toBeGreaterThan(20);
   });
 
-  it('keeps the CloudTrail observed-layer read region-scoped on the runtime role only', () => {
-    const cloudtrail = statements.filter((statement) => statement.actions.includes('cloudtrail:LookupEvents'));
-    expect(cloudtrail).toHaveLength(1);
-    expect(cloudtrail[0].principal).toBe('beta-infra-runtime-role');
-    expect(cloudtrail[0].resources).toEqual(['*']);
-    expect(cloudtrail[0].condition).toEqual({ StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } });
-  });
-
-  it('pins the lint/simulator/observed non-coverage list', () => {
+  it('pins the lint/simulator/narrowing non-coverage list', () => {
     const list = JSON.parse(readFileSync(path.resolve(__dirname, '..', 'scripts', 'authorization-non-coverage.json'), 'utf8'));
     expect(list.record_type).toBe('anywear_authorization_non_coverage');
     const ids = list.entries.map((entry: any) => entry.id);
     expect(ids).toEqual(['lint-scope', 'lint-rules', 'bootstrap-role', 'runtime-stack', 'simulator-approximation',
-      'simulator-scope', 'preflight-reads', 'simulate-disclosure', 'observed-scope']);
+      'simulator-scope', 'preflight-reads', 'simulate-disclosure', 'narrowing']);
     for (const entry of list.entries) {
-      expect(['lint', 'simulator', 'observed']).toContain(entry.layer);
+      expect(['lint', 'simulator', 'narrowing']).toContain(entry.layer);
       expect(entry.summary.length).toBeGreaterThan(20);
       expect(entry.consequence.length).toBeGreaterThan(20);
     }
     expect(list.entries.some((entry: any) => /AdministratorAccess/.test(entry.summary))).toBe(true);
     expect(list.entries.some((entry: any) => /release slice|RuntimeStack|release-slice/i.test(entry.summary))).toBe(true);
     expect(list.entries.some((entry: any) => /disclos/i.test(`${entry.summary} ${entry.consequence}`))).toBe(true);
+    expect(list.entries.find((entry: any) => entry.id === 'narrowing')?.layer).toBe('narrowing');
   });
 });

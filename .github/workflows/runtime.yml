@@ -133,16 +133,8 @@ jobs:
           name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
           path: deployment-evidence
         continue-on-error: true
-      - name: Download the observed authorization surface when the credential job produced one
-        uses: actions/download-artifact@v4
-        with:
-          name: infra-permissions-observed-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence
-        continue-on-error: true
       - name: Validate, checksum and preserve the operation and deployment records
         run: node scripts/record-deployment.mjs
-      - name: Fail on an observed action the declared authorization surface does not contain
-        run: node scripts/check-authorization-observed.mjs
       - name: Preserve the validated records and their checksums
         uses: actions/upload-artifact@v4
         with:

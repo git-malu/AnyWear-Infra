@@ -89,10 +89,6 @@ export const reads = {
   'ecr/describe-images': 'ecr:DescribeImages', 'ecr/batch-get-image': 'ecr:BatchGetImage',
   'lambda/get-function': 'lambda:GetFunction', 'sqs/get-queue-attributes': 'sqs:GetQueueAttributes',
   'logs/get-log-events': 'logs:GetLogEvents', 'logs/describe-log-groups': 'logs:DescribeLogGroups',
-  // The observed layer (#165) reads CloudTrail for the run window under the same
-  // restricted runtime session; it is a read, never a mutation, and is scoped to
-  // the account's event history by the API.
-  'cloudtrail/lookup-events': 'cloudtrail:LookupEvents',
   // The base role may deny this legacy fallback; this session never adds grants.
   'cloudfront/get-distribution': 'cloudfront:GetDistribution',
 };
