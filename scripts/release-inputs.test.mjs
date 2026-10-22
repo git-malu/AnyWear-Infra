@@ -22,7 +22,7 @@ import { parseJson, sha256 } from './json-contract.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 const serviceCommit = '1'.repeat(40);
 const releaseTag = `service-artifacts-${serviceCommit}`;
-const releaseOperations = ['deploy-platform', 'restore-release'];
+const releaseOperations = ['deploy-platform', 'deploy-runtime', 'restore-release'];
 const selectedDirectory = path.join(root, '.service-artifacts', 'selected');
 const otherOperations = ['deploy-foundation', 'deploy-billing', 'migrate', 'admission-status', 'add-testers',
   'set-testers', 'open-admission', 'close-admission', 'observe', 'state', 'verify', 'deploy-workload'];

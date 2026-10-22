@@ -172,7 +172,7 @@ describe('IaC policy lint (#165)', () => {
       expect(matches.every((match) => match.reason.length > 20)).toBe(true);
       reviewed += 1;
     }
-    expect(reviewed).toBeGreaterThan(40);
+    expect(reviewed).toBeGreaterThan(25);
     // Suppressions stay honest: each one is exercised by a statement.
     for (const suppression of SUPPRESSIONS) {
       expect({ reason: suppression.reason,

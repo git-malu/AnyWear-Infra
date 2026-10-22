@@ -89,5 +89,181 @@
     ],
     "fallback": "If the allocation is missing, deploy-egress without the parameter creates a new EIP and the provider probe must be repeated.",
     "baseline_bytes": "No baseline bytes change: the synth matrix does not cover the egress-only Egress stack; the Egress Jest synth tests are the identity assertions."
+  },
+  "runtime_identity": {
+    "record_type": "anywear_service_runtime_template_identity",
+    "issue": 195,
+    "repository": "git-malu/AnyWear-Service",
+    "source_sha": "4f2ba555ec293771551c0d23266af7038d95383e",
+    "moved_from": "AnyWear-Service/infra",
+    "moved_at": "2026-10-22",
+    "cdk_context_sha256": "0ad07319922bdca4b6540085c19a18c65a0789113cfae2f4fca6bbf64e6e3f09",
+    "cdk_version": "2.272.0",
+    "aws_account": "650880818323",
+    "application_region": "ap-east-1",
+    "identity_phase": "legacy",
+    "templates": {
+      "beta-active/AnyWearRuntimeStack-beta.template.json": "4e62ddf0efd630134e81bb71f30937f9ef959e6926a033753da1f37af2630ff9",
+      "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
+    },
+    "identity_phases": {
+      "legacy": "454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37",
+      "roles-added": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
+      "retired": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
+    },
+    "phase_hashes": {
+      "beta": {
+        "legacy": "454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37",
+        "roles-added": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
+        "retired": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
+      },
+      "prod": {
+        "legacy": "d9a990fc4882aab32471ac5fbcc6a91178fabb3e55d38b4c52b73e5c3a46309b",
+        "roles-added": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55",
+        "retired": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55"
+      }
+    },
+    "normalisation": [
+      "remove every resource Metadata key (only aws:cdk:path, aws:asset:path, aws:asset:property and aws:asset:is-bundled may be present)",
+      "drop the Resources/CDKMetadata resource",
+      "drop the Conditions/CDKMetadataAvailable condition",
+      "sha256 of RFC 8785-style canonical JSON"
+    ],
+    "stage_parameters": {
+      "beta": [
+        "api_base_url",
+        "api_security_group_id",
+        "auto_tagging_dlq_name",
+        "auto_tagging_dlq_url",
+        "auto_tagging_queue_arn",
+        "auto_tagging_queue_name",
+        "auto_tagging_queue_url",
+        "cognito_client_id",
+        "cognito_user_pool_id",
+        "database_host",
+        "database_port",
+        "database_secret_arn",
+        "ecs_cluster_arn",
+        "ecs_cluster_name",
+        "load_balancer_security_group_id",
+        "one_shot_execution_role_arn",
+        "one_shot_log_group_arn",
+        "one_shot_log_group_name",
+        "one_shot_security_group_id",
+        "operations_topic_arn",
+        "private_subnet_ids",
+        "public_subnet_ids",
+        "s3_bucket_arn",
+        "s3_bucket_name",
+        "service_repository_arn",
+        "service_repository_name",
+        "service_repository_uri",
+        "verification_task_role_arn",
+        "vpc_id",
+        "vto_dlq_name",
+        "vto_dlq_url",
+        "vto_queue_arn",
+        "vto_queue_name",
+        "vto_queue_url",
+        "worker_security_group_id"
+      ],
+      "prod": [
+        "api_base_url",
+        "api_security_group_id",
+        "auto_tagging_dlq_name",
+        "auto_tagging_dlq_url",
+        "auto_tagging_queue_arn",
+        "auto_tagging_queue_name",
+        "auto_tagging_queue_url",
+        "cognito_client_id",
+        "cognito_user_pool_id",
+        "database_host",
+        "database_port",
+        "database_secret_arn",
+        "ecs_cluster_arn",
+        "ecs_cluster_name",
+        "load_balancer_security_group_id",
+        "one_shot_execution_role_arn",
+        "one_shot_log_group_arn",
+        "one_shot_log_group_name",
+        "one_shot_security_group_id",
+        "private_subnet_ids",
+        "public_subnet_ids",
+        "s3_bucket_arn",
+        "s3_bucket_name",
+        "service_repository_arn",
+        "service_repository_name",
+        "service_repository_uri",
+        "verification_task_role_arn",
+        "vpc_id",
+        "vto_dlq_name",
+        "vto_dlq_url",
+        "vto_queue_arn",
+        "vto_queue_name",
+        "vto_queue_url",
+        "worker_security_group_id"
+      ]
+    },
+    "source_files": {
+      "infra/lib/runtime-stack.ts": "2ebc8469d6bed0fd100a01b3d51bb5dc94b6931a",
+      "infra/lib/compute-runtime.ts": "dff2516fa521c5390c3081200025a7ab718967dc",
+      "infra/lib/cleanup-operation.ts": "8fc68752c1f2169d7c3f6f603dbbf9eaca7f4bd5",
+      "infra/lib/platform-inputs.ts": "8d1a5b75662ba60a8d803491d6dfe4c64793ae76",
+      "infra/scripts/bake-gate.mjs": "3e0d41036ae1eae9218eaf90277750ae2e1ef57c",
+      "infra/test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json": "3ebf10b4ba9937450c095772abd207ea25f31ad5",
+      "infra/test/baselines/prod-active/AnyWearRuntimeStack-prod.template.json": "2a3c8c6a8a52f77dc7f6ab5b57c88c80c98b7a95"
+    },
+    "source_file_hashes": "Git blob hashes at 4f2ba555ec293771551c0d23266af7038d95383e: the moved file was compared with `git rev-parse 4f2ba555:infra/<path>` before the stack synthesiser changed. runtime-stack.ts changed only its synthesiser (own-credentials -> standard cdk-hnb659fds), so the moved bytes prove the source identity.",
+    "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e. Only the stack synthesiser changed: the retired own-credentials synthesiser was replaced by the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes (the phase hashes and the template comparison prove it). The legacy/roles-added/retired phase hashes are measured from this moved source, which is the pre-change source, not copied from the live stack.",
+    "live_verification": {
+      "recorded_at": "2026-10-22",
+      "live_stack": "AnyWearRuntimeStack-beta",
+      "live_status": "UPDATE_COMPLETE",
+      "live_original_normalised_sha256": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
+      "note": "Analysis recorded the live roles-added phase at the same normalised hash; the operation asserts the synthesized hash before mutation and the deployed Original hash after deploy."
+    },
+    "alarm_extension": {
+      "issue": 162,
+      "recorded_at": "2026-10-18",
+      "source_branch": "issue/162-bake-gate",
+      "added_resources": [
+        "ComputeRuntimeAlb5xxAlarm3A2E5E3F",
+        "ComputeRuntimeApiP95LatencyAlarm4C92F930",
+        "ComputeRuntimeEcsRunningNotDesiredAlarm547C84B2",
+        "ComputeRuntimeOutboxOldestAgeAlarm3F5E8F76",
+        "ComputeRuntimeWorkerOutboxMetricFilterD1E82153"
+      ],
+      "note": "The four #162 bake alarms and the worker outbox metric filter are part of the recorded Runtime baseline; they were the intentional additions to the post-#158 SSM form."
+    },
+    "scaling_signal_fix": {
+      "issue": 149,
+      "recorded_at": "2026-10-19",
+      "source_branch": "issue/149-queue-drain-scaling",
+      "removed_resources": [
+        "ComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingLowerPolicy91A7F542",
+        "ComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingLowerAlarm2A871303"
+      ],
+      "added_resources": [
+        "ComputeRuntimeWorkerServiceTaskCountTargetQueueDrainScalingLowerPolicyC435097A",
+        "ComputeRuntimeWorkerServiceTaskCountTargetQueueDrainScalingLowerAlarm56B97485"
+      ],
+      "metrics_expression": "vto_visible + vto_inflight + tagging_visible + tagging_inflight",
+      "evaluation_periods": 2,
+      "cooldown_seconds": 60,
+      "upper_policy": "ComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingUpperPolicy16579F51",
+      "upper_alarm": "ComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingUpperAlarm69C122A0"
+    },
+    "protection_extension": {
+      "issue": 170,
+      "recorded_at": "2026-10-21",
+      "source_branch": "issue/170-task-protection",
+      "changed_policy_logical_id": "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+      "actions": [
+        "ecs:GetTaskProtection",
+        "ecs:UpdateTaskProtection"
+      ],
+      "resource_scope": "arn:aws:ecs:<region>:<account>:task/<cluster-name>/*",
+      "note": "The WorkerTaskRole's default policy gains exactly one statement so the ECS container agent can set, refresh and clear task scale-in protection for the worker's own task. The resource is the cluster's task ARNs, built with Stack.formatArn from props.cluster.clusterName (an SSM-backed token on this base) rather than '*'; the worker task role is the only role that carries either action, and no other resource changes."
+    }
   }
 }

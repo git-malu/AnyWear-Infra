@@ -1,7 +1,8 @@
 // Type declarations for @git-malu/stage-contracts.
 //
 // The package is plain ESM JavaScript; these declarations are the consumer-facing
-// contract. The Service deployment record is v4 (the v3 core plus the required
+// contract. The Service deployment record is v5, produced by AnyWear-Infra's
+// `mutate.yml` `deploy-runtime` operation (the v3 core plus the required
 // 600-second bake gate); Infra's `anywear_infra_deployment` stays v3 and never
 // produces a gate. No build step and no runtime dependencies.
 
@@ -53,7 +54,7 @@ export declare function stageContractSchemaHash(rows: readonly StageInputRow[]):
 /** The repository that owns the shared infrastructure, Foundation and stage base. */
 export declare const INFRA_REPOSITORY: 'git-malu/AnyWear-Infra';
 
-/** The repository that owns the release slice and produces the Service record. */
+/** The repository that owns the release source; since #195 it produces no record. */
 export declare const SERVICE_REPOSITORY: 'git-malu/AnyWear-Service';
 
 /** `platformStackName('beta')` -> `AnyWearPlatformStack-beta`. */
@@ -62,7 +63,7 @@ export declare function platformStackName(stage: string): string;
 /** `runtimeStackName('beta')` -> `AnyWearRuntimeStack-beta`. */
 export declare function runtimeStackName(stage: string): string;
 
-/** The Service release slice's one stack and producer workflow. */
+/** The release slice's one stack and the Infra workflow that deploys it. */
 export interface ServiceRuntimeStack {
   readonly name: string;
   readonly region: string;
@@ -70,6 +71,19 @@ export interface ServiceRuntimeStack {
 }
 
 export declare const SERVICE_RUNTIME_STACK: ServiceRuntimeStack;
+
+/** The declared normalisation of a deployed template, as human-readable rules. */
+export declare const DEPLOYED_TEMPLATE_NORMALISATION: readonly string[];
+
+/**
+ * Return a normalised copy of a deployed or synthesized CloudFormation template:
+ * resource `Metadata` removed, the `CDKMetadata` resource and the
+ * `CDKMetadataAvailable` condition dropped. The input is not mutated.
+ */
+export declare function normaliseDeployedTemplate(template: unknown): Record<string, unknown>;
+
+/** The canonical sha256 of a deployed template after {@link normaliseDeployedTemplate}. */
+export declare function canonicalDeployedTemplateHash(template: unknown): string;
 
 /** The exact top-level members of a v3 deployment record core (Infra owns this shape). */
 export declare const DEPLOYMENT_RECORD_MEMBERS: readonly string[];
@@ -83,7 +97,7 @@ export declare const DEPLOYMENT_STACK_FIELDS: readonly string[];
 /** The exact `inputs[]` fields of a v3 deployment record. */
 export declare const DEPLOYMENT_INPUT_FIELDS: readonly string[];
 
-/** The exact `observed` fields of a v4 Service deployment record. */
+/** The exact `observed` fields of a v5 Service deployment record. */
 export declare const SERVICE_OBSERVED_FIELDS: readonly string[];
 
 /** One ECS service identity recorded in the Service observation. */
@@ -97,7 +111,7 @@ export interface ServiceEcsIdentity {
 /** The exact fields of one ECS service identity in the Service observation. */
 export declare const SERVICE_ECS_IDENTITY_FIELDS: readonly string[];
 
-/** The required `observed` tuple of a v4 Service deployment record. */
+/** The required `observed` tuple of a v5 Service deployment record. */
 export interface ServiceObserved {
   readonly service_sha: string;
   readonly image_digest: string;
@@ -107,7 +121,7 @@ export interface ServiceObserved {
   readonly endpoints: { readonly api: string };
 }
 
-/** The exact top-level members of the v4 Service deployment record. */
+/** The exact top-level members of the v5 Service deployment record. */
 export declare const SERVICE_DEPLOYMENT_RECORD_MEMBERS: readonly string[];
 
 /** The exact fields of the required `gate` block. */
@@ -219,9 +233,9 @@ export interface DeploymentGate {
 /** Validate one passed deployment gate block for a stage. */
 export declare function validateDeploymentGate(gate: unknown, stage: string): DeploymentGate;
 
-/** The complete v4 `anywear_service_deployment` schema surface. */
+/** The complete v5 `anywear_service_deployment` schema surface. */
 export interface ServiceDeploymentRecordSchema {
-  readonly schema_version: 4;
+  readonly schema_version: 5;
   readonly record_type: 'anywear_service_deployment';
   readonly members: readonly string[];
   readonly producer: readonly string[];
@@ -231,6 +245,8 @@ export interface ServiceDeploymentRecordSchema {
   readonly gate: readonly string[];
   readonly signal: readonly string[];
   readonly signals: readonly string[];
+  readonly producer_repository: string;
+  readonly template_normalisation: readonly string[];
   readonly stacks: readonly { readonly name: string; readonly region: string }[];
 }
 
@@ -259,7 +275,7 @@ export declare function stableTaskDefinition(definition: unknown): StableTaskDef
 export declare function taskDefinitionContentHash(definition: unknown): string;
 
 /**
- * Validate one v4 `anywear_service_deployment` record, including its required
+ * Validate one v5 `anywear_service_deployment` record, including its required
  * `gate` block bound to the observed Service/image. Returns the input record
  * unchanged when it is valid.
  */
@@ -271,24 +287,6 @@ export declare function validateServiceDeploymentRecord<T>(record: T): T;
  */
 export declare function validateServiceStacks<T extends readonly { readonly name: string }[]>(rows: T): T;
 
-/** `serviceDeployRoleName('service')` -> `beta-service-deploy-role`. */
-export declare function serviceDeployRoleName(service: string): string;
-
-/** `serviceDeployCfnRoleName('service')` -> `beta-service-deploy-cfn-role`. */
-export declare function serviceDeployCfnRoleName(service: string): string;
-
-/** Options for {@link serviceTrustSubject}. */
-export interface ServiceTrustSubjectOptions {
-  /** The repository name only, for example `AnyWear-Service`. */
-  readonly repository: string;
-  /** GitHub's immutable repository id. */
-  readonly repositoryId: number;
-  /** The GitHub environment name, for example `beta`. */
-  readonly environment: string;
-}
-
-/**
- * Build the immutable GitHub OIDC subject for a service environment:
- * `repo:git-malu@11473072/<repository>@<repositoryId>:environment:<environment>`.
- */
-export declare function serviceTrustSubject(options: ServiceTrustSubjectOptions): string;
+// Issue #195 retired the Foundation per-service deploy roles. The Runtime stack is
+// deployed by the existing `beta-infra-deploy-role` through the standard CDK
+// bootstrap path, so the role-naming and OIDC-subject helpers left with them.

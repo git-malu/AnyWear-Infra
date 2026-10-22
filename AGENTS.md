@@ -3,9 +3,9 @@
 This repository owns shared AWS infrastructure and environment operations after
 the verified #54 cutover. It owns the account-wide Foundation and Billing stacks
 and the Beta stage's persistent `Base` stack (`AnyWearPlatformStack-beta`), plus
-the disposable `Egress` stack (`AnyWearEgressStack-beta`). AnyWear-Service owns
+the disposable `Egress` stack (`AnyWearEgressStack-beta`). Infra also owns
 the release slice (`AnyWearRuntimeStack-beta`, formerly `AnyWearWorkloadStack-beta`),
-its CDK source and its deploy chain; Infra no longer synthesizes, deploys or
+its CDK source and its deploy chain; no other repository synthesizes, deploys or
 recovers that stack. AnyWear-Service
 remains the application, migration, verification and immutable artifact
 publisher. Earlier Service-side bootstrap authority is historical evidence only
@@ -116,8 +116,8 @@ and must not be relabeled as an Infra-produced deployment.
   bootstrap is a separately assigned operator allocation and needs no Service
   artifact. Never use `cdk bootstrap`, broader trust, shared-role fallback or new
   permissions to make a blocked bootstrap/consumer operation succeed.
-- After #158 step C the only path that deploys the Service-owned release slice is
-  AnyWear-Service's release chain, and that capability is installed. Issue #166
+- Since #195 the only path that deploys the release slice is this repository's
+  `deploy-runtime` operation; AnyWear-Service carries no CDK source or deploy chain. Issue #166
   renamed that slice to `AnyWearRuntimeStack-beta`; the historical runs below
   still refer to it by its then-name `AnyWearWorkloadStack-beta`. The deferred
   Foundation round has happened, so its two Service deploy roles from step A exist
@@ -139,7 +139,7 @@ and must not be relabeled as an Infra-produced deployment.
   effective bootstrap/inline/managed policies, including unmanaged
   `AnyWearBetaPipelineBaseline`, before retirement; synth alone cannot prove IAM.
 - The Beta stage base is published as SSM parameters under `/anywear/beta/` so the
-  release slice can be deployed from a checkout that holds no Infra source. Two
+  release slice used to be deployable from a checkout holding no Infra source;
   of those values are reviewed constants, not Platform resources: the VLM config
   secret ARN and the AWS-managed CloudFront origin-facing prefix list id. Change
   the constants only in a reviewed diff; the slice's own stack parameters are

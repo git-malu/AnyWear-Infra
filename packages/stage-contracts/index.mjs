@@ -1,10 +1,12 @@
 // @git-malu/stage-contracts
 //
 // The versioned, dependency-free source of the AnyWear Beta stage contract:
-// the SSM parameter surface the stage base publishes, the stack identities and
-// Foundation service-role naming, and the pure v4 `anywear_service_deployment`
-// record validators. AnyWear-Infra consumes it directly; AnyWear-Service pins a
-// packed tarball. Nothing here reads AWS, CloudFormation or the filesystem.
+// the SSM parameter surface the stage base publishes, the stack identities, the
+// deployed-template normalisation, and the pure v5 `anywear_service_deployment`
+// record validators. AnyWear-Infra consumes it directly from
+// `file:packages/stage-contracts`; since #195 it is also the record producer, so
+// no other repository pins a packed tarball. Nothing here reads AWS,
+// CloudFormation or the filesystem.
 //
 // The stage reading itself belongs to the consumer: `stageParameters()` returns
 // the typed definitions, and a CDK app creates its own
@@ -208,16 +210,83 @@ export function runtimeStackName(stage) {
   return `AnyWearRuntimeStack-${stage}`;
 }
 
-// The Service release chain's one stack and its producer workflow. The record
-// schema and validators below are the generic v4 Service producer contract.
+// The release slice's one stack and the workflow that now deploys it. Since #195
+// the producer is AnyWear-Infra's single mutation entry (`deploy-runtime`); the
+// v5 record schema and validators below pin that producer.
 export const SERVICE_RUNTIME_STACK = Object.freeze({
   name: runtimeStackName(STAGE_CONTRACT_STAGE),
   region: 'ap-east-1',
-  workflow_path: '.github/workflows/service-artifacts.yml',
+  workflow_path: '.github/workflows/mutate.yml',
 });
 
 // ---------------------------------------------------------------------------
-// v3 deployment record core (v4 Service record adds the bake gate)
+// Deployed-template normalisation (Issue #195)
+//
+// CloudFormation's `Original` template and a CDK synthesis differ only in
+// declared diagnostics: per-resource CDK `Metadata`, the `CDKMetadata` resource
+// and the `CDKMetadataAvailable` condition. The deployment record's
+// `template_sha256` is the canonical hash of the deployed template *after* this
+// declaration, so it is directly comparable with the recorded per-phase
+// baseline. The normalisation is exactly what `compare-live-foundation.mjs`
+// already applies, and both the producer and any verifier call it here so they
+// cannot drift.
+
+export const DEPLOYED_TEMPLATE_NORMALISATION = Object.freeze([
+  'remove every resource Metadata key',
+  'drop the Resources/CDKMetadata resource',
+  'drop the Conditions/CDKMetadataAvailable condition',
+  'sha256 of RFC 8785-style canonical JSON',
+]);
+
+// The only resource metadata keys CDK emits. Anything else is an unreviewed
+// difference and fails the normalisation before a hash is recorded.
+const CDK_RESOURCE_METADATA_KEYS = Object.freeze(['aws:cdk:path', 'aws:asset:path', 'aws:asset:property', 'aws:asset:is-bundled']);
+
+/**
+ * Return a normalised copy of a deployed or synthesized CloudFormation template.
+ *
+ * The input is never mutated. Resource `Metadata` is removed (only the declared
+ * CDK keys may be present), the `CDKMetadata` resource and the
+ * `CDKMetadataAvailable` condition are dropped, and an empty `Conditions` map is
+ * removed. Every other member is preserved exactly.
+ */
+export function normaliseDeployedTemplate(template) {
+  if (!template || typeof template !== 'object' || Array.isArray(template)) {
+    throw new Error('Invalid deployed template');
+  }
+  const result = structuredClone(template);
+  for (const [id, resource] of Object.entries(result.Resources ?? {})) {
+    if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
+      throw new Error(`Invalid deployed template resource ${id}`);
+    }
+    for (const key of Object.keys(resource.Metadata ?? {})) {
+      if (!CDK_RESOURCE_METADATA_KEYS.includes(key)) {
+        throw new Error(`Unreviewed deployed template metadata ${id}/${key}`);
+      }
+    }
+    delete resource.Metadata;
+    if (id === 'CDKMetadata') {
+      if (resource.Type !== 'AWS::CDK::Metadata') throw new Error('Invalid CDKMetadata resource identity');
+      delete result.Resources[id];
+      if (resource.Condition !== undefined && resource.Condition !== 'CDKMetadataAvailable') {
+        throw new Error('Invalid CDKMetadata resource condition');
+      }
+    }
+  }
+  if (result.Conditions?.CDKMetadataAvailable !== undefined) {
+    delete result.Conditions.CDKMetadataAvailable;
+    if (!Object.keys(result.Conditions).length) delete result.Conditions;
+  }
+  return result;
+}
+
+/** The canonical sha256 of a deployed template after the declared normalisation. */
+export function canonicalDeployedTemplateHash(template) {
+  return contentHash(normaliseDeployedTemplate(template));
+}
+
+// ---------------------------------------------------------------------------
+// v3 deployment record core (the v5 Infra Service record adds the bake gate)
 //
 //   producer  the repository/commit/workflow that produced this record
 //   stacks    every stack this record's producer owns, each with its producer
@@ -226,11 +295,12 @@ export const SERVICE_RUNTIME_STACK = Object.freeze({
 //   observed  the authenticated observation that producer made
 //   schema    a content hash of the consumed stage-contract schema surface
 //
-// Service produces `anywear_service_deployment` for `AnyWearRuntimeStack-beta`
-// only. `validateServiceDeploymentRecord` is the consumer-side validator: a
-// record it accepts is a record another producer can verify without trusting the
-// writer. Infra's `anywear_infra_deployment` keeps the seven-member core below
-// and never produces a gate.
+// AnyWear-Infra produces `anywear_service_deployment` v5 for
+// `AnyWearRuntimeStack-beta` only, from the `deploy-runtime` operation.
+// `validateServiceDeploymentRecord` is the consumer-side validator: a record it
+// accepts is a record another producer can verify without trusting the writer.
+// Infra's `anywear_infra_deployment` keeps the seven-member core below and never
+// produces a gate.
 
 export const DEPLOYMENT_RECORD_MEMBERS = Object.freeze(
   ['schema_version', 'record_type', 'producer', 'stacks', 'inputs', 'observed', 'schema']);
@@ -253,7 +323,7 @@ export const SERVICE_ECS_IDENTITY_FIELDS = Object.freeze(
 //
 // A Service deployment records success only after a bounded 600-second bake read
 // the six named signals live from the deployed state. The gate block is a
-// required top-level member of the v4 `anywear_service_deployment` record; the
+// required top-level member of the v5 `anywear_service_deployment` record; the
 // Infra `anywear_infra_deployment` v3 record keeps the seven-member core and is
 // never forced to produce one.
 //
@@ -672,7 +742,7 @@ export function validateDeploymentGate(gate, stage) {
 export const SERVICE_DEPLOYMENT_RECORD_MEMBERS = Object.freeze([...DEPLOYMENT_RECORD_MEMBERS, 'gate']);
 
 export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
-  schema_version: 4,
+  schema_version: 5,
   record_type: 'anywear_service_deployment',
   members: SERVICE_DEPLOYMENT_RECORD_MEMBERS,
   producer: DEPLOYMENT_PRODUCER_FIELDS,
@@ -682,6 +752,10 @@ export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
   gate: DEPLOYMENT_GATE_FIELDS,
   signal: DEPLOYMENT_GATE_SIGNAL_FIELDS,
   signals: DEPLOYMENT_GATE_SIGNAL_NAMES,
+  // The v5 producer is the Infra `deploy-runtime` operation; `template_sha256`
+  // is the canonical deployed template hash after the declared normalisation.
+  producer_repository: INFRA_REPOSITORY,
+  template_normalisation: DEPLOYED_TEMPLATE_NORMALISATION,
   stacks: Object.freeze([Object.freeze({
     name: SERVICE_RUNTIME_STACK.name,
     region: SERVICE_RUNTIME_STACK.region,
@@ -690,7 +764,7 @@ export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
 
 function validateServiceProducer(producer) {
   exact(producer, DEPLOYMENT_PRODUCER_FIELDS, 'deployment producer');
-  if (producer.repository !== SERVICE_REPOSITORY) throw new Error('Unexpected deployment producer repository');
+  if (producer.repository !== INFRA_REPOSITORY) throw new Error('Unexpected deployment producer repository');
   if (!producer.workflow_path?.startsWith('.github/workflows/')
     || producer.workflow_ref !== `${producer.repository}/${producer.workflow_path}@refs/heads/main`) throw new Error('Unexpected deployment workflow');
   if (producer.workflow_path !== SERVICE_RUNTIME_STACK.workflow_path) throw new Error('Unexpected deployment workflow path');
@@ -778,12 +852,13 @@ function validateServiceRecordBase(record) {
 }
 
 /**
- * Validate one v4 `anywear_service_deployment` record.
+ * Validate one v5 `anywear_service_deployment` record.
  *
  * Pure: no AWS, network or filesystem access. The record lists exactly the
- * Service producer's stack (`AnyWearRuntimeStack-beta`), the stage-contract SSM
- * inputs the deploy read, the authenticated Runtime observation, and the passed
+ * producer's stack (`AnyWearRuntimeStack-beta`), the stage-contract SSM inputs
+ * the deploy read, the authenticated Runtime observation, and the passed
  * 600-second six-signal bake gate bound to the same `service_sha`/`image_digest`.
+ * A v4 or earlier record is a historical shape, not a direct-verification input.
  */
 export function validateServiceDeploymentRecord(record) {
   validateServiceRecordBase(record);
@@ -824,43 +899,8 @@ export function taskDefinitionContentHash(definition) {
   return contentHash(stableTaskDefinition(definition));
 }
 
-// ---------------------------------------------------------------------------
-// Foundation service-role naming and identity
-//
-// The Foundation stack creates one GitHub OIDC deploy role and one
-// CloudFormation execution role per service. The stage prefix is the Beta stage
-// contract's stage; the service slug names the owning repository's service.
-
-const GITHUB_OWNER = 'git-malu';
-const GITHUB_OWNER_ID = 11473072;
-const SERVICE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const REPOSITORY_NAME = /^[A-Za-z0-9._-]+$/;
-const ENVIRONMENT = /^[a-z][a-z0-9-]*$/;
-
-function requireServiceSlug(service) {
-  if (typeof service !== 'string' || !SERVICE_SLUG.test(service)) throw new Error('Invalid service name');
-  return service;
-}
-
-/** `serviceDeployRoleName('service')` -> `beta-service-deploy-role`. */
-export function serviceDeployRoleName(service) {
-  return `${STAGE_CONTRACT_STAGE}-${requireServiceSlug(service)}-deploy-role`;
-}
-
-/** `serviceDeployCfnRoleName('service')` -> `beta-service-deploy-cfn-role`. */
-export function serviceDeployCfnRoleName(service) {
-  return `${STAGE_CONTRACT_STAGE}-${requireServiceSlug(service)}-deploy-cfn-role`;
-}
-
-/**
- * The immutable GitHub OIDC subject for a service repository environment:
- * `repo:git-malu@11473072/<repository>@<repositoryId>:environment:<environment>`.
- *
- * `repository` is the repository name only (`AnyWear-Service`), not owner/name.
- */
-export function serviceTrustSubject({ repository, repositoryId, environment } = {}) {
-  if (typeof repository !== 'string' || !REPOSITORY_NAME.test(repository)) throw new Error('Invalid service repository');
-  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) throw new Error('Invalid service repository id');
-  if (typeof environment !== 'string' || !ENVIRONMENT.test(environment)) throw new Error('Invalid service environment');
-  return `repo:${GITHUB_OWNER}@${GITHUB_OWNER_ID}/${repository}@${repositoryId}:environment:${environment}`;
-}
+// Issue #195 retired the Foundation per-service deploy roles: the Service-role
+// naming helpers (`serviceDeployRoleName`, `serviceDeployCfnRoleName`,
+// `serviceTrustSubject`) left this package with them. The Runtime stack is now
+// deployed by the existing `beta-infra-deploy-role` through the standard CDK
+// bootstrap path, so there is no second service-role naming surface to keep.

@@ -102,23 +102,27 @@ export function recoveryFailureMessage(violations, { stage, stackName }) {
 // re-recorded baseline carries it.
 export const TEST_API_ORIGIN_DOMAIN_NAME = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
 
-export function synthStage({ repository = repositoryRoot, directory, stage, apiOriginDomainName, inputs } = {}) {
+export function synthStage({ repository = repositoryRoot, directory, stage, apiOriginDomainName, inputs, deployScope = 'application' } = {}) {
   assert.ok(directory, 'Synthesis output directory is required');
   assert.ok(['dev', 'beta', 'prod'].includes(stage), `Unknown stage: ${stage}`);
+  assert.ok(['application', 'foundation', 'billing', 'egress', 'runtime'].includes(deployScope),
+    `Unknown deploy scope: ${deployScope}`);
   mkdirSync(directory, { recursive: true });
   const config = JSON.parse(readFileSync(path.join(repository, 'cdk.json'), 'utf8'));
-  const context = { ...config.context, stage };
+  const context = { ...config.context, stage, deployScope };
   if (stage === 'beta') context.apiOriginDomainName = apiOriginDomainName ?? TEST_API_ORIGIN_DOMAIN_NAME;
   if (inputs) {
     assert.ok(['legacy', 'roles-added', 'retired'].includes(inputs.identityPhase), 'Explicit identity phase required');
     assert.equal(typeof inputs.ecrImageRetention, 'boolean', 'Explicit image retention required');
     assert.ok(['cdk', 'external'].includes(inputs.legacyRoleSource), 'Explicit legacy role source required');
-    assert.ok(inputs.artifactDirectory, 'Artifact directory required');
+    // A Runtime synthesis consumes no Service-built asset, so it needs no
+    // artifact directory; the Base deploy still does.
+    if (deployScope !== 'runtime') assert.ok(inputs.artifactDirectory, 'Artifact directory required');
     Object.assign(context, {
       identityPhase: inputs.identityPhase,
       ecrImageRetention: inputs.ecrImageRetention,
       legacyRoleSource: inputs.legacyRoleSource,
-      artifactDirectory: path.resolve(inputs.artifactDirectory),
+      ...(deployScope !== 'runtime' ? { artifactDirectory: path.resolve(inputs.artifactDirectory) } : {}),
     });
   }
   execFileSync(process.execPath, ['--require', path.join(repository, 'node_modules/ts-node/register'),
@@ -126,6 +130,10 @@ export function synthStage({ repository = repositoryRoot, directory, stage, apiO
     CDK_CONTEXT_JSON: JSON.stringify(context), CDK_OUTDIR: directory,
     CDK_DEFAULT_ACCOUNT: '650880818323', CDK_DEFAULT_REGION: 'ap-east-1', BILLING_REGION: 'us-east-1' } });
   const files = readdirSync(directory).filter((file) => file.endsWith('.template.json'));
-  assert.ok(files.includes('AnyWearFoundationStack.template.json'), `Synth failed for ${directory}`);
+  // `runtime` synthesizes only the release slice; every other scope includes the
+  // account-wide Foundation stack.
+  const required = deployScope === 'runtime'
+    ? `AnyWearRuntimeStack-${stage}.template.json` : 'AnyWearFoundationStack.template.json';
+  assert.ok(files.includes(required), `Synth failed for ${directory}`);
   return files;
 }

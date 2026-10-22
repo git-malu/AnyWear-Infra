@@ -1,15 +1,15 @@
 # `@git-malu/stage-contracts`
 
 Versioned, dependency-free source of the AnyWear Beta stage contract, the
-Base/Egress/Runtime stack identities shared with AnyWear-Service, the v4
-`anywear_service_deployment` record and bake-gate validators, and the Foundation
-service-role naming helpers.
+Base/Egress/Runtime stack identities, the deployed-template normalisation, and
+the v5 `anywear_service_deployment` record and bake-gate validators that
+AnyWear-Infra's `deploy-runtime` operation produces.
 
 | | |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.3.0` |
-| Tag | `stage-contracts-v0.3.0` (a post-merge publication step; `0.1.0` is the last tagged release) |
+| Version | `0.4.0` |
+| Tag | `stage-contracts-v0.4.0` (a post-merge publication step; `0.1.0` is the last tagged release) |
 | Registry | GitHub Packages (`https://npm.pkg.github.com`) |
 | Runtime | Node.js 24+, plain ESM (`.mjs`) with `.d.ts`; no build step, no runtime dependency |
 
@@ -32,18 +32,32 @@ service-role naming helpers.
   `platformStackName(stage)`, `runtimeStackName(stage)`,
   `SERVICE_RUNTIME_STACK`, `runtimeStageFromStack(stackName)` and
   `validateServiceStacks(rows)`. The persistent `Base` stack keeps the physical
-  name `AnyWearPlatformStack-<stage>`; the Service-owned release slice is
-  `AnyWearRuntimeStack-<stage>` (0.3.0 renamed it from the retired name).
-- **Service record v4** — `DEPLOYMENT_RECORD_MEMBERS` (the seven-member v3 core
+  name `AnyWearPlatformStack-<stage>`; the release slice is
+  `AnyWearRuntimeStack-<stage>`, deployed since 0.4.0 by Infra's
+  `.github/workflows/mutate.yml`.
+- **Deployed-template normalisation** — `DEPLOYED_TEMPLATE_NORMALISATION`,
+  `normaliseDeployedTemplate(template)` and
+  `canonicalDeployedTemplateHash(template)`. The record's
+  `template_sha256` is the canonical hash of the deployed `Original` template
+  after the declared normalisation: every resource `Metadata` key is removed
+  (only the reviewed CDK keys may be present), the `Resources/CDKMetadata`
+  resource and the `Conditions/CDKMetadataAvailable` condition are dropped, and
+  the result is hashed as canonical JSON. The producer and any verifier call the
+  same helper, so a synthesized baseline and a live read-back are directly
+  comparable.
+- **Service record v5** — `DEPLOYMENT_RECORD_MEMBERS` (the seven-member v3 core
   Infra still produces), `SERVICE_DEPLOYMENT_RECORD_MEMBERS` (the same core plus
   the required `gate`), `SERVICE_DEPLOYMENT_RECORD_SCHEMA`, the required
   `SERVICE_OBSERVED_FIELDS` tuple (`service_sha`, `image_digest`,
   `minimum_client_version`, `ecs`, `endpoints`), `SERVICE_ECS_IDENTITY_FIELDS`,
   `stableTaskDefinition`, `taskDefinitionContentHash`,
-  `validateServiceDeploymentRecord`. `minimum_client_version` is a required
-  non-negative safe integer: it is the minimum Client version floor the observed
-  Service enforces, read back from the deployed Service instead of being defaulted
-  by the record producer. All pure: no AWS, network, filesystem or clock.
+  `validateServiceDeploymentRecord`. The producer is
+  `git-malu/AnyWear-Infra`'s `deploy-runtime` operation; v4 and earlier records
+  are historical shapes and are rejected as unknown schemas.
+  `minimum_client_version` is a required non-negative safe integer: it is the
+  minimum Client version floor the observed Service enforces, read back from the
+  deployed Service instead of being defaulted by the record producer. All pure:
+  no AWS, network, filesystem or clock.
 - **Deployment bake gate** — `DEPLOYMENT_GATE_SIGNAL_NAMES` (the six fixed
   names, in order), `DEPLOYMENT_GATE_THRESHOLDS` and
   `DEPLOYMENT_GATE_COMPARISONS` (one stage-free table), `deploymentAlarmNames`
@@ -57,11 +71,11 @@ service-role naming helpers.
   `GetQueueAttributes` (`DEPLOYMENT_SQS_DEPTH_ATTRIBUTES`). The age is not a
   `GetQueueAttributes` attribute; `ApproximateNumberOfMessagesVisible` is not a
   valid attribute name, so neither can appear in the record.
-- **Foundation roles** — `serviceDeployRoleName('service')` →
-  `beta-service-deploy-role`,
-  `serviceDeployCfnRoleName('service')` → `beta-service-deploy-cfn-role`, and
-  `serviceTrustSubject({ repository, repositoryId, environment })` for the
-  immutable GitHub OIDC subject.
+
+Issue #195 removed the Foundation service-role naming helpers
+(`serviceDeployRoleName`, `serviceDeployCfnRoleName`, `serviceTrustSubject`) with
+the two roles they named. The Runtime stack is deployed by the existing
+`beta-infra-deploy-role` through the standard CDK bootstrap path.
 
 The conditional `cleanup_task_role_arn` definition is included in
 `stageParameters()`; a legacy identity phase filters it with
@@ -71,34 +85,32 @@ The conditional `cleanup_task_role_arn` definition is included in
 
 ```sh
 npm test    # node --test test/*.test.mjs
-npm pack    # git-malu-stage-contracts-0.3.0.tgz
+npm pack    # git-malu-stage-contracts-0.4.0.tgz
 ```
 
 ## Publishing
 
 Publishing is a separate, tag-triggered workflow
 (`.github/workflows/publish-stage-contracts.yml`) with `packages: write`. Pushing
-the annotated tag `stage-contracts-v0.3.0` runs the package tests, asserts the
+the annotated tag `stage-contracts-v0.4.0` runs the package tests, asserts the
 tag equals `stage-contracts-v<package version>`, and publishes with
 `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` to
 `https://npm.pkg.github.com`. It holds no AWS credential and no deployment
 authority.
 
 Version bumps are a new `version` plus the matching `stage-contracts-v<version>`
-tag; an existing tag is never moved or force-pushed. A consumer may pin a
-tarball packed from an unmerged release branch, but that vendor record names the
-source commit and states that the tag-based re-vendor is a post-merge step.
+tag; an existing tag is never moved or force-pushed.
 
-## Consuming a pinned tarball
+## Consumption
 
-AnyWear-Service pins the packed artifact, not a mutable branch and not a registry
-credential in the deploy job:
+AnyWear-Infra consumes the package from this checkout, not from a registry
+credential and not from another repository's tarball:
 
-1. Commit the tarball (for example
-   `git-malu-stage-contracts-0.3.0.tgz`) under `infra/vendor/`.
-2. Pin it in `infra/package.json`:
-   `"@git-malu/stage-contracts": "file:vendor/git-malu-stage-contracts-0.3.0.tgz"`.
-3. Install with the workspace's usual frozen-lockfile command.
+```json
+"@git-malu/stage-contracts": "file:packages/stage-contracts"
+```
 
-The tarball is built by `npm pack` in this directory; its sha256 and file list are
-reported with the tag so a consumer can verify the bytes it commits.
+`npm ci` links it into `node_modules` and `npm run check` runs the package tests
+with the repository's own source. Since #195 AnyWear-Service declares no CDK
+dependency at all, so there is no second consumer and no re-vendor step; the
+tag-driven publication stays available for a future external consumer.

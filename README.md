@@ -70,54 +70,39 @@ Service release-slice parameters before the #166 split (account `650880818323`,
 `ap-east-1`), recorded as identifiers only. They are changed only in a reviewed
 diff. Any other stage must pass explicit values and fails closed without them.
 
-Foundation owns the two Service release-slice deployment identities:
-`beta-service-deploy-role` (GitHub OIDC `environment:beta`; CloudFormation change
-sets for `AnyWearRuntimeStack-beta`, `ssm:GetParameter*` under
-`/anywear/beta/`, `ecr:DescribeImages` on `beta-anywear-service`, plus the CDK
-CLI's own-credentials path: `ssm:GetParameter` on
-`cdk-bootstrap/hnb659fds/version`, `s3:PutObject`/`s3:GetObject` on
-`cdk-hnb659fds-assets-650880818323-ap-east-1/*` and
-`s3:ListBucket`/`s3:GetBucketLocation` on that bucket) and
-`beta-service-deploy-cfn-role` (trusted by
-`cloudformation.amazonaws.com`; the
-Runtime stack's ECS, ELBv2, CloudFront, CloudWatch, Logs, maintenance-bucket,
-load-balancer-ingress and four task-role families). Issue #162 adds the deploy
-role's read-only bake grants: `cloudwatch:GetMetricStatistics`,
-`cloudwatch:DescribeAlarms` on `beta-anywear-*`, `ecs:DescribeServices` on the
-two workload services, `sqs:GetQueueAttributes` on the four Beta stage queues
-and `logs:FilterLogEvents` on `/anywear/beta/worker`. They are read-only; the
-controlled-fault drill's one-off DLQ write is an operator credential, never a
-standing grant, and the CloudFormation execution role is unchanged. Neither role
-assumes a
-`cdk-hnb659fds-*` role, carries a managed
-policy or holds account-wide grants; the policy-inventory tests pin both the
-allowed inventory and the absent VPC, Aurora, Cognito, wardrobe/client bucket
-configuration, SQS configuration, ECR configuration, Foundation and other-stack
-grants. The Runtime stack's
-CDK source and deploy chain now live in AnyWear-Service (#158 step B); after step
-C nothing in this repository synthesizes, deploys or recovers it. Issue #166
-renamed the slice to `AnyWearRuntimeStack-beta` and scoped both roles to it.
+Foundation no longer defines per-service deploy roles. Issue #195 retired
+`beta-service-deploy-role` and `beta-service-deploy-cfn-role` with the Service
+deploy chain: the release slice is deployed by `deploy-runtime` under the
+existing `beta-infra-deploy-role`, which already assumes the standard CDK
+bootstrap roles (`cdk-hnb659fds-deploy-role`, `-file-publishing-role`,
+`-lookup-role`) and the bootstrap CloudFormation execution role
+(`cdk-hnb659fds-cfn-exec-role-650880818323-ap-east-1`). The operation's own
+preflight, change set and session policy are its scope; it does not claim IAM
+isolation the bootstrap path does not provide. The live Foundation still carries
+the four retired resources until a separately authorized `deploy-foundation`;
+`test/fixtures/foundation-live-provenance.json` records them as
+`pending_removal` and `beta-service-deploy-cfn-role` stays named by the live
+Runtime stack's `RoleARN` until the first executed Runtime update rebinds it.
+The Runtime stack's CDK source, baselines and deploy chain now live in this
+repository (`lib/runtime-stack.ts`, `deployScope=runtime`), and `deploy-runtime`
+with the Beta stage contract produces the v5 `anywear_service_deployment`
+record.
 
-The Foundation service set is reviewed CDK context, not source. `infraServices`
-is an array of `{ service, repository, repositoryId, environment }` descriptors
-and defaults to exactly the single `service` descriptor above. Both role names
-(`beta-<service>-deploy-role`, `beta-<service>-deploy-cfn-role`) and the OIDC
-subject derive from the descriptor, so a second service is that context value
-plus a Foundation deploy with it (the Foundation-only CLI entry below), never an
-edit to this repository. The context is strict: an unknown key, a malformed
-descriptor, a duplicate service, a missing default service or a changed default
-descriptor fails synthesis before any resource is created. The default context
-reproduces today's template byte for byte; a second service adds only its own two
-roles and policies, scoped to its own runtime stack and resource families.
+`beta-infra-runtime-role` (Platform `DedicatedPolicy`) gains two read-only
+statements for the deployment bake (#195): `cloudwatch:DescribeAlarms` on
+`beta-anywear-*` and `logs:FilterLogEvents` on `/anywear/beta/worker`.
+`beta-infra-deploy-role` gains the change-set `Describe`/`Execute`/`Delete`
+statements scoped to the Runtime stack and its change-set ARNs. Both are read or
+operation-scoped; no managed policy or account-wide grant is added.
 
 ### Versioned `@git-malu/stage-contracts`
 
 [`packages/stage-contracts/`](packages/stage-contracts/README.md) is the
 dependency-free, versioned source of the stage-contract names/kinds, the stack
-identities, the v4 `anywear_service_deployment` validators (the v3 core plus the
-required 600-second bake gate), the gate's one stage-free threshold table and the
-Foundation service-role naming. It is `@git-malu/stage-contracts` `0.3.0`; the
-`stage-contracts-v0.3.0` tag is a post-merge publication step (`0.1.0` is the
+identities, the v5 `anywear_service_deployment` validators (the v3 core plus the
+required 600-second bake gate), the gate's one stage-free threshold table, the
+deployed-template normalisation and the two Infra deployment roles' scope. It is
+`@git-malu/stage-contracts` `0.4.0`; the `stage-contracts-v0.4.0` tag is a post-merge publication step (`0.1.0` is the
 last tagged release), and the package is packed with `npm pack`. AnyWear-Service
 pins the
 tarball (for example under `infra/vendor/`) instead of a mutable branch or a

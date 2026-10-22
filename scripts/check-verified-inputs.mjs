@@ -36,11 +36,19 @@ if (!expectedRelease) {
   matches(value.release.source_sha, SHA, 'verified Service source');
   exact(value.assets, [...STAGE_BASE_ASSETS], 'verified release assets');
   for (const name of STAGE_BASE_ASSETS) matches(value.assets[name], DIGEST, `verified asset ${name}`);
-  // The artifact directory travelled between jobs; hash its three files once each
-  // so a modified upload cannot reach CDK under an accepted record.
-  await assertSelectedReleaseBytes(value.assets, SELECTED_RELEASE_DIRECTORY);
-  // The same strict loader CDK uses, so the downloaded policy bytes are proven
-  // parseable before the restricted session is requested.
-  loadLocalArtifactInputs(SELECTED_RELEASE_DIRECTORY);
-  process.stdout.write(`Verified inputs bind ${value.workflow} ${value.operation} to ${SERVICE_REPOSITORY} ${value.release.tag}@${value.release.source_sha}.\n`);
+  if (env.INFRA_OPERATION === 'deploy-runtime') {
+    // The Runtime deploy consumes the release identity, not the stage-base files:
+    // the verify job proved the immutable release and its assets over REST, and
+    // no bytes travelled. The ECR digest of `service-artifacts-<sha>` is resolved
+    // under the operation's own restricted session.
+    process.stdout.write(`Verified inputs bind ${value.workflow} ${value.operation} to ${SERVICE_REPOSITORY} ${value.release.tag}@${value.release.source_sha} (identity only).\n`);
+  } else {
+    // The artifact directory travelled between jobs; hash its three files once each
+    // so a modified upload cannot reach CDK under an accepted record.
+    await assertSelectedReleaseBytes(value.assets, SELECTED_RELEASE_DIRECTORY);
+    // The same strict loader CDK uses, so the downloaded policy bytes are proven
+    // parseable before the restricted session is requested.
+    loadLocalArtifactInputs(SELECTED_RELEASE_DIRECTORY);
+    process.stdout.write(`Verified inputs bind ${value.workflow} ${value.operation} to ${SERVICE_REPOSITORY} ${value.release.tag}@${value.release.source_sha}.\n`);
+  }
 }

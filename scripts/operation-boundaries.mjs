@@ -5,14 +5,13 @@ import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
 // `state` entry and the accepted `anywear_infra_deployment` producer `observe`;
-// every mutation shares `mutate.yml`. The release slice (`AnyWearRuntimeStack-beta`)
-// is no longer an Infra operation: AnyWear-Service deploys it from its own
-// release chain, so no entry here can deploy, verify or recover it.
+// every mutation shares `mutate.yml`, including since #195 the release slice's
+// `deploy-runtime` and `stop-runtime`.
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['state', 'observe'],
   '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',
-    'deploy-egress', 'delete-egress', 'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers',
-    'open-admission', 'close-admission'],
+    'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
+    'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission'],
 });
 
 // A record's family is derived from the operation, not from the file that hosts
@@ -28,6 +27,8 @@ export const operationFamilies = Object.freeze({
   'deploy-platform': 'beta-deploy',
   'deploy-egress': 'beta-deploy',
   'delete-egress': 'beta-deploy',
+  'deploy-runtime': 'beta-deploy',
+  'stop-runtime': 'beta-deploy',
   'restore-release': 'beta-deploy',
   migrate: 'beta-schema',
   'admission-status': 'beta-admission',
@@ -89,6 +90,11 @@ export const reads = {
   'ecr/describe-images': 'ecr:DescribeImages', 'ecr/batch-get-image': 'ecr:BatchGetImage',
   'lambda/get-function': 'lambda:GetFunction', 'sqs/get-queue-attributes': 'sqs:GetQueueAttributes',
   'logs/get-log-events': 'logs:GetLogEvents', 'logs/describe-log-groups': 'logs:DescribeLogGroups',
+  // Issue #195: the bake's live reads. The change-set read is deploy-session
+  // only and is handled by `assertAwsAllowed`'s deploy branch, not this table.
+  'cloudwatch/get-metric-statistics': 'cloudwatch:GetMetricStatistics',
+  'cloudwatch/describe-alarms': 'cloudwatch:DescribeAlarms',
+  'logs/filter-log-events': 'logs:FilterLogEvents',
   // The base role may deny this legacy fallback; this session never adds grants.
   'cloudfront/get-distribution': 'cloudfront:GetDistribution',
 };
@@ -117,6 +123,12 @@ export const operationEvidence = Object.freeze({
     'The accepted record carries the Egress stack Original template hash after the disposable network edge is created.'),
   'delete-egress': evidenceEntry([], '.github/workflows/runtime.yml',
     'The accepted record carries the observed stack state and proves the Runtime stack was absent before the Egress delete; no deployment record is produced.'),
+  // Issue #195: the operation writes the v5 `anywear_service_deployment` record
+  // itself (with the passed 600-second gate), so its own mutation run qualifies it.
+  'deploy-runtime': evidenceEntry([], 'self',
+    'The deploy job writes the v5 anywear_service_deployment record: the six deploy parameters, the 39 stage-contract inputs, the normalised deployed template hash, the passed 600-second gate and the v5 observed tuple.'),
+  'stop-runtime': evidenceEntry([], '.github/workflows/runtime.yml',
+    'The operation record carries the observed stack state and proves only AnyWearRuntimeStack-beta was destroyed; no deployment record is produced.'),
   'restore-release': evidenceEntry([], '.github/workflows/runtime.yml',
     'Restoring the Base stack leaves the Runtime stack observable by the following fixed observation; the Runtime slice is restored by AnyWear-Service.'),
   migrate: evidenceEntry(['migrate'], '.github/workflows/runtime.yml',
@@ -173,11 +185,23 @@ export function families(env, purpose) {
   if (purpose !== 'operation') throw new Error('Unknown credential purpose');
   return boundary.readOnly ? [] : [...operationEvidence[env.INFRA_OPERATION].roles];
 }
-export function assertAwsAllowed(env, args, purpose = 'operation') {
+export function assertAwsAllowed(env, args, purpose = 'operation', session = 'runtime') {
   const boundary = operationBoundary(env);
   const key = `${args[0]}/${args[1]}`;
   const argument = flag => args[args.indexOf(flag) + 1];
   if (args.includes('--with-decryption')) throw new Error('Runtime parameter decryption is forbidden');
+  // The deploy session is a change-set driver only: it describes, executes or
+  // deletes this run's Runtime change set and nothing else. CDK creates the
+  // change set through the bootstrap deploy role, so no create action is needed
+  // or granted here.
+  if (session === 'deploy') {
+    if (purpose === 'operation' && args[0] === 'cloudformation'
+      && ['describe-change-set', 'execute-change-set', 'delete-change-set'].includes(args[1])
+      && ['deploy-runtime', 'stop-runtime'].includes(env.INFRA_OPERATION)
+      && argument('--stack-name') === 'AnyWearRuntimeStack-beta'
+      && /^anywear-runtime-[0-9]+$/.test(argument('--change-set-name') ?? '')) return;
+    throw new Error(`AWS action ${key} is forbidden for the deploy session`);
+  }
   if (reads[key] && (!boundary.readOnly || stateReads.includes(key))) return;
   if (args[0] === 'ecs' && args[1] === 'wait') {
     const allowed = args[2] === 'tasks-stopped' || !boundary.readOnly && args[2] === 'services-stable';
@@ -225,6 +249,15 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
       statement('sts:AssumeRole', regions.flatMap(roleRegion => ['deploy', 'file-publishing', 'lookup'].map(role =>
         `arn:aws:iam::650880818323:role/cdk-hnb659fds-${role}-role-650880818323-${roleRegion}`))),
       statement('secretsmanager:GetSecretValue', arn('secretsmanager', 'secret:/anywear/beta/cloudfront_origin_header-*'))];
+    // Issue #195: the deploy-runtime session describes the change set it created
+    // and executes or deletes it. The statement is scoped to the Runtime stack
+    // and its change-set collection; no create action is needed because the CDK
+    // CLI creates the change set through the bootstrap deploy role.
+    if (env.INFRA_OPERATION === 'deploy-runtime') {
+      statements.push(statement(['cloudformation:DescribeChangeSet', 'cloudformation:ExecuteChangeSet',
+        'cloudformation:DeleteChangeSet'],
+      [arn('cloudformation', 'stack', 'AnyWearRuntimeStack-beta/*'), arn('cloudformation', 'changeSet', '*')]));
+    }
   } else if (kind === 'runtime') {
     const allowedFamilies = families(env, purpose);
     statements = [statement((boundary.readOnly ? stateReads : Object.keys(reads)).map(read => reads[read])

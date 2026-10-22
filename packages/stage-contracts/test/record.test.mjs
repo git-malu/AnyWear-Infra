@@ -7,7 +7,7 @@ import {
   SERVICE_ECS_IDENTITY_FIELDS,
   SERVICE_OBSERVED_FIELDS,
   SERVICE_DEPLOYMENT_RECORD_SCHEMA,
-  SERVICE_REPOSITORY,
+  INFRA_REPOSITORY,
   SERVICE_RUNTIME_STACK,
   stageContractSchemaHash,
   stableTaskDefinition,
@@ -52,20 +52,20 @@ const workerDefinition = { ...apiDefinition, family: 'beta-anywear-worker',
 
 function serviceRecord() {
   return {
-    schema_version: 4,
+    schema_version: 5,
     record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
     producer: {
-      repository: SERVICE_REPOSITORY,
+      repository: INFRA_REPOSITORY,
       sha: serviceSha,
       workflow_path: SERVICE_RUNTIME_STACK.workflow_path,
-      workflow_ref: `${SERVICE_REPOSITORY}/${SERVICE_RUNTIME_STACK.workflow_path}@refs/heads/main`,
+      workflow_ref: `${INFRA_REPOSITORY}/${SERVICE_RUNTIME_STACK.workflow_path}@refs/heads/main`,
       run_id: 11,
       run_attempt: 1,
     },
     stacks: [{
       name: SERVICE_RUNTIME_STACK.name,
       region: SERVICE_RUNTIME_STACK.region,
-      producer_repository: SERVICE_REPOSITORY,
+      producer_repository: INFRA_REPOSITORY,
       producer_sha: serviceSha,
       template_sha256: '5'.repeat(64),
     }],
@@ -95,7 +95,7 @@ function serviceRecord() {
   };
 }
 
-test('a complete Service v4 record validates, lists only the Runtime stack and requires the gate', () => {
+test('a complete Infra-produced v5 record validates, lists only the Runtime stack and requires the gate', () => {
   const record = serviceRecord();
   assert.deepEqual(validateServiceDeploymentRecord(record), record);
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
@@ -103,7 +103,7 @@ test('a complete Service v4 record validates, lists only the Runtime stack and r
     [...DEPLOYMENT_RECORD_MEMBERS, 'gate'].sort());
   assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks,
     [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }]);
-  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 4);
+  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 5);
   assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type, 'anywear_service_deployment');
   assert.deepEqual([...SERVICE_ECS_IDENTITY_FIELDS],
     ['service_arn', 'task_definition_arn', 'task_definition_sha256', 'image_digest']);
@@ -132,7 +132,7 @@ test('the Service record fails closed on producer, stack and schema drift', () =
   })), /Unexpected deployment producer repository/);
   assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
     record.producer.workflow_path = '.github/workflows/runtime.yml';
-    record.producer.workflow_ref = `${SERVICE_REPOSITORY}/.github/workflows/runtime.yml@refs/heads/main`;
+    record.producer.workflow_ref = `${INFRA_REPOSITORY}/.github/workflows/runtime.yml@refs/heads/main`;
   })), /Unexpected deployment workflow path/);
   assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
     record.stacks[0].name = 'AnyWearPlatformStack-beta';
@@ -221,10 +221,20 @@ test('the record gate must pass and stay bound to the observed Service and image
   assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
     record.gate.signals[4].value.vto_depth = 1;
   })), /Deployment gate signal sqs_dlq_depth is breaching/);
-  // A pre-gate v3 Service record is a historical shape, not a live input.
+  // A pre-gate v3 and the Service-produced v4 record are historical shapes, not
+  // live inputs: the producer change made v5 the only accepted version.
   assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
     record.schema_version = 3;
   })), /Unknown anywear_service_deployment schema/);
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
+    record.schema_version = 4;
+  })), /Unknown anywear_service_deployment schema/);
+  // The v5 producer is Infra's `mutate.yml`; the retired Service workflow is not
+  // a producer even when the repository field is changed with it.
+  assert.throws(() => validateServiceDeploymentRecord(withChange(record => {
+    record.producer.workflow_path = '.github/workflows/service-artifacts.yml';
+    record.producer.workflow_ref = `${INFRA_REPOSITORY}/.github/workflows/service-artifacts.yml@refs/heads/main`;
+  })), /Unexpected deployment workflow path/);
 });
 
 test('stableTaskDefinition is the normalized content identity, not the revision', () => {

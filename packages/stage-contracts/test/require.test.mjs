@@ -16,5 +16,8 @@ test('Node 24 CommonJS require() can load the ESM package', () => {
   assert.equal(loaded.STAGE_CONTRACT_READ_PARAMETERS.length, 36);
   assert.equal(typeof loaded.stageParameters, 'function');
   assert.equal(typeof loaded.validateServiceDeploymentRecord, 'function');
-  assert.equal(loaded.serviceDeployRoleName('service'), 'beta-service-deploy-role');
+  assert.equal(typeof loaded.normaliseDeployedTemplate, 'function');
+  assert.equal(typeof loaded.canonicalDeployedTemplateHash, 'function');
+  assert.equal(loaded.SERVICE_RUNTIME_STACK.workflow_path, '.github/workflows/mutate.yml');
+  assert.equal(loaded.serviceDeployRoleName, undefined);
 });

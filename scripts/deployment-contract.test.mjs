@@ -36,10 +36,10 @@ function serviceRecord({ revision = 12, digest = imageDigest } = {}) {
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-api-execution', networkMode: 'awsvpc', cpu: '512', memory: '1024',
     containerDefinitions: [{ name: 'ApiContainer', image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@${imageDigest}`,
       command: ['node', 'dist/index.js'], environment: [{ name: 'B', value: '2' }, { name: 'A', value: '1' }] }] };
-  return { schema_version: 4, record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
-    producer: producer('git-malu/AnyWear-Service', '.github/workflows/service-artifacts.yml'),
-    stacks: [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Service',
-      producer_sha: serviceSha, template_sha256: '5'.repeat(64) }],
+  return { schema_version: 5, record_type: SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type,
+    producer: producer('git-malu/AnyWear-Infra', '.github/workflows/mutate.yml'),
+    stacks: [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1', producer_repository: 'git-malu/AnyWear-Infra',
+      producer_sha: infraSha, template_sha256: '5'.repeat(64) }],
     inputs,
     observed: { service_sha: serviceSha, image_digest: digest, minimum_client_version: 0,
       ecs: { api: { service_arn: 'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
@@ -61,12 +61,12 @@ test('a complete Infra v3 record validates', () => {
   assert.deepEqual([...DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
 });
 
-test('a complete Service v4 record validates, lists only the Runtime stack and carries the gate', () => {
+test('a complete Infra-produced v5 record validates, lists only the Runtime stack and carries the gate', () => {
   const record = serviceRecord();
   assert.deepEqual(validateServiceDeploymentRecord(record), record);
   assert.deepEqual(validateDeploymentRecord(record), record);
   assert.deepEqual(SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks, [{ name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }]);
-  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 4);
+  assert.equal(SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version, 5);
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), Object.keys(record).sort());
   assert.deepEqual([...SERVICE_DEPLOYMENT_RECORD_MEMBERS].sort(), [...DEPLOYMENT_RECORD_MEMBERS, 'gate'].sort());
   assert.deepEqual(validateDeploymentGate(record.gate, 'beta'), record.gate);
@@ -107,10 +107,19 @@ test('both record types reject an extra or missing member', () => {
   assert.throws(() => validateServiceDeploymentRecord(crossed), /Invalid deployment record fields/);
 });
 
-test('the Service producer may not carry an Infra stack or workflow', () => {
+test('the Service record producer is Infra mutate.yml and nothing else', () => {
   const record = serviceRecord();
-  assert.throws(() => validateServiceDeploymentRecord({ ...record,
-    producer: producer('git-malu/AnyWear-Service', '.github/workflows/runtime.yml') }), /Unexpected deployment workflow path/);
+  // The retired Service producer and a foreign workflow are both refused.
+  const service = structuredClone(record);
+  service.producer = producer('git-malu/AnyWear-Service', '.github/workflows/service-artifacts.yml');
+  for (const row of service.stacks) { row.producer_repository = 'git-malu/AnyWear-Service'; row.producer_sha = serviceSha; }
+  assert.throws(() => validateServiceDeploymentRecord(service), /Unexpected deployment producer repository/);
+  const runtime = structuredClone(record);
+  runtime.producer = producer('git-malu/AnyWear-Infra', '.github/workflows/runtime.yml');
+  assert.throws(() => validateServiceDeploymentRecord(runtime), /Unexpected deployment workflow path/);
+  const v4 = structuredClone(record);
+  v4.schema_version = 4;
+  assert.throws(() => validateServiceDeploymentRecord(v4), /Unknown anywear_service_deployment schema/);
 });
 
 test('a task-definition revision-only change is not an identity failure', () => {
