@@ -175,6 +175,32 @@ test('every simulator context entry uses a valid context-key type', () => {
     ['arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear']);
 });
 
+test('account-level actions simulate on * and resource-level actions stay concrete', () => {
+  // Run 39732059192: ecs:DescribeTaskDefinition has no resource-level support, so a
+  // concrete task-definition ARN is an implicit deny even when the policy allows
+  // the action on *. Pin the known account-level actions and keep the rest concrete.
+  const noResource = new Set(['ecs:DescribeTaskDefinition', 'ecs:ListTasks',
+    'ec2:DescribeManagedPrefixLists', 'logs:DescribeLogGroups']);
+  const plan = [...simulationRequests('runtime', {}), ...simulationRequests('deploy', {})];
+  const seen = new Set();
+  for (const request of plan) {
+    for (const action of request.actions) {
+      if (noResource.has(action)) {
+        seen.add(action);
+        assert.deepEqual(request.resources, ['*'], `${action} must simulate on *`);
+      } else {
+        assert.ok(!(request.resources.length === 1 && request.resources[0] === '*'),
+          `${action} has resource-level support and must simulate a concrete form`);
+      }
+    }
+  }
+  assert.deepEqual([...seen].sort(), [...noResource].sort());
+  const taskDefinition = plan.find((request) => request.pair === 'ecs/describe-task-definition');
+  assert.deepEqual(taskDefinition.resources, ['*']);
+  const logGroups = plan.find((request) => request.pair === 'logs/describe-log-groups');
+  assert.deepEqual(logGroups.resources, ['*']);
+});
+
 test('production.yml pins the app-token attestations read it needs', async () => {
   // The batch failure: a release-verifying path read the attestation API without
   // the attestations scope. Infra mints an app token for that read, so the input

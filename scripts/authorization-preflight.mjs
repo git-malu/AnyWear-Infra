@@ -61,14 +61,19 @@ export const READ_RESOURCES = Object.freeze({
   'ecs/describe-services': Object.freeze(['beta-anywear-api', 'beta-anywear-worker']
     .map((name) => arn('ecs', `service/beta-anywear/${name}`))),
   'ecs/describe-tasks': Object.freeze([arn('ecs', 'task/beta-anywear/00000000000000000000000000000000')]),
-  'ecs/describe-task-definition': Object.freeze([arn('ecs', 'task-definition/beta-anywear-lifecycle:1')]),
+  // ECS DescribeTaskDefinition has no resource-level permissions: the simulator
+  // returns implicitDeny for a concrete task-definition ARN even when the policy
+  // allows the action on `*`.
+  'ecs/describe-task-definition': Object.freeze(['*']),
   'ecs/list-tasks': Object.freeze(['*']),
   'ecr/describe-images': Object.freeze([arn('ecr', 'repository/beta-anywear-service')]),
   'lambda/get-function': TASK_FUNCTIONS,
   'sqs/get-queue-attributes': BASE_QUEUES,
   'logs/get-log-events': Object.freeze([arn('logs',
     'log-group:/anywear/beta/one-shot:log-stream:beta-anywear-lifecycle/OneShot/probe')]),
-  'logs/describe-log-groups': Object.freeze([arn('logs', 'log-group::log-stream:')]),
+  // DescribeLogGroups is account-level: its list form has no resource type, so a
+  // log-group/log-stream ARN (even an empty-name form) is an implicit deny.
+  'logs/describe-log-groups': Object.freeze(['*']),
 });
 
 // Reads that are not simulated, each with the reason. A new reviewed read must be
@@ -76,7 +81,7 @@ export const READ_RESOURCES = Object.freeze({
 export const SIMULATION_SKIPS = Object.freeze({
   'sts/get-caller-identity': 'No IAM permission is required; the call is allowed to every principal.',
   'ecr/batch-get-image': 'The reviewed mapping also needs ecr:BatchCheckLayerAvailability and ecr:GetDownloadUrlForLayer, which the restricted runtime role does not grant; the operation has no Infra call site (operator CLI only) and is not simulated.',
-  'cloudfront/get-distribution': 'A conditional legacy fallback whose base grant the runtime role may deny by design; the session never adds grants and the fallback must surface through the observed layer if it is ever taken.',
+  'cloudfront/get-distribution': 'A conditional legacy fallback whose base grant the runtime role may deny by design; the session never adds grants and the fallback must surface through the deployment itself if it is ever taken.',
   'ecr/describe-images': 'An operator-CLI read (scripts/ecr-retention.mjs); the deployed runtime session does not execute it and the preflight plan does not include operator-only reads.',
   'ecr/get-lifecycle-policy': 'An operator-CLI lifecycle read (scripts/ecr-retention.mjs); not executed by the deployed session.',
   'ecr/get-lifecycle-policy-preview': 'An operator-CLI lifecycle read (scripts/ecr-retention.mjs); not executed by the deployed session.',
