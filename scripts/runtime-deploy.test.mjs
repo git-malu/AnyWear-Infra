@@ -226,7 +226,7 @@ test('the bake input helpers accept only full contract URLs and the contract clu
   assert.throws(() => runtimeEcsClusterName(new Map()), /ecs_cluster_name is not an ECS cluster name/);
 });
 
-test('the CDK arguments pass exactly the six parameters in the runtime scope', () => {
+test('the CDK arguments pass one stack-qualified flag per parameter and disable previous parameters', () => {
   const parameters = Object.fromEntries(RUNTIME_DEPLOY_PARAMETER_KEYS.map((key) => [key, `${key}-value`]));
   const args = runtimeCdkDeployArguments({ parameters, changeSetName: 'anywear-runtime-1', identityPhase: 'roles-added', retentionProtection: 'true' });
   assert.deepEqual(args.slice(0, 6), ['cdk', 'deploy', RUNTIME_STACK, '--exclusively', '--require-approval', 'never']);
@@ -235,7 +235,22 @@ test('the CDK arguments pass exactly the six parameters in the runtime scope', (
   assert.ok(args.includes('identityPhase=roles-added'));
   assert.ok(!args.some((arg) => arg.startsWith('artifactDirectory=')));
   assert.ok(!args.includes('--role-arn'), 'the standard synthesizer chooses the execution role');
-  for (const key of RUNTIME_DEPLOY_PARAMETER_KEYS) assert.ok(args.includes(`${key}=${key}-value`), key);
+  // Issue #194: the CLI's `--parameters` is an `array` option with `nargs: 1` and
+  // documents `STACK:KEY=VALUE`, so the single-flag form kept only its first value
+  // and `--previous-parameters` (default true) retained the rest. The exact array
+  // is asserted, so a missing pair or a missing fail-closed flag fails this test.
+  assert.deepEqual(args, ['cdk', 'deploy', RUNTIME_STACK, '--exclusively', '--require-approval', 'never',
+    '--no-execute', '--change-set-name', 'anywear-runtime-1',
+    '-c', 'deployScope=runtime', '-c', 'stage=beta', '-c', 'legacyRoleSource=external',
+    '-c', 'identityPhase=roles-added', '-c', 'ecrImageRetention=true',
+    '--previous-parameters=false',
+    ...RUNTIME_DEPLOY_PARAMETER_KEYS.flatMap((key) => ['--parameters', `${RUNTIME_STACK}:${key}=${key}-value`])]);
+  assert.equal(args.filter((arg) => arg === '--parameters').length, RUNTIME_DEPLOY_PARAMETER_KEYS.length,
+    'every parameter needs its own --parameters flag (nargs: 1)');
+  for (const key of RUNTIME_DEPLOY_PARAMETER_KEYS) {
+    assert.ok(args.includes(`${RUNTIME_STACK}:${key}=${key}-value`), key);
+    assert.ok(!args.includes(`${key}=${key}-value`), `${key} must be stack-qualified`);
+  }
   assert.throws(() => runtimeCdkDeployArguments({ parameters: { ServiceCommitSha: 'x' }, changeSetName: 'anywear-runtime-1',
     identityPhase: 'roles-added', retentionProtection: 'true' }), /exactly the six reviewed parameters/);
 });
@@ -334,9 +349,10 @@ test('a schema-boundary refusal fails the run before synthesis, the change set a
     const record = { events: [] };
     const assetBytes = readFileSync('test/fixtures/schema-boundary/schema-asset.json');
     const liveRead = JSON.parse(readFileSync('test/fixtures/schema-boundary/live-read-compatible.json', 'utf8'));
-    // Synthetic ahead variant: one applied row the release does not contain.
+    // Synthetic ahead variant: one applied row the release does not contain. The
+    // captured last serial is 133, so the next applied row would be 134.
     const ahead = structuredClone(liveRead);
-    ahead.applied.push({ id: 27, tag: '0026_newer_fly', created_at: ahead.applied.at(-1).created_at + 1000,
+    ahead.applied.push({ id: 134, tag: '0026_newer_fly', created_at: ahead.applied.at(-1).created_at + 1000,
       hash: 'f'.repeat(64) });
     const definitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:7';
     const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
@@ -354,7 +370,7 @@ test('a schema-boundary refusal fails the run before synthesis, the change set a
       outputPath: path.join(directory, 'service-deployment.json') }),
     (error) => error instanceof SchemaBoundaryError && error.reason === 'applied-beyond-release'
       && /expected release journal ends at 0025_new_human_fly/.test(error.message)
-      && /observed database row 27 at index 26 0026_newer_fly/.test(error.message));
+      && /observed database row 134 at index 26 0026_newer_fly/.test(error.message));
     assert.equal(synthesized, 0, 'synthesis never runs after a refusal');
     assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false, 'no CDK change-set call');
     assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false);
