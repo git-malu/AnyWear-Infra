@@ -20,6 +20,16 @@ jobs:
       - run: npm run audit:prod
       - run: npm run check
       - run: bash -n .github/scripts/run-one-shot-task.sh .github/scripts/operation-hook.sh
+      - name: Lint the GitHub Actions workflows
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          curl -sSfL -o actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint -color
+          rm -f actionlint actionlint.tar.gz
       - name: Compare explicit live Foundation with authenticated Original fixture
         env:
           AWS_REGION: ap-east-1

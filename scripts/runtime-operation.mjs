@@ -16,6 +16,7 @@ import { runCloseAdmission, runOpenAdmission, assertMigrationAdmissionClosed } f
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertTerminalRuntime, assertRuntimeAbsent, assertRuntimeReady, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
+import { runAuthorizationPreflight } from './authorization-preflight.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { account, region } from './deployment-contract.mjs';
 
@@ -196,7 +197,8 @@ export function cleanAwsEnvironment(env) {
     'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONTAINER_AUTHORIZATION_TOKEN', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE']) delete result[key];
   return { ...result, AWS_CONFIG_FILE: '/dev/null', AWS_SHARED_CREDENTIALS_FILE: '/dev/null', AWS_EC2_METADATA_DISABLED: 'true' };
 }
-export async function credentialEnvironment(kind, env = process.env, purpose = 'operation', { requestToken = fetch, run = execute } = {}) {
+export async function credentialEnvironment(kind, env = process.env, purpose = 'operation',
+  { requestToken = fetch, run = execute, sessionMarker } = {}) {
   validateOperationInputs(env);
   const policy = sessionPolicy(kind, env, purpose);
   const role = `arn:aws:iam::650880818323:role/beta-infra-${kind}-role`;
@@ -210,16 +212,19 @@ export async function credentialEnvironment(kind, env = process.env, purpose = '
   if (!response.ok) throw new Error('OIDC token retrieval failed');
   const token = (await response.json()).value;
   if (typeof token !== 'string' || !token) throw new Error('OIDC token missing');
+  // D2: the preflight requests its own session name (`infra-<kind>-preflight-<run>`),
+  // so the CloudTrail reconciliation can exclude the sensor's own calls.
+  const sessionName = `infra-${kind}${sessionMarker ? `-${sessionMarker}` : ''}-${env.GITHUB_RUN_ID}`;
   let assumed;
   try {
     assumed = parseJson((await run('aws', ['sts', 'assume-role-with-web-identity', '--role-arn', role,
-      '--role-session-name', `infra-${kind}-${env.GITHUB_RUN_ID}`, '--web-identity-token', token, '--policy', policy, '--duration-seconds', '3600', '--output', 'json'],
+      '--role-session-name', sessionName, '--web-identity-token', token, '--policy', policy, '--duration-seconds', '3600', '--output', 'json'],
       { env: cleanAwsEnvironment(env), timeout: 60_000, maxBuffer: 1024 * 1024 })).stdout);
   } catch {
     // execFile errors include token-bearing arguments; keep them out of logs.
     throw new Error('Dedicated restricted STS assumption failed');
   }
-  if (!assumed.AssumedRoleUser?.Arn?.startsWith(`arn:aws:sts::650880818323:assumed-role/beta-infra-${kind}-role/`)) throw new Error('Dedicated assumed principal mismatch');
+  if (!assumed.AssumedRoleUser?.Arn?.startsWith(`arn:aws:sts::650880818323:assumed-role/beta-infra-${kind}-role/${sessionName}`)) throw new Error('Dedicated assumed principal mismatch');
   const credentials = assumed.Credentials;
   return { ...cleanAwsEnvironment(env), AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
@@ -259,6 +264,10 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
     async oneShot(role, revision, argument = '', payload) {
       if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
       assertOneShotAllowed(env, role, argument, payload);
+      // Pre-mutation preflight (#165): a migration or admission one-shot changes
+      // data, so the policy simulation runs first. A deny stops the operation
+      // before the task is registered or started.
+      await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('runtime');
       let result;
       try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
@@ -300,6 +309,11 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       const apiOriginDomainName = stack === baseStack ? await readApiOrigin(io) : undefined;
       const natEipAllocationId = stack === egressStack ? env.NAT_EIP_ALLOCATION_ID : undefined;
       const awsEnv = await roleEnv('deploy');
+      // Pre-mutation preflight (#165): after the restricted session is
+      // available and before CDK changes anything, simulate the deploy and
+      // runtime roles' effective authorization for the operation's reads. A
+      // deny or a simulation failure stops the deploy with zero changes.
+      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       // Record the completed mutation immediately: a later retention failure must
@@ -317,6 +331,9 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       if (purpose !== 'operation') throw new Error('Qualification cannot destroy');
       assertDeployAllowed(env, stack);
       if (env.INFRA_OPERATION !== 'delete-egress' || stack !== egressStack) throw new Error('Only delete-egress may destroy a stack');
+      // Pre-mutation preflight (#165): simulate the deploy and runtime roles'
+      // authorization before the Egress stack is deleted.
+      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });

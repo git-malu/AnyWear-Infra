@@ -77,7 +77,7 @@ export function operationBoundary(env) {
   return { workflow, family: operationFamilies[operation], readOnly: operation === 'state' };
 }
 
-const reads = {
+export const reads = {
   'sts/get-caller-identity': 'sts:GetCallerIdentity',
   'cloudformation/describe-stacks': 'cloudformation:DescribeStacks',
   'cloudformation/get-template': 'cloudformation:GetTemplate',
@@ -89,10 +89,14 @@ const reads = {
   'ecr/describe-images': 'ecr:DescribeImages', 'ecr/batch-get-image': 'ecr:BatchGetImage',
   'lambda/get-function': 'lambda:GetFunction', 'sqs/get-queue-attributes': 'sqs:GetQueueAttributes',
   'logs/get-log-events': 'logs:GetLogEvents', 'logs/describe-log-groups': 'logs:DescribeLogGroups',
+  // The observed layer (#165) reads CloudTrail for the run window under the same
+  // restricted runtime session; it is a read, never a mutation, and is scoped to
+  // the account's event history by the API.
+  'cloudtrail/lookup-events': 'cloudtrail:LookupEvents',
   // The base role may deny this legacy fallback; this session never adds grants.
   'cloudfront/get-distribution': 'cloudfront:GetDistribution',
 };
-const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'cloudformation/get-template', 'ssm/get-parameter'];
+export const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'cloudformation/get-template', 'ssm/get-parameter'];
 // One frozen evidence record per operation. `roles` is exactly what
 // `families(env, 'operation')` materializes for the operation's own session;
 // `qualified_by` names the run that qualifies the operation's mutation for E2E

@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "record_type": "anywear_authorization_non_coverage",
+  "source": "Issue #165. The lint, simulated-preflight and observed layers state their limits here, and test/authorization-lint.test.ts pins this list exactly.",
+  "entries": [
+    {
+      "id": "lint-scope",
+      "layer": "lint",
+      "summary": "The lint inspects the synthesized Foundation and Platform policy statements for the four deployment and runtime principals only; the legacy pipeline role and CDK-generated service roles are outside its scope.",
+      "consequence": "A wildcard grant added to an unscanned role is caught only by review, not by the check."
+    },
+    {
+      "id": "lint-rules",
+      "layer": "lint",
+      "summary": "The lint fails on wildcard actions, wildcard resource ARNs (including scoped ARNs such as stack or prefix forms), unreviewed managed-policy attachments and the repository's condition expectations. It evaluates statement text, not effective permission or condition values.",
+      "consequence": "The lint evaluates statement text. The simulator checks the plan's ARNs, the deployment itself exercises the real resource, and the observed layer reconciles actions, not resource forms."
+    },
+    {
+      "id": "bootstrap-role",
+      "layer": "lint",
+      "summary": "The CDK bootstrap cfn-exec role holds AdministratorAccess and no permissions boundary; no repository defines it. It is carried as a stated exception in the reviewed suppression table, not as a construct the lint can inspect.",
+      "consequence": "Effective permission on the Infra deploy path remains account-wide; the exception is recorded rather than asserted."
+    },
+    {
+      "id": "runtime-stack",
+      "layer": "lint",
+      "summary": "The AnyWearRuntimeStack-beta resource types are synthesized in AnyWear-Service as the per-service release slice; the Infra lint does not inspect that template, and its resource-type identity remains the Service release chain's contract. The dropped declared layer would not have changed this: it never derived the Service template either.",
+      "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the observed layer or by the deployment itself, not by the Infra lint."
+    },
+    {
+      "id": "simulator-approximation",
+      "layer": "simulator",
+      "summary": "IAM policy simulation evaluates policies approximately: condition keys, resource policies, SCPs, permissions boundaries and service-specific semantics may differ from the real service.",
+      "consequence": "The preflight is a strong pre-mutation signal, not ground truth; the observed layer still reconciles the real calls."
+    },
+    {
+      "id": "simulator-scope",
+      "layer": "simulator",
+      "summary": "The preflight simulates the Infra deploy and runtime roles only; the Service CloudFormation execution role trusts cloudformation.amazonaws.com and cannot be assumed or simulated from this job.",
+      "consequence": "That role's reads are covered by the lint and the observed layer, not by the preflight."
+    },
+    {
+      "id": "preflight-reads",
+      "layer": "simulator",
+      "summary": "The preflight evaluates policy against the reviewed ARNs in its plan; it does not sample live resources or make the real read calls. Mutations, waiter semantics, operator-CLI reads and the conditional CloudFront fallback are recorded as skips with reasons.",
+      "consequence": "Create-path authorization, resource existence and the real service semantics stay with the observed layer and the deployment itself."
+    },
+    {
+      "id": "simulate-disclosure",
+      "layer": "simulator",
+      "summary": "iam:SimulatePrincipalPolicy can enumerate any principal's effective permissions in the account. The grant is `*` because the simulator actions have no resource-level scope; it is limited to the two simulate actions, runs only in the restricted deploy/runtime session, and is used only by the preflight.",
+      "consequence": "The grant is read-only but is a permission-metadata disclosure surface; it is recorded here as an accepted reviewed wildcard."
+    },
+    {
+      "id": "observed-scope",
+      "layer": "observed",
+      "summary": "CloudTrail cannot see calls that never happened, and only the four reconciled role sessions are audited.",
+      "consequence": "Declared-but-unused is report-only with a minimum window and a recorded retention reason; it is narrowing input, never an automatic change."
+    }
+  ]
+}

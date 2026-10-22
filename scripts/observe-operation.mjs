@@ -1,6 +1,7 @@
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
-import { validateOperationInputs, createRuntimeIo } from './runtime-operation.mjs';
+import { validateOperationInputs, createRuntimeIo, credentialEnvironment } from './runtime-operation.mjs';
 import { observeDeployment } from './observe-deployment.mjs';
+import { runAuthorizationPreflight } from './authorization-preflight.mjs';
 import { validateDeploymentRecord, validateObservationRecord } from './deployment-contract.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
 import { buildDeploymentRecord, deploymentRecordType, observationRecordType, unpublishedStageInputs } from './observation-record.mjs';
@@ -26,6 +27,10 @@ if (boundary.readOnly) throw new Error('State observation cannot emit qualificat
 const operation = readOperationRecord(parseJson(await readFile('deployment-evidence/operation-record.json')));
 const io = await createRuntimeIo(env, operation, { purpose: 'qualification' });
 try {
+  // Pre-mutation preflight (#165) on the observe path: the qualification session
+  // is available, and the policy simulation runs before the observation starts.
+  // A deny or simulation failure stops before the observation does any work.
+  await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose: 'qualification', assume: credentialEnvironment });
   // The authenticated observation covers the stacks Infra still produces and the
   // stage-contract surface it publishes. The release slice is observed by
   // AnyWear-Service's release chain, never from here. Only the `runtime` family

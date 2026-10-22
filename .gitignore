@@ -12,6 +12,8 @@ bin/*.js
 bin/*.d.ts
 test/*.js
 test/*.d.ts
+test/support/*.js
+test/support/*.d.ts
 .service-artifacts/
 .qualification/
 .qualification-verifier/
