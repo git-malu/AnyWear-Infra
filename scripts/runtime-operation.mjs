@@ -1,6 +1,6 @@
-import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFileSync } from 'node:fs';
 import { readFile, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -19,6 +19,7 @@ import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowe
 import { runAuthorizationPreflight } from './authorization-preflight.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { account, region } from './deployment-contract.mjs';
+import { assertRuntimePhase, deployRuntime, stopRuntime } from './runtime-deploy.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,7 +34,8 @@ const admissionRecoveryOperations = ['close-admission', 'open-admission', 'resto
 // every operation of their entry, so their per-operation scope is enforced here
 // (before credentials) instead of by the file that carries them.
 const testerOperations = ['add-testers', 'set-testers'];
-const contextVariableOperations = ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'restore-release'];
+const contextVariableOperations = ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'restore-release',
+  'deploy-runtime', 'stop-runtime'];
 export function validateOperationInputs(env = process.env) {
   const boundary = operationBoundary(env);
   const operation = env.INFRA_OPERATION;
@@ -43,9 +45,12 @@ export function validateOperationInputs(env = process.env) {
   if (env.AWS_ACCOUNT_ID !== account || env.AWS_REGION !== region) throw new Error('Unexpected account/region');
   if (!['legacy', 'roles-added', 'retired'].includes(env.INFRA_IDENTITY_PHASE)) throw new Error('Explicit identity phase required');
   if (!['true', 'false'].includes(env.INFRA_RETENTION_PROTECTION)) throw new Error('Explicit retention protection required');
-  // Only a Platform deploy and a release recovery consume Service-built Lambda
-  // assets; every other operation must not carry a release identity at all.
+  // Only a Platform deploy, a Runtime deploy and a release recovery consume
+  // Service-built identity; every other operation must not carry a release
+  // identity at all.
   const release = validateReleaseInput(env, operation);
+  // The Runtime operations act only on the recorded live identity phase.
+  if (operation === 'deploy-runtime' || operation === 'stop-runtime') assertRuntimePhase(operation, env);
   // Only a deployment or a release recovery may vary these workflow-level
   // inputs; every other operation runs the retired, protected context.
   if (!contextVariableOperations.includes(operation)
@@ -194,6 +199,7 @@ function deployScopeFor(stack) {
   if (stack === baseStack) return 'application';
   if (stack === 'AnyWearBillingStack-beta') return 'billing';
   if (stack === egressStack) return 'egress';
+  if (stack === runtimeStack) return 'runtime';
   return 'foundation';
 }
 export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId } = {}) {
@@ -283,6 +289,42 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       }
       return observed;
     },
+    // Issue #195: the Runtime change-set driver runs under the restricted deploy
+    // session, never the read-only runtime session. Every call is checked against
+    // the deploy-session allow-list before it reaches AWS.
+    async awsAs(session, args) {
+      if (session !== 'deploy') throw new Error(`Unsupported explicit operation session ${session}`);
+      if (purpose !== 'operation') throw new Error('Qualification cannot use the deploy session');
+      assertAwsAllowed(env, args, purpose, 'deploy');
+      const awsEnv = await roleEnv('deploy');
+      const result = await run('aws', [...args, '--region', 'ap-east-1', '--output', 'json'],
+        { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
+      return result.stdout.trim() ? parseJson(result.stdout) : {};
+    },
+    // The CDK CLI creates this run's change set under the bootstrap deploy role.
+    // `--no-execute` means it records the delta and stops; the operation describes
+    // it, judges it and then executes or deletes it through `awsAs`.
+    async deployRuntimeChangeSet({ args }) {
+      if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
+      if (env.INFRA_OPERATION !== 'deploy-runtime') throw new Error('Only deploy-runtime may create a Runtime change set');
+      assertDeployAllowed(env, runtimeStack);
+      const awsEnv = await roleEnv('deploy');
+      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
+      await run('npx', args, { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
+      record?.events.push({ type: 'runtime-cdk-change-set', stack_name: runtimeStack, result: 'created' });
+    },
+    // A synchronous runner for the bake's AWS reads. It resolves the runtime
+    // session once and checks every call against the same reviewed allow-list;
+    // the bake's evaluation is deterministic and its transport is the CLI.
+    async runtimeAwsRunner() {
+      if (purpose !== 'operation') throw new Error('Qualification cannot run the deployment bake');
+      const awsEnv = await roleEnv('runtime');
+      return (args) => {
+        assertAwsAllowed(env, args, purpose, 'runtime');
+        return execFileSync('aws', [...args, '--region', 'ap-east-1', '--output', 'json'],
+          { env: awsEnv, timeout: 120_000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' });
+      };
+    },
     async oneShot(role, revision, argument = '', payload) {
       if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
       assertOneShotAllowed(env, role, argument, payload);
@@ -347,14 +389,18 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
         record?.events.push({ type: 'beta-platform-log-retention', stack_name: stack, result: 'complete' });
       }
     },
-    // The stop path's second step. It destroys only the disposable Egress stack;
-    // the caller proves the Runtime stack is already absent before credentials.
+    // The stop paths. `delete-egress` is the second stop step and destroys only
+    // the Egress stack; since #195 `stop-runtime` deletes only the release slice.
     async destroy(stack) {
       if (purpose !== 'operation') throw new Error('Qualification cannot destroy');
       assertDeployAllowed(env, stack);
-      if (env.INFRA_OPERATION !== 'delete-egress' || stack !== egressStack) throw new Error('Only delete-egress may destroy a stack');
+      if (env.INFRA_OPERATION === 'delete-egress') {
+        if (stack !== egressStack) throw new Error('Only delete-egress may destroy the Egress stack');
+      } else if (env.INFRA_OPERATION === 'stop-runtime') {
+        if (stack !== runtimeStack) throw new Error('Only stop-runtime may destroy the Runtime stack');
+      } else throw new Error('This operation may not destroy a stack');
       // Pre-mutation preflight (#165): simulate the deploy and runtime roles'
-      // authorization before the Egress stack is deleted.
+      // authorization before the stack is deleted.
       await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),
@@ -443,6 +489,13 @@ export async function runOperation(env = process.env) {
     const revision = workloadRevision(runtime);
     record.observed_service_revision = { service_sha: revision.commit, image_digest: revision.digest };
     await io.oneShot('migrate', revision);
+  } else if (operation === 'deploy-runtime') {
+    // Issue #195: one operation deploys a Service release, resolves the image
+    // digest, records the change set, bakes the six signals and writes the v5
+    // record. It produces its own accepted record, so no `observe` job follows.
+    await deployRuntime({ io, env, record, release: record.service_release });
+  } else if (operation === 'stop-runtime') {
+    await stopRuntime({ io, env, record });
   } else if (operation === 'delete-egress') {
     await deleteOperationStack(io, operation, record);
   } else if (operation !== 'observe') {
@@ -458,7 +511,10 @@ export async function runOperation(env = process.env) {
   record.events.push({ type: 'final-stack-state', base_status: base?.StackStatus ?? 'unavailable',
     runtime_status: runtime?.StackStatus ?? 'unavailable', runtime_exists: runtimeExists(runtime) });
   if (!terminalStackStatuses.has(base?.StackStatus)) throw new Error(`The Base stack is not terminal after ${operation}`);
-  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `runtime_exists=${runtimeExists(runtime)}\nrequires_qualification=true\n`);
+  // `deploy-runtime` writes the accepted v5 record itself; every other mutating
+  // operation still needs the separate read-only observation job.
+  const requiresQualification = operation === 'deploy-runtime' ? 'false' : 'true';
+  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `runtime_exists=${runtimeExists(runtime)}\nrequires_qualification=${requiresQualification}\n`);
   if (env.GITHUB_STEP_SUMMARY) {
     const release = inputs.service_release ? ` Service release ${inputs.service_release.releaseTag}@${inputs.service_release.serviceCommit}.` : '';
     await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}.${release}\n`);

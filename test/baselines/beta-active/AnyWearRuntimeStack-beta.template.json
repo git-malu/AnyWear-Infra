@@ -1,0 +1,2060 @@
+{
+ "Parameters": {
+  "SsmParameterValueanywearbetavpcidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/vpc_id"
+  },
+  "SsmParameterValueanywearbetapublicsubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<List<String>>",
+   "Default": "/anywear/beta/public_subnet_ids"
+  },
+  "SsmParameterValueanywearbetaprivatesubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<List<String>>",
+   "Default": "/anywear/beta/private_subnet_ids"
+  },
+  "SsmParameterValueanywearbetadatabasesecretarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/database_secret_arn"
+  },
+  "SsmParameterValueanywearbetadatabasehostC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/database_host"
+  },
+  "SsmParameterValueanywearbetadatabaseportC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/database_port"
+  },
+  "SsmParameterValueanywearbetas3bucketarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/s3_bucket_arn"
+  },
+  "SsmParameterValueanywearbetas3bucketnameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/s3_bucket_name"
+  },
+  "SsmParameterValueanywearbetaservicerepositoryarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/service_repository_arn"
+  },
+  "SsmParameterValueanywearbetaservicerepositorynameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/service_repository_name"
+  },
+  "SsmParameterValueanywearbetavtoqueuearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/vto_queue_arn"
+  },
+  "SsmParameterValueanywearbetavtoqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/vto_queue_name"
+  },
+  "SsmParameterValueanywearbetavtoqueueurlC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/vto_queue_url"
+  },
+  "SsmParameterValueanywearbetaautotaggingqueuearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/auto_tagging_queue_arn"
+  },
+  "SsmParameterValueanywearbetaautotaggingqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/auto_tagging_queue_name"
+  },
+  "SsmParameterValueanywearbetaautotaggingqueueurlC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/auto_tagging_queue_url"
+  },
+  "SsmParameterValueanywearbetavtodlqnameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/vto_dlq_name"
+  },
+  "SsmParameterValueanywearbetavtodlqurlC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/vto_dlq_url"
+  },
+  "SsmParameterValueanywearbetaautotaggingdlqnameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/auto_tagging_dlq_name"
+  },
+  "SsmParameterValueanywearbetaautotaggingdlqurlC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/auto_tagging_dlq_url"
+  },
+  "SsmParameterValueanywearbetaverificationtaskrolearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/verification_task_role_arn"
+  },
+  "SsmParameterValueanywearbetaoneshotexecutionrolearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/one_shot_execution_role_arn"
+  },
+  "SsmParameterValueanywearbetaoneshotloggrouparnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/one_shot_log_group_arn"
+  },
+  "SsmParameterValueanywearbetaoneshotloggroupnameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/one_shot_log_group_name"
+  },
+  "SsmParameterValueanywearbetaoneshotsecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/one_shot_security_group_id"
+  },
+  "SsmParameterValueanywearbetaecsclusterarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/ecs_cluster_arn"
+  },
+  "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/ecs_cluster_name"
+  },
+  "SsmParameterValueanywearbetaapisecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/api_security_group_id"
+  },
+  "SsmParameterValueanywearbetaworkersecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/worker_security_group_id"
+  },
+  "SsmParameterValueanywearbetaloadbalancersecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/load_balancer_security_group_id"
+  },
+  "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/operations_topic_arn"
+  },
+  "SsmParameterValueanywearbetaservicerepositoryuriC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/service_repository_uri"
+  },
+  "SsmParameterValueanywearbetaapibaseurlC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/api_base_url"
+  },
+  "SsmParameterValueanywearbetacognitouserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/cognito_user_pool_id"
+  },
+  "SsmParameterValueanywearbetacognitoclientidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/cognito_client_id"
+  },
+  "BetaApiSizingProfile": {
+   "Type": "String",
+   "Default": "s1",
+   "AllowedValues": [
+    "s1",
+    "s2-api"
+   ],
+   "Description": "Retained Beta API sizing profile; s2-api is an unqualified Issue #95 candidate"
+  },
+  "BetaSizingTelemetry": {
+   "Type": "String",
+   "Default": "false",
+   "AllowedValues": [
+    "false",
+    "true"
+   ],
+   "Description": "Retained Beta API and Worker sizing telemetry; disabled by default"
+  },
+  "ServiceImageDigest": {
+   "Type": "String",
+   "AllowedPattern": "^sha256:[a-f0-9]{64}$",
+   "ConstraintDescription": "Must be a sha256 OCI image digest",
+   "Description": "Immutable ECR image digest qualified for this deployment"
+  },
+  "ServiceCommitSha": {
+   "Type": "String",
+   "AllowedPattern": "^[a-f0-9]{40}$",
+   "Description": "Exact AnyWear-Service commit represented by the image"
+  },
+  "VlmConfigArn": {
+   "Type": "String",
+   "Description": "Secrets Manager ARN containing DOUBAO_VLM_API_KEY"
+  },
+  "CloudFrontPrefixListId": {
+   "Type": "String",
+   "AllowedPattern": "^pl-[a-z0-9]+$",
+   "Description": "Regional ID for com.amazonaws.global.cloudfront.origin-facing"
+  },
+  "SsmParameterValueanywearbetaqweatherapihostC96584B6F00A464EAD1953AFF4B05118Parameter": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/anywear/beta/qweather_api_host"
+  },
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Conditions": {
+  "BetaApiS2": {
+   "Fn::Equals": [
+    {
+     "Ref": "BetaApiSizingProfile"
+    },
+    "s2-api"
+   ]
+  }
+ },
+ "Resources": {
+  "ComputeRuntimeCloudFrontOriginIngress3B8D6D63": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "CloudFront origin-facing network only",
+    "FromPort": 80,
+    "GroupId": {
+     "Ref": "SsmParameterValueanywearbetaloadbalancersecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter"
+    },
+    "IpProtocol": "tcp",
+    "SourcePrefixListId": {
+     "Ref": "CloudFrontPrefixListId"
+    },
+    "ToPort": 80
+   }
+  },
+  "ComputeRuntimeLoadBalancerABD1175B": {
+   "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+   "Properties": {
+    "LoadBalancerAttributes": [
+     {
+      "Key": "deletion_protection.enabled",
+      "Value": "false"
+     }
+    ],
+    "Name": "beta-anywear-api",
+    "Scheme": "internet-facing",
+    "SecurityGroups": [
+     {
+      "Ref": "SsmParameterValueanywearbetaloadbalancersecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "Subnets": [
+     {
+      "Fn::Select": [
+       0,
+       {
+        "Ref": "SsmParameterValueanywearbetapublicsubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter"
+       }
+      ]
+     },
+     {
+      "Fn::Select": [
+       1,
+       {
+        "Ref": "SsmParameterValueanywearbetapublicsubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter"
+       }
+      ]
+     }
+    ],
+    "Type": "application"
+   }
+  },
+  "ComputeRuntimeLoadBalancerHttpListenerD3B04BD9": {
+   "Type": "AWS::ElasticLoadBalancingV2::Listener",
+   "Properties": {
+    "DefaultActions": [
+     {
+      "FixedResponseConfig": {
+       "ContentType": "application/json",
+       "MessageBody": "{\"error\":\"forbidden_origin\"}",
+       "StatusCode": "403"
+      },
+      "Type": "fixed-response"
+     }
+    ],
+    "LoadBalancerArn": {
+     "Ref": "ComputeRuntimeLoadBalancerABD1175B"
+    },
+    "Port": 80,
+    "Protocol": "HTTP"
+   }
+  },
+  "ComputeRuntimeLoadBalancerHttpListenerCloudFrontVerifiedOriginRule5CA288B3": {
+   "Type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+   "Properties": {
+    "Actions": [
+     {
+      "TargetGroupArn": {
+       "Ref": "ComputeRuntimeApiTargetGroupDA07A6E8"
+      },
+      "Type": "forward"
+     }
+    ],
+    "Conditions": [
+     {
+      "Field": "http-header",
+      "HttpHeaderConfig": {
+       "HttpHeaderName": "X-AnyWear-Origin-Verify",
+       "Values": [
+        "{{resolve:secretsmanager:arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header:SecretString:::}}"
+       ]
+      }
+     }
+    ],
+    "ListenerArn": {
+     "Ref": "ComputeRuntimeLoadBalancerHttpListenerD3B04BD9"
+    },
+    "Priority": 1
+   }
+  },
+  "ComputeRuntimeApiTargetGroupDA07A6E8": {
+   "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+   "Properties": {
+    "HealthCheckIntervalSeconds": 30,
+    "HealthCheckPath": "/readyz",
+    "HealthCheckTimeoutSeconds": 5,
+    "Matcher": {
+     "HttpCode": "200"
+    },
+    "Name": "beta-anywear-api",
+    "Port": 3000,
+    "Protocol": "HTTP",
+    "TargetGroupAttributes": [
+     {
+      "Key": "deregistration_delay.timeout_seconds",
+      "Value": "30"
+     },
+     {
+      "Key": "stickiness.enabled",
+      "Value": "false"
+     }
+    ],
+    "TargetType": "ip",
+    "VpcId": {
+     "Ref": "SsmParameterValueanywearbetavpcidC96584B6F00A464EAD1953AFF4B05118Parameter"
+    }
+   }
+  },
+  "ComputeRuntimeApiLogGroupC2FC529C": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/anywear/beta/api",
+    "RetentionInDays": 14
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "ComputeRuntimeWorkerLogGroupF6DEE804": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/anywear/beta/worker",
+    "RetentionInDays": 14
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete"
+  },
+  "ComputeRuntimeApiTaskRoleA4C8842E": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "RoleName": "beta-anywear-api-task"
+   }
+  },
+  "ComputeRuntimeApiTaskRoleDefaultPolicyFCDB5A0D": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cleanup_machine_auth-??????",
+        {
+         "Ref": "SsmParameterValueanywearbetadatabasesecretarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "SsmParameterValueanywearbetas3bucketarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+           },
+           "/*"
+          ]
+         ]
+        },
+        {
+         "Ref": "SsmParameterValueanywearbetas3bucketarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ComputeRuntimeApiTaskRoleDefaultPolicyFCDB5A0D",
+    "Roles": [
+     {
+      "Ref": "ComputeRuntimeApiTaskRoleA4C8842E"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeApiExecutionRole8677C168": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+       ]
+      ]
+     }
+    ],
+    "RoleName": "beta-anywear-api-execution"
+   }
+  },
+  "ComputeRuntimeApiExecutionRoleDefaultPolicy97341159": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "SsmParameterValueanywearbetaservicerepositoryarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+       }
+      },
+      {
+       "Action": "ecr:GetAuthorizationToken",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "ComputeRuntimeApiLogGroupC2FC529C",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cleanup_machine_auth-??????",
+        "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/qweather_api_key-??????"
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ComputeRuntimeApiExecutionRoleDefaultPolicy97341159",
+    "Roles": [
+     {
+      "Ref": "ComputeRuntimeApiExecutionRole8677C168"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeWorkerTaskRole66813EBC": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "RoleName": "beta-anywear-worker-task"
+   }
+  },
+  "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "SsmParameterValueanywearbetadatabasesecretarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+       }
+      },
+      {
+       "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "SsmParameterValueanywearbetas3bucketarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+           },
+           "/*"
+          ]
+         ]
+        },
+        {
+         "Ref": "SsmParameterValueanywearbetas3bucketarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "sqs:ChangeMessageVisibility",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:ReceiveMessage",
+        "sqs:SendMessage"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Ref": "SsmParameterValueanywearbetaautotaggingqueuearnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        {
+         "Ref": "SsmParameterValueanywearbetavtoqueuearnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "ecs:GetTaskProtection",
+        "ecs:UpdateTaskProtection"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:aws:ecs:ap-east-1:650880818323:task/",
+          {
+           "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+    "Roles": [
+     {
+      "Ref": "ComputeRuntimeWorkerTaskRole66813EBC"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeWorkerExecutionRoleAC47F012": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+       ]
+      ]
+     }
+    ],
+    "RoleName": "beta-anywear-worker-execution"
+   }
+  },
+  "ComputeRuntimeWorkerExecutionRoleDefaultPolicyA3ABB12A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "SsmParameterValueanywearbetaservicerepositoryarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+       }
+      },
+      {
+       "Action": "ecr:GetAuthorizationToken",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "ComputeRuntimeWorkerLogGroupF6DEE804",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "VlmConfigArn"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ComputeRuntimeWorkerExecutionRoleDefaultPolicyA3ABB12A",
+    "Roles": [
+     {
+      "Ref": "ComputeRuntimeWorkerExecutionRoleAC47F012"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeApiTaskDefinition99E11C46": {
+   "Type": "AWS::ECS::TaskDefinition",
+   "Properties": {
+    "ContainerDefinitions": [
+     {
+      "Command": [
+       "node",
+       "dist/api.js"
+      ],
+      "Environment": [
+       {
+        "Name": "STAGE",
+        "Value": "beta"
+       },
+       {
+        "Name": "NODE_ENV",
+        "Value": "production"
+       },
+       {
+        "Name": "AWS_REGION",
+        "Value": "ap-east-1"
+       },
+       {
+        "Name": "DB_SECRET_ARN",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetadatabasesecretarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "DB_HOST",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetadatabasehostC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "DB_PORT",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetadatabaseportC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "DB_NAME",
+        "Value": "anywear"
+       },
+       {
+        "Name": "S3_BUCKET_NAME",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetas3bucketnameC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "TASK_TRANSPORT",
+        "Value": "sqs"
+       },
+       {
+        "Name": "SQS_VTO_QUEUE_URL",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetavtoqueueurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "SQS_AUTO_TAGGING_QUEUE_URL",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetaautotaggingqueueurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "SERVICE_COMMIT_SHA",
+        "Value": {
+         "Ref": "ServiceCommitSha"
+        }
+       },
+       {
+        "Name": "IMAGE_DIGEST",
+        "Value": {
+         "Ref": "ServiceImageDigest"
+        }
+       },
+       {
+        "Name": "BETA_SIZING_TELEMETRY",
+        "Value": {
+         "Ref": "BetaSizingTelemetry"
+        }
+       },
+       {
+        "Name": "PORT",
+        "Value": "3000"
+       },
+       {
+        "Name": "COGNITO_USER_POOL_ID",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetacognitouserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "COGNITO_CLIENT_ID",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetacognitoclientidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "QWEATHER_API_HOST",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetaqweatherapihostC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       }
+      ],
+      "Essential": true,
+      "HealthCheck": {
+       "Command": [
+        "CMD-SHELL",
+        "node -e \"fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+       ],
+       "Interval": 30,
+       "Retries": 3,
+       "StartPeriod": 30,
+       "Timeout": 5
+      },
+      "Image": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Fn::Select": [
+           4,
+           {
+            "Fn::Split": [
+             ":",
+             {
+              "Ref": "SsmParameterValueanywearbetaservicerepositoryarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+             }
+            ]
+           }
+          ]
+         },
+         ".dkr.ecr.",
+         {
+          "Fn::Select": [
+           3,
+           {
+            "Fn::Split": [
+             ":",
+             {
+              "Ref": "SsmParameterValueanywearbetaservicerepositoryarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+             }
+            ]
+           }
+          ]
+         },
+         ".",
+         {
+          "Ref": "AWS::URLSuffix"
+         },
+         "/",
+         {
+          "Ref": "SsmParameterValueanywearbetaservicerepositorynameC96584B6F00A464EAD1953AFF4B05118Parameter"
+         },
+         "@",
+         {
+          "Ref": "ServiceImageDigest"
+         }
+        ]
+       ]
+      },
+      "LogConfiguration": {
+       "LogDriver": "awslogs",
+       "Options": {
+        "awslogs-group": {
+         "Ref": "ComputeRuntimeApiLogGroupC2FC529C"
+        },
+        "awslogs-stream-prefix": "api",
+        "awslogs-region": "ap-east-1"
+       }
+      },
+      "Name": "ApiContainer",
+      "PortMappings": [
+       {
+        "AppProtocol": "http",
+        "ContainerPort": 3000,
+        "Name": "http",
+        "Protocol": "tcp"
+       }
+      ],
+      "Secrets": [
+       {
+        "Name": "QWEATHER_API_KEY",
+        "ValueFrom": "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/qweather_api_key"
+       },
+       {
+        "Name": "CLEANUP_MACHINE_AUTH_SECRET",
+        "ValueFrom": "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cleanup_machine_auth"
+       }
+      ]
+     }
+    ],
+    "Cpu": {
+     "Fn::If": [
+      "BetaApiS2",
+      "256",
+      "512"
+     ]
+    },
+    "ExecutionRoleArn": {
+     "Fn::GetAtt": [
+      "ComputeRuntimeApiExecutionRole8677C168",
+      "Arn"
+     ]
+    },
+    "Family": "beta-anywear-api",
+    "Memory": {
+     "Fn::If": [
+      "BetaApiS2",
+      "512",
+      "1024"
+     ]
+    },
+    "NetworkMode": "awsvpc",
+    "RequiresCompatibilities": [
+     "FARGATE"
+    ],
+    "TaskRoleArn": {
+     "Fn::GetAtt": [
+      "ComputeRuntimeApiTaskRoleA4C8842E",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "ComputeRuntimeWorkerTaskDefinitionFDF37699": {
+   "Type": "AWS::ECS::TaskDefinition",
+   "Properties": {
+    "ContainerDefinitions": [
+     {
+      "Command": [
+       "node",
+       "dist/worker.js"
+      ],
+      "Environment": [
+       {
+        "Name": "STAGE",
+        "Value": "beta"
+       },
+       {
+        "Name": "NODE_ENV",
+        "Value": "production"
+       },
+       {
+        "Name": "AWS_REGION",
+        "Value": "ap-east-1"
+       },
+       {
+        "Name": "DB_SECRET_ARN",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetadatabasesecretarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "DB_HOST",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetadatabasehostC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "DB_PORT",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetadatabaseportC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "DB_NAME",
+        "Value": "anywear"
+       },
+       {
+        "Name": "S3_BUCKET_NAME",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetas3bucketnameC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "TASK_TRANSPORT",
+        "Value": "sqs"
+       },
+       {
+        "Name": "SQS_VTO_QUEUE_URL",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetavtoqueueurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "SQS_AUTO_TAGGING_QUEUE_URL",
+        "Value": {
+         "Ref": "SsmParameterValueanywearbetaautotaggingqueueurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+        }
+       },
+       {
+        "Name": "SERVICE_COMMIT_SHA",
+        "Value": {
+         "Ref": "ServiceCommitSha"
+        }
+       },
+       {
+        "Name": "IMAGE_DIGEST",
+        "Value": {
+         "Ref": "ServiceImageDigest"
+        }
+       },
+       {
+        "Name": "BETA_SIZING_TELEMETRY",
+        "Value": {
+         "Ref": "BetaSizingTelemetry"
+        }
+       },
+       {
+        "Name": "VLM_DEFAULT_PROVIDER",
+        "Value": "doubao"
+       }
+      ],
+      "Essential": true,
+      "Image": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Fn::Select": [
+           4,
+           {
+            "Fn::Split": [
+             ":",
+             {
+              "Ref": "SsmParameterValueanywearbetaservicerepositoryarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+             }
+            ]
+           }
+          ]
+         },
+         ".dkr.ecr.",
+         {
+          "Fn::Select": [
+           3,
+           {
+            "Fn::Split": [
+             ":",
+             {
+              "Ref": "SsmParameterValueanywearbetaservicerepositoryarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+             }
+            ]
+           }
+          ]
+         },
+         ".",
+         {
+          "Ref": "AWS::URLSuffix"
+         },
+         "/",
+         {
+          "Ref": "SsmParameterValueanywearbetaservicerepositorynameC96584B6F00A464EAD1953AFF4B05118Parameter"
+         },
+         "@",
+         {
+          "Ref": "ServiceImageDigest"
+         }
+        ]
+       ]
+      },
+      "LogConfiguration": {
+       "LogDriver": "awslogs",
+       "Options": {
+        "awslogs-group": {
+         "Ref": "ComputeRuntimeWorkerLogGroupF6DEE804"
+        },
+        "awslogs-stream-prefix": "worker",
+        "awslogs-region": "ap-east-1"
+       }
+      },
+      "Name": "WorkerContainer",
+      "Secrets": [
+       {
+        "Name": "DOUBAO_VLM_API_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "VlmConfigArn"
+           },
+           ":DOUBAO_VLM_API_KEY::"
+          ]
+         ]
+        }
+       }
+      ]
+     }
+    ],
+    "Cpu": "1024",
+    "ExecutionRoleArn": {
+     "Fn::GetAtt": [
+      "ComputeRuntimeWorkerExecutionRoleAC47F012",
+      "Arn"
+     ]
+    },
+    "Family": "beta-anywear-worker",
+    "Memory": "2048",
+    "NetworkMode": "awsvpc",
+    "RequiresCompatibilities": [
+     "FARGATE"
+    ],
+    "TaskRoleArn": {
+     "Fn::GetAtt": [
+      "ComputeRuntimeWorkerTaskRole66813EBC",
+      "Arn"
+     ]
+    }
+   }
+  },
+  "ComputeRuntimeApiServiceD2475D0A": {
+   "Type": "AWS::ECS::Service",
+   "Properties": {
+    "Cluster": {
+     "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+    },
+    "DeploymentConfiguration": {
+     "DeploymentCircuitBreaker": {
+      "Enable": true,
+      "Rollback": true
+     },
+     "MaximumPercent": 200,
+     "MinimumHealthyPercent": 100
+    },
+    "DesiredCount": 1,
+    "EnableECSManagedTags": false,
+    "EnableExecuteCommand": false,
+    "HealthCheckGracePeriodSeconds": 60,
+    "LaunchType": "FARGATE",
+    "LoadBalancers": [
+     {
+      "ContainerName": "ApiContainer",
+      "ContainerPort": 3000,
+      "TargetGroupArn": {
+       "Ref": "ComputeRuntimeApiTargetGroupDA07A6E8"
+      }
+     }
+    ],
+    "NetworkConfiguration": {
+     "AwsvpcConfiguration": {
+      "AssignPublicIp": "DISABLED",
+      "SecurityGroups": [
+       {
+        "Ref": "SsmParameterValueanywearbetaapisecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter"
+       }
+      ],
+      "Subnets": [
+       {
+        "Fn::Select": [
+         0,
+         {
+          "Ref": "SsmParameterValueanywearbetaprivatesubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter"
+         }
+        ]
+       },
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Ref": "SsmParameterValueanywearbetaprivatesubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    "ServiceName": "beta-anywear-api",
+    "TaskDefinition": {
+     "Ref": "ComputeRuntimeApiTaskDefinition99E11C46"
+    }
+   },
+   "DependsOn": [
+    "ComputeRuntimeApiTaskRoleDefaultPolicyFCDB5A0D",
+    "ComputeRuntimeApiTaskRoleA4C8842E",
+    "ComputeRuntimeLoadBalancerHttpListenerCloudFrontVerifiedOriginRule5CA288B3"
+   ]
+  },
+  "ComputeRuntimeApiServiceTaskCountTarget2C7645AB": {
+   "Type": "AWS::ApplicationAutoScaling::ScalableTarget",
+   "Properties": {
+    "MaxCapacity": 4,
+    "MinCapacity": 1,
+    "ResourceId": {
+     "Fn::Join": [
+      "",
+      [
+       "service/",
+       {
+        "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "ComputeRuntimeApiServiceD2475D0A",
+         "Name"
+        ]
+       }
+      ]
+     ]
+    },
+    "RoleARN": "arn:aws:iam::650880818323:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService",
+    "ScalableDimension": "ecs:service:DesiredCount",
+    "ServiceNamespace": "ecs"
+   },
+   "DependsOn": [
+    "ComputeRuntimeApiTaskRoleDefaultPolicyFCDB5A0D",
+    "ComputeRuntimeApiTaskRoleA4C8842E"
+   ]
+  },
+  "ComputeRuntimeApiServiceTaskCountTargetApiCpuScaling5B937892": {
+   "Type": "AWS::ApplicationAutoScaling::ScalingPolicy",
+   "Properties": {
+    "PolicyName": "AnyWearRuntimeStackbetaComputeRuntimeApiServiceTaskCountTargetApiCpuScalingAC7B378D",
+    "PolicyType": "TargetTrackingScaling",
+    "ScalingTargetId": {
+     "Ref": "ComputeRuntimeApiServiceTaskCountTarget2C7645AB"
+    },
+    "TargetTrackingScalingPolicyConfiguration": {
+     "PredefinedMetricSpecification": {
+      "PredefinedMetricType": "ECSServiceAverageCPUUtilization"
+     },
+     "ScaleInCooldown": 300,
+     "ScaleOutCooldown": 60,
+     "TargetValue": 60
+    }
+   },
+   "DependsOn": [
+    "ComputeRuntimeApiTaskRoleDefaultPolicyFCDB5A0D",
+    "ComputeRuntimeApiTaskRoleA4C8842E"
+   ]
+  },
+  "ComputeRuntimeWorkerServiceCDA21CB2": {
+   "Type": "AWS::ECS::Service",
+   "Properties": {
+    "Cluster": {
+     "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+    },
+    "DeploymentConfiguration": {
+     "DeploymentCircuitBreaker": {
+      "Enable": true,
+      "Rollback": true
+     },
+     "MaximumPercent": 200,
+     "MinimumHealthyPercent": 100
+    },
+    "DesiredCount": 1,
+    "EnableECSManagedTags": false,
+    "EnableExecuteCommand": false,
+    "LaunchType": "FARGATE",
+    "NetworkConfiguration": {
+     "AwsvpcConfiguration": {
+      "AssignPublicIp": "DISABLED",
+      "SecurityGroups": [
+       {
+        "Ref": "SsmParameterValueanywearbetaworkersecuritygroupidC96584B6F00A464EAD1953AFF4B05118Parameter"
+       }
+      ],
+      "Subnets": [
+       {
+        "Fn::Select": [
+         0,
+         {
+          "Ref": "SsmParameterValueanywearbetaprivatesubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter"
+         }
+        ]
+       },
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Ref": "SsmParameterValueanywearbetaprivatesubnetidsC96584B6F00A464EAD1953AFF4B05118Parameter"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    "ServiceName": "beta-anywear-worker",
+    "TaskDefinition": {
+     "Ref": "ComputeRuntimeWorkerTaskDefinitionFDF37699"
+    }
+   },
+   "DependsOn": [
+    "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+    "ComputeRuntimeWorkerTaskRole66813EBC"
+   ]
+  },
+  "ComputeRuntimeWorkerServiceTaskCountTargetAE996473": {
+   "Type": "AWS::ApplicationAutoScaling::ScalableTarget",
+   "Properties": {
+    "MaxCapacity": 4,
+    "MinCapacity": 1,
+    "ResourceId": {
+     "Fn::Join": [
+      "",
+      [
+       "service/",
+       {
+        "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "ComputeRuntimeWorkerServiceCDA21CB2",
+         "Name"
+        ]
+       }
+      ]
+     ]
+    },
+    "RoleARN": "arn:aws:iam::650880818323:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService",
+    "ScalableDimension": "ecs:service:DesiredCount",
+    "ServiceNamespace": "ecs"
+   },
+   "DependsOn": [
+    "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+    "ComputeRuntimeWorkerTaskRole66813EBC"
+   ]
+  },
+  "ComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingUpperPolicy16579F51": {
+   "Type": "AWS::ApplicationAutoScaling::ScalingPolicy",
+   "Properties": {
+    "PolicyName": "AnyWearRuntimeStackbetaComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingUpperPolicy29456A56",
+    "PolicyType": "StepScaling",
+    "ScalingTargetId": {
+     "Ref": "ComputeRuntimeWorkerServiceTaskCountTargetAE996473"
+    },
+    "StepScalingPolicyConfiguration": {
+     "AdjustmentType": "ChangeInCapacity",
+     "Cooldown": 60,
+     "StepAdjustments": [
+      {
+       "MetricIntervalLowerBound": 0,
+       "MetricIntervalUpperBound": 9,
+       "ScalingAdjustment": 1
+      },
+      {
+       "MetricIntervalLowerBound": 9,
+       "ScalingAdjustment": 2
+      }
+     ]
+    }
+   },
+   "DependsOn": [
+    "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+    "ComputeRuntimeWorkerTaskRole66813EBC"
+   ]
+  },
+  "ComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingUpperAlarm69C122A0": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "ComputeRuntimeWorkerServiceTaskCountTargetQueueDepthScalingUpperPolicy16579F51"
+     }
+    ],
+    "AlarmDescription": "Upper threshold scaling alarm",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 1,
+    "Metrics": [
+     {
+      "Expression": "vto + tagging",
+      "Id": "expr_1",
+      "ReturnData": true
+     },
+     {
+      "Id": "vto",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "QueueName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetavtoqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         }
+        ],
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS"
+       },
+       "Period": 60,
+       "Stat": "Maximum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "tagging",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "QueueName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetaautotaggingqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         }
+        ],
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS"
+       },
+       "Period": 60,
+       "Stat": "Maximum"
+      },
+      "ReturnData": false
+     }
+    ],
+    "Threshold": 1
+   },
+   "DependsOn": [
+    "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+    "ComputeRuntimeWorkerTaskRole66813EBC"
+   ]
+  },
+  "ComputeRuntimeWorkerServiceTaskCountTargetQueueDrainScalingLowerPolicyC435097A": {
+   "Type": "AWS::ApplicationAutoScaling::ScalingPolicy",
+   "Properties": {
+    "PolicyName": "AnyWearRuntimeStackbetaComputeRuntimeWorkerServiceTaskCountTargetQueueDrainScalingLowerPolicy9FBBFE3F",
+    "PolicyType": "StepScaling",
+    "ScalingTargetId": {
+     "Ref": "ComputeRuntimeWorkerServiceTaskCountTargetAE996473"
+    },
+    "StepScalingPolicyConfiguration": {
+     "AdjustmentType": "ChangeInCapacity",
+     "Cooldown": 60,
+     "StepAdjustments": [
+      {
+       "MetricIntervalUpperBound": 0,
+       "ScalingAdjustment": -1
+      }
+     ]
+    }
+   },
+   "DependsOn": [
+    "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+    "ComputeRuntimeWorkerTaskRole66813EBC"
+   ]
+  },
+  "ComputeRuntimeWorkerServiceTaskCountTargetQueueDrainScalingLowerAlarm56B97485": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "ComputeRuntimeWorkerServiceTaskCountTargetQueueDrainScalingLowerPolicyC435097A"
+     }
+    ],
+    "AlarmDescription": "Lower threshold scaling alarm",
+    "ComparisonOperator": "LessThanOrEqualToThreshold",
+    "EvaluationPeriods": 2,
+    "Metrics": [
+     {
+      "Expression": "vto_visible + vto_inflight + tagging_visible + tagging_inflight",
+      "Id": "expr_1",
+      "ReturnData": true
+     },
+     {
+      "Id": "vto_visible",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "QueueName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetavtoqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         }
+        ],
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS"
+       },
+       "Period": 60,
+       "Stat": "Maximum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "vto_inflight",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "QueueName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetavtoqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         }
+        ],
+        "MetricName": "ApproximateNumberOfMessagesNotVisible",
+        "Namespace": "AWS/SQS"
+       },
+       "Period": 60,
+       "Stat": "Maximum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "tagging_visible",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "QueueName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetaautotaggingqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         }
+        ],
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS"
+       },
+       "Period": 60,
+       "Stat": "Maximum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "tagging_inflight",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "QueueName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetaautotaggingqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         }
+        ],
+        "MetricName": "ApproximateNumberOfMessagesNotVisible",
+        "Namespace": "AWS/SQS"
+       },
+       "Period": 60,
+       "Stat": "Maximum"
+      },
+      "ReturnData": false
+     }
+    ],
+    "Threshold": 0
+   },
+   "DependsOn": [
+    "ComputeRuntimeWorkerTaskRoleDefaultPolicyD3D4D309",
+    "ComputeRuntimeWorkerTaskRole66813EBC"
+   ]
+  },
+  "ComputeRuntimeVtoDlqAlarmFB9DF4F1": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-vto-dlq-not-empty",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "QueueName",
+      "Value": {
+       "Ref": "SsmParameterValueanywearbetavtodlqnameC96584B6F00A464EAD1953AFF4B05118Parameter"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ApproximateNumberOfMessagesVisible",
+    "Namespace": "AWS/SQS",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeAutoTaggingDlqAlarmF71D1352": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-auto-tagging-dlq-not-empty",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "QueueName",
+      "Value": {
+       "Ref": "SsmParameterValueanywearbetaautotaggingdlqnameC96584B6F00A464EAD1953AFF4B05118Parameter"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ApproximateNumberOfMessagesVisible",
+    "Namespace": "AWS/SQS",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeVtoAgeAlarm02DEBB57": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-vto-oldest-message",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "Dimensions": [
+     {
+      "Name": "QueueName",
+      "Value": {
+       "Ref": "SsmParameterValueanywearbetavtoqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "ApproximateAgeOfOldestMessage",
+    "Namespace": "AWS/SQS",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Threshold": 300,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeAutoTaggingAgeAlarmDF06D465": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-auto-tagging-oldest-message",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "Dimensions": [
+     {
+      "Name": "QueueName",
+      "Value": {
+       "Ref": "SsmParameterValueanywearbetaautotaggingqueuenameC96584B6F00A464EAD1953AFF4B05118Parameter"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "ApproximateAgeOfOldestMessage",
+    "Namespace": "AWS/SQS",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Threshold": 300,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeApiCpuAlarmE55AD7BE": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-api-high-cpu",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "ClusterName",
+      "Value": {
+       "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+      }
+     },
+     {
+      "Name": "ServiceName",
+      "Value": {
+       "Fn::GetAtt": [
+        "ComputeRuntimeApiServiceD2475D0A",
+        "Name"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "CPUUtilization",
+    "Namespace": "AWS/ECS",
+    "Period": 300,
+    "Statistic": "Average",
+    "Threshold": 85,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeAlb5xxAlarm3A2E5E3F": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-alb-5xx",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 3,
+    "Metrics": [
+     {
+      "Expression": "IF(requests > 0, 100 * (target5xx + elb5xx) / requests, 0)",
+      "Id": "expr_1",
+      "ReturnData": true
+     },
+     {
+      "Id": "target5xx",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "LoadBalancer",
+          "Value": {
+           "Fn::GetAtt": [
+            "ComputeRuntimeLoadBalancerABD1175B",
+            "LoadBalancerFullName"
+           ]
+          }
+         }
+        ],
+        "MetricName": "HTTPCode_Target_5XX_Count",
+        "Namespace": "AWS/ApplicationELB"
+       },
+       "Period": 60,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "elb5xx",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "LoadBalancer",
+          "Value": {
+           "Fn::GetAtt": [
+            "ComputeRuntimeLoadBalancerABD1175B",
+            "LoadBalancerFullName"
+           ]
+          }
+         }
+        ],
+        "MetricName": "HTTPCode_ELB_5XX_Count",
+        "Namespace": "AWS/ApplicationELB"
+       },
+       "Period": 60,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "requests",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "LoadBalancer",
+          "Value": {
+           "Fn::GetAtt": [
+            "ComputeRuntimeLoadBalancerABD1175B",
+            "LoadBalancerFullName"
+           ]
+          }
+         }
+        ],
+        "MetricName": "RequestCount",
+        "Namespace": "AWS/ApplicationELB"
+       },
+       "Period": 60,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     }
+    ],
+    "Threshold": 5,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeApiP95LatencyAlarm4C92F930": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-api-p95-latency",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "Dimensions": [
+     {
+      "Name": "LoadBalancer",
+      "Value": {
+       "Fn::GetAtt": [
+        "ComputeRuntimeLoadBalancerABD1175B",
+        "LoadBalancerFullName"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 3,
+    "ExtendedStatistic": "p95",
+    "MetricName": "TargetResponseTime",
+    "Namespace": "AWS/ApplicationELB",
+    "Period": 60,
+    "Threshold": 5,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeEcsRunningNotDesiredAlarm547C84B2": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-ecs-running-not-desired",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "EvaluationPeriods": 2,
+    "Metrics": [
+     {
+      "Expression": "MAX([api_desired - api_running, worker_desired - worker_running])",
+      "Id": "expr_1",
+      "ReturnData": true
+     },
+     {
+      "Id": "api_desired",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "ClusterName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         },
+         {
+          "Name": "ServiceName",
+          "Value": {
+           "Fn::GetAtt": [
+            "ComputeRuntimeApiServiceD2475D0A",
+            "Name"
+           ]
+          }
+         }
+        ],
+        "MetricName": "DesiredTaskCount",
+        "Namespace": "AWS/ECS/ContainerInsights"
+       },
+       "Period": 60,
+       "Stat": "Average"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "api_running",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "ClusterName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         },
+         {
+          "Name": "ServiceName",
+          "Value": {
+           "Fn::GetAtt": [
+            "ComputeRuntimeApiServiceD2475D0A",
+            "Name"
+           ]
+          }
+         }
+        ],
+        "MetricName": "RunningTaskCount",
+        "Namespace": "AWS/ECS/ContainerInsights"
+       },
+       "Period": 60,
+       "Stat": "Average"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "worker_desired",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "ClusterName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         },
+         {
+          "Name": "ServiceName",
+          "Value": {
+           "Fn::GetAtt": [
+            "ComputeRuntimeWorkerServiceCDA21CB2",
+            "Name"
+           ]
+          }
+         }
+        ],
+        "MetricName": "DesiredTaskCount",
+        "Namespace": "AWS/ECS/ContainerInsights"
+       },
+       "Period": 60,
+       "Stat": "Average"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "worker_running",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "ClusterName",
+          "Value": {
+           "Ref": "SsmParameterValueanywearbetaecsclusternameC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+         },
+         {
+          "Name": "ServiceName",
+          "Value": {
+           "Fn::GetAtt": [
+            "ComputeRuntimeWorkerServiceCDA21CB2",
+            "Name"
+           ]
+          }
+         }
+        ],
+        "MetricName": "RunningTaskCount",
+        "Namespace": "AWS/ECS/ContainerInsights"
+       },
+       "Period": 60,
+       "Stat": "Average"
+      },
+      "ReturnData": false
+     }
+    ],
+    "Threshold": 0,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeWorkerOutboxMetricFilterD1E82153": {
+   "Type": "AWS::Logs::MetricFilter",
+   "Properties": {
+    "FilterPattern": "{ $.msg = \"Durable task outbox metrics\" }",
+    "LogGroupName": {
+     "Ref": "ComputeRuntimeWorkerLogGroupF6DEE804"
+    },
+    "MetricTransformations": [
+     {
+      "DefaultValue": 0,
+      "MetricName": "OutboxOldestAgeMs",
+      "MetricNamespace": "AnyWear/Worker",
+      "MetricValue": "$.outboxOldestAgeMs",
+      "Unit": "Milliseconds"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeOutboxOldestAgeAlarm3F5E8F76": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "SsmParameterValueanywearbetaoperationstopicarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+     }
+    ],
+    "AlarmName": "beta-anywear-outbox-oldest-age",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "EvaluationPeriods": 2,
+    "MetricName": "OutboxOldestAgeMs",
+    "Namespace": "AnyWear/Worker",
+    "Period": 60,
+    "Statistic": "Maximum",
+    "Threshold": 300000,
+    "TreatMissingData": "notBreaching"
+   }
+  }
+ },
+ "Outputs": {
+  "ServiceRepositoryUri": {
+   "Value": {
+    "Ref": "SsmParameterValueanywearbetaservicerepositoryuriC96584B6F00A464EAD1953AFF4B05118Parameter"
+   }
+  },
+  "ApiServiceName": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ComputeRuntimeApiServiceD2475D0A",
+     "Name"
+    ]
+   }
+  },
+  "WorkerServiceName": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ComputeRuntimeWorkerServiceCDA21CB2",
+     "Name"
+    ]
+   }
+  },
+  "ApiLoadBalancerDnsName": {
+   "Description": "Origin only; direct access is restricted to CloudFront",
+   "Value": {
+    "Fn::GetAtt": [
+     "ComputeRuntimeLoadBalancerABD1175B",
+     "DNSName"
+    ]
+   }
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

@@ -5,9 +5,9 @@ import { canonicalJson, parseJson, sha256 } from './json-contract.mjs';
 import { validateDeploymentRecord, validateObservationRecord } from './deployment-contract.mjs';
 import { readOperationRecord } from './operation-record.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
-import { acceptedObservationRequired, deploymentRecordType, familyObservationRecordType } from './observation-record.mjs';
+import { acceptedObservationRequired, deploymentRecordType, familyObservationRecordType, serviceDeploymentRecordType, serviceDeploymentRequired } from './observation-record.mjs';
 import { markDeploymentIncomplete } from './finalize-operation.mjs';
-import { acceptedRecordPath, deploymentRecordPath, familyRecordPath, operationRecordPath } from './deployment-evidence.mjs';
+import { acceptedRecordPath, deploymentRecordPath, familyRecordPath, operationRecordPath, serviceDeploymentRecordPath } from './deployment-evidence.mjs';
 
 // The `record` job holds no credentials and no environment. It validates the
 // evidence the credential jobs produced, binds it to this dispatch, decides
@@ -19,7 +19,7 @@ import { acceptedRecordPath, deploymentRecordPath, familyRecordPath, operationRe
 // `deployment-evidence/family/`; `runtime.yml` still downloads its single artifact
 // straight into `deployment-evidence/`. Files are classified by record type, never
 // by which job happened to upload them.
-const evidenceCandidates = Object.freeze([acceptedRecordPath, familyRecordPath, deploymentRecordPath]);
+const evidenceCandidates = Object.freeze([acceptedRecordPath, familyRecordPath, deploymentRecordPath, serviceDeploymentRecordPath]);
 // The result values GitHub reports for a job that ran; `unavailable` means this
 // run had no separate observation job to report (the manual `observe` producer).
 const observationOutcomes = Object.freeze(['success', 'failure', 'cancelled', 'skipped', 'unavailable']);
@@ -42,7 +42,7 @@ export async function recordDeployment(env = process.env, { root = '.', stdout =
   const family = [];
   for (const entry of await Promise.all(evidenceCandidates.map(file => readOptional(at(file))))) {
     if (!entry) continue;
-    if (entry.value?.record_type === deploymentRecordType) accepted.push(entry);
+    if (entry.value?.record_type === deploymentRecordType || entry.value?.record_type === serviceDeploymentRecordType) accepted.push(entry);
     else if (entry.value?.record_type === familyObservationRecordType) family.push(entry);
     else throw new Error(`Unknown observation record type in ${entry.file}`);
   }
@@ -63,7 +63,10 @@ export async function recordDeployment(env = process.env, { root = '.', stdout =
   };
   const acceptedEntry = accepted[0] ? requireThisRun(accepted[0], validateDeploymentRecord) : undefined;
   const familyEntry = family[0] ? requireThisRun(family[0], validateObservationRecord) : undefined;
-  const requiresAccepted = acceptedObservationRequired(operation.operation);
+  // `deploy-runtime` produces the v5 Service record in its own mutation job; a
+  // missing one is an incomplete deployment, exactly like a missing accepted
+  // observation.
+  const requiresAccepted = acceptedObservationRequired(operation.operation) || serviceDeploymentRequired(operation.operation);
   const requireRecord = env.REQUIRE_DEPLOYMENT_RECORD === 'true';
   const observeJob = env.OBSERVE_JOB_RESULT ?? 'unavailable';
   if (!observationOutcomes.includes(observeJob)) throw new Error('Invalid observation job result');

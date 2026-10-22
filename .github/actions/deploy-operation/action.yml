@@ -47,6 +47,18 @@ runs:
         path: deployment-evidence/deployment-record.json
         retention-days: 90
         if-no-files-found: error
+    # Issue #195: `deploy-runtime` writes the v5 `anywear_service_deployment`
+    # record in the mutating job itself (the record cannot describe a deployment
+    # that did not happen). It owns the same `infra-deployment-<run>-<attempt>`
+    # artifact name the record job downloads and validates.
+    - name: Preserve the v5 Service deployment record
+      if: env.INFRA_OPERATION == 'deploy-runtime' && steps.operation.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+        path: deployment-evidence/service-deployment.json
+        retention-days: 90
+        if-no-files-found: error
     - name: Record final observation outcome
       if: always()
       shell: bash

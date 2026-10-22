@@ -23,8 +23,9 @@ const preflight = require('../scripts/authorization-preflight.mjs');
 
 const ACCOUNT = '650880818323';
 const REGION = 'ap-east-1';
-const IN_SCOPE_PRINCIPALS = ['beta-service-deploy-role', 'beta-service-deploy-cfn-role',
-  'beta-infra-runtime-role', 'beta-infra-deploy-role'];
+// Issue #195 retires the two Service deployment roles; exactly the two Infra
+// roles below remain in scope, which the declaration artifact must mirror.
+const IN_SCOPE_PRINCIPALS = ['beta-infra-runtime-role', 'beta-infra-deploy-role'];
 const artifactInputs: ArtifactInputs = {
   lambdas: {
     'pre-sign-up': { path: path.resolve(__dirname, 'fixtures/placeholder.zip') },
@@ -172,7 +173,7 @@ describe('IaC policy lint (#165)', () => {
       expect(matches.every((match) => match.reason.length > 20)).toBe(true);
       reviewed += 1;
     }
-    expect(reviewed).toBeGreaterThan(40);
+    expect(reviewed).toBeGreaterThan(25);
     // Suppressions stay honest: each one is exercised by a statement.
     for (const suppression of SUPPRESSIONS) {
       expect({ reason: suppression.reason,
@@ -230,6 +231,12 @@ describe('IaC policy lint (#165)', () => {
       .map(([role, actions]) => [role, [...actions].sort()]));
     expect((declared as any).record_type).toBe('anywear_authorization_declared_actions');
     expect((declared as any).roles).toEqual(expected);
+    // The acceptance is exactly two in-scope roles: the scan, the declaration and
+    // the role list must name the same set, so a retired role cannot creep back in.
+    const declaredRoles = Object.keys((declared as any).roles).sort();
+    expect([...IN_SCOPE_PRINCIPALS].sort()).toEqual(declaredRoles);
+    expect(declaredRoles).toEqual(['beta-infra-deploy-role', 'beta-infra-runtime-role']);
+    expect(Object.keys(byRole).sort()).toEqual(declaredRoles);
   });
 
   it('the preflight simulation plan stays inside the declared grants and covers the reviewed forms', () => {

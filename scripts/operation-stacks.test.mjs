@@ -18,7 +18,7 @@ test('the configured stack set is exactly Foundation, the Beta Base stack and Bi
   assert.deepEqual(configuredStackNames(), configuredStacks.map(stack => stack.stack_name));
 });
 
-test('no operation can deploy or recover the Runtime slice, and Egress is operation-owned', () => {
+test('deploy-runtime and stop-runtime own the Runtime slice; Egress stays operation-owned', () => {
   assert.deepEqual(changedStackNames('deploy-foundation'), ['AnyWearFoundationStack']);
   assert.deepEqual(changedStackNames('deploy-billing'), ['AnyWearBillingStack-beta']);
   assert.deepEqual(changedStackNames('deploy-platform'), ['AnyWearPlatformStack-beta']);
@@ -26,7 +26,8 @@ test('no operation can deploy or recover the Runtime slice, and Egress is operat
   assert.deepEqual(changedStackNames('deploy-egress'), ['AnyWearEgressStack-beta']);
   assert.deepEqual(changedStackNames('delete-egress'), ['AnyWearEgressStack-beta']);
   assert.deepEqual(changedStackNames('deploy-workload'), []);
-  assert.deepEqual(changedStackNames('deploy-runtime'), []);
+  assert.deepEqual(changedStackNames('deploy-runtime'), ['AnyWearRuntimeStack-beta']);
+  assert.deepEqual(changedStackNames('stop-runtime'), ['AnyWearRuntimeStack-beta']);
   assert.deepEqual(changedStackNames('observe'), []);
 });
 
@@ -108,5 +109,7 @@ test('historical operation records stay readable and invalid changed stacks fail
   assert.equal(readOperationRecord({ ...record, schema_version: 3 }).schema_version, 3);
   assert.throws(() => readOperationRecord({ ...record, schema_version: 5 }), /Unknown operation record schema/);
   assert.throws(() => readOperationRecord({ ...record, changed_stack_names: ['AnyWearWorkloadStack-beta'] }), /Invalid changed stack names/);
-  assert.throws(() => readOperationRecord({ ...record, changed_stack_names: ['AnyWearRuntimeStack-beta'] }), /Invalid changed stack names/);
+  // The Runtime stack is operation-owned since #195: naming it is valid, while
+  // the retired Workload identity still fails closed.
+  assert.deepEqual(readOperationRecord({ ...record, changed_stack_names: ['AnyWearRuntimeStack-beta'] }).changed_stack_names, ['AnyWearRuntimeStack-beta']);
 });

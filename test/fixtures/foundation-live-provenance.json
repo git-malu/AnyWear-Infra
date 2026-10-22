@@ -12,8 +12,8 @@
   "original_canonical_sha256": "f388789d4e849f35402574e23a60ebfc1e09b3a28ad47a7415522902f79a4bd0",
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
-  "dedicated_candidate_canonical_sha256": "bf444567178e329063aeb1112c21d84fffa46efacee256e1991c1ad8186bf074",
-  "dedicated_additions_sha256": "fe1387786162dbe5594e411ba83342cfc7e25f7ac6b7f38a8265e33a8c41e0b9",
+  "dedicated_candidate_canonical_sha256": "9e399b24b2c7fa30ba76da874689b811fb968d45e7c5d69a16b5f9b22bf483d1",
+  "dedicated_additions_sha256": "d42178307679b7325e54b0adfb89d5e87cc4e71998bec898130243ba58e804fd",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -23,11 +23,7 @@
     "BetaInfraRuntimeRoleDefaultPolicy948D2855",
     "BetaServiceArtifactRole7F1A3C4E",
     "BetaServiceArtifactRoleDefaultPolicy0CD74B82",
-    "BetaServiceDataRoleE58F0017",
-    "BetaServiceDeployCfnRoleB6333451",
-    "BetaServiceDeployCfnRoleDefaultPolicy7FF124FD",
-    "BetaServiceDeployRole4CA9D485",
-    "BetaServiceDeployRoleDefaultPolicyC2C5B50D"
+    "BetaServiceDataRoleE58F0017"
   ],
   "publication_verified": false,
   "deployment_qualified": false,
@@ -102,5 +98,23 @@
       "scope": "M6 Runtime queue-depth alarm prefix grant on beta-service-deploy-cfn-role",
       "detail": "The Runtime template creates two CDK-auto-named queue-depth alarms whose names carry the AnyWearRuntimeStack-beta- prefix, so the existing cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms grant on alarm:beta-anywear-* does not match them (the same evaluation gap that made them undeletable at M3). Foundation adds exactly cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms on arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*, Sid RuntimeQueueDepthAlarms. The nine explicitly named beta-anywear-* alarms stay covered by the existing statement; no broader prefix, action or role. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
     }
-  ]
+  ],
+  "pending_removal": {
+    "recorded_at": "2026-10-22",
+    "issue": 195,
+    "reason": "The two Foundation per-service deployment roles were removed from source with #195: the Runtime stack is deployed by the existing beta-infra-deploy-role through the standard CDK bootstrap path, so no consumer remains. The live Foundation still carries these four resources (added by the 2026-10-18 Foundation deploy); a later, separately authorized deploy-foundation removes them. This issue neither designs nor runs that update.",
+    "resources": [
+      "BetaServiceDeployRole4CA9D485",
+      "BetaServiceDeployRoleDefaultPolicyC2C5B50D",
+      "BetaServiceDeployCfnRoleB6333451",
+      "BetaServiceDeployCfnRoleDefaultPolicy7FF124FD"
+    ],
+    "live_role_names": [
+      "beta-service-deploy-role",
+      "beta-service-deploy-cfn-role"
+    ],
+    "live_effect": "beta-service-deploy-role is consumerless once Service's deploy job retired: its only trust is the AnyWear-Service service-artifacts/beta OIDC subject and no workflow assumes it. beta-service-deploy-cfn-role is still named as the live AnyWearRuntimeStack-beta CloudFormation execution role (RoleARN), so it is not inert; the first executed Runtime update after this issue rebinds the stack to cdk-hnb659fds-cfn-exec-role-650880818323-ap-east-1, and the role deletion must follow that rebind.",
+    "publication_verified": false,
+    "deployment_qualified": false
+  }
 }

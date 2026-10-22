@@ -7,6 +7,7 @@ import { validateReleaseInput } from './release-inputs.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
 import { platformStackName, platformStackStage, recoveryFailureMessage, recoveryViolations, synthStage } from './recovery-contract.mjs';
+import { PHASE, synthesizeRuntimeTemplate } from './runtime-deploy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -36,6 +37,20 @@ export async function assertDatabaseRecoveryPrecondition(env = process.env) {
   }
 }
 
+// Issue #195: a Runtime deploy proves the synthesized template identity before
+// any credential. The synthesis runs the one Infra app in `deployScope=runtime`,
+// normalises the result and compares it with the recorded `roles-added` baseline
+// hash, so a source or context drift fails in the credential-free preflight.
+export async function assertRuntimeIdentityPrecondition(env = process.env) {
+  if (env.INFRA_OPERATION !== 'deploy-runtime') return;
+  const synthesized = await synthesizeRuntimeTemplate(env);
+  if (synthesized.normalised_sha256 !== synthesized.expected) {
+    throw new Error(`The synthesized Runtime template is not the recorded ${PHASE} identity`);
+  }
+  process.stdout.write(`Runtime ${PHASE} identity ${synthesized.normalised_sha256}\n`);
+}
+
 validateOperationInputs();
 validateReleaseInput();
 await assertDatabaseRecoveryPrecondition();
+await assertRuntimeIdentityPrecondition();

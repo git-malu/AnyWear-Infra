@@ -10,6 +10,13 @@ import { changedStackNames, configuredStackNames, mutatingOperations } from './o
 export const deploymentWorkflowFamily = 'runtime';
 export const deploymentRecordType = 'anywear_infra_deployment';
 export const familyObservationRecordType = 'anywear_infra_family_observation';
+// Issue #195: `deploy-runtime` produces the v5 Service deployment record itself
+// instead of a separate accepted `anywear_infra_deployment` observation.
+export const serviceDeploymentRecordType = 'anywear_service_deployment';
+
+export function serviceDeploymentRequired(operation) {
+  return operation === 'deploy-runtime';
+}
 
 export function isDeploymentFamily(family) {
   return family === deploymentWorkflowFamily;
@@ -22,10 +29,10 @@ export function observationRecordType(family) {
 // The trigger set is derived from the two frozen stack tables, not restated as a
 // list of operation names: an operation requires the accepted record exactly when
 // it changes at least one stack the accepted record lists, plus the manual
-// `observe` producer itself (#181). `deploy-egress`/`delete-egress` change only
-// the operation-owned `AnyWearEgressStack-beta`, so a correctly executed stop or
-// start is never marked incomplete; `migrate`, the admission operations and the
-// read-only `state` change no stack at all.
+// `observe` producer itself (#181). `deploy-egress`/`delete-egress`,
+// `deploy-runtime`/`stop-runtime` change only operation-owned stacks, so a
+// correctly executed operation is never marked incomplete; `deploy-runtime`
+// writes its own v5 record instead (see `serviceDeploymentRequired`).
 export function acceptedObservationRequired(operation) {
   return operation === 'observe'
     || changedStackNames(operation).some(name => configuredStackNames().includes(name));

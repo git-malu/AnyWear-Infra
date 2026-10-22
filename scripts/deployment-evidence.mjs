@@ -8,5 +8,8 @@ export const evidenceDirectory = 'deployment-evidence';
 export const deploymentRecordPath = `${evidenceDirectory}/deployment-record.json`;
 // The `record` job's downloaded inputs.
 export const acceptedRecordPath = `${evidenceDirectory}/accepted/deployment-record.json`;
+// The v5 Service record `deploy-runtime` writes in the deploy job and the record
+// job downloads from the same `infra-deployment-<run>-<attempt>` artifact.
+export const serviceDeploymentRecordPath = `${evidenceDirectory}/accepted/service-deployment.json`;
 export const familyRecordPath = `${evidenceDirectory}/family/deployment-record.json`;
 export const operationRecordPath = `${evidenceDirectory}/operation-record.json`;

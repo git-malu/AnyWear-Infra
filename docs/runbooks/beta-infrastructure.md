@@ -82,25 +82,33 @@ repeated. The input is accepted only for `deploy-egress` and must match
 `eipalloc-[0-9a-f]+`; the retained allocation is recorded in the operation
 context and the delete event.
 
-## Step C: the release slice left this repository
+## Step C: the release slice left this repository (historical, pre-#195)
 
-After #158 step C, Infra owns Foundation, the Beta Base stack, Egress and Billing
-only. The Service release slice's CDK source and deploy chain live in
-AnyWear-Service. The only path that can deploy that stack is Service's release
-chain, and that path needs the deferred Foundation deploy (the two Service deploy
+> **Historical (before #195).** This section records the #158 step C decision. The
+> ownership and deploy path it describes no longer exist: since #195 the release
+> slice's CDK source, baselines and deploy chain are in this repository, and
+> `deploy-runtime` / `stop-runtime` are its only mutation paths. The slice deploys
+> through the existing `beta-infra-deploy-role` and the standard CDK bootstrap
+> path, writes the v5 `anywear_service_deployment` record from the mutating job,
+> and no Foundation per-service role exists.
+
+After #158 step C, Infra owned Foundation, the Beta Base stack, Egress and Billing
+only. The Service release slice's CDK source and deploy chain lived in
+AnyWear-Service. The only path that could deploy that stack was Service's release
+chain, and that path needed the deferred Foundation deploy (the two Service deploy
 roles from step A, plus the round-3 CLI-path grants to `beta-service-deploy-role`:
 the `cdk-bootstrap/hnb659fds/version` parameter, the dedicated
 `cdk-hnb659fds-assets-650880818323-ap-east-1` template object, and that bucket's
 list and location reads; no `cdk-hnb659fds-*` role assumption) and Service's own
 `ENABLE_BETA_MUTATION=true`. Until that
-round no workload deploy may be attempted from anywhere, and no Infra entry may
+round no workload deploy might be attempted from anywhere, and no Infra entry might
 re-add one. The committed `selection`/`stack_sources` contract, its double-write
 window, the cross-repository native-asset verification and the vendored Service
 parser were deleted; `deploy-platform` and `restore-release` take one reviewed
 Service release identity (`service_release_tag` + `service_commit`), read the
 sealed release and its tag ref over the REST API and download only the two Lambda
-bundles and the runtime policy before any credential. Deployment records are v3
-and contain no `selection`.
+bundles and the runtime policy before any credential. Deployment records were v3
+and contained no `selection`.
 
 **Do not deploy the post-C Platform template while Service's slice still reads
 `PublishOutput*` outputs.** CDK's weak cross-stack reference feature emits those
@@ -270,8 +278,9 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job re-hashes each travelled byte once against those published digests before any credential and records the release tag, Service commit and ECR image digest. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; the same run's `observe` job then produces the accepted `anywear_infra_deployment` v3 record with producer `mutate.yml` and that run's id/attempt/source |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
+| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service release identity, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, records the change set as evidence, executes it or records the converged no-op, bakes the unchanged 600-second six-signal gate under the read-only runtime session, reads `/health` and writes the v5 `anywear_service_deployment` record in the mutating job. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention, closed admission and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice |
-| ~~`deploy-workload`~~ | Removed in #158 step C; the slice was renamed to Runtime in #166 and is deployed only by AnyWear-Service's release chain |
+| ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
 | `observe` | Collect authenticated deployment evidence with the restricted read-only runtime session (no task, no deploy role); the manual accepted `anywear_infra_deployment` v3 producer |
@@ -302,24 +311,21 @@ complete an earlier deployment. Initial role bootstrap uses the
 [Foundation-only procedure](cutover-and-recovery.md#foundation-only-bootstrap),
 because no sealed Service release is needed to create the artifact publisher role.
 
-### Foundation service set
+### Foundation service set (retired by #195)
 
-The Foundation deploy reconciles the reviewed `infraServices` CDK context set: an
-array of `{ service, repository, repositoryId, environment }` descriptors, each
-naming one workload service's deployment identities. The default is exactly the
-single `service` descriptor (repository `AnyWear-Service`, repository id
-`1158460323`, environment `beta`), so the default deploy is unchanged. Role names
-(`beta-<service>-deploy-role`, `beta-<service>-deploy-cfn-role`) and the immutable
-OIDC subject derive from the descriptor, so an additional service is a context
-value carried by a Foundation deploy — the Foundation-only CLI entry with
-`-c infraServices='[...]'`, or any reviewed dispatch that passes the same context —
-never an edit to Infra source. The context is strict: an unknown descriptor key, a
-malformed value, a duplicate service, a missing default service or a changed
-default descriptor fails synthesis before any resource is created. A second
-service adds only its own two roles and policies, scoped to its own workload stack
-and resource families; the existing service's resources are unchanged.
+The `infraServices` CDK context and the two per-service deployment roles it named
+(`beta-<service>-deploy-role` and `beta-<service>-deploy-cfn-role`, with the
+immutable OIDC subject derived from the descriptor) were retired by #195 with the
+Service deploy chain. `bin/infra.ts` now rejects a stale `infraServices` context
+explicitly before creating any resource, the synthesized Foundation contains no
+per-service role, and `@git-malu/stage-contracts` no longer exports the role-naming
+helpers. The Runtime stack deploys through the existing `beta-infra-deploy-role`
+and the standard CDK bootstrap path; `deploy-runtime` is the operation. The live
+Foundation still carries the four retired resources, recorded as `pending_removal`
+in `test/fixtures/foundation-live-provenance.json`, until a separately authorized
+`deploy-foundation` removes them.
 
-## Retained Beta sizing (release-slice parameter, Service-owned)
+## Retained Beta sizing (retained on the Runtime stack)
 
 Issue #95 adds retained Workload parameters without changing lifecycle authority.
 `BetaApiSizingProfile` defaults to `s1` (API CPU 512 / memory 1024 MiB); `s2-api`
@@ -332,20 +338,19 @@ contract, and its behavior must be accepted before enabling it; Infra source che
 alone do not establish that application behavior.
 
 `BetaApiSizingProfile` and `BetaSizingTelemetry` are parameters of
-`AnyWearWorkloadStack-beta`. After #158 step C they are set and changed by
-AnyWear-Service's release chain; Infra has no operation input for them and only
-reads the retained values when it reports Beta state.
+`AnyWearRuntimeStack-beta` and remain on it while paid compute is stopped.
+`deploy-runtime` reads the live retained values and passes them back unchanged, so
+an ordinary deployment preserves them; it exposes no sizing input, and the
+operation fails closed on an unreviewed retained value.
 A pre-parameter deployment means S1 and telemetry off. Unknown retained values
-fail closed in the state reader. `runtime.yml` state/observe has no sizing or
-telemetry input, and no Infra operation can change either parameter; sizing
-changes are dispatched from AnyWear-Service's release chain. Neither input starts
-or stops Beta or grants an environment writer. State-only observation records the
-retained values but cannot prove running telemetry.
+fail closed in the state reader and in the deploy parameter resolver. Neither
+input starts or stops Beta or grants an environment writer. State-only observation
+records the retained values but cannot prove running telemetry.
 
-After measurement, the rollout that disables telemetry is dispatched from
-AnyWear-Service's release chain with `beta_sizing_telemetry=disable`, the unchanged
-Service image and Service's own reviewed release inputs. Infra has no operation or
-input for it. (Historical: before #158 step C this was Infra's `deploy-workload`
+After measurement, a rollout that disables telemetry would need a separately
+reviewed `deploy-runtime` input (the operation preserves the retained values
+today), the unchanged Service image and the sealed release identity; no such input
+exists in #195. (Historical: before #158 step C this was Infra's `deploy-workload`
 operation with `beta_api_sizing_profile=s1` to restore S1 or `preserve` to retain
 an accepted profile, the unchanged Service image and a committed stack-source
 binding. That operation and the stack-source map are deleted, so the command cannot
@@ -628,9 +633,10 @@ recovery operations (`close-admission`, `open-admission`, `restore-release`) rej
 > [admission-mode migration and rollout](#admission-mode-migration-and-rollout-historical-pre-158-step-c)
 > section record the specific Beta rounds as they were executed before #158 step C.
 > They mention the `selection`/`stack_sources` contract and `deploy-workload`
-> because those existed at the time; both are now deleted and the Workload slice is
-> deployed only by AnyWear-Service. Do not attempt any `selections/...`,
-> `stack-sources/...` or `deploy-workload` command from these records.
+> because those existed at the time; both are now deleted, and since #195 the
+> Runtime slice is deployed by this repository's `deploy-runtime` operation. Do
+> not attempt any `selections/...`, `stack-sources/...` or `deploy-workload`
+> command from these records.
 
 **Historical restore sequence (before #158 step C; the current single-stack
 behavior is in the [operation table](#entry-points)).** `restore-release` had one
@@ -733,7 +739,7 @@ read-only session policy, reads the three configured stacks' live
 parameters, and uploads `infra-deployment-<run-id>-<attempt>` containing
 `deployment-record.json` — record type `anywear_infra_deployment`, schema version
 3, producer `.github/workflows/mutate.yml`, this run's `run_id`/`run_attempt`/`sha`.
-The chain observation never reads or requires the Service-owned Runtime stack
+The chain observation never reads or requires the release slice's Runtime stack
 (`requireRuntime: false`), so a Foundation or Billing deploy while Beta is stopped
 is a complete deployment, not an incomplete one.
 

@@ -165,6 +165,34 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     actions: ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate', 'cloudformation:ListStackResources'],
     resources: [arn('cloudformation', 'stack', 'AnyWearEgressStack-beta/*')],
   }));
+  // Issue #195: `deploy-runtime` reads the change set back as its AC 4 evidence
+  // and executes it. The CDK CLI creates the change set through the bootstrap
+  // deploy role; this restricted session only describes, executes or deletes it.
+  // The two ARNs are the Runtime stack and its change-set collection; nothing
+  // outside the release slice is reachable, and no create action is granted.
+  deploy.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudformation:DescribeChangeSet', 'cloudformation:ExecuteChangeSet', 'cloudformation:DeleteChangeSet'],
+    resources: [arn('cloudformation', 'stack', 'AnyWearRuntimeStack-beta/*'),
+      arn('cloudformation', 'changeSet', '*')],
+  }));
+  // Issue #195: the 600-second six-signal bake runs inside `deploy-runtime` under
+  // the read-only runtime session before the v5 record is written. Two read-only
+  // statements on the existing read role: the deployed bake alarm states and the
+  // worker outbox log lines. No write, no managed policy, no new principal.
+  runtime.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudwatch:DescribeAlarms'],
+    resources: [stack.formatArn({
+      service: 'cloudwatch', resource: 'alarm', resourceName: 'beta-anywear-*',
+      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    })],
+  }));
+  runtime.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['logs:FilterLogEvents'],
+    resources: ['/anywear/beta/worker', '/anywear/beta/worker:*'].map((name) => stack.formatArn({
+      service: 'logs', resource: 'log-group', resourceName: name,
+      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    })),
+  }));
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'], conditions: regional,
   }));

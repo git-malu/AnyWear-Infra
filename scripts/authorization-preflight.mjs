@@ -72,6 +72,16 @@ export const READ_RESOURCES = Object.freeze({
   // DescribeLogGroups is account-level: its list form has no resource type, so a
   // log-group/log-stream ARN (even an empty-name form) is an implicit deny.
   'logs/describe-log-groups': Object.freeze(['*']),
+  // Issue #195: the bake's live reads and the change-set evidence.
+  'cloudwatch/get-metric-statistics': Object.freeze(['*']),
+  'cloudwatch/describe-alarms': Object.freeze(['beta-anywear-alb-5xx', 'beta-anywear-api-p95-latency',
+    'beta-anywear-ecs-running-not-desired', 'beta-anywear-vto-oldest-message',
+    'beta-anywear-auto-tagging-oldest-message', 'beta-anywear-vto-dlq-not-empty',
+    'beta-anywear-auto-tagging-dlq-not-empty', 'beta-anywear-outbox-oldest-age']
+    .map((name) => arn('cloudwatch', `alarm:${name}`))),
+  'logs/filter-log-events': Object.freeze(['/anywear/beta/worker', '/anywear/beta/worker:*']
+    .map((name) => arn('logs', `log-group:${name}`))),
+  'cloudformation/describe-change-set': Object.freeze([arn('cloudformation', 'changeSet/*')]),
 });
 
 // Reads that are not simulated, each with the reason. A new reviewed read must be
@@ -124,11 +134,19 @@ export class AuthorizationPreflightError extends Error {
 // simulated: the preflight proves the reads before the mutation begins.
 export function simulationRequests(kind, env, purpose = 'operation') {
   if (kind === 'deploy') {
-    return [
+    const requests = [
       { pair: 'cloudformation/describe-stacks', actions: ['cloudformation:DescribeStacks'], resources: [STACKS[1]] },
       { pair: 'ssm/get-parameter', actions: ['ssm:GetParameter'], resources: DEPLOY_PARAMETER_ARNS },
       { pair: 'ec2/describe-managed-prefix-lists', actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'] },
     ];
+    // Issue #195: `deploy-runtime` describes the change set it will execute under
+    // this session. `ExecuteChangeSet`/`DeleteChangeSet` are mutations and are
+    // not simulated; the read is the evidence the operation judges.
+    if (env.INFRA_OPERATION === 'deploy-runtime') {
+      requests.push({ pair: 'cloudformation/describe-change-set', actions: ['cloudformation:DescribeChangeSet'],
+        resources: [arn('cloudformation', 'changeSet/anywear-runtime-preflight/00000000-0000-0000-0000-000000000000')] });
+    }
+    return requests;
   }
   if (kind !== 'runtime') throw new Error(`Unknown preflight session ${kind}`);
   const requests = [];

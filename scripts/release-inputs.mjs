@@ -26,9 +26,11 @@ export const STAGE_BASE_ASSETS = Object.freeze(['pre-sign-up.zip', 'post-confirm
 // credential, so both sides name the same bytes.
 export const SELECTED_RELEASE_DIRECTORY = path.join(root, '.service-artifacts', 'selected');
 // Both operations deploy the stage base, which consumes the Service-built Lambda
-// bundles and runtime policy. A release identity supplied to any other operation
-// is rejected instead of silently ignored.
-export const RELEASE_IDENTITY_OPERATIONS = Object.freeze(['deploy-platform', 'restore-release']);
+// bundles and runtime policy; `deploy-runtime` consumes the sealed release's
+// identity only (commit, tag and the ECR image the tag names) and downloads no
+// asset. A release identity supplied to any other operation is rejected instead
+// of silently ignored.
+export const RELEASE_IDENTITY_OPERATIONS = Object.freeze(['deploy-platform', 'deploy-runtime', 'restore-release']);
 const GH_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // An annotated tag names a tag object that names the commit. The bound keeps a
 // malformed or cyclic chain from issuing unbounded REST reads.
@@ -160,4 +162,24 @@ export async function runVerifyInputs({ env = process.env, run = execute, token 
   const release = validateReleaseInput(env);
   if (!release) return null;
   return downloadReleaseInputs({ ...release, token, run, directory });
+}
+
+// Issue #195: `deploy-runtime` consumes the sealed release's identity only (its
+// tag, the commit it names and the ECR image the tag was built into). It still
+// proves the immutable release and every published asset over REST before any AWS
+// credential, but it downloads none of them: the Runtime template carries no
+// Service-built file.
+export async function verifyReleaseIdentity({ env = process.env, run = execute, token = env.GH_TOKEN } = {}) {
+  const release = validateReleaseInput(env);
+  if (!release) return null;
+  if (typeof token !== 'string' || !token) throw new Error('A read-only Service token is required to read the Service release');
+  const apiEnv = { ...process.env, GH_TOKEN: token, GH_TELEMETRY: 'disabled' };
+  const api = async endpoint => parseJson((await run('gh', ['api', endpoint],
+    { env: apiEnv, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
+  const { id, assets } = assertPublishedRelease(await api(releaseApiPath(release.releaseTag)), release.releaseTag);
+  const sourceSha = await resolveTagCommit(release.releaseTag, api);
+  if (sourceSha !== release.serviceCommit) {
+    throw new Error(`Service tag ${release.releaseTag} resolves to ${sourceSha}, not the reviewed commit ${release.serviceCommit}`);
+  }
+  return { release: { id, tag: release.releaseTag, source_sha: sourceSha }, assets };
 }

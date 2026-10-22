@@ -27,8 +27,8 @@ const credentialJobs = workflow => Object.entries(workflow.jobs ?? {})
   .filter(([, job]) => declaresEnvironment(job) || holdsIdToken(job)).map(([jobName]) => jobName);
 
 const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', 'deploy-platform',
-  'deploy-egress', 'delete-egress', 'restore-release', 'migrate', 'admission-status', 'add-testers', 'set-testers',
-  'open-admission', 'close-admission']);
+  'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
+  'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission']);
 
 test('the workflow directory is exactly the three Beta entries plus the callable and publication files', async () => {
   // GitHub accepts both `.yml` and `.yaml`; the census must see either extension,
@@ -130,11 +130,17 @@ test('mutate.yml keeps one preflight → verify → deploy → observe → recor
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.options.includes('deploy-workload'), false);
   const text = await readFile(workflowFile('mutate.yml'), 'utf8');
   assert.equal(/deploy-workload/.test(text), false, 'mutate.yml must not name the retired workload operation');
-  // #166: Egress is the only disposable stack Infra deletes; the Runtime slice is
-  // the Service release chain's.
+  // #166/#195: Egress and Runtime are the disposable stacks Infra owns. Since
+  // #195 the Runtime slice is deployed here too, by exactly these two operations;
+  // the retired Workload identity stays absent.
   assert.match(text, /deploy-egress/);
   assert.match(text, /delete-egress/);
-  assert.equal(/AnyWearRuntimeStack-beta/.test(text), false, 'mutate.yml must not deploy the Service-owned Runtime stack');
+  assert.match(text, /deploy-runtime/);
+  assert.match(text, /stop-runtime/);
+  const runtimeOperations = mutate.on.workflow_dispatch.inputs.operation.options
+    .filter(operation => /(?:^|-)runtime$/.test(operation) || operation === 'stop-runtime');
+  assert.deepEqual(runtimeOperations.sort(), ['deploy-runtime', 'stop-runtime'],
+    'exactly deploy-runtime and stop-runtime mutate the release slice');
   assert.equal(/AnyWearWorkloadStack/.test(text), false, 'mutate.yml must not name the retired Workload stack');
 });
 

@@ -15,8 +15,8 @@ import { publishObservationRequirement, requiresAcceptedObservation } from './ob
 // record exactly when it changes a stack that record lists. The trigger set is
 // derived from the two frozen stack tables, so this file pins the derivation
 // rather than a hand-maintained list of operation names.
-const excluded = Object.freeze(['deploy-egress', 'delete-egress', 'migrate', 'admission-status', 'add-testers',
-  'set-testers', 'open-admission', 'close-admission', 'state']);
+const excluded = Object.freeze(['deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'migrate',
+  'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission', 'state']);
 
 test('the trigger set is exactly the configured-stack mutations plus the manual observe producer', () => {
   assert.deepEqual([...acceptedObservationOperations].sort(),
@@ -34,17 +34,24 @@ test('the requirement is the stack-set derivation, not a name list', () => {
   // stays out.
   const configured = configuredStackNames();
   assert.deepEqual([...mutatingOperations].sort(),
-    ['delete-egress', 'deploy-billing', 'deploy-egress', 'deploy-foundation', 'deploy-platform', 'restore-release']);
+    ['delete-egress', 'deploy-billing', 'deploy-egress', 'deploy-foundation', 'deploy-platform',
+      'deploy-runtime', 'restore-release', 'stop-runtime']);
   for (const operation of mutatingOperations) {
     const derived = changedStackNames(operation).some(name => configured.includes(name));
     assert.equal(acceptedObservationRequired(operation), derived, operation);
   }
   // #166's stop/start is excluded because Egress is operation-owned, not because
-  // its name is missing: both Egress operations do change a stack.
+  // its name is missing: both Egress operations do change a stack. Since #195 the
+  // same holds for the Runtime operations.
   for (const operation of ['deploy-egress', 'delete-egress']) {
     assert.deepEqual(changedStackNames(operation), ['AnyWearEgressStack-beta']);
     assert.ok(operationOwnedStacks.some(stack => stack.stack_name === 'AnyWearEgressStack-beta'));
     assert.equal(configured.includes('AnyWearEgressStack-beta'), false);
+  }
+  for (const operation of ['deploy-runtime', 'stop-runtime']) {
+    assert.deepEqual(changedStackNames(operation), ['AnyWearRuntimeStack-beta']);
+    assert.ok(operationOwnedStacks.some(stack => stack.stack_name === 'AnyWearRuntimeStack-beta'));
+    assert.equal(configured.includes('AnyWearRuntimeStack-beta'), false);
   }
   // `observe` changes nothing and is still required: it is the manual producer.
   assert.deepEqual(changedStackNames('observe'), []);

@@ -180,7 +180,7 @@ test('account-level actions simulate on * and resource-level actions stay concre
   // concrete task-definition ARN is an implicit deny even when the policy allows
   // the action on *. Pin the known account-level actions and keep the rest concrete.
   const noResource = new Set(['ecs:DescribeTaskDefinition', 'ecs:ListTasks',
-    'ec2:DescribeManagedPrefixLists', 'logs:DescribeLogGroups']);
+    'ec2:DescribeManagedPrefixLists', 'logs:DescribeLogGroups', 'cloudwatch:GetMetricStatistics']);
   const plan = [...simulationRequests('runtime', {}), ...simulationRequests('deploy', {})];
   const seen = new Set();
   for (const request of plan) {
@@ -213,12 +213,12 @@ test('the simulator-unevaluable log-stream read is skipped and the rest of the r
   const plan = simulationRequests('runtime', {});
   const pairs = plan.map((request) => request.pair).sort();
   assert.ok(!pairs.includes('logs/get-log-events'));
-  assert.equal(plan.length, 12);
+  assert.equal(plan.length, 15);
   assert.deepEqual(pairs, ['cloudformation/describe-stacks', 'cloudformation/get-template',
-    'cloudformation/list-stack-resources', 'ecs/describe-services', 'ecs/describe-task-definition',
-    'ecs/describe-tasks', 'ecs/list-tasks', 'lambda/get-function',
-    'logs/describe-log-groups', 'sqs/get-queue-attributes', 'ssm/get-parameter',
-    'ssm/get-parameters']);
+    'cloudformation/list-stack-resources', 'cloudwatch/describe-alarms', 'cloudwatch/get-metric-statistics',
+    'ecs/describe-services', 'ecs/describe-task-definition', 'ecs/describe-tasks', 'ecs/list-tasks',
+    'lambda/get-function', 'logs/describe-log-groups', 'logs/filter-log-events',
+    'sqs/get-queue-attributes', 'ssm/get-parameter', 'ssm/get-parameters']);
 });
 
 test('production.yml pins the app-token attestations read it needs', async () => {

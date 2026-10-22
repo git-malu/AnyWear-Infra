@@ -8,15 +8,26 @@ import { recordRecovery, readOperationRecord } from './operation-record.mjs';
 // is unverified: that is `partial` with explicit recovery, not `failed` as if
 // nothing changed. An operation that fails before any completed stack mutation
 // stays `failed`/`not-required`.
+//
+// `deploy-runtime` records its mutation as `runtime-change-set-executed` with
+// `executed: true` once the executed change set reached a terminal stack status,
+// because it drives the change set through the CLI rather than `io.deploy`. A
+// converged no-op records `executed: false` and is not a mutation.
 export function hasCompletedMutation(record) {
   return Array.isArray(record?.events) && record.events.some((event) => (
-    ['stack-deploy', 'stack-destroy'].includes(event?.type) && event?.result === 'complete'));
+    (['stack-deploy', 'stack-destroy'].includes(event?.type) && event?.result === 'complete')
+    || (event?.type === 'runtime-change-set-executed' && event?.executed === true)));
 }
 
-// Final observation remains strict and separate: its failure still fails the job.
-// The durable record distinguishes the two failure situations so a reader never
-// has to treat "the mutation did not happen" and "the mutation happened but its
-// end state is unverified" as the same outcome.
+// Every non-state operation normally ends on the separate read-only observation
+// job. `deploy-runtime` is the exception: its `deploy` job writes the accepted v5
+// `anywear_service_deployment` record itself (the record cannot describe a
+// deployment that did not happen), so the operation sets
+// `requires_qualification=false` and there is no separate observation to require.
+// Treating the skipped job as a missing required observation would mark every
+// successful Runtime deployment `partial`, contradicting the recorded design.
+const observationRequired = operation => !['state', 'deploy-runtime'].includes(operation);
+
 export function finalizeOperationRecord(record, operationOutcome, observationOutcome) {
   const outcomes = ['success', 'failure', 'cancelled', 'skipped'];
   if (!outcomes.includes(operationOutcome) || !outcomes.includes(observationOutcome)) throw new Error('Invalid final operation outcome');
@@ -25,8 +36,9 @@ export function finalizeOperationRecord(record, operationOutcome, observationOut
   record.final_observation = record.operation === 'state' ? 'not-applicable' : observationOutcome;
   // Every non-state operation ends on an observed final stack state (terminal
   // Base plus the observed Runtime existence/status) that must be accepted; the
-  // read-only state operation is the only exemption.
-  const requiresObservation = record.operation !== 'state';
+  // read-only state operation and the self-recording Runtime deploy are the only
+  // exemptions.
+  const requiresObservation = observationRequired(record.operation);
   let completedMutationFailure = false;
   if (operationOutcome !== 'success') {
     if (completedMutation) { record.result = 'partial'; completedMutationFailure = true; }

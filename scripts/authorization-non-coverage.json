@@ -6,7 +6,7 @@
     {
       "id": "lint-scope",
       "layer": "lint",
-      "summary": "The lint inspects the synthesized Foundation and Platform policy statements for the four deployment and runtime principals only; the legacy pipeline role and CDK-generated service roles are outside its scope.",
+      "summary": "The lint inspects the synthesized Foundation and Platform policy statements for the two Infra deployment and runtime principals only (#195 removed the per-service roles); the legacy pipeline role and CDK-generated service roles are outside its scope.",
       "consequence": "A wildcard grant added to an unscanned role is caught only by review, not by the check."
     },
     {
@@ -24,7 +24,7 @@
     {
       "id": "runtime-stack",
       "layer": "lint",
-      "summary": "The AnyWearRuntimeStack-beta resource types are synthesized in AnyWear-Service as the per-service release slice; the Infra lint does not inspect that template, and its resource-type identity remains the Service release chain's contract.",
+      "summary": "Since #195 the Runtime stack is synthesized by this repository (deployScope=runtime), so its template identity (AnyWearRuntimeStack) is covered by the matrix; the lint still scans only the Foundation and Platform policy documents, so a Runtime-template resource whose CloudFormation reads are ungranted stays outside the statement scan.",
       "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the deployment itself or by an optional review, not by the Infra lint."
     },
     {
@@ -36,8 +36,8 @@
     {
       "id": "simulator-scope",
       "layer": "simulator",
-      "summary": "The preflight simulates the Infra deploy and runtime roles only; the Service CloudFormation execution role trusts cloudformation.amazonaws.com and cannot be assumed or simulated from this job.",
-      "consequence": "That role's reads are covered by the lint, not by the preflight."
+      "summary": "The preflight simulates the Infra deploy and runtime roles only. The Runtime stack's CloudFormation execution role is the CDK bootstrap cfn-exec role (standard synthesizer, #195), which holds AdministratorAccess and no permissions boundary; it cannot be assumed or simulated from this job and is a stated lint exception.",
+      "consequence": "Those reads are covered by the statement lint and the deployment itself, not by the preflight."
     },
     {
       "id": "preflight-reads",

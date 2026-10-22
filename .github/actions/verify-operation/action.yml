@@ -19,7 +19,7 @@ runs:
         node scripts/check-operation.mjs
     - name: Create the read-only Service release token when this operation takes a release
       id: app
-      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release'
+      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime'
       uses: actions/create-github-app-token@v3
       with:
         app-id: 3346940

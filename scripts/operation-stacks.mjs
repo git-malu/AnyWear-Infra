@@ -7,8 +7,11 @@ const stackChanges = Object.freeze({
   // configured manifest below.
   'deploy-egress': ['AnyWearEgressStack-beta'],
   'delete-egress': ['AnyWearEgressStack-beta'],
-  // Release recovery restores the persistent Base stack only. The Runtime slice
-  // is deployed and recovered by AnyWear-Service's release chain, never from here.
+  // Issue #195: the release slice is deployed and stopped by Infra with the same
+  // restricted mutations entry. Both operations change only the Runtime stack.
+  'deploy-runtime': ['AnyWearRuntimeStack-beta'],
+  'stop-runtime': ['AnyWearRuntimeStack-beta'],
+  // Release recovery restores the persistent Base stack only.
   'restore-release': ['AnyWearPlatformStack-beta'],
 });
 
@@ -16,8 +19,8 @@ const stackChanges = Object.freeze({
 // deployment records, observation and provenance validation all read this instead
 // of repeating stack names, regions and count assertions locally. It is exactly
 // the stack set this repository always produces: Foundation, the Beta Base
-// stack and Billing. `AnyWearRuntimeStack-beta` belongs to the Service release
-// chain; `AnyWearEgressStack-beta` exists only while the environment runs.
+// stack and Billing. `AnyWearRuntimeStack-beta` and `AnyWearEgressStack-beta`
+// exist only while the environment runs.
 export const configuredStacks = Object.freeze([
   Object.freeze({ stack_name: 'AnyWearFoundationStack', region: 'ap-east-1' }),
   Object.freeze({ stack_name: 'AnyWearPlatformStack-beta', region: 'ap-east-1' }),
@@ -29,6 +32,7 @@ export const configuredStacks = Object.freeze([
 // `stack_manifest` stays exactly the configured set.
 export const operationOwnedStacks = Object.freeze([
   Object.freeze({ stack_name: 'AnyWearEgressStack-beta', region: 'ap-east-1' }),
+  Object.freeze({ stack_name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }),
 ]);
 
 // Every operation with a row in the frozen change table. It is exported rather
