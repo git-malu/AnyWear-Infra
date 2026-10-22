@@ -210,14 +210,6 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   }));
   const ownedFunctionNames = ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync', 'AnyWearPlatformStack-beta-*'];
   runtime.addToPrincipalPolicy(new iam.PolicyStatement({ actions: ['logs:DescribeLogGroups'], resources: ['*'], conditions: regional }));
-  // Issue #165: the observed layer reads CloudTrail for the roles' run window
-  // from the credentialed deploy job under this same restricted runtime session.
-  // LookupEvents has no resource-level scope, so the read is region-conditioned
-  // only. Its output is report-only narrowing input, never an automatic grant or
-  // revocation.
-  runtime.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['cloudtrail:LookupEvents'], resources: ['*'], conditions: regional,
-  }));
   runtime.addToPrincipalPolicy(new iam.PolicyStatement({ actions: ['lambda:GetFunction'],
     resources: ownedFunctionNames.map(name => `arn:aws:lambda:${stack.region}:${stack.account}:function:${name}`), conditions: regional }));
   runtime.addToPrincipalPolicy(new iam.PolicyStatement({ actions: ['logs:PutRetentionPolicy'],

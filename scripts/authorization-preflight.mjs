@@ -69,7 +69,6 @@ export const READ_RESOURCES = Object.freeze({
   'logs/get-log-events': Object.freeze([arn('logs',
     'log-group:/anywear/beta/one-shot:log-stream:beta-anywear-lifecycle/OneShot/probe')]),
   'logs/describe-log-groups': Object.freeze([arn('logs', 'log-group::log-stream:')]),
-  'cloudtrail/lookup-events': Object.freeze(['*']),
 });
 
 // Reads that are not simulated, each with the reason. A new reviewed read must be

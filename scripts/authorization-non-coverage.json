@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record_type": "anywear_authorization_non_coverage",
-  "source": "Issue #165. The lint, simulated-preflight and observed layers state their limits here, and test/authorization-lint.test.ts pins this list exactly.",
+  "source": "Issue #165. The policy-quality lint and the simulated preflight state their limits here, and test/authorization-lint.test.ts pins this list exactly. Narrowing is not part of this issue's deliverable.",
   "entries": [
     {
       "id": "lint-scope",
@@ -13,7 +13,7 @@
       "id": "lint-rules",
       "layer": "lint",
       "summary": "The lint fails on wildcard actions, wildcard resource ARNs (including scoped ARNs such as stack or prefix forms), unreviewed managed-policy attachments and the repository's condition expectations. It evaluates statement text, not effective permission or condition values.",
-      "consequence": "The lint evaluates statement text. The simulator checks the plan's ARNs, the deployment itself exercises the real resource, and the observed layer reconciles actions, not resource forms."
+      "consequence": "The lint evaluates statement text; the simulator checks the plan's ARNs and the deployment itself exercises the real resource."
     },
     {
       "id": "bootstrap-role",
@@ -24,26 +24,26 @@
     {
       "id": "runtime-stack",
       "layer": "lint",
-      "summary": "The AnyWearRuntimeStack-beta resource types are synthesized in AnyWear-Service as the per-service release slice; the Infra lint does not inspect that template, and its resource-type identity remains the Service release chain's contract. The dropped declared layer would not have changed this: it never derived the Service template either.",
-      "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the observed layer or by the deployment itself, not by the Infra lint."
+      "summary": "The AnyWearRuntimeStack-beta resource types are synthesized in AnyWear-Service as the per-service release slice; the Infra lint does not inspect that template, and its resource-type identity remains the Service release chain's contract.",
+      "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the deployment itself or by an optional review, not by the Infra lint."
     },
     {
       "id": "simulator-approximation",
       "layer": "simulator",
       "summary": "IAM policy simulation evaluates policies approximately: condition keys, resource policies, SCPs, permissions boundaries and service-specific semantics may differ from the real service.",
-      "consequence": "The preflight is a strong pre-mutation signal, not ground truth; the observed layer still reconciles the real calls."
+      "consequence": "The preflight is a strong pre-mutation signal, not ground truth; the deployment's own behavior remains the final check."
     },
     {
       "id": "simulator-scope",
       "layer": "simulator",
       "summary": "The preflight simulates the Infra deploy and runtime roles only; the Service CloudFormation execution role trusts cloudformation.amazonaws.com and cannot be assumed or simulated from this job.",
-      "consequence": "That role's reads are covered by the lint and the observed layer, not by the preflight."
+      "consequence": "That role's reads are covered by the lint, not by the preflight."
     },
     {
       "id": "preflight-reads",
       "layer": "simulator",
       "summary": "The preflight evaluates policy against the reviewed ARNs in its plan; it does not sample live resources or make the real read calls. Mutations, waiter semantics, operator-CLI reads and the conditional CloudFront fallback are recorded as skips with reasons.",
-      "consequence": "Create-path authorization, resource existence and the real service semantics stay with the observed layer and the deployment itself."
+      "consequence": "Create-path authorization, resource existence and the real service semantics stay with the deployment itself."
     },
     {
       "id": "simulate-disclosure",
@@ -52,10 +52,10 @@
       "consequence": "The grant is read-only but is a permission-metadata disclosure surface; it is recorded here as an accepted reviewed wildcard."
     },
     {
-      "id": "observed-scope",
-      "layer": "observed",
-      "summary": "CloudTrail cannot see calls that never happened, and only the four reconciled role sessions are audited.",
-      "consequence": "Declared-but-unused is report-only with a minimum window and a recorded retention reason; it is narrowing input, never an automatic change."
+      "id": "narrowing",
+      "layer": "narrowing",
+      "summary": "Narrowing declared actions from actual usage is not part of this issue's deliverable.",
+      "consequence": "It remains an optional operator review, for example with IAM Access Analyzer or by manual analysis, under its own reviewed change; nothing here revokes a grant automatically."
     }
   ]
 }
