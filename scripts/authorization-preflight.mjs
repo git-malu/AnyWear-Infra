@@ -147,9 +147,17 @@ export function simulationRequests(kind, env, purpose = 'operation') {
     // Issue #195: `deploy-runtime` describes the change set it will execute under
     // this session. `ExecuteChangeSet`/`DeleteChangeSet` are mutations and are
     // not simulated; the read is the evidence the operation judges.
+    // The simulated resource is the Runtime stack ARN, not a change-set ARN: the
+    // IAM policy simulator returns implicitDeny for `cloudformation:DescribeChangeSet`
+    // on every change-set ARN form even under a policy that allows the action on
+    // `*` (form probes 2026-10-22; run 39787035530 failed on the change-set form),
+    // while the stack ARN form is evaluable. The deploy role's DedicatedPolicy and
+    // the generated session policy both grant the action on the real stack and
+    // change-set forms, so this keeps the action a simulated gate rather than a
+    // `SIMULATION_SKIPS` entry.
     if (env.INFRA_OPERATION === 'deploy-runtime') {
       requests.push({ pair: 'cloudformation/describe-change-set', actions: ['cloudformation:DescribeChangeSet'],
-        resources: [arn('cloudformation', 'changeSet/anywear-runtime-preflight/00000000-0000-0000-0000-000000000000')] });
+        resources: [stack('AnyWearRuntimeStack-beta')] });
     }
     return requests;
   }

@@ -275,7 +275,7 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
     if (env.INFRA_OPERATION === 'deploy-runtime') {
       statements.push(statement(['cloudformation:DescribeChangeSet', 'cloudformation:ExecuteChangeSet',
         'cloudformation:DeleteChangeSet'],
-      [arn('cloudformation', 'stack', 'AnyWearRuntimeStack-beta/*'), arn('cloudformation', 'changeSet', '*')]));
+      [arn('cloudformation', 'stack/AnyWearRuntimeStack-beta/*'), arn('cloudformation', 'changeSet/*')]));
     }
   } else if (kind === 'runtime') {
     const allowedFamilies = families(env, purpose);
