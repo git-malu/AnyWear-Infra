@@ -92,7 +92,9 @@ export const SIMULATION_SKIPS = Object.freeze({
 // comes from a missing context rather than from a missing grant.
 export const CONTEXT_ENTRIES = Object.freeze([
   Object.freeze({ ContextKeyName: 'aws:RequestedRegion', ContextKeyValues: [region], ContextKeyType: 'string' }),
-  Object.freeze({ ContextKeyName: 'ecs:cluster', ContextKeyValues: [`arn:aws:ecs:${region}:${account}:cluster/beta-anywear`], ContextKeyType: 'arn' }),
+  // `ecs:cluster` is ARN-valued but the simulator has no `arn` context-key type:
+  // an ARN condition key is supplied as a string value.
+  Object.freeze({ ContextKeyName: 'ecs:cluster', ContextKeyValues: [`arn:aws:ecs:${region}:${account}:cluster/beta-anywear`], ContextKeyType: 'string' }),
   Object.freeze({ ContextKeyName: 'iam:PassedToService', ContextKeyValues: ['ecs-tasks.amazonaws.com'], ContextKeyType: 'string' }),
   Object.freeze({ ContextKeyName: 'ecs:CreateAction', ContextKeyValues: ['RegisterTaskDefinition'], ContextKeyType: 'string' }),
 ]);

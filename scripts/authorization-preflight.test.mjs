@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { runAuthorizationPreflight, AuthorizationPreflightError, simulationRequests, SIMULATION_SKIPS,
-  PREFLIGHT_MARKER, preflightActionSet } from './authorization-preflight.mjs';
+  PREFLIGHT_MARKER, preflightActionSet, CONTEXT_ENTRIES } from './authorization-preflight.mjs';
 import { sessionPolicy, reads } from './operation-boundaries.mjs';
 import { createRuntimeIo } from './runtime-operation.mjs';
 
@@ -155,6 +155,24 @@ test('the preflight runs under a marked session and its simulator events are exc
       return { AWS_ACCESS_KEY_ID: 'x' };
     }, run: simulation({}) });
   assert.deepEqual(assumed, [{ kind: 'runtime', marker: PREFLIGHT_MARKER }]);
+});
+
+test('every simulator context entry uses a valid context-key type', () => {
+  // Run 39726665630: the simulator rejected ContextKeyType 'arn' (it has no ARN
+  // type), so the preflight failed before any mutation. The CLI mock never
+  // validated the enum; this test pins it.
+  const allowed = new Set(['binary', 'ipList', 'booleanList', 'ip', 'boolean', 'numericList',
+    'dateList', 'numeric', 'date', 'stringList', 'string', 'binaryList']);
+  for (const entry of CONTEXT_ENTRIES) {
+    assert.ok(allowed.has(entry.ContextKeyType),
+      `${entry.ContextKeyName} uses ${entry.ContextKeyType}, which the simulator rejects`);
+    assert.notEqual(entry.ContextKeyType, 'arn');
+  }
+  const cluster = CONTEXT_ENTRIES.find((entry) => entry.ContextKeyName === 'ecs:cluster');
+  assert.ok(cluster, 'ecs:cluster must be supplied');
+  assert.equal(cluster.ContextKeyType, 'string');
+  assert.deepEqual(cluster.ContextKeyValues,
+    ['arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear']);
 });
 
 test('production.yml pins the app-token attestations read it needs', async () => {
