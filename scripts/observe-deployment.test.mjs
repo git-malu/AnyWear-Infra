@@ -223,11 +223,12 @@ test('the observer CLI writes the authenticated v3 body that equals the expected
     await writeFile(expectedFile, JSON.stringify(otherSha));
     await assert.rejects(observeDeploymentCli({ argv: ['--expected', expectedFile, '--output', outputFile,
       '--infra-sha', infraSha], io: fixtureIo(), env: executorEnvironment() }), /different Infra revision/);
-    // A service record is not an Infra deployment record.
+    // A service record is not an Infra deployment record. The version check runs
+    // first, so a v3 record carrying the Service type is an unknown schema.
     await writeFile(expectedFile, JSON.stringify({ ...record, record_type: 'anywear_service_deployment' }));
     await assert.rejects(observeDeploymentCli({ argv: ['--expected', expectedFile, '--output', outputFile,
       '--infra-sha', infraSha], io: fixtureIo(), env: executorEnvironment() }),
-    /Invalid deployment record fields|exactly its producer's stacks/);
+    /Unknown anywear_service_deployment schema|Invalid deployment record fields|exactly its producer's stacks/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

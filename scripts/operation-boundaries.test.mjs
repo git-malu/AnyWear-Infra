@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workflowOperations, operationFamilies, operationBoundary, operationEvidence, families, assertOneShotAllowed,
-  assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads } from './operation-boundaries.mjs';
+  assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads,
+  verifyActions } from './operation-boundaries.mjs';
 
 const infraSha = '5'.repeat(40);
 const env = (operation, overrides = {}) => {
@@ -41,6 +42,12 @@ test('one-shot roles are exactly the release-slice drivers that remain', () => {
   assert.deepEqual(operationEvidence.migrate.roles, ['migrate']);
   assert.deepEqual(operationEvidence['close-admission'].roles, ['lifecycle']);
   assert.deepEqual(operationEvidence['open-admission'].roles, ['lifecycle']);
+  // Issue #194: `deploy-runtime` gains the existing `verify` family for the
+  // pre-mutation schema-journal read; no other operation gains one.
+  assert.deepEqual(operationEvidence['deploy-runtime'].roles, ['verify']);
+  assert.deepEqual(families(env('deploy-runtime'), 'operation'), ['verify']);
+  assert.deepEqual(verifyActions('deploy-runtime'), ['schema-journal']);
+  assert.deepEqual(verifyActions('deploy-platform'), []);
   assert.deepEqual(families(env('observe'), 'qualification'), []);
   assert.deepEqual(families(env('migrate'), 'operation'), ['migrate']);
   assert.deepEqual(families(env('state'), 'operation'), []);
@@ -54,6 +61,13 @@ test('one-shot guards admit only the reviewed role/action pairs', () => {
   assertOneShotAllowed(env('open-admission'), 'lifecycle', 'status');
   assertOneShotAllowed(env('open-admission'), 'lifecycle', 'resume');
   assertOneShotAllowed(env('open-admission'), 'lifecycle', 'suspend');
+  // Issue #194: the verify family's only action is the read-only schema-journal
+  // read, and it takes no payload.
+  assertOneShotAllowed(env('deploy-runtime'), 'verify', 'schema-journal');
+  assert.throws(() => assertOneShotAllowed(env('deploy-runtime'), 'verify'), /forbidden/);
+  assert.throws(() => assertOneShotAllowed(env('deploy-runtime'), 'verify', 'status'), /forbidden/);
+  assert.throws(() => assertOneShotAllowed(env('deploy-runtime'), 'verify', 'schema-journal', '{}'), /forbidden/);
+  assert.throws(() => assertOneShotAllowed(env('deploy-platform'), 'verify', 'schema-journal'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('deploy-platform'), 'lifecycle', 'status'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('migrate'), 'verify'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('migrate'), 'artifact-verify'), /forbidden/);
@@ -92,6 +106,25 @@ test('AWS allow-list keeps reads, one-shots and retention updates scoped', () =>
     containerDefinitions: [{ name: 'OneShot', command: ['node', 'dist/ops/beta-lifecycle.js', 'status'] }] };
   assertAwsAllowed(env('close-admission'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]);
   assert.throws(() => assertAwsAllowed(env('deploy-platform'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]), /forbidden/);
+  // Issue #194: only the exact schema-journal verify registration is accepted,
+  // and only for the operation that gained the verify family.
+  const verify = { family: 'beta-anywear-verify',
+    taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-verification-task',
+    executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
+    containerDefinitions: [{ name: 'OneShot', command: ['node', 'dist/verify.js', 'schema-journal'] }] };
+  assertAwsAllowed(env('deploy-runtime'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(verify)]);
+  assertAwsAllowed(env('deploy-runtime'), ['ecs', 'run-task', '--task-definition',
+    'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:7']);
+  for (const command of [['node', 'dist/verify.js'], ['node', 'dist/verify.js', 'status'],
+    ['node', 'dist/verify.js', 'schema-journal', 'extra'], ['node', 'dist/ops/beta-lifecycle.js', 'status']]) {
+    assert.throws(() => assertAwsAllowed(env('deploy-runtime'), ['ecs', 'register-task-definition', '--cli-input-json',
+      JSON.stringify({ ...verify, containerDefinitions: [{ name: 'OneShot', command }] })]), /forbidden/, command.join(' '));
+  }
+  assert.throws(() => assertAwsAllowed(env('deploy-platform'), ['ecs', 'register-task-definition', '--cli-input-json',
+    JSON.stringify(verify)]), /forbidden/, 'the verify family belongs only to deploy-runtime');
+  const wrongRole = { ...verify, taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task' };
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), ['ecs', 'register-task-definition', '--cli-input-json',
+    JSON.stringify(wrongRole)]), /forbidden/, 'the verify family registers under the verification task role');
   assertAwsAllowed(env('deploy-platform'), ['logs', 'put-retention-policy']);
   assert.throws(() => assertAwsAllowed(env('migrate'), ['logs', 'put-retention-policy']), /forbidden/);
 });
@@ -107,6 +140,16 @@ test('session policies carry only the operation\'s own families', () => {
   assert.match(state, /ssm:GetParameter/);
   assert.doesNotMatch(state, /ecs:RegisterTaskDefinition/);
   assert.doesNotMatch(sessionPolicy('runtime', env('deploy-platform')), /ecs:RegisterTaskDefinition/);
+  // Issue #194: `deploy-runtime` adds the verify family's register/run/PassRole
+  // statements under the existing verification-task role, and the generated
+  // policy stays inside the 2048-byte inline limit. The measured length is
+  // recorded in the test failure message so a drift is visible.
+  const runtime = sessionPolicy('runtime', env('deploy-runtime'));
+  assert.match(runtime, /beta-anywear-verify/);
+  assert.match(runtime, /beta-anywear-verification-task/);
+  assert.doesNotMatch(runtime, /beta-anywear-lifecycle-task|beta-anywear-migration-task/);
+  assert.ok(runtime.length < 2048, `deploy-runtime session policy is ${runtime.length} bytes`);
+  assert.equal(JSON.parse(runtime).Version, '2012-10-17');
 });
 
 // Issue #195: the bake runs only inside `deploy-runtime`, and its two new grants

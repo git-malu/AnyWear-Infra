@@ -5,9 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   RELEASE_ASSET_NAMES,
+  RUNTIME_RELEASE_ASSETS,
   STAGE_BASE_ASSETS,
   SERVICE_REPOSITORY,
   assertSelectedReleaseBytes,
+  releaseAssetsFor,
   runVerifyInputs,
   validateReleaseInput,
 } from './release-inputs.mjs';
@@ -16,9 +18,11 @@ import { parseJson, sha256 } from './json-contract.mjs';
 
 // #193: the Service release is four assets with no manifest, and its identity is
 // the release API's own statement (tag to commit, `draft`, `immutable`, a digest
-// per asset). The verify job reads that identity over REST and downloads only the
-// three names the stage base consumes; the deploy job hashes those three travelled
-// files exactly once before it requests a credential.
+// per asset). #194 makes the consumed set operation-dependent: the verify job
+// downloads what the dispatched operation consumes — the three stage-base names
+// for `deploy-platform`/`restore-release`, only `service-schema.json` for
+// `deploy-runtime` — and the deploy job hashes those travelled files exactly once
+// before it requests a credential.
 const root = path.resolve(import.meta.dirname, '..');
 const serviceCommit = '1'.repeat(40);
 const releaseTag = `service-artifacts-${serviceCommit}`;
@@ -41,12 +45,18 @@ test.after(async () => {
 });
 
 // The fixture directory holds the same `placeholder.zip` and policy bytes the
-// pre-#193 fixture produced, so the recorded Lambda asset identities are stable.
+// pre-#193 fixture produced, so the recorded Lambda asset identities are stable,
+// plus the committed schema asset so a `deploy-runtime` download has real bytes.
+const schemaAssetBytes = await readFile(new URL('../test/fixtures/schema-boundary/schema-asset.json', import.meta.url));
+async function newFixture() {
+  const directory = await temporary('infra-release-fixture-');
+  await createTestInputs(directory);
+  await writeFile(path.join(directory, 'service-schema.json'), schemaAssetBytes);
+  return directory;
+}
 async function fixtureDigests(directory) {
   const digests = {};
-  for (const name of STAGE_BASE_ASSETS) digests[name] = `sha256:${sha256(await readFile(path.join(directory, name)))}`;
-  // Infra requires the schema asset to be published but never downloads or reads it.
-  digests['service-schema.json'] = `sha256:${'c'.repeat(64)}`;
+  for (const name of RELEASE_ASSET_NAMES) digests[name] = `sha256:${sha256(await readFile(path.join(directory, name)))}`;
   return digests;
 }
 
@@ -111,14 +121,24 @@ test('restore-release and deploy-platform take the reviewed Service release iden
   }
 });
 
-test('the frozen asset constants are the four published names and the three consumed names', async () => {
+test('the frozen asset constants are the four published names and the per-operation consumed sets', async () => {
   const module = await import('./release-inputs.mjs');
   assert.deepEqual([...RELEASE_ASSET_NAMES], ['pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json',
     'service-schema.json']);
   assert.deepEqual([...STAGE_BASE_ASSETS], ['pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json']);
+  assert.deepEqual([...RUNTIME_RELEASE_ASSETS], ['service-schema.json']);
   assert.ok(RELEASE_ASSET_NAMES.every(name => typeof name === 'string'));
   assert.equal(Object.isFrozen(RELEASE_ASSET_NAMES), true);
   assert.equal(Object.isFrozen(STAGE_BASE_ASSETS), true);
+  assert.equal(Object.isFrozen(RUNTIME_RELEASE_ASSETS), true);
+  // #194: the consumed set follows the operation. A stage-base deploy never asks
+  // for the schema asset and the Runtime deploy asks only for it.
+  assert.deepEqual(releaseAssetsFor('deploy-runtime'), RUNTIME_RELEASE_ASSETS);
+  assert.deepEqual(releaseAssetsFor('deploy-platform'), STAGE_BASE_ASSETS);
+  assert.deepEqual(releaseAssetsFor('restore-release'), STAGE_BASE_ASSETS);
+  for (const operation of otherOperations) {
+    assert.throws(() => releaseAssetsFor(operation), /consumes no Service release assets/, operation);
+  }
   assert.deepEqual([...module.RELEASE_IDENTITY_OPERATIONS], releaseOperations);
   assert.equal(module.SELECTED_RELEASE_DIRECTORY, selectedDirectory);
 });
@@ -134,8 +154,7 @@ test('every other operation still rejects a supplied release identity and takes 
 });
 
 test('restore-release reads the release identity over REST and downloads exactly the three consumed assets', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const { calls, run, digests } = await releaseMock(fixture);
   const record = await runVerifyInputs({ env: releaseEnv('restore-release'), run, token: 'read-only-token',
@@ -175,8 +194,7 @@ test('restore-release reads the release identity over REST and downloads exactly
 });
 
 test('deploy-platform reads the same release identity and downloads the same three assets', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const { calls, run, digests } = await releaseMock(fixture);
   const record = await runVerifyInputs({ env: releaseEnv('deploy-platform'), run, token: 'read-only-token',
@@ -190,9 +208,33 @@ test('deploy-platform reads the same release identity and downloads the same thr
   assert.equal(calls.filter(([, args]) => args[0] === 'release' && args[1] === 'download').length, 1);
 });
 
+test('deploy-runtime downloads only the schema asset and the deploy job re-hashes that one file', async () => {
+  const fixture = await newFixture();
+  const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
+  const { calls, run, digests } = await releaseMock(fixture);
+  const record = await runVerifyInputs({ env: releaseEnv('deploy-runtime'), run, token: 'read-only-token',
+    directory: selected });
+  // The record binds exactly the operation's consumed set (#194), not the
+  // publisher's four names and not the stage-base three.
+  assert.deepEqual(record.release, { id: 407218593, tag: releaseTag, source_sha: serviceCommit });
+  assert.deepEqual(record.assets, { 'service-schema.json': digests['service-schema.json'] });
+  assert.deepEqual(Object.keys(record.assets), ['service-schema.json']);
+  // Only the schema asset and the binding record travelled; two REST reads and
+  // one download naming exactly that pattern.
+  assert.deepEqual((await readdir(selected)).sort(), ['release-inputs.json', 'service-schema.json']);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2][1].flatMap((arg, index) => arg === '--pattern' ? [calls[2][1][index + 1]] : []),
+    ['service-schema.json']);
+  assert.deepEqual(parseJson(await readFile(path.join(selected, 'release-inputs.json'))), record);
+  // The deploy-side proof re-hashes the one travelled file and refuses drift.
+  assert.deepEqual(await assertSelectedReleaseBytes(record.assets, selected, RUNTIME_RELEASE_ASSETS), record.assets);
+  // A stage-base proof over the same bytes refuses the wrong asset set.
+  await assert.rejects(assertSelectedReleaseBytes(record.assets, selected, STAGE_BASE_ASSETS),
+    /Invalid travelled release assets fields/);
+});
+
 test('a pre-change five-asset release stays selectable: the legacy manifest is ignored', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const { calls, run, digests } = await releaseMock(fixture, {
     // A release published before #193 carries the manifest as an extra asset.
@@ -209,8 +251,7 @@ test('a pre-change five-asset release stays selectable: the legacy manifest is i
 });
 
 test('the verify job records the published digest while the deploy job proves the travelled bytes once', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   // A tampered download is still bound to the digest the release published: the
   // verify job trusts that statement and does not hash the bytes.
@@ -224,8 +265,7 @@ test('the verify job records the published digest while the deploy job proves th
 });
 
 test('the deploy-side check proves all three travelled bytes and their exact names', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const { run, digests } = await releaseMock(fixture);
   const record = await runVerifyInputs({ env: releaseEnv('deploy-platform'), run, token: 'read-only-token',
@@ -249,8 +289,7 @@ test('the deploy-side check proves all three travelled bytes and their exact nam
 });
 
 test('an annotated tag dereferences to its commit and a chain deeper than four refuses', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const tagSha = '2'.repeat(40);
   const annotated = await releaseMock(fixture, { refObject: { type: 'tag', sha: tagSha },
@@ -276,8 +315,7 @@ test('an annotated tag dereferences to its commit and a chain deeper than four r
 });
 
 test('requires the numeric REST release id, not a GraphQL node id', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const stringId = await releaseMock(fixture, { mutateRelease: release => ({ ...release, id: 'RE_kwDORQyzo84Y1D8V' }) });
   await assert.rejects(runVerifyInputs({ env: releaseEnv('deploy-platform'), run: stringId.run,
@@ -292,8 +330,7 @@ test('requires the numeric REST release id, not a GraphQL node id', async () => 
 });
 
 test('the release identity refusal matrix fails before any download', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const cases = [
     ['a draft release', { mutateRelease: release => ({ ...release, draft: true }) }, /is a draft/],
@@ -324,8 +361,7 @@ test('the release identity refusal matrix fails before any download', async () =
 });
 
 test('a tag that resolves to another commit is refused and names both commits', async () => {
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const selected = await temporary('infra-release-selected-', path.join('.service-artifacts', 'selected'));
   const other = '9'.repeat(40);
   const { calls, run } = await releaseMock(fixture, { refObject: { type: 'commit', sha: other } });
@@ -352,8 +388,7 @@ test('fails closed without an identity or a read-only Service token', async () =
     run: forbidden, token: 'read-only-token', directory: selected }), /Invalid Service release source commit/);
   assert.equal(invoked, false);
 
-  const fixture = await temporary('infra-release-fixture-');
-  await createTestInputs(fixture);
+  const fixture = await newFixture();
   const { run } = await releaseMock(fixture);
   await assert.rejects(runVerifyInputs({ env: releaseEnv('restore-release'), run, directory: selected }),
     /A read-only Service token is required/);

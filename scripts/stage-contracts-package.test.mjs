@@ -28,7 +28,10 @@ test('the package is the single source of the stage and record exports', () => {
     'DEPLOYMENT_INPUT_FIELDS', 'SERVICE_OBSERVED_FIELDS', 'SERVICE_ECS_IDENTITY_FIELDS',
     'SERVICE_DEPLOYMENT_RECORD_SCHEMA', 'INFRA_REPOSITORY', 'SERVICE_REPOSITORY', 'SERVICE_RUNTIME_STACK',
     'validateStageInputs', 'stageContractSchemaHash', 'stableTaskDefinition', 'taskDefinitionContentHash',
-    'validateServiceDeploymentRecord', 'runtimeStageFromStack', 'validateServiceStacks']) {
+    'validateServiceDeploymentRecord', 'runtimeStageFromStack', 'validateServiceStacks',
+    'SERVICE_SCHEMA_BOUNDARY_FIELDS', 'SCHEMA_BOUNDARY_ASSET_FIELDS', 'SCHEMA_BOUNDARY_APPLIED_FIELDS',
+    'SCHEMA_BOUNDARY_COMPARISON_FIELDS', 'SCHEMA_BOUNDARY_READER_FIELDS', 'SCHEMA_BOUNDARY_READER_SOURCES',
+    'SCHEMA_BOUNDARY_RESULTS', 'schemaBoundaryPrefixHash', 'validateSchemaBoundary']) {
     assert.equal(deployment[name], pkg[name], `${name} is not re-exported from the package`);
   }
   assert.equal(recovery.platformStackName, pkg.platformStackName);

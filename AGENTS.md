@@ -22,27 +22,33 @@ and must not be relabeled as an Infra-produced deployment.
   verification path. `deploy-platform`, `deploy-runtime` and `restore-release`
   take one reviewed Service release identity (`service_release_tag` +
   `service_commit`), read the sealed release and its tag ref over the REST API,
-  require the release's two Lambda bundles and runtime policy to be present,
-  uploaded and digest-valid while ignoring extras such as the retired legacy
-  manifest, and prove the release before any credential. `deploy-platform` and
-  `restore-release` download those three files and prove each travelled byte once
-  in the deploy job; `deploy-runtime` consumes the identity only and downloads no
-  asset. The deploy records the release tag, Service commit and the ECR digest of
-  the immutable `service-artifacts-<service_commit>` tag. No Service-built
-  artifact is committed here. Every other operation rejects a release identity.
+  require the release's schema declaration (`service-schema.json`) plus the two
+  Lambda bundles and runtime policy to be present, uploaded and digest-valid
+  while ignoring extras such as the retired legacy manifest, and prove the
+  release before any credential. `deploy-platform` and `restore-release`
+  download the three stage-base files and prove each travelled byte once in the
+  deploy job; `deploy-runtime` downloads only `service-schema.json`, re-hashes it
+  once in the deploy job, strictly validates it as a consumer, and the
+  schema-boundary gate compares it with the live applied journal before any
+  stack mutation. The deploy records the release tag, Service commit and the ECR
+  digest of the immutable `service-artifacts-<service_commit>` tag. No
+  Service-built artifact is committed here. Every other operation rejects a
+  release identity.
 - Deployment records are v3 (`anywear_infra_deployment`): producer identity, the
   exact stack set that producer owns, the stage-contract SSM parameters the run
   read (name, version, value hash), the authenticated observation and a content
   hash of the stage-contract schema surface. There is no `selection` member and
   no pin to another repository's release. The `deploy-runtime` operation produces
-  `anywear_service_deployment` v5 from the same core plus a required 600-second
-  six-signal bake `gate`; the Infra `anywear_infra_deployment` v3 record never carries one.
+  `anywear_service_deployment` v6 from the same core plus a required 600-second
+  six-signal bake `gate` and the admitted `schema_boundary` comparison; the Infra
+  `anywear_infra_deployment` v3 record never carries either.
 - The versioned `@git-malu/stage-contracts` package
-  (`packages/stage-contracts/`) is the single source of the stage-contract
-  names/kinds, stack identities, the v5 Service record and bake-gate validators, the
-  deployed-template normalisation and no service-role naming. It is consumed from
-  `file:packages/stage-contracts`; `npm run check` runs its tests. Change it only
-  with a version bump and the matching `stage-contracts-v<version>` tag.
+  (`packages/stage-contracts/`, currently `0.5.0`) is the single source of the
+  stage-contract names/kinds, stack identities, the v6 Service record,
+  bake-gate and schema-boundary validators, the deployed-template normalisation
+  and no service-role naming. It is consumed from `file:packages/stage-contracts`;
+  `npm run check` runs its tests. Change it only with a version bump and the
+  matching `stage-contracts-v<version>` tag.
 - Do not claim repository branch protection when the private plan cannot enforce
   it. The configured Beta environment restricts the branch to main. Apply the
   independently reviewed exact source/inputs and operational coordination
@@ -120,12 +126,15 @@ and must not be relabeled as an Infra-produced deployment.
 - Since #195 `deploy-runtime` and `stop-runtime` are the only mutation paths for
   the release slice (`AnyWearRuntimeStack-beta`); AnyWear-Service carries no CDK
   source or deploy chain. `deploy-runtime` takes one reviewed Service release
-  identity (`service_release_tag` + `service_commit`), resolves the immutable ECR
-  image digest, records the change set, runs the unchanged 600-second six-signal
-  bake under the read-only runtime session and writes the v5
-  `anywear_service_deployment` record from the mutating job itself; `stop-runtime`
-  deletes only that stack, and an absent stack is its accepted no-op. The
-  historical runs below evidence the pre-#195 path only: Service run 39137577023
+  identity (`service_release_tag` + `service_commit`), downloads and validates
+  the sealed release's `service-schema.json`, resolves the immutable ECR image
+  digest, admits the pre-mutation schema boundary with one bounded read-only
+  `schema-journal` verify task under the existing verification-task role,
+  records the change set, runs the unchanged 600-second six-signal bake under the
+  read-only runtime session and writes the v6 `anywear_service_deployment`
+  record from the mutating job itself; `stop-runtime` deletes only that stack,
+  and an absent stack is its accepted no-op. The historical runs below evidence
+  the pre-#195 path only: Service run 39137577023
   ("Service release: deploy", `workflow_dispatch`, success, 2026-10-18T14:47:35Z)
   and the Infra `deploy-foundation` runs at 12:48:21Z, 12:22:55Z, 11:02:38Z and
   07:33:47Z belonged to the Service-owned slice and its release chain, which no

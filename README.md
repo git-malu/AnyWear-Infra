@@ -85,8 +85,8 @@ the four retired resources until a separately authorized `deploy-foundation`;
 Runtime stack's `RoleARN` until the first executed Runtime update rebinds it.
 The Runtime stack's CDK source, baselines and deploy chain now live in this
 repository (`lib/runtime-stack.ts`, `deployScope=runtime`), and `deploy-runtime`
-with the Beta stage contract produces the v5 `anywear_service_deployment`
-record.
+with the Beta stage contract produces the v6 `anywear_service_deployment`
+record, including the admitted `schema_boundary` comparison.
 
 `beta-infra-runtime-role` (Platform `DedicatedPolicy`) gains two read-only
 statements for the deployment bake (#195): `cloudwatch:DescribeAlarms` on
@@ -99,11 +99,13 @@ operation-scoped; no managed policy or account-wide grant is added.
 
 [`packages/stage-contracts/`](packages/stage-contracts/README.md) is the
 dependency-free, versioned source of the stage-contract names/kinds, the stack
-identities, the v5 `anywear_service_deployment` validators (the v3 core plus the
-required 600-second bake gate), the gate's one stage-free threshold table, the
+identities, the v6 `anywear_service_deployment` validators (the v3 core plus the
+required 600-second bake gate and the admitted `schema_boundary` comparison), the
+gate's one stage-free threshold table, the schema-boundary prefix hash, the
 deployed-template normalisation and the two Infra deployment roles' scope. It is
-`@git-malu/stage-contracts` `0.4.0`; the `stage-contracts-v0.4.0` tag is a post-merge publication step (`0.1.0` is the
-last tagged release), and the package is packed with `npm pack`. AnyWear-Service
+`@git-malu/stage-contracts` `0.5.0`; the `stage-contracts-v0.5.0` tag is a post-merge publication step created at
+Deployment, not by this change (`0.3.0` is the newest published tag and `0.4.0`
+was never tagged), and the package is packed with `npm pack`. AnyWear-Service
 pins the
 tarball (for example under `infra/vendor/`) instead of a mutable branch or a
 registry credential in its deploy job; a tarball packed from an unmerged branch
@@ -116,9 +118,9 @@ tests.
 
 Infra's own `anywear_infra_deployment` record stays schema v3 and keeps the
 seven-member core (`DEPLOYMENT_RECORD_MEMBERS`); it is never forced to produce a
-`gate`. The pre-gate v3 Service shape was never produced (the Service deployment
-pin is deferred), and historical v2 records remain readable for the audit path
-only.
+`gate` or a `schema_boundary`. The pre-gate v3 Service shape was never produced
+(the Service deployment pin is deferred), and historical v2 records remain
+readable for the audit path only.
 
 ## Operations
 
@@ -131,7 +133,7 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the manual accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. A deployment that changes a configured stack also produces the accepted `anywear_infra_deployment` v3 record in the same run: `preflight` → `verify` → `deploy` → `observe` → `record`. `deploy-runtime` produces its own v5 `anywear_service_deployment` record from the `deploy` job and is outside that v3 trigger set |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. A deployment that changes a configured stack also produces the accepted `anywear_infra_deployment` v3 record in the same run: `preflight` → `verify` → `deploy` → `observe` → `record`. `deploy-runtime` produces its own v6 `anywear_service_deployment` record from the `deploy` job and is outside that v3 trigger set |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -157,8 +159,9 @@ longer runs a release-verification task.
 `mutate.yml` is one credential-timing chain: `preflight` (no environment, no
 `id-token`, no App token; publishes `requires_accepted_observation` from the
 shared trigger set before any credential) → `verify` (read-only release token only
-when the operation takes a Service release; downloads and hashes the sealed
-assets) → `deploy` (**the only job** that holds the mutation role:
+when the operation takes a Service release; reads the release and downloads the
+operation's consumed set — three stage-base files, or only `service-schema.json`
+for `deploy-runtime`) → `deploy` (**the only job** that holds the mutation role:
 `environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN`, scheduled after
 `verify`) → `observe` (only when the operation changes a configured stack and the
 mutation succeeded: the second credential job, with the read-only
@@ -183,17 +186,21 @@ mutation job's own evidence is uploaded as
 `deploy-runtime`, `migrate`, the admission operations and read-only `state` are
 outside that trigger set: the Egress stop/start drill reports its family
 observation and is never marked incomplete for lacking an accepted record,
-`deploy-runtime` writes the v5 `anywear_service_deployment` record itself and runs
+`deploy-runtime` writes the v6 `anywear_service_deployment` record itself (the
+passed bake plus the admitted `schema_boundary` comparison) and runs
 no separate `observe` job, a migration or admission write changes no recorded
 stack, and `state` makes no record claim. The trigger set is
 derived from the frozen stack tables in [operation-stacks.mjs](scripts/operation-stacks.mjs)
 by [observation-record.mjs](scripts/observation-record.mjs), not restated in YAML.
 
-Every Beta entry requires exact reviewed main and protected `beta`; the two
-operations that consume Service-built Lambda assets also require the reviewed
-Service release tag and commit. The release-identity read and the three-file
-download happen before AWS credentials, and each travelled file is re-hashed once
-in the deploy job before its restricted STS session; the sessions are
+Every Beta entry requires exact reviewed main and protected `beta`; the three
+operations that take a Service release identity also require the reviewed
+Service release tag and commit. The release-identity read and the operation's
+consumed download happen before AWS credentials, and each travelled file is
+re-hashed once in the deploy job before its restricted STS session; `deploy-runtime`
+additionally strictly validates the travelled `service-schema.json` there, so the
+schema-boundary gate later compares an asset this pre-credential check already
+proved. The sessions are
 operation-specific and the read-only session carries no ECS or PassRole
 permissions. Only mutation requires
 `ENABLE_BETA_MUTATION=true`; read-only `state` remains available when it is
@@ -311,7 +318,11 @@ identity: `deploy-platform`/`restore-release` take `service_release_tag` and
 require the two Lambda bundles and the runtime policy to be present, uploaded and
 digest-valid (extras such as the retired legacy manifest are ignored), download
 only those three, and re-hash each travelled byte once in the deploy job before
-any credential. The deploy records the release tag, Service commit and the ECR
+any credential. `deploy-runtime` takes the same identity but downloads only the
+release's `service-schema.json`, re-hashes it once and strictly validates it
+before credentials, then compares it with the live applied journal before any
+stack mutation (the `schema_boundary` member of the v6 record). The deploy
+records the release tag, Service commit and the ECR
 digest of the immutable `service-artifacts-<service_commit>` tag. There is no
 committed selection, no release manifest, no vendored Service parser
 and no cross-repository native-attestation path; publication ZIP/receipt/handshake

@@ -1,4 +1,4 @@
-import { parseJson } from './json-contract.mjs';
+import { parseJson, canonicalJson } from './json-contract.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { normalizeTesterEmails } from './tester-allowlist.mjs';
 import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
@@ -142,10 +142,13 @@ export const operationEvidence = Object.freeze({
     'The accepted record carries the Egress stack Original template hash after the disposable network edge is created.'),
   'delete-egress': evidenceEntry([], '.github/workflows/runtime.yml',
     'The accepted record carries the observed stack state and proves the Runtime stack was absent before the Egress delete; no deployment record is produced.'),
-  // Issue #195: the operation writes the v5 `anywear_service_deployment` record
-  // itself (with the passed 600-second gate), so its own mutation run qualifies it.
-  'deploy-runtime': evidenceEntry([], 'self',
-    'The deploy job writes the v5 anywear_service_deployment record: the six deploy parameters, the 39 stage-contract inputs, the normalised deployed template hash, the passed 600-second gate and the v5 observed tuple.'),
+  // Issue #195: the operation writes the v6 `anywear_service_deployment` record
+  // itself (the passed 600-second gate and the admitted schema-boundary
+  // comparison), so its own mutation run qualifies it. Issue #194: the pre-mutation
+  // schema-boundary gate runs one read-only `schema-journal` task from the
+  // existing `verify` family, under the existing verification-task role.
+  'deploy-runtime': evidenceEntry(['verify'], 'self',
+    'The deploy job writes the v6 anywear_service_deployment record: the six deploy parameters, the 39 stage-contract inputs, the normalised deployed template hash, the passed 600-second gate, the v6 observed tuple and the schema_boundary comparison admitted by one read-only schema-journal verify task before any mutation.'),
   'stop-runtime': evidenceEntry([], '.github/workflows/runtime.yml',
     'The operation record carries the observed stack state and proves only AnyWearRuntimeStack-beta was destroyed; no deployment record is produced.'),
   'restore-release': evidenceEntry([], '.github/workflows/runtime.yml',
@@ -164,6 +167,15 @@ export const operationEvidence = Object.freeze({
     'The accepted record does not observe admission state; the operation record carries `admission-open-proof`: the mode, its source, the tester count and hash, the no-bound evidence (the SSM record key set and the absence of the database status window field) and SSM/DB agreement. There is no automatic closure: an interrupted open leaves admission open until an explicit `close-admission` and an `admission-status` read-back.'),
 });
 const oneShotRoles = operation => operationEvidence[operation].roles;
+// The task role each one-shot family registers under. `verify` keeps the existing
+// verification-task role (#194): the schema-journal read adds no role, task
+// family, log group or IAM statement.
+const ONE_SHOT_TASK_ROLES = Object.freeze({
+  migrate: 'migration', lifecycle: 'lifecycle', verify: 'verification',
+});
+const oneShotTaskRole = family => ONE_SHOT_TASK_ROLES[family];
+// The only non-URL verify action: one read-only journal read.
+const VERIFY_SCHEMA_JOURNAL_COMMAND = Object.freeze(['node', 'dist/verify.js', 'schema-journal']);
 // `resume` appears for exactly one operation. `open-admission` also lists
 // `suspend`, and that entry is recovery-only: the driver may issue it solely on
 // its failed-open path, to close what a failure would otherwise leave open. No
@@ -175,12 +187,16 @@ const oneShotRoles = operation => operationEvidence[operation].roles;
 export const lifecycleActions = operation => ({ 'admission-status': ['status'], 'add-testers': ['set-testers', 'status'],
   'set-testers': ['set-testers', 'status'], 'close-admission': ['suspend', 'status'],
   'open-admission': ['resume', 'status', 'suspend'] }[operation] ?? []);
+// Issue #194: the `verify` family's only non-URL action is the read-only
+// `schema-journal` read. It takes no payload; any other action is refused.
+export const verifyActions = operation => ({ 'deploy-runtime': ['schema-journal'] }[operation] ?? []);
 const payloadActions = ['set-testers'];
 export function assertOneShotAllowed(env, role, action = '', payload) {
   operationBoundary(env);
   if (role === 'lifecycle' && action === 'resume' && payload !== undefined) throw new Error('Lifecycle resume takes no payload');
   if (!oneShotRoles(env.INFRA_OPERATION).includes(role)
     || role === 'lifecycle' && !lifecycleActions(env.INFRA_OPERATION).includes(action)
+    || role === 'verify' && (!verifyActions(env.INFRA_OPERATION).includes(action) || payload !== undefined)
     || role !== 'lifecycle' && payload !== undefined
     || role === 'lifecycle' && !payloadActions.includes(action) && payload !== undefined) throw new Error('One-shot role/action is forbidden for this operation');
   if (role === 'lifecycle' && action === 'set-testers') {
@@ -230,7 +246,7 @@ export function assertAwsAllowed(env, args, purpose = 'operation', session = 'ru
   if (args[0] === 'ecs' && args[1] === 'register-task-definition') {
     const definition = parseJson(argument('--cli-input-json'));
     const family = allowedFamilies.find(allowed => definition.family === `beta-anywear-${allowed}`);
-    const role = family === 'migrate' ? 'migration' : family === 'lifecycle' ? 'lifecycle' : undefined;
+    const role = oneShotTaskRole(family);
     const container = definition.containerDefinitions?.find(row => row.name === 'OneShot');
     const command = container?.command;
     if (family && definition.taskRoleArn === `arn:aws:iam::650880818323:role/beta-anywear-${role}-task`
@@ -240,6 +256,11 @@ export function assertAwsAllowed(env, args, purpose = 'operation', session = 'ru
         assertOneShotAllowed(env, 'lifecycle', command[2], command[3]); return;
       }
       if (family === 'migrate' && command[1] === 'dist/migrate.js' && command.length === 2) return;
+      // Issue #194: the verify family's only accepted registration is the exact
+      // schema-journal read, with no payload and no other command.
+      if (family === 'verify' && canonicalJson(command) === canonicalJson(VERIFY_SCHEMA_JOURNAL_COMMAND)) {
+        assertOneShotAllowed(env, 'verify', 'schema-journal'); return;
+      }
     }
   }
   if (args[0] === 'ecs' && ['run-task', 'deregister-task-definition'].includes(args[1])) {
@@ -285,7 +306,7 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
       const definitions = allowedFamilies.map(family => arn('ecs', `task-definition/beta-anywear-${family}:*`));
       statements.push(statement(['ecs:RegisterTaskDefinition', 'ecs:RunTask'], definitions),
         statement('ecs:DeregisterTaskDefinition'),
-        statement('iam:PassRole', [...new Set(allowedFamilies.map(family => family === 'migrate' ? 'migration' : 'lifecycle'))]
+        statement('iam:PassRole', [...new Set(allowedFamilies.map(oneShotTaskRole))]
           .map(role => `arn:aws:iam::650880818323:role/beta-anywear-${role}-task`)
           .concat('arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution'),
         { StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' } }));
