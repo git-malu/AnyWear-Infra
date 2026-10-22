@@ -125,6 +125,38 @@ test('a missing accepted record marks a completed mutation partial and keeps a p
   }
 });
 
+test('deploy-runtime is exempt from the separate observation and an executed change set is a completed mutation', () => {
+  // The `deploy` job writes the accepted v5 record itself, so the skipped
+  // observation job is expected and must not mark a successful deployment partial.
+  const succeeded = finalizeOperationRecord(fixture('deploy-runtime'), 'success', 'skipped');
+  assert.equal(succeeded.result, 'succeeded');
+  assert.equal(succeeded.final_observation, 'skipped');
+  assert.equal(succeeded.recovery, 'not-required');
+
+  // A converged no-op executes nothing, so a later failure stays failed.
+  const converged = fixture('deploy-runtime');
+  converged.events.push({ type: 'runtime-change-set-converged', executed: false });
+  const noMutation = finalizeOperationRecord(converged, 'failure', 'skipped');
+  assert.equal(noMutation.result, 'failed');
+  assert.equal(noMutation.recovery, 'not-required');
+  const begun = fixture('deploy-runtime');
+  begun.events.push({ type: 'runtime-change-set-executed', executed: false });
+  assert.equal(finalizeOperationRecord(begun, 'failure', 'skipped').result, 'failed');
+
+  // An executed Runtime change set is a real mutation: a later bake or /health
+  // failure is partial evidence with an explicit recovery decision, and the record
+  // job applies the same rule when the v5 record never arrives.
+  const mutated = fixture('deploy-runtime');
+  mutated.events.push({ type: 'runtime-change-set-executed', executed: true, mode: 'update' });
+  const failed = finalizeOperationRecord(mutated, 'failure', 'skipped');
+  assert.equal(failed.result, 'partial');
+  assert.equal(failed.recovery, 'requires-explicit-recovery');
+  const missing = structuredClone(mutated);
+  markDeploymentIncomplete(missing, { observationJob: 'unavailable', expectedWorkflow: '.github/workflows/mutate.yml' });
+  assert.equal(missing.result, 'partial');
+  assert.equal(missing.recovery, 'requires-explicit-recovery');
+});
+
 test('finalizer CLI rewrites strictly parsed state and ordinary records with the three-value result and recovery evidence', async () => {
   const execute = promisify(execFile);
   const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-finalize-file-'));
@@ -138,6 +170,9 @@ test('finalizer CLI rewrites strictly parsed state and ordinary records with the
     ['observe', 'success', 'failure', 'partial', 'not-required', true],
     ['observe', 'success', 'skipped', 'partial', 'not-required', true],
     ['deploy-platform', 'success', 'success', 'succeeded', 'not-required', true],
+    // `deploy-runtime` writes its accepted v5 record in the deploy job itself, so
+    // the skipped observation is expected and the operation record is `succeeded`.
+    ['deploy-runtime', 'success', 'skipped', 'succeeded', 'not-required', true],
     ['deploy-platform', 'failure', 'success', 'failed', 'not-required', true],
     ['deploy-platform', 'success', 'skipped', 'partial', 'not-required', false],
     ['deploy-platform', 'cancelled', 'success', 'failed', 'not-required', false],

@@ -14,7 +14,7 @@ import {
 import { canonicalJson, parseJson, sha256, DIGEST, SHA } from './json-contract.mjs';
 import { describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { synthStage } from './recovery-contract.mjs';
-import { readRuntimeDeployValues, readRuntimeStageInputs } from './runtime-stage-inputs.mjs';
+import { readRuntimeDeployValues, readRuntimeStageContract, runtimeBakeQueueUrls, runtimeEcsClusterName } from './runtime-stage-inputs.mjs';
 import { runBakeGate } from './bake-gate.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,7 +34,6 @@ export const RUNTIME_DEPLOY_PARAMETER_KEYS = Object.freeze([
 const SIZING_PROFILES = Object.freeze(['s1', 's2-api']);
 const TELEMETRY_VALUES = Object.freeze(['false', 'true']);
 const CHANGE_SET_NAME = /^[A-Za-z][-A-Za-z0-9]{0,127}$/;
-const CLUSTER = 'beta-anywear';
 const SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
 
 export function assertRuntimePhase(operation, env = process.env) {
@@ -211,8 +210,8 @@ export async function synthesizeRuntimeTemplate(env) {
   }
 }
 
-async function observeEcsIdentities(io, release) {
-  const response = await io.aws(['ecs', 'describe-services', '--cluster', CLUSTER, '--services', ...SERVICE_NAMES]);
+async function observeEcsIdentities(io, release, cluster) {
+  const response = await io.aws(['ecs', 'describe-services', '--cluster', cluster, '--services', ...SERVICE_NAMES]);
   const services = response.services;
   if (!Array.isArray(services) || services.length !== SERVICE_NAMES.length) {
     throw new Error('The Runtime ECS services are not both deployed');
@@ -358,7 +357,14 @@ export async function deployRuntime({ io, env, record, release,
     runtime_exists: stackExists, stack_role_arn: roleArnBefore, release_identity_unchanged: identityUnchanged });
 
   const deployValues = await readRuntimeDeployValues(io);
-  const inputs = await readRuntimeStageInputs(io);
+  // The bake's queue URLs and ECS cluster are contract values from the same
+  // reviewed 39-name read whose bytes the record hashes; they are never
+  // account/region literals or guessed queue names. Both fail closed here, before
+  // the change set exists, if the contract value is missing or malformed.
+  const contract = await readRuntimeStageContract(io);
+  const inputs = contract.inputs;
+  const cluster = runtimeEcsClusterName(contract.values);
+  const queueUrls = runtimeBakeQueueUrls(contract.values);
   const parameters = runtimeDeployParameters({ liveParameters: runtime?.Parameters ?? [], deployValues, release });
   const synthesized = await synthesize(env);
   record?.events.push({ type: 'runtime-synthesized-template', raw_sha256: synthesized.raw_sha256,
@@ -438,17 +444,13 @@ export async function deployRuntime({ io, env, record, release,
   record?.events.push({ type: 'runtime-stack-role', before: roleArnBefore, after: roleArnAfter,
     execution_role_source: 'standard CDK bootstrap synthesizer (cdk-hnb659fds-cfn-exec-role)' });
 
-  const ecs = await observeEcsIdentities(io, release);
+  const ecs = await observeEcsIdentities(io, release, cluster);
   const apiBaseUrl = new Map(inputs.map((row) => [row.parameter, row])).has('/anywear/beta/api_base_url')
     ? (await io.aws(['ssm', 'get-parameter', '--name', '/anywear/beta/api_base_url'])).Parameter?.Value : undefined;
   if (typeof apiBaseUrl !== 'string' || !/^https:\/\//.test(apiBaseUrl)) throw new Error('The stage contract api_base_url is unavailable');
   const minimumClientVersion = await health(apiBaseUrl, release, { sleep: io.sleep });
-  const queueNames = {
-    vto: 'beta-anywear-vto', vto_dlq: 'beta-anywear-vto-dlq',
-    auto_tagging: 'beta-anywear-auto-tagging', auto_tagging_dlq: 'beta-anywear-auto-tagging-dlq',
-  };
-  const gate = await bake({ stage: 'beta', stack: RUNTIME_STACK, apiBaseUrl, cluster: CLUSTER,
-    queueUrls: queueNames, logGroup: '/anywear/beta/worker',
+  const gate = await bake({ stage: 'beta', stack: RUNTIME_STACK, apiBaseUrl, cluster,
+    queueUrls, logGroup: '/anywear/beta/worker',
     serviceSha: release.serviceCommit, imageDigest: release.imageDigest,
     now: io.now, sleep: io.sleep, fetchImpl: fetch, runAws: await io.runtimeAwsRunner() });
   if (gate.result !== 'passed') {

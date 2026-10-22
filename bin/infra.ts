@@ -67,7 +67,7 @@ const qWeatherApiHost = app.node.tryGetContext('qweatherApiHost')
   || DEFAULT_QWEATHER_API_HOST;
 // The Base API CloudFront distribution owns a literal origin (the CloudFront
 // stack-refactor MOVE requires it), so a Beta synthesis must state the live ALB
-// DNS name. The deployment reads `ApiLoadBalancerDnsName` from the Service-owned
+// DNS name. The deployment reads `ApiLoadBalancerDnsName` from the Infra-owned
 // Runtime stack (or the recorded live value during the one-time split migration)
 // and passes it as this context value. Other stages have no such distribution.
 const apiOriginDomainNameContext = app.node.tryGetContext('apiOriginDomainName');
@@ -77,12 +77,13 @@ if (apiOriginDomainNameContext !== undefined && typeof apiOriginDomainNameContex
 if (stage === 'beta' && !apiOriginDomainNameContext) {
   throw new Error('The Beta Base stack requires -c apiOriginDomainName=<live API load-balancer DNS name>');
 }
-// Infra owns the account-wide Foundation/Billing stacks and the stage base only.
-// The release slice (`AnyWearRuntimeStack-beta` / `-prod`) was moved to
-// AnyWear-Service in #158 step B and is deployed from Service's own release
-// chain; this app must not synthesize or deploy it. Issue #166 split the stage
-// base's disposable egress into `AnyWearEgressStack-beta` and moved the API
-// CloudFront distribution into Base.
+// Infra owns every stack of the account from this one application: the
+// account-wide Foundation/Billing stacks, the stage base and, since #195, the
+// release slice. This `application` branch synthesizes only the Base stack, so a
+// Base deploy never touches the Runtime stack; `deployScope=runtime` (below)
+// synthesizes `AnyWearRuntimeStack-<stage>` from the same app and `deploy-runtime`
+// deploys it. Issue #166 split the stage base's disposable egress into
+// `AnyWearEgressStack-beta` and moved the API CloudFront distribution into Base.
 new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
   stage,
   artifactInputs,

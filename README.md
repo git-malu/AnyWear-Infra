@@ -131,7 +131,7 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the manual accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. A deployment that changes a configured stack also produces the accepted `anywear_infra_deployment` v3 record in the same run: `preflight` → `verify` → `deploy` → `observe` → `record` |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. A deployment that changes a configured stack also produces the accepted `anywear_infra_deployment` v3 record in the same run: `preflight` → `verify` → `deploy` → `observe` → `record`. `deploy-runtime` produces its own v5 `anywear_service_deployment` record from the `deploy` job and is outside that v3 trigger set |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -147,10 +147,10 @@ workflow-level inputs; `scripts/runtime-operation.mjs` enforces their
 per-operation scope in preflight, before any credential. Only a `deploy-*`
 operation or `restore-release` may vary identity phase and retention protection;
 every other operation must run the `retired` / `true` context. Only
-`add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`
-and `restore-release` take a Service release identity. Admission takes no bound
-input: lifecycle `resume` is invoked with no payload at all. The standalone
-`verify` operation is retired, and the
+`add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
+`deploy-runtime` and `restore-release` take a Service release identity. Admission
+takes no bound input: lifecycle `resume` is invoked with no payload at all. The
+standalone `verify` operation is retired, and the
 `verify`/`artifact-verify` task families left with the release slice; Infra no
 longer runs a release-verification task.
 
@@ -180,10 +180,12 @@ record inside the same run: its `observe` job writes the v3 record with producer
 `.github/workflows/mutate.yml` and that run's id/attempt/source SHA, and the
 mutation job's own evidence is uploaded as
 `infra-family-observation-<run-id>-<attempt>`. `deploy-egress`/`delete-egress`,
-`migrate`, the admission operations and read-only `state` are outside that trigger
-set: the Egress stop/start drill reports its family observation and is never
-marked incomplete for lacking an accepted record, a migration or admission write
-changes no recorded stack, and `state` makes no record claim. The trigger set is
+`deploy-runtime`, `migrate`, the admission operations and read-only `state` are
+outside that trigger set: the Egress stop/start drill reports its family
+observation and is never marked incomplete for lacking an accepted record,
+`deploy-runtime` writes the v5 `anywear_service_deployment` record itself and runs
+no separate `observe` job, a migration or admission write changes no recorded
+stack, and `state` makes no record claim. The trigger set is
 derived from the frozen stack tables in [operation-stacks.mjs](scripts/operation-stacks.mjs)
 by [observation-record.mjs](scripts/observation-record.mjs), not restated in YAML.
 

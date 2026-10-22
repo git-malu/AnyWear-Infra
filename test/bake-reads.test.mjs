@@ -5,17 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '@git-malu/stage-contracts';
 
-// Every AWS CLI call the 600-second bake runs. The bake executes as the
-// Service deploy job's OIDC role (`beta-service-deploy-role`), whose grants live
-// in AnyWear-Infra/lib/foundation-stack.ts; the paired Infra test
-// `grants every declared bake AWS call on the API resource form inside its
-// target` reads AnyWear-Infra/test/fixtures/workload-bake-reads.json and proves
-// each entry has exactly one grant in the API's resource form inside its target.
-//
-// A new AWS call in `scripts/bake-gate.mjs` fails this test until it is added
-// here (with its IAM action and whether #162 added the grant) and to the Infra
-// read table plus the Foundation roles. This is the completeness check for the
-// bake surface, not just the #162 extension resources.
+// Every AWS CLI call the 600-second bake runs. Since #195 the bake runs inside
+// the Infra `deploy-runtime` operation under the read-only runtime session as
+// `beta-infra-runtime-role`; its bake grants live in
+// `lib/beta-role-grants.ts` and render into the Platform stack's
+// `DedicatedPolicy`. This table is the completeness check for the bake surface:
+// a new AWS call in `scripts/bake-gate.mjs` fails this test until it is added
+// here with its IAM action and its `added_by_162` provenance.
 export const BAKE_AWS_CALLS = Object.freeze({
   'cloudformation:list-stack-resources': Object.freeze({
     action: 'cloudformation:ListStackResources',

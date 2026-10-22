@@ -59,6 +59,22 @@ export const RUNTIME_DEPLOY_PARAMETER_INPUTS = Object.freeze([
   '/anywear/beta/vlm_config_arn', '/anywear/beta/cloudfront_prefix_list_id',
 ]);
 
+// The four queue URLs and the ECS cluster name the 600-second bake reads. They are
+// contract values like every other stage input: the deploy names them by
+// parameter, never by an account/region literal or a guessed queue name. The bake
+// passes the URLs to `sqs get-queue-attributes` and the cluster to
+// `ecs describe-services`, so a queue *name* where a URL belongs fails every SQS
+// read at Deployment and the gate can never pass.
+export const RUNTIME_QUEUE_URL_NAMES = Object.freeze({
+  vto: '/anywear/beta/vto_queue_url',
+  auto_tagging: '/anywear/beta/auto_tagging_queue_url',
+  vto_dlq: '/anywear/beta/vto_dlq_url',
+  auto_tagging_dlq: '/anywear/beta/auto_tagging_dlq_url',
+});
+export const RUNTIME_ECS_CLUSTER_INPUT = '/anywear/beta/ecs_cluster_name';
+const QUEUE_URL = /^https:\/\/sqs\.[a-z0-9.-]+\/\d{12}\/[A-Za-z0-9_.-]+$/;
+const ECS_CLUSTER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$/;
+
 export const SSM_GET_PARAMETERS_LIMIT = 10;
 
 export function runtimeStageInputBatches() {
@@ -70,11 +86,39 @@ export function runtimeStageInputBatches() {
 const VLM_ARN = /^arn:aws:secretsmanager:ap-east-1:650880818323:secret:.+$/;
 const PREFIX_LIST = /^pl-[a-z0-9]+$/;
 
+const valueOf = (values, name) => (values instanceof Map ? values.get(name) : values?.[name]);
+
+// The bake's queue URLs, read from the same contract surface as the record
+// inputs. A missing value, a bare queue name, or anything that is not a full
+// `https://sqs.` URL fails closed before the gate runs.
+export function runtimeBakeQueueUrls(values) {
+  const queueUrls = {};
+  for (const [purpose, name] of Object.entries(RUNTIME_QUEUE_URL_NAMES)) {
+    const value = valueOf(values, name);
+    if (typeof value !== 'string' || !QUEUE_URL.test(value)) {
+      throw new Error(`The stage contract ${name} is not an https://sqs. queue URL`);
+    }
+    queueUrls[purpose] = value;
+  }
+  return Object.freeze(queueUrls);
+}
+
+// The deployed ECS cluster name. It is one of the 39 contract names, so the deploy
+// does not carry a second literal that could drift from the Base stack.
+export function runtimeEcsClusterName(values) {
+  const value = valueOf(values, RUNTIME_ECS_CLUSTER_INPUT);
+  if (typeof value !== 'string' || !ECS_CLUSTER_NAME.test(value)) {
+    throw new Error(`The stage contract ${RUNTIME_ECS_CLUSTER_INPUT} is not an ECS cluster name`);
+  }
+  return value;
+}
+
 // Read the whole Runtime stage surface in bounded `ssm get-parameters` calls and
-// return the record's sorted `inputs[]` rows (name, SSM version, value sha256).
-// A missing name fails closed: the `roles-added` phase publishes every one of the
-// 39 names, so an absent name is a wrong phase or a Base that was never deployed.
-export async function readRuntimeStageInputs(io) {
+// return the record's sorted `inputs[]` rows (name, SSM version, value sha256)
+// together with the values. A missing name fails closed: the `roles-added` phase
+// publishes every one of the 39 names, so an absent name is a wrong phase or a
+// Base that was never deployed.
+export async function readRuntimeStageContract(io) {
   const byName = new Map();
   for (const batch of runtimeStageInputBatches()) {
     const response = await io.aws(['ssm', 'get-parameters', '--names', ...batch], 'ap-east-1');
@@ -96,10 +140,13 @@ export async function readRuntimeStageInputs(io) {
       byName.set(parameter.Name, parameter);
     }
   }
-  return RUNTIME_STAGE_INPUT_NAMES.map((parameter) => {
-    const observed = byName.get(parameter);
-    return { parameter, version: String(observed.Version), value_sha256: sha256(observed.Value) };
-  }).sort((left, right) => (left.parameter < right.parameter ? -1 : left.parameter > right.parameter ? 1 : 0));
+  return {
+    inputs: RUNTIME_STAGE_INPUT_NAMES.map((parameter) => {
+      const observed = byName.get(parameter);
+      return { parameter, version: String(observed.Version), value_sha256: sha256(observed.Value) };
+    }).sort((left, right) => (left.parameter < right.parameter ? -1 : left.parameter > right.parameter ? 1 : 0)),
+    values: new Map(RUNTIME_STAGE_INPUT_NAMES.map((parameter) => [parameter, byName.get(parameter).Value])),
+  };
 }
 
 // The deployment parameters whose values come from the stage contract rather than
