@@ -263,6 +263,11 @@ export const SUPPRESSIONS: Suppression[] = [
     resources: ["arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*"],
     conditionRequired: false,
     reason: "The Beta stage-contract prefix; every parameter under it is published by the reviewed Base deploy." },
+  { template: "platform", principals: ["beta-infra-deploy-role","beta-infra-runtime-role"],
+    actions: ["iam:SimulateCustomPolicy","iam:SimulatePrincipalPolicy"],
+    resources: ["*"],
+    conditionRequired: false,
+    reason: "The simulator actions have no resource-level scope. SimulatePrincipalPolicy can enumerate any principal's effective permissions in the account; the grant is these two actions alone, used only by the preflight." },
 ];
 
 // A managed-policy attachment on one of the linted roles is a finding unless it
