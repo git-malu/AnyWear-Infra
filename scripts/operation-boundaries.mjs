@@ -213,11 +213,6 @@ export function assertAwsAllowed(env, args, purpose = 'operation') {
 }
 
 const arn = (service, suffix, awsRegion = 'ap-east-1') => `arn:aws:${service}:${awsRegion}:650880818323:${suffix}`;
-// The pre-mutation preflight calls the IAM policy simulator from inside the
-// restricted session. The simulator actions have no resource-level scope, so the
-// generated session policy carries them on `*`; the restricted base roles grant
-// exactly these two actions (§ beta-role-grants.ts).
-const simulate = ['iam:SimulatePrincipalPolicy', 'iam:SimulateCustomPolicy'];
 export function sessionPolicy(kind, env, purpose = 'operation') {
   const boundary = operationBoundary(env);
   const statement = (Action, Resource = '*', Condition) => ({ Effect: 'Allow', Action, Resource, ...(Condition ? { Condition } : {}) });
@@ -225,15 +220,13 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
   if (kind === 'deploy') {
     if (purpose !== 'operation' || !changedStackNames(env.INFRA_OPERATION).length) throw new Error('Deploy credentials are forbidden for this operation');
     const regions = env.INFRA_OPERATION === 'deploy-billing' ? ['us-east-1'] : ['ap-east-1'];
-    statements = [statement(['sts:GetCallerIdentity', 'cloudformation:DescribeStacks', 'ssm:GetParameter',
-      'ec2:DescribeManagedPrefixLists', ...simulate]),
+    statements = [statement(['sts:GetCallerIdentity', 'cloudformation:DescribeStacks', 'ssm:GetParameter', 'ec2:DescribeManagedPrefixLists']),
       statement('sts:AssumeRole', regions.flatMap(roleRegion => ['deploy', 'file-publishing', 'lookup'].map(role =>
         `arn:aws:iam::650880818323:role/cdk-hnb659fds-${role}-role-650880818323-${roleRegion}`))),
       statement('secretsmanager:GetSecretValue', arn('secretsmanager', 'secret:/anywear/beta/cloudfront_origin_header-*'))];
   } else if (kind === 'runtime') {
     const allowedFamilies = families(env, purpose);
-    statements = [statement((boundary.readOnly ? stateReads : Object.keys(reads)).map(read => reads[read])
-      .concat(boundary.readOnly ? [] : simulate))];
+    statements = [statement((boundary.readOnly ? stateReads : Object.keys(reads)).map(read => reads[read]))];
     if (allowedFamilies.length) {
       const definitions = allowedFamilies.map(family => arn('ecs', `task-definition/beta-anywear-${family}:*`));
       statements.push(statement(['ecs:RegisterTaskDefinition', 'ecs:RunTask'], definitions),
