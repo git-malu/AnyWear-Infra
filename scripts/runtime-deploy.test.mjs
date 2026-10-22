@@ -349,9 +349,10 @@ test('a schema-boundary refusal fails the run before synthesis, the change set a
     const record = { events: [] };
     const assetBytes = readFileSync('test/fixtures/schema-boundary/schema-asset.json');
     const liveRead = JSON.parse(readFileSync('test/fixtures/schema-boundary/live-read-compatible.json', 'utf8'));
-    // Synthetic ahead variant: one applied row the release does not contain.
+    // Synthetic ahead variant: one applied row the release does not contain. The
+    // captured last serial is 133, so the next applied row would be 134.
     const ahead = structuredClone(liveRead);
-    ahead.applied.push({ id: 27, tag: '0026_newer_fly', created_at: ahead.applied.at(-1).created_at + 1000,
+    ahead.applied.push({ id: 134, tag: '0026_newer_fly', created_at: ahead.applied.at(-1).created_at + 1000,
       hash: 'f'.repeat(64) });
     const definitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:7';
     const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
@@ -369,7 +370,7 @@ test('a schema-boundary refusal fails the run before synthesis, the change set a
       outputPath: path.join(directory, 'service-deployment.json') }),
     (error) => error instanceof SchemaBoundaryError && error.reason === 'applied-beyond-release'
       && /expected release journal ends at 0025_new_human_fly/.test(error.message)
-      && /observed database row 27 at index 26 0026_newer_fly/.test(error.message));
+      && /observed database row 134 at index 26 0026_newer_fly/.test(error.message));
     assert.equal(synthesized, 0, 'synthesis never runs after a refusal');
     assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false, 'no CDK change-set call');
     assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false);
