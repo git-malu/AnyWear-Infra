@@ -78,11 +78,12 @@ bootstrap roles (`cdk-hnb659fds-deploy-role`, `-file-publishing-role`,
 `-lookup-role`) and the bootstrap CloudFormation execution role
 (`cdk-hnb659fds-cfn-exec-role-650880818323-ap-east-1`). The operation's own
 preflight, change set and session policy are its scope; it does not claim IAM
-isolation the bootstrap path does not provide. The live Foundation still carries
-the four retired resources until a separately authorized `deploy-foundation`;
-`test/fixtures/foundation-live-provenance.json` records them as
-`pending_removal` and `beta-service-deploy-cfn-role` stays named by the live
-Runtime stack's `RoleARN` until the first executed Runtime update rebinds it.
+isolation the bootstrap path does not provide. The live Foundation no longer
+carries the four retired resources: issue #199's separately authorized
+`deploy-foundation` removed them, and
+`test/fixtures/foundation-live-provenance.json` no longer records a pending
+removal. The Runtime stack's execution role is the CDK bootstrap role because the
+rebind happened before the removal.
 The Runtime stack's CDK source, baselines and deploy chain now live in this
 repository (`lib/runtime-stack.ts`, `deployScope=runtime`), and `deploy-runtime`
 with the Beta stage contract produces the v6 `anywear_service_deployment`

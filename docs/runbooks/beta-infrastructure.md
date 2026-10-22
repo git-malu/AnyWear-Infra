@@ -399,10 +399,11 @@ Service deploy chain. `bin/infra.ts` now rejects a stale `infraServices` context
 explicitly before creating any resource, the synthesized Foundation contains no
 per-service role, and `@git-malu/stage-contracts` no longer exports the role-naming
 helpers. The Runtime stack deploys through the existing `beta-infra-deploy-role`
-and the standard CDK bootstrap path; `deploy-runtime` is the operation. The live
-Foundation still carries the four retired resources, recorded as `pending_removal`
-in `test/fixtures/foundation-live-provenance.json`, until a separately authorized
-`deploy-foundation` removes them.
+and the standard CDK bootstrap path; `deploy-runtime` is the operation. Issue
+#199's separately authorized `deploy-foundation` removed the four retired
+resources from the live Foundation, and
+`test/fixtures/foundation-live-provenance.json` no longer records a pending
+removal.
 
 ## Retained Beta sizing (retained on the Runtime stack)
 
