@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { reads, sessionPolicy } from './operation-boundaries.mjs';
+import { reads, sessionPolicy, operationReads } from './operation-boundaries.mjs';
 import { STAGE_CONTRACT_PARAMETERS } from './stage-contract-parameters.mjs';
 import { account, region } from './deployment-contract.mjs';
 
@@ -72,7 +72,8 @@ export const READ_RESOURCES = Object.freeze({
   // DescribeLogGroups is account-level: its list form has no resource type, so a
   // log-group/log-stream ARN (even an empty-name form) is an implicit deny.
   'logs/describe-log-groups': Object.freeze(['*']),
-  // Issue #195: the bake's live reads and the change-set evidence.
+  // Issue #195: the bake's live reads (`deploy-runtime` only, `readOperations`)
+  // and the change-set evidence.
   'cloudwatch/get-metric-statistics': Object.freeze(['*']),
   'cloudwatch/describe-alarms': Object.freeze(['beta-anywear-alb-5xx', 'beta-anywear-api-p95-latency',
     'beta-anywear-ecs-running-not-desired', 'beta-anywear-vto-oldest-message',
@@ -129,9 +130,13 @@ export class AuthorizationPreflightError extends Error {
   }
 }
 
-// Runtime reads come from the reviewed reads table in operation-boundaries.mjs;
-// the deploy session's own reads are the CDK CLI path. Mutations are not
-// simulated: the preflight proves the reads before the mutation begins.
+// Runtime reads come from the reviewed reads table in operation-boundaries.mjs,
+// scoped by `operationReads` to the reads the dispatched operation performs; the
+// deploy session's own reads are the CDK CLI path. Mutations are not simulated:
+// the preflight proves the reads before the mutation begins. The scope narrows
+// what an operation must already hold; it never removes a read the operation
+// performs, so `deploy-runtime` — the only operation that runs the bake — still
+// simulates the bake reads and still fails closed when the role lacks them.
 export function simulationRequests(kind, env, purpose = 'operation') {
   if (kind === 'deploy') {
     const requests = [
@@ -150,11 +155,11 @@ export function simulationRequests(kind, env, purpose = 'operation') {
   }
   if (kind !== 'runtime') throw new Error(`Unknown preflight session ${kind}`);
   const requests = [];
-  for (const [pair, action] of Object.entries(reads)) {
+  for (const pair of operationReads(env)) {
     if (pair in SIMULATION_SKIPS) continue;
     const resources = READ_RESOURCES[pair];
     if (!resources) throw new Error(`Read ${pair} has no reviewed simulation resources`);
-    requests.push({ pair, actions: [action], resources: [...resources] });
+    requests.push({ pair, actions: [reads[pair]], resources: [...resources] });
   }
   // The session policy is the other half of the intersection; its actions are
   // asserted against the same requests by the callers.

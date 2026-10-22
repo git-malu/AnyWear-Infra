@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workflowOperations, operationFamilies, operationBoundary, operationEvidence, families, assertOneShotAllowed,
-  assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor } from './operation-boundaries.mjs';
+  assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads } from './operation-boundaries.mjs';
 
 const infraSha = '5'.repeat(40);
 const env = (operation, overrides = {}) => {
@@ -107,6 +107,37 @@ test('session policies carry only the operation\'s own families', () => {
   assert.match(state, /ssm:GetParameter/);
   assert.doesNotMatch(state, /ecs:RegisterTaskDefinition/);
   assert.doesNotMatch(sessionPolicy('runtime', env('deploy-platform')), /ecs:RegisterTaskDefinition/);
+});
+
+// Issue #195: the bake runs only inside `deploy-runtime`, and its two new grants
+// are installed by a Platform deploy. The read table, the session policy and the
+// call allow-list are scoped together so no other operation requires them and
+// `deploy-runtime` still does.
+test('the runtime read set is scoped to the operation that performs the read', () => {
+  const bakeReads = ['cloudwatch/get-metric-statistics', 'cloudwatch/describe-alarms', 'logs/filter-log-events'];
+  assert.deepEqual(Object.keys(readOperations).sort(), [...bakeReads].sort());
+  for (const pair of bakeReads) {
+    assert.ok(pair in reads, `${pair} stays in the reviewed reads table`);
+    assert.deepEqual(readOperations[pair], ['deploy-runtime']);
+    assert.equal(operationReads(env('deploy-platform')).includes(pair), false, `${pair} is not a Platform-deploy read`);
+    assert.equal(operationReads(env('deploy-runtime')).includes(pair), true, `${pair} is a deploy-runtime read`);
+  }
+  // The universal reads remain in every operation's set.
+  for (const pair of ['cloudformation/describe-stacks', 'ssm/get-parameters', 'logs/describe-log-groups']) {
+    assert.equal(operationReads(env('migrate')).includes(pair), true, `${pair} is universal`);
+  }
+  assert.throws(() => assertAwsAllowed(env('deploy-platform'), ['cloudwatch', 'describe-alarms']), /forbidden/);
+  assert.throws(() => assertAwsAllowed(env('migrate'), ['logs', 'filter-log-events']), /forbidden/);
+  assertAwsAllowed(env('deploy-runtime'), ['cloudwatch', 'describe-alarms']);
+  assertAwsAllowed(env('deploy-runtime'), ['logs', 'filter-log-events']);
+  const platform = sessionPolicy('runtime', env('deploy-platform'));
+  assert.doesNotMatch(platform, /cloudwatch:DescribeAlarms|logs:FilterLogEvents|cloudwatch:GetMetricStatistics/);
+  const runtime = sessionPolicy('runtime', env('deploy-runtime'));
+  assert.match(runtime, /cloudwatch:DescribeAlarms/);
+  assert.match(runtime, /logs:FilterLogEvents/);
+  // The read-only state session keeps its own narrower set and never gains a bake read.
+  const state = sessionPolicy('runtime', env('state'));
+  assert.doesNotMatch(state, /cloudwatch|logs:FilterLogEvents/);
 });
 
 test('the protected executor gate binds repository, workflow, source, account and region', () => {

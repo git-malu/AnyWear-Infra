@@ -98,6 +98,25 @@ export const reads = {
   // The base role may deny this legacy fallback; this session never adds grants.
   'cloudfront/get-distribution': 'cloudfront:GetDistribution',
 };
+// Reads that only some operations perform. A read absent from this table is
+// performed by every operation that uses the runtime session; a listed read is
+// simulated and granted only for the operations named here. Issue #195: the
+// 600-second bake runs only inside `deploy-runtime`, and two of its grants are
+// installed by a Platform deploy, so requiring them from every runtime-session
+// operation would leave no reviewed operation able to install them.
+export const readOperations = Object.freeze({
+  'cloudwatch/get-metric-statistics': Object.freeze(['deploy-runtime']),
+  'cloudwatch/describe-alarms': Object.freeze(['deploy-runtime']),
+  'logs/filter-log-events': Object.freeze(['deploy-runtime']),
+});
+// The reviewed read set the dispatched operation's runtime session performs. The
+// simulation plan, the generated session policy and the AWS call allow-list all
+// derive from this one function, so an operation cannot be granted a read it does
+// not perform and cannot call a read another operation's session needs.
+export function operationReads(env) {
+  const operation = env?.INFRA_OPERATION;
+  return Object.keys(reads).filter((pair) => !(pair in readOperations) || readOperations[pair].includes(operation));
+}
 export const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'cloudformation/get-template', 'ssm/get-parameter'];
 // One frozen evidence record per operation. `roles` is exactly what
 // `families(env, 'operation')` materializes for the operation's own session;
@@ -202,7 +221,7 @@ export function assertAwsAllowed(env, args, purpose = 'operation', session = 'ru
       && /^anywear-runtime-[0-9]+$/.test(argument('--change-set-name') ?? '')) return;
     throw new Error(`AWS action ${key} is forbidden for the deploy session`);
   }
-  if (reads[key] && (!boundary.readOnly || stateReads.includes(key))) return;
+  if (reads[key] && operationReads(env).includes(key) && (!boundary.readOnly || stateReads.includes(key))) return;
   if (args[0] === 'ecs' && args[1] === 'wait') {
     const allowed = args[2] === 'tasks-stopped' || !boundary.readOnly && args[2] === 'services-stable';
     if (!boundary.readOnly && allowed) return;
@@ -260,7 +279,7 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
     }
   } else if (kind === 'runtime') {
     const allowedFamilies = families(env, purpose);
-    statements = [statement((boundary.readOnly ? stateReads : Object.keys(reads)).map(read => reads[read])
+    statements = [statement((boundary.readOnly ? stateReads : operationReads(env)).map(read => reads[read])
       .concat(boundary.readOnly ? [] : simulate))];
     if (allowedFamilies.length) {
       const definitions = allowedFamilies.map(family => arn('ecs', `task-definition/beta-anywear-${family}:*`));

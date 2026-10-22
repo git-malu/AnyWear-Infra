@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { runAuthorizationPreflight, AuthorizationPreflightError, simulationRequests, SIMULATION_SKIPS,
   PREFLIGHT_MARKER, preflightActionSet, CONTEXT_ENTRIES } from './authorization-preflight.mjs';
-import { sessionPolicy, reads } from './operation-boundaries.mjs';
+import { sessionPolicy, reads, readOperations, workflowOperations } from './operation-boundaries.mjs';
 import { createRuntimeIo } from './runtime-operation.mjs';
 
 // The pre-mutation preflight's contract (#165): the simulation plan comes from the
@@ -55,7 +55,8 @@ test('the plan comes from the reviewed reads table and stays inside the declared
   const env = operationEnvironment('migrate');
   const runtime = simulationRequests('runtime', env, 'operation');
   const runtimePairs = runtime.map((request) => request.pair).sort();
-  const expectedPairs = Object.keys(reads).filter((pair) => !(pair in SIMULATION_SKIPS)).sort();
+  const expectedPairs = Object.keys(reads).filter((pair) => !(pair in SIMULATION_SKIPS)
+    && !(pair in readOperations)).sort();
   assert.deepEqual(runtimePairs, expectedPairs);
   for (const request of runtime) {
     assert.equal(request.actions.includes(reads[request.pair]), true);
@@ -63,22 +64,63 @@ test('the plan comes from the reviewed reads table and stays inside the declared
       assert.equal(declaredCovers('beta-infra-runtime-role', action), true, `${action} is declared`);
     }
   }
+  // `deploy-runtime` runs the bake, so its plan is every reviewed read, skips aside.
+  const bake = simulationRequests('runtime', operationEnvironment('deploy-runtime'), 'operation');
+  assert.deepEqual(bake.map((request) => request.pair).sort(),
+    Object.keys(reads).filter((pair) => !(pair in SIMULATION_SKIPS)).sort());
+  for (const request of bake) for (const action of request.actions) {
+    assert.equal(declaredCovers('beta-infra-runtime-role', action), true, `${action} is declared`);
+  }
   const deploy = simulationRequests('deploy', env, 'operation');
   assert.deepEqual(deploy.map((request) => request.pair), ['cloudformation/describe-stacks',
     'ssm/get-parameter', 'ec2/describe-managed-prefix-lists']);
   for (const request of deploy) for (const action of request.actions) {
     assert.equal(declaredCovers('beta-infra-deploy-role', action), true, `${action} is declared`);
   }
-  // Every plan action is also granted by the session policy the preflight runs under.
-  const sessionActions = new Set(JSON.parse(sessionPolicy('runtime', env, 'operation'))
-    .Statement.flatMap((statement) => [statement.Action].flat()));
-  for (const action of preflightActionSet('runtime', env, 'operation')) {
-    assert.equal(sessionActions.has(action), true, `${action} is in the runtime session policy`);
+  // Every plan action is also granted by the session policy the preflight runs under,
+  // for the operation that runs the bake and for one that does not.
+  for (const operation of ['migrate', 'deploy-runtime']) {
+    const opEnv = operationEnvironment(operation);
+    const sessionActions = new Set(JSON.parse(sessionPolicy('runtime', opEnv, 'operation'))
+      .Statement.flatMap((statement) => [statement.Action].flat()));
+    for (const action of preflightActionSet('runtime', opEnv, 'operation')) {
+      assert.equal(sessionActions.has(action), true, `${operation}: ${action} is in the runtime session policy`);
+    }
   }
   assert.deepEqual(Object.keys(SIMULATION_SKIPS).sort(), ['cloudfront/get-distribution', 'ecr/batch-get-image',
     'ecr/describe-images', 'ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
     'ecr/start-lifecycle-policy-preview', 'ecs/register-task-definition', 'ecs/run-task', 'ecs/wait',
     'logs/get-log-events', 'logs/put-retention-policy', 'sts/get-caller-identity']);
+});
+
+// Issue #195: the runtime session's plan, its session policy and its call
+// allow-list are scoped to the reads the dispatched operation performs. The bake
+// reads are Platform-installed grants, so requiring them from every operation
+// would leave the Platform deploy — the operation that installs them — blocked.
+test('only deploy-runtime simulates and is granted the bake reads', () => {
+  const operations = Object.values(workflowOperations).flat();
+  assert.equal(operations.length, 16);
+  const bakeReads = ['cloudwatch/get-metric-statistics', 'cloudwatch/describe-alarms', 'logs/filter-log-events'];
+  assert.deepEqual(Object.keys(readOperations).sort(), [...bakeReads].sort());
+  for (const pair of bakeReads) {
+    assert.ok(pair in reads, `${pair} is a reviewed read`);
+    assert.deepEqual(readOperations[pair], ['deploy-runtime']);
+  }
+  for (const operation of operations) {
+    const workflow = ['state', 'observe'].includes(operation) ? 'runtime' : 'mutate';
+    const env = operationEnvironment(operation, workflow);
+    const plan = new Set(simulationRequests('runtime', env, 'operation').map((request) => request.pair));
+    const sessionActions = new Set(JSON.parse(sessionPolicy('runtime', env, 'operation'))
+      .Statement.flatMap((statement) => [statement.Action].flat()));
+    for (const pair of bakeReads) {
+      assert.equal(plan.has(pair), operation === 'deploy-runtime', `${operation}: ${pair} in the plan`);
+      assert.equal(sessionActions.has(reads[pair]), operation === 'deploy-runtime',
+        `${operation}: ${reads[pair]} in the session policy`);
+    }
+    // The universal reads stay in every operation's plan.
+    assert.equal(plan.has('ssm/get-parameters'), true, `${operation}: the stage-contract read remains`);
+    assert.equal(plan.has('cloudformation/describe-stacks'), true, `${operation}: the stack read remains`);
+  }
 });
 
 test('the preflight passes when both the base policies and the session policy allow every read', async () => {
@@ -124,6 +166,33 @@ test('a denied Egress destroy stops before npx cdk destroy', async () => {
   });
   await assert.rejects(io.destroy('AnyWearEgressStack-beta'), (error) => error.denial === true);
   assert.equal(calls.some((call) => call.command === 'npx'), false);
+});
+
+// Issue #195's counter-check: scoping the plan must not weaken the one operation
+// that performs the bake. `deploy-runtime` still simulates both bake reads under
+// the runtime session and stops before the change set is created.
+test('deploy-runtime still fails closed when the runtime role denies a bake read', async () => {
+  const env = { ...operationEnvironment('deploy-runtime'), INFRA_IDENTITY_PHASE: 'roles-added',
+    SERVICE_RELEASE_TAG: 'service-artifacts-4f2ba555', SERVICE_COMMIT: '4f2ba555'.padEnd(40, '0') };
+  for (const denied of ['cloudwatch:DescribeAlarms', 'logs:FilterLogEvents']) {
+    const calls = [];
+    const deny = async (command, args) => {
+      calls.push({ command, args });
+      if (command !== 'aws') throw new Error('a mutation must not run');
+      return simulation({ denyAction: denied })(command, args);
+    };
+    const io = await createRuntimeIo(env, undefined, {
+      purpose: 'operation', assume: async () => ({ AWS_ACCESS_KEY_ID: 'x' }), run: deny });
+    await assert.rejects(io.deployRuntimeChangeSet(
+      { args: ['cdk', 'deploy', 'AnyWearRuntimeStack-beta', '--no-execute'] }), (error) => {
+      assert.ok(error instanceof AuthorizationPreflightError);
+      assert.equal(error.kind, 'runtime');
+      assert.equal(error.denial, true);
+      assert.match(error.message, new RegExp(denied));
+      return true;
+    });
+    assert.equal(calls.some((call) => call.command === 'npx'), false, 'the change set must not be created');
+  }
 });
 
 test('a simulator API error is classified apart from a denial', async () => {
@@ -181,7 +250,7 @@ test('account-level actions simulate on * and resource-level actions stay concre
   // the action on *. Pin the known account-level actions and keep the rest concrete.
   const noResource = new Set(['ecs:DescribeTaskDefinition', 'ecs:ListTasks',
     'ec2:DescribeManagedPrefixLists', 'logs:DescribeLogGroups', 'cloudwatch:GetMetricStatistics']);
-  const plan = [...simulationRequests('runtime', {}), ...simulationRequests('deploy', {})];
+  const plan = [...simulationRequests('runtime', operationEnvironment('deploy-runtime')), ...simulationRequests('deploy', {})];
   const seen = new Set();
   for (const request of plan) {
     for (const action of request.actions) {
@@ -210,7 +279,7 @@ test('the simulator-unevaluable log-stream read is skipped and the rest of the r
   assert.match(reason, /log-stream ARNs/);
   assert.match(reason, /implicitDeny/);
   assert.match(reason, /form probes 2026-10-22/);
-  const plan = simulationRequests('runtime', {});
+  const plan = simulationRequests('runtime', operationEnvironment('deploy-runtime'));
   const pairs = plan.map((request) => request.pair).sort();
   assert.ok(!pairs.includes('logs/get-log-events'));
   assert.equal(plan.length, 15);
