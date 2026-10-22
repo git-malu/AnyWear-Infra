@@ -20,11 +20,15 @@ and must not be relabeled as an Infra-produced deployment.
   deployment input. Client publishes independently through deployed interfaces.
 - There is no committed selection and no cross-repository native-asset
   verification path. `deploy-platform` and `restore-release` take one reviewed
-  Service release identity (`service_release_tag` + `service_commit`), download
-  that sealed release's Lambda bundles, runtime policy and manifest with a
-  read-only token, and prove each downloaded byte against the manifest before any
-  credential. No Service-built artifact is committed here. Every other operation
-  rejects a release identity.
+  Service release identity (`service_release_tag` + `service_commit`), read the
+  sealed release and its tag ref over the REST API, require the release's two
+  Lambda bundles and runtime policy to be present, uploaded and digest-valid
+  while ignoring extras such as the retired legacy manifest, download only those
+  three, and prove each travelled byte once in the deploy job before any
+  credential. The deploy records the release tag, Service commit and the ECR
+  digest of the immutable `service-artifacts-<service_commit>` tag. No
+  Service-built artifact is committed here. Every other operation rejects a
+  release identity.
 - Deployment records are v3 (`anywear_infra_deployment`): producer identity, the
   exact stack set that producer owns, the stage-contract SSM parameters the run
   read (name, version, value hash), the authenticated observation and a content

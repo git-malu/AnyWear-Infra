@@ -27,12 +27,12 @@ runs:
         owner: git-malu
         repositories: AnyWear-Service
         permission-contents: read
-    - name: Download and prove the sealed Service release assets
+    - name: Read the Service release identity over REST and download the three consumed assets
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app.outputs.token }}
       run: node scripts/verify-operation-inputs.mjs
-    - name: Preserve the verified inputs and the sealed release directory
+    - name: Preserve the verified inputs and the selected release directory
       uses: actions/upload-artifact@v4
       with:
         name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}

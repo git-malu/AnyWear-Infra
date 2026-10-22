@@ -4,11 +4,11 @@ import { promisify } from 'node:util';
 import { readFile, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { parseJson, sha256, canonicalJson, HASH, SHA } from './json-contract.mjs';
+import { parseJson, sha256, canonicalJson, matches, DIGEST, SHA } from './json-contract.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
-import { createOperationRecord, recordRecovery } from './operation-record.mjs';
+import { createOperationRecord, recordRecovery, validateServiceRelease } from './operation-record.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
@@ -86,6 +86,28 @@ export function validateOperationInputs(env = process.env) {
 }
 const baseStack = 'AnyWearPlatformStack-beta';
 const egressStack = 'AnyWearEgressStack-beta';
+// The ECR repository Service's release chain pushes to. Tag immutability makes
+// `service-artifacts-<commit>` a one-image lookup, so a release operation can
+// record the deployed image digest from ECR instead of a release manifest.
+export const SERVICE_IMAGE_REPOSITORY = 'beta-anywear-service';
+export function serviceImageTag(serviceCommit) {
+  return `service-artifacts-${serviceCommit}`;
+}
+// Resolve the release image digest for one Service commit before the deploy. A
+// missing or ambiguous tag fails closed before CloudFormation is touched.
+export async function resolveServiceImageDigest(io, serviceCommit) {
+  const tag = serviceImageTag(serviceCommit);
+  const { imageDetails } = await io.aws(['ecr', 'describe-images', '--repository-name', SERVICE_IMAGE_REPOSITORY,
+    '--image-ids', `imageTag=${tag}`]);
+  if (!Array.isArray(imageDetails) || imageDetails.length !== 1) {
+    throw new Error(`The immutable ECR tag ${tag} does not resolve to exactly one image`);
+  }
+  const [image] = imageDetails;
+  if (!Array.isArray(image.imageTags) || !image.imageTags.includes(tag)) {
+    throw new Error(`The immutable ECR tag ${tag} does not name the resolved image`);
+  }
+  return matches(image.imageDigest, DIGEST, `ECR tag ${tag} image digest`);
+}
 // The legacy Service stack that still exists until the one-time split migration
 // deletes it. Its `ApiLoadBalancerDnsName` output is the only origin source
 // before the Runtime stack exists; it is a read-only transition path.
@@ -380,6 +402,14 @@ export async function runOperation(env = process.env) {
   for (const row of record.stack_manifest) {
     const template = (await io.aws(['cloudformation', 'get-template', '--stack-name', row.stack_name, '--template-stage', 'Original', '--region', row.region])).TemplateBody;
     record.original_stack_templates.push({ stack_name: row.stack_name, region: row.region, template_sha256: sha256(canonicalJson(typeof template === 'string' ? parseJson(template) : template)) });
+  }
+  // A release operation records the image digest its Service commit was
+  // published under. Resolve it from the immutable ECR tag under the operation's
+  // own session before the deploy; a missing or ambiguous tag fails with no
+  // mutation. Every other operation keeps `service_release = null`.
+  if (inputs.service_release) {
+    record.service_release = validateServiceRelease({ ...inputs.service_release,
+      imageDigest: await resolveServiceImageDigest(io, inputs.service_release.serviceCommit) });
   }
   if (env.INFRA_OPERATION === 'state') {
     try { record.state_observation = await observeBetaState(io); }

@@ -71,6 +71,12 @@ test('the operation record is v4 with the reviewed release identity and configur
   assert.deepEqual(record.stack_manifest.map(row => row.stack_name), configuredStackNames());
   assert.ok(record.stack_manifest.every(row => row.source_repository === 'git-malu/AnyWear-Infra' && row.source_sha === env.GITHUB_SHA));
   assert.deepEqual(readOperationRecord(record), record);
+  // The deploy resolves the release image digest from its immutable ECR tag and
+  // records it in the same block; a historical record without it stays readable.
+  const imageDigest = `sha256:${'7'.repeat(64)}`;
+  const withDigest = createOperationRecord({ env, release: { ...release, imageDigest } });
+  assert.deepEqual(withDigest.service_release, { ...release, imageDigest });
+  assert.deepEqual(readOperationRecord(withDigest), withDigest);
   const withoutRelease = createOperationRecord({ env: { ...env, INFRA_OPERATION: 'deploy-billing' } });
   assert.equal(withoutRelease.service_release, null);
   // Egress is an operation-owned changed stack, not a manifest row.
@@ -78,6 +84,23 @@ test('the operation record is v4 with the reviewed release identity and configur
   assert.deepEqual(egress.changed_stack_names, ['AnyWearEgressStack-beta']);
   assert.deepEqual(egress.stack_manifest.map(row => row.stack_name), configuredStackNames());
   assert.deepEqual(readOperationRecord(egress), egress);
+});
+
+test('the v4 service release block validates its exact shape', () => {
+  const release = { releaseTag: 'beta-2026-10-18', serviceCommit: '6'.repeat(40) };
+  const record = createOperationRecord({ env, release });
+  const shape = overrides => ({ ...record, service_release: overrides });
+  for (const invalid of [{ releaseTag: release.releaseTag }, { serviceCommit: release.serviceCommit },
+    { ...release, extra: true }, 'release', []]) {
+    assert.throws(() => readOperationRecord(shape(invalid)), /Invalid operation service release/, JSON.stringify(invalid));
+  }
+  assert.throws(() => readOperationRecord(shape({ ...release, releaseTag: 'bad tag' })), /Invalid operation release tag/);
+  assert.throws(() => readOperationRecord(shape({ ...release, serviceCommit: '6'.repeat(39) })), /Invalid operation Service commit/);
+  assert.throws(() => readOperationRecord(shape({ ...release, image_digest: 'sha256:abc' })), /Invalid operation service release fields/);
+  assert.throws(() => readOperationRecord(shape({ ...release, imageDigest: 'sha256:abc' })), /Invalid operation image digest/);
+  assert.equal(readOperationRecord(shape(null)).service_release, null);
+  // Creation refuses the same malformed block instead of writing it.
+  assert.throws(() => createOperationRecord({ env, release: { releaseTag: release.releaseTag } }), /Invalid operation service release fields/);
 });
 
 test('historical operation records stay readable and invalid changed stacks fail', () => {

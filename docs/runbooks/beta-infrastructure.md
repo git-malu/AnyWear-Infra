@@ -97,9 +97,10 @@ round no workload deploy may be attempted from anywhere, and no Infra entry may
 re-add one. The committed `selection`/`stack_sources` contract, its double-write
 window, the cross-repository native-asset verification and the vendored Service
 parser were deleted; `deploy-platform` and `restore-release` take one reviewed
-Service release identity (`service_release_tag` + `service_commit`) and download
-that sealed release's Lambda bundles, runtime policy and manifest before any
-credential. Deployment records are v3 and contain no `selection`.
+Service release identity (`service_release_tag` + `service_commit`), read the
+sealed release and its tag ref over the REST API and download only the two Lambda
+bundles and the runtime policy before any credential. Deployment records are v3
+and contain no `selection`.
 
 **Do not deploy the post-C Platform template while Service's slice still reads
 `PublishOutput*` outputs.** CDK's weak cross-stack reference feature emits those
@@ -158,12 +159,17 @@ authenticated observation and a derived schema content hash.
 Before App credentials, source guards require the exact Infra Git origin/full
 HEAD, main runtime workflow/account/region and clean tracked/untracked checkout.
 `deploy-platform` and `restore-release` additionally carry the reviewed Service
-release tag and source commit. Before AWS OIDC, a read-only Service token
-downloads the sealed release (`service-artifacts.json`, `pre-sign-up.zip`,
-`post-confirmation.zip`, `runtime-policy.json`) and every downloaded byte is
-proved against the release manifest; the manifest's image source must equal the
-reviewed commit. There is no selection schema, native attestation, vendored
-parser or publisher-run identity check on this path. See
+release tag and source commit. Before AWS OIDC, a read-only Service token reads
+the release identity over REST (the tag resolves to the reviewed commit,
+`draft=false`, `immutable=true`, and the two Lambda bundles and the runtime policy
+are present, uploaded and carry a `sha256` digest; extras such as the retired
+legacy manifest are ignored) and downloads only those three
+(`pre-sign-up.zip`, `post-confirmation.zip`, `runtime-policy.json`). The deploy job
+re-hashes each travelled byte once against those published digests before it
+requests a session, then records the release tag, Service commit and the ECR
+digest of the immutable `service-artifacts-<service_commit>` tag. There is no
+selection schema, native attestation, release manifest, vendored parser or
+publisher-run identity check on this path. See
 [direct release identity](cutover-and-recovery.md#direct-release-identity).
 
 Runtime uses the reviewed main workspace and `GITHUB_SHA`. Every deployment record
@@ -209,12 +215,12 @@ main, the `beta` environment and shared non-cancelling queue
 `anywear-infra-runtime`. Their local composites split verification from
 execution: [verify-operation](../../.github/actions/verify-operation/action.yml)
 rejects cross-family operations, validates the reviewed Service release identity
-for the two operations that take one, and verifies the downloaded sealed-release
-bytes against its manifest before App credentials, and verifies the
-complete immutable Service release/publisher before AWS credentials;
+for the two operations that take one, and reads that release and its tag ref over
+REST and downloads only the three files it consumes before App credentials;
 [deploy-operation](../../.github/actions/deploy-operation/action.yml) binds the
-verified-inputs artifact, obtains the operation-specific restricted STS session,
-runs the operation and finalizes the evidence. Only mutation requires
+verified-inputs artifact, re-hashes each travelled release byte once, obtains the
+operation-specific restricted STS session, runs the operation and finalizes the
+evidence. Only mutation requires
 `ENABLE_BETA_MUTATION=true`; read-only `state` remains available when it is
 closed. The environment restricts branches to main; no required-reviewer rule is
 currently configured. Approval and writer allocation remain separate operational
@@ -262,7 +268,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | --- | --- |
 | `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; takes no Service release identity and no committed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
-| `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job downloads that sealed release's Lambda bundles, runtime policy and manifest with a read-only token and proves every byte against the manifest before any credential. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; the same run's `observe` job then produces the accepted `anywear_infra_deployment` v3 record with producer `mutate.yml` and that run's id/attempt/source |
+| `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job re-hashes each travelled byte once against those published digests before any credential and records the release tag, Service commit and ECR image digest. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin; the same run's `observe` job then produces the accepted `anywear_infra_deployment` v3 record with producer `mutate.yml` and that run's id/attempt/source |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention, closed admission and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice |
 | ~~`deploy-workload`~~ | Removed in #158 step C; the slice was renamed to Runtime in #166 and is deployed only by AnyWear-Service's release chain |
@@ -663,8 +669,9 @@ separately reviewed recovery may proceed from the observed partial state.
 Preserve `deployment-evidence/operation-record.json` under the always-attempted
 `infra-operation-<run-id>-<attempt>` artifact even on failure. Its current
 version-4 `anywear_infra_operation` record keeps the reviewed Service release
-identity (`service_release`, only for the operation that took one) separate from
-the current Infra executor SHA/run/attempt. It records actual
+identity (`service_release` = release tag, Service commit and the ECR image digest
+resolved for that immutable tag, only for the operation that took one) separate
+from the current Infra executor SHA/run/attempt. It records actual
 Original template hashes and the original Runtime image/source readbacks,
 the validated all-stack `stack_manifest` plus the operation's `changed_stack_names`,
 completed one-shot task/deployment events,
@@ -688,7 +695,9 @@ Version-4 `anywear_infra_operation` records are the current shape: `stack_manife
 always carries every configured stack with its `Original` template hash, while
 `changed_stack_names` records only what the operation mutated and still drives
 deploy authorization, cleanup fencing and retention gates. The record carries the
-reviewed `service_release` when the operation took one, and no `selection` member.
+reviewed `service_release` (release tag, Service commit and the ECR image digest
+resolved for that immutable tag) when the operation took one, and no `selection`
+member.
 Historical version-3 records (template evidence separated from the changed-stack
 set) and version-2 records (hand-authored per-stack `reviewed_stack_sources`)
 remain readable as evidence; they are not operation inputs. Unknown versions are

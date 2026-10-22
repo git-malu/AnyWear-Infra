@@ -17,7 +17,9 @@ const execute = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const workflowDirectory = new URL('../.github/workflows/', import.meta.url);
 const workflowFile = name => new URL(`../.github/workflows/${name}`, import.meta.url);
+const actionFile = name => new URL(`../.github/actions/${name}/action.yml`, import.meta.url);
 const loadWorkflow = async name => yaml.load(await readFile(workflowFile(name), 'utf8'));
+const loadAction = async name => yaml.load(await readFile(actionFile(name), 'utf8'));
 
 const declaresEnvironment = job => Object.hasOwn(job ?? {}, 'environment');
 const holdsIdToken = job => job?.permissions?.['id-token'] === 'write';
@@ -136,6 +138,45 @@ test('mutate.yml keeps one preflight → verify → deploy → observe → recor
   assert.equal(/AnyWearWorkloadStack/.test(text), false, 'mutate.yml must not name the retired Workload stack');
 });
 
+test('no AWS credential precedes the release identity and travelled-byte checks', async () => {
+  const mutate = await loadWorkflow('mutate.yml');
+  // `verify` is the only pre-deploy job that reads the Service release, and it
+  // has no AWS credential surface at all: the release identity read and the three
+  // downloads happen before any environment or OIDC identity exists.
+  assert.equal(mutate.jobs.verify.environment, undefined);
+  assert.equal(mutate.jobs.verify.permissions?.['id-token'], undefined);
+  assert.deepEqual(credentialJobs(mutate), ['deploy', 'observe']);
+  assert.equal(mutate.jobs.deploy.needs, 'verify');
+  const verifyStep = mutate.jobs.verify.steps.find(step => step.uses === './.github/actions/verify-operation');
+  assert.ok(verifyStep, 'the verify job runs the release-identity composite');
+  assert.equal(mutate.jobs.deploy.steps.some(step => step.uses === './.github/actions/deploy-operation'), true);
+
+  // The verify composite validates the operation/identity shape, mints the
+  // read-only Service token and then reads the release identity and downloads
+  // exactly the three consumed names.
+  const verify = await loadAction('verify-operation');
+  const verifyRun = verify.runs.steps.map(step => step.run ?? '').join('\n');
+  assert.match(verifyRun, /node scripts\/check-operation\.mjs/);
+  assert.match(verifyRun, /node scripts\/verify-operation-inputs\.mjs/);
+  assert.equal(verify.runs.steps.some(step => /download-artifact|assume-role|configure-aws-credentials/.test(
+    `${step.uses ?? ''} ${step.run ?? ''}`)), false, 'the verify job downloads no credential surface');
+
+  // The deploy composite re-hashes the three travelled files (one hash per file)
+  // before the operation step that requests the restricted STS session.
+  const deploy = await loadAction('deploy-operation');
+  const steps = deploy.runs.steps;
+  const bindIndex = steps.findIndex(step => step.run === 'node scripts/check-verified-inputs.mjs');
+  const operationIndex = steps.findIndex(step => step.run === 'node scripts/runtime-operation.mjs');
+  assert.ok(bindIndex >= 0, 'the deploy job binds the verified inputs');
+  assert.ok(operationIndex > bindIndex, 'the byte re-hash precedes the credential-requesting operation');
+  assert.equal(steps[bindIndex].if, "inputs.verify_artifact == 'true'");
+  // Nothing between the bind and the operation may acquire a credential.
+  for (const step of steps.slice(bindIndex, operationIndex)) {
+    assert.equal(/configure-aws-credentials|assume-role|oidc/i.test(`${step.uses ?? ''} ${step.run ?? ''}`), false,
+      'no credential step may sit between the byte check and the operation');
+  }
+});
+
 test('runtime.yml keeps state runnable with the switch closed and observe switch-gated', async () => {
   const runtime = await loadWorkflow('runtime.yml');
   assert.deepEqual(Object.keys(runtime.jobs), ['preflight', 'state', 'observe', 'record']);
@@ -189,6 +230,30 @@ test('exactly one ENABLE_* switch name exists across workflows and non-test exec
   for (const file of ['mutate.yml', 'runtime.yml']) {
     assert.match(await readFile(workflowFile(file), 'utf8'), /ENABLE_BETA_MUTATION/, file);
   }
+});
+
+test('no release-manifest reader or retired Service parser remains in production sources', async () => {
+  // #193: the release states its own identity (tag to commit, immutability and a
+  // digest per asset), so no production source or workflow may name the retired
+  // manifest asset or a retired parser helper. Tests may construct a legacy
+  // five-asset release to prove rollback tolerance; production code may not.
+  const retiredNames = ['service-artifacts.json', ['validate', 'Manifest'].join(''),
+    ['zip', 'Stored'].join(''), ['assert', 'Native', 'Release', 'Attestation'].join('')];
+  const tracked = (await execute('git', ['-C', repositoryRoot, 'ls-files', '.github', 'scripts'])).stdout
+    .split(/\r?\n/).filter(Boolean)
+    .filter(file => /\.(mjs|cjs|ts|yml|yaml)$/.test(file))
+    .filter(file => !/(^|\/)(test|tests|__tests__|fixtures)\//.test(file))
+    .filter(file => !/\.(test|spec)\.[^.]+$/.test(file));
+  assert.ok(tracked.length > 20, `tracked production source set too small: ${tracked.length}`);
+  for (const file of tracked) {
+    const text = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    for (const name of retiredNames) assert.equal(text.includes(name), false, `${file} must not name ${name}`);
+  }
+  // The release-inputs module exposes the frozen four-name asset set instead.
+  const release = await readFile(new URL('../scripts/release-inputs.mjs', import.meta.url), 'utf8');
+  assert.match(release, /export const RELEASE_ASSET_NAMES = Object\.freeze/);
+  assert.match(release, /export const STAGE_BASE_ASSETS = Object\.freeze/);
+  assert.match(release, /export async function assertSelectedReleaseBytes/);
 });
 
 test('AnyWear-E2E has exactly one reviewed executor workflow', async () => {
