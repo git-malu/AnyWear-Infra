@@ -253,6 +253,12 @@ describe('IaC policy lint (#165)', () => {
     expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/api_base_url`);
     const lambda = runtime.find((request: any) => request.pair === 'lambda/get-function');
     expect(lambda.resources).toContain(`arn:aws:lambda:${REGION}:${ACCOUNT}:function:AnyWearPlatformStack-beta-*`);
+    const egress = `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/AnyWearEgressStack-beta/*`;
+    for (const pair of ['cloudformation/describe-stacks', 'cloudformation/get-template',
+      'cloudformation/list-stack-resources']) {
+      const request = runtime.find((entry: any) => entry.pair === pair);
+      expect({ pair, egress: request.resources.includes(egress) }).toEqual({ pair, egress: true });
+    }
     const deploy = preflight.simulationRequests('deploy', env) as any[];
     expect(deploy.map((request) => request.pair)).toEqual(['cloudformation/describe-stacks', 'ssm/get-parameter',
       'ec2/describe-managed-prefix-lists']);

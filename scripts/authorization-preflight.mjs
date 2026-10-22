@@ -23,7 +23,7 @@ const iamRole = (name) => `arn:aws:iam::${account}:role/${name}`;
 
 const STACKS = Object.freeze([stack('AnyWearFoundationStack'), stack('AnyWearPlatformStack-beta'),
   stack('AnyWearBillingStack-beta', 'us-east-1'), stack('AnyWearRuntimeStack-beta'),
-  stack('AnyWearWorkloadStack-beta')]);
+  stack('AnyWearWorkloadStack-beta'), stack('AnyWearEgressStack-beta')]);
 const ONE_SHOT_FAMILIES = Object.freeze(['migrate', 'verify', 'lifecycle', 'artifact-verify']);
 const TASK_FUNCTIONS = Object.freeze(['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync',
   'AnyWearPlatformStack-beta-*'].map((name) => arn('lambda', `function:${name}`)));
@@ -53,7 +53,9 @@ const BASE_QUEUES = Object.freeze(['beta-anywear-vto', 'beta-anywear-vto-dlq',
 export const READ_RESOURCES = Object.freeze({
   'cloudformation/describe-stacks': STACKS,
   'cloudformation/get-template': STACKS,
-  'cloudformation/list-stack-resources': Object.freeze([STACKS[1]]),
+  // The platform list read plus the Egress stack the runtime role reads for
+  // `delete-egress` (lib/beta-role-grants.ts).
+  'cloudformation/list-stack-resources': Object.freeze([STACKS[1], STACKS[5]]),
   'ssm/get-parameter': STAGE_PARAMETER_ARNS,
   'ssm/get-parameters': STAGE_PARAMETER_ARNS,
   'ecs/describe-services': Object.freeze(['beta-anywear-api', 'beta-anywear-worker']
