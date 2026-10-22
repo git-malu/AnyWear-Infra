@@ -125,6 +125,11 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   oneShots(data, ['verify', 'tester-cleanup'], [
     p.verificationTaskRole.roleArn, p.cleanupTaskRole.roleArn, p.oneShotExecutionRole.roleArn,
   ]);
+  // Issue #185: the operator cleanup's caller-side identity phase preflights the
+  // captured identity with a read-only AdminGetUser and deletes exactly that
+  // user from the Beta pool. No ListUsers or account-wide listing, and the fixed
+  // cleanup task role stays DB/DLQ-only.
+  p.userPool.grant(data, 'cognito-idp:AdminGetUser', 'cognito-idp:AdminDeleteUser');
 
   for (const principal of [deploy, runtime, e2e]) {
     describeStacks(principal, stackArns);
@@ -152,6 +157,14 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   // record, so it needs the same prefix read as the runtime principal.
   getStageContractParameters(runtime);
   getStageContractParameters(e2e);
+  // `delete-egress` reads the stack it destroys; Egress is part of the stage's
+  // disposable stack set and the runtime role is the operation's read session.
+  // This is a separate runtime-only statement: the deploy/client/data/e2e
+  // principals do not read the Egress stack.
+  runtime.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate', 'cloudformation:ListStackResources'],
+    resources: [arn('cloudformation', 'stack', 'AnyWearEgressStack-beta/*')],
+  }));
   deploy.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'], conditions: regional,
   }));

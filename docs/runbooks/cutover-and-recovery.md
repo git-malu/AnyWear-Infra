@@ -253,14 +253,15 @@ Current dispatches use `mutate.yml` for maintenance, `deploy-egress`/
 `delete-egress` for the disposable network edge, and `restore-release`. Beta
 stops by deleting Runtime then Egress and starts by recreating Egress then
 Runtime; the persistent Base stack is never deleted and no stopped Base template
-exists. A separately coordinated fixed `runtime.yml` `observe` run produces the
-E2E-compatible
-v3 `anywear_infra_deployment` record after changes; mutation family observations
-identify their actual workflow (`mutate.yml`) and are not accepted as E2E deployment
-inputs. The Runtime slice's own record is produced by AnyWear-Service's release
-chain (`anywear_service_deployment`). Read-only `runtime.yml`
-`state` remains available with the stage switch closed, including recovery diagnosis,
-and cannot start tasks or qualify database/schema state.
+exists. A separately coordinated fixed `runtime.yml` `observe` run produces the v3
+`anywear_infra_deployment` record after changes; mutation family observations
+identify their actual workflow (`mutate.yml`). E2E v3 qualification consumes no
+deployment record and observes the platform itself, so the legacy-producer/pin
+acceptance rule is inert and retires in Wave 2 (#180); the record remains
+deployment evidence and #181's lineage. The Runtime slice's own record is produced
+by AnyWear-Service's release chain (`anywear_service_deployment`). Read-only
+`runtime.yml` `state` remains available with the stage switch closed, including
+recovery diagnosis, and cannot start tasks or qualify database/schema state.
 
 At the time, the bounded #54 practical recovery was executed as [stop
 37886520975](https://github.com/git-malu/AnyWear-Infra/actions/runs/37886520975)
@@ -300,7 +301,8 @@ entry points only after their recovery obligations and consumer migrations finis
 
 Observe new post-retirement Original templates and actual runtime identities,
 publish a new trusted completed-success Infra deployment record, then run final
-E2E v2 qualification against that exact record in its scheduled window. Pre-retirement
+E2E v3 qualification in its scheduled window: it reads the deployed tuple and
+takes its own authenticated before/after observations. Pre-retirement
 rehearsal hashes cannot substitute. Preserve deployment/operation/recovery records,
 sealed Service release identities, signed releases and publisher identities, authenticated
 before/after observations and exact source/run/attempt/artifact hashes before root
@@ -323,8 +325,9 @@ Production deployment and readiness gates remain disabled. The workflow has a
 source blocker before AWS credential assumption: changing an activation variable
 cannot establish its missing target-account/runtime/verifier contract. A separately
 reviewed onboarding PR must complete that contract before removing the blocker.
-Future promotion also requires a sealed stable Service release, completed-success
-exact E2E v2 qualification, digest-preserving promotion and scan policy. Artifact
+Future promotion also requires a sealed stable Service release, a completed-success
+E2E v3 qualification whose record binds the reviewed release tuple and its own
+authenticated observations, digest-preserving promotion and scan policy. Artifact
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
 

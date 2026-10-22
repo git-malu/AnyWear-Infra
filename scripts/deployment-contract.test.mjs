@@ -72,6 +72,26 @@ test('a complete Service v4 record validates, lists only the Runtime stack and c
   assert.deepEqual(validateDeploymentGate(record.gate, 'beta'), record.gate);
 });
 
+test('a mutate-produced accepted record validates with the chain producer path', () => {
+  // #181: the deployment chain's read-only observe job writes the same v3 record
+  // under `.github/workflows/mutate.yml`; the record type, schema version and stack
+  // set are unchanged, only the producer path and the run identity move.
+  const record = infraRecord();
+  record.producer = producer('git-malu/AnyWear-Infra', '.github/workflows/mutate.yml');
+  assert.deepEqual(validateInfraDeploymentRecord(record), record);
+  assert.deepEqual(validateDeploymentRecord(record), record);
+  assert.equal(record.record_type, 'anywear_infra_deployment');
+  assert.equal(record.schema_version, 3);
+  assert.deepEqual(record.stacks.map(row => row.name),
+    ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearBillingStack-beta']);
+  // The E2E consumer's producer pin still accepts the manual observe path.
+  assert.deepEqual(validateInfraDeploymentRecord(infraRecord()), infraRecord());
+  // A workflow outside the two reviewed producer paths is refused.
+  const untracked = infraRecord();
+  untracked.producer = producer('git-malu/AnyWear-Infra', '.github/workflows/other.yml');
+  assert.throws(() => validateInfraDeploymentRecord(untracked), /Unexpected deployment workflow path/);
+});
+
 test('both record types reject an extra or missing member', () => {
   for (const build of [infraRecord, serviceRecord]) {
     const extra = { ...build(), note: 'unexpected' };

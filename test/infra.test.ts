@@ -2165,6 +2165,23 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(JSON.stringify(dataPassRoles)).not.toContain('LifecycleTaskRole');
     const cleanupPolicy = (Object.values(template.Resources) as any[]).find(resource => resource.Type === 'AWS::IAM::Policy' && JSON.stringify(resource.Properties.Roles).includes('CleanupTaskRole'));
     expect(JSON.stringify(cleanupPolicy)).not.toContain('ssm:');
+    expect(JSON.stringify(cleanupPolicy)).not.toContain('cognito-idp:');
+    // Issue #185: the operator cleanup's caller-side identity phase preflights
+    // the captured identity with a read-only AdminGetUser and deletes exactly
+    // that user, so the data role holds exactly the two Cognito actions on the
+    // Beta user pool. No ListUsers, no account-wide listing, and the fixed
+    // cleanup task role stays DB/DLQ-only.
+    const userPoolId = (Object.entries(template.Resources) as [string, any][])
+      .find(([, resource]) => resource.Type === 'AWS::Cognito::UserPool')?.[0];
+    expect(userPoolId).toBeDefined();
+    const cognitoGrants = grantsFor(template, 'service-data')
+      .filter((grant) => [grant.Action].flat().some((action) => action.startsWith('cognito-idp:')));
+    expect(cognitoGrants.length).toBeGreaterThan(0);
+    for (const grant of cognitoGrants) expect(grant.Effect).toBe('Allow');
+    expect([...new Set(cognitoGrants.flatMap((grant) => [grant.Action].flat()))].sort())
+      .toEqual(['cognito-idp:AdminDeleteUser', 'cognito-idp:AdminGetUser']);
+    expect([...new Set(cognitoGrants.flatMap((grant) => [grant.Resource].flat()))])
+      .toEqual([{ 'Fn::GetAtt': [userPoolId, 'Arn'] }]);
     const e2eRegistration = grantsFor(template, 'e2e-qualification')
       .find((grant) => [grant.Action].flat().includes('ecs:RegisterTaskDefinition'));
     expect(JSON.stringify(e2eRegistration.Resource)).not.toContain('beta-anywear-lifecycle:');
@@ -2425,6 +2442,28 @@ describe('Issue #166 runtime-role CloudFormation read surface', () => {
   const policiesForRuntime = (template: any, roleId?: string): any[] => (Object.values(template.Resources) as any[])
     .filter((resource) => resource.Type === 'AWS::IAM::Policy'
       && resource.Properties.Roles?.some((role: any) => (roleId ? role.Ref === roleId : role === roleName)));
+
+  it('grants only the runtime principal read access to the disposable Egress stack', () => {
+    const { base } = synthesis();
+    const egressArn = 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearEgressStack-beta/*';
+    const policiesFor = (template: any, name: string): any[] => (Object.values(template.Resources) as any[])
+      .filter((resource) => resource.Type === 'AWS::IAM::Policy'
+        && resource.Properties.Roles?.includes(name));
+    const grantsFor = (template: any, name: string): any[] => policiesFor(template, name)
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const egressGrants = (name: string) => grantsFor(base, name)
+      .filter((statement: any) => [statement.Resource].flat().map(render).includes(egressArn));
+    const runtimeGrants = egressGrants('beta-infra-runtime-role');
+    expect(runtimeGrants).toHaveLength(1);
+    expect([runtimeGrants[0].Action].flat().sort())
+      .toEqual(['cloudformation:DescribeStacks', 'cloudformation:GetTemplate', 'cloudformation:ListStackResources']);
+    expect([runtimeGrants[0].Resource].flat().map(render)).toEqual([egressArn]);
+    // No other dedicated principal reads the Egress stack.
+    for (const name of ['beta-infra-deploy-role', 'beta-client-publish-role', 'beta-service-data-role',
+      'beta-e2e-qualification-role']) {
+      expect(egressGrants(name)).toHaveLength(0);
+    }
+  });
 
   it('authorizes DescribeStacks and GetTemplate on Runtime and Workload before the Base update', () => {
     const { foundation, base } = synthesis();

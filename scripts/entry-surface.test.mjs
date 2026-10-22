@@ -61,26 +61,51 @@ test('the workflow directory is exactly the three Beta entries plus the callable
   assert.equal(credentialJobs(workflows['publish-stage-contracts.yml']).length, 0);
 });
 
-test('mutate.yml keeps one preflight → verify → deploy → record chain and no workload deploy', async () => {
+test('mutate.yml keeps one preflight → verify → deploy → observe → record chain and no workload deploy', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'record']);
-  const { preflight, verify, deploy, record } = mutate.jobs;
+  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'observe', 'record']);
+  const { preflight, verify, deploy, observe, record } = mutate.jobs;
 
   assert.equal(preflight.needs, undefined);
   assert.equal(verify.needs, 'preflight');
   assert.equal(deploy.needs, 'verify', 'credentials are acquired only after verification');
-  assert.equal(record.needs, 'deploy');
+  assert.deepEqual(observe.needs, ['preflight', 'deploy'], 'the accepted observation waits for the mutation');
+  assert.deepEqual(record.needs, ['deploy', 'observe'], 'the record gate sees both credential jobs');
 
-  // Exactly one credential job, scheduled after verify; record holds neither
-  // environment nor OIDC.
-  assert.deepEqual(credentialJobs(mutate), ['deploy']);
-  assert.equal(deploy.environment, 'beta');
-  assert.equal(holdsIdToken(deploy), true);
+  // Two credential jobs, and they never share a role: only `deploy` holds the
+  // mutation role, the accepted producer `observe` holds only the read-only
+  // runtime role and cannot mutate. `record` holds neither environment nor OIDC.
+  const roleHolders = name => Object.entries(mutate.jobs)
+    .filter(([, job]) => JSON.stringify(job).includes(name)).map(([jobName]) => jobName);
+  assert.deepEqual(credentialJobs(mutate), ['deploy', 'observe']);
+  assert.deepEqual(roleHolders('INFRA_DEPLOY_ROLE_ARN'), ['deploy'], 'exactly one job can mutate');
+  assert.deepEqual(roleHolders('INFRA_RUNTIME_ROLE_ARN'), ['deploy', 'observe']);
+  assert.equal(observe.env.INFRA_DEPLOY_ROLE_ARN, undefined, 'the accepted producer must not hold the mutation role');
+  for (const job of [deploy, observe]) {
+    assert.equal(job.environment, 'beta');
+    assert.equal(holdsIdToken(job), true);
+  }
   assert.equal(declaresEnvironment(preflight), false);
   assert.equal(holdsIdToken(preflight), false);
   assert.equal(declaresEnvironment(record), false);
   assert.equal(holdsIdToken(record), false);
   assert.equal(record.environment, undefined);
+
+  // The accepted record can only be written by the job that does not hold the
+  // mutation role, and only when the credential-free preflight published the
+  // trigger-set decision and the mutation succeeded.
+  assert.match(JSON.stringify(observe.steps), /scripts\/observe-accepted-record\.mjs/);
+  assert.equal(/observe-accepted-record|accepted\/deployment-record/.test(JSON.stringify(deploy.steps)), false,
+    'the mutation job must not write the accepted record');
+  assert.match(observe.if, /needs\.deploy\.result == 'success'/);
+  assert.match(observe.if, /needs\.preflight\.outputs\.requires_accepted_observation == 'true'/);
+  assert.equal(preflight.outputs.requires_accepted_observation,
+    '${{ steps.observation-requirement.outputs.requires_accepted_observation }}');
+  const requirement = preflight.steps.find(step => step.id === 'observation-requirement');
+  assert.ok(requirement, 'preflight publishes the trigger-set decision');
+  assert.equal(requirement.run, 'node scripts/observation-requirement.mjs');
+  // The observe job downloads no verify artifact and has no release token.
+  assert.equal(/APP_PRIVATE_KEY|verify-operation/.test(JSON.stringify(observe)), false);
 
   // The credential-free preflight is the stage-switch gate.
   assert.match(preflight.if, /github\.ref == 'refs\/heads\/main'/);
