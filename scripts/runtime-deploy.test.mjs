@@ -5,6 +5,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  DECLARED_DIAGNOSTIC_EXCLUSION,
+  DECLARED_DIAGNOSTIC_RESOURCE_TYPES,
   RUNTIME_DEPLOY_PARAMETER_KEYS,
   RUNTIME_STACK,
   assertConvergedChangeSet,
@@ -96,6 +98,10 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
   runtime = liveStack(), changeSet = undefined, executeError = undefined } = {}) {
   const calls = [];
   let runtimeObserved = runtime;
+  // A deleted change set can no longer be described. The failed code left one
+  // AVAILABLE, so this fake makes a post-delete describe a test failure: the
+  // operation record must keep the classification it already read.
+  let changeSetDeleted = false;
   const io = {
     calls, now: () => 0, sleep: async () => {},
     async aws(args) {
@@ -142,7 +148,11 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
     },
     async awsAs(session, args) {
       calls.push({ session, key: `${args[0]}/${args[1]}`, args });
-      if (args[1] === 'describe-change-set') return changeSet;
+      if (args[1] === 'describe-change-set') {
+        if (changeSetDeleted) throw new Error('describe-change-set after delete-change-set');
+        return changeSet;
+      }
+      if (args[1] === 'delete-change-set') changeSetDeleted = true;
       if (args[1] === 'execute-change-set') {
         if (executeError) throw executeError;
         runtimeObserved = liveStack();
@@ -226,7 +236,7 @@ test('a change set is classified as converged or as a delta, and the guards fail
   assert.deepEqual(classifyChangeSet({ Status: 'FAILED', StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." }), {
     converged: true, failed: false, status: 'FAILED', execution_status: 'unknown',
     reason: "The submitted information didn't contain changes. Submit different information to create a change set.",
-    changes: [], replacement: false,
+    changes: [], resource_changes: [], diagnostic_changes: [], replacement: false,
   });
   assert.equal(classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [] }).converged, true);
   const delta = classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
@@ -241,6 +251,31 @@ test('a change set is classified as converged or as a delta, and the guards fail
   assert.doesNotThrow(() => assertCreateOnlyChangeSet(classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
     { Type: 'Add', ResourceChange: { LogicalResourceId: 'A', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } }] })));
   assert.throws(() => assertCreateOnlyChangeSet(delta), /created only with Add changes/);
+
+  // Issue #195: `AWS::CDK::Metadata` is the declared diagnostic metadata the
+  // template normalisation drops, so a change to it is evidence, not a stack
+  // change, a delta or a replacement.
+  assert.deepEqual(DECLARED_DIAGNOSTIC_RESOURCE_TYPES, ['AWS::CDK::Metadata']);
+  const diagnostic = classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] });
+  const diagnosticRow = { action: 'Modify', logical_id: 'CDKMetadata', resource_type: 'AWS::CDK::Metadata',
+    action_type: 'Modify', replacement: 'Conditional', declared_diagnostic: true, excluded: DECLARED_DIAGNOSTIC_EXCLUSION };
+  assert.equal(diagnostic.converged, true);
+  assert.equal(diagnostic.failed, false);
+  assert.equal(diagnostic.replacement, false, 'a diagnostic conditional replacement is not a replacement');
+  assert.deepEqual(diagnostic.resource_changes, []);
+  assert.deepEqual(diagnostic.diagnostic_changes, [diagnosticRow]);
+  assert.deepEqual(diagnostic.changes, [diagnosticRow]);
+  assert.doesNotThrow(() => assertConvergedChangeSet(diagnostic));
+
+  // A real resource keeps the unchanged fail-closed guard even when a diagnostic
+  // row is present: only real rows count and only their replacement flags report.
+  const mixed = classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } },
+    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] });
+  assert.equal(mixed.converged, false);
+  assert.equal(mixed.replacement, false, 'the diagnostic row does not raise the replacement flag');
+  assert.throws(() => assertConvergedChangeSet(mixed), /the change set lists 1: Modify ComputeRuntimeApiServiceD2475D0A \(False\)/);
 });
 
 test('only the recorded live identity phase passes for the Runtime operations', () => {
@@ -338,14 +373,83 @@ test('the bake receives the contract queue URLs and cluster, not hardcoded names
   }
 });
 
-test('an unchanged release identity cannot produce a delta: Add, Remove and Modify all fail closed', async () => {
+test('an unchanged release identity cannot produce a delta: Add, Remove and Modify still fail closed and delete the change set', async () => {
   for (const action of ['Add', 'Modify', 'Remove']) {
     const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
       { Type: action, ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] } });
-    await assert.rejects(deployRuntime({ env: env(), release, record: { events: [] }, io,
+    const record = { events: [] };
+    await assert.rejects(deployRuntime({ env: env(), release, record, io,
       synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }), /must not change the stack/, action);
     assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, action);
+    assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), `${action}: fail-closed delete`);
+    assert.equal(record.events.some((event) => event.type === 'runtime-change-set-deleted'), true, action);
   }
+});
+
+// Issue #195 acceptance: a converged release's only change is the CDKMetadata
+// Analytics payload, which the declared normalisation drops. It must execute
+// nothing, delete the change set, leave the diagnostic delta in the recorded
+// evidence, and let the operation continue to read back, bake and write the v5
+// record.
+test('a CDKMetadata-only change set is converged: it executes nothing, is deleted and still writes the v5 record', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'runtime-deploy-diagnostic-'));
+  try {
+    const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+      { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] } });
+    const record = { events: [] };
+    const deployment = await deployRuntime({ env: env(), release, record, io,
+      synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE,
+      outputPath: path.join(directory, 'service-deployment.json') });
+    assert.equal(deployment.schema_version, 5);
+    assert.equal(deployment.stacks[0].template_sha256, SYNTHESIZED.normalised_sha256);
+    assert.equal(deployment.observed.service_sha, SERVICE_SHA);
+    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'the diagnostic delta executes nothing');
+    assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), 'the diagnostic-only change set is deleted');
+    const deleteIndex = calls.findIndex((call) => call.args?.includes('delete-change-set'));
+    assert.equal(calls.slice(deleteIndex + 1).some((call) => call.args?.includes('describe-change-set')), false,
+      'the record does not depend on describing the deleted change set');
+    const changeSetEvent = record.events.find((event) => event.type === 'runtime-change-set');
+    assert.equal(changeSetEvent.converged, true);
+    assert.equal(changeSetEvent.failed, false);
+    assert.equal(changeSetEvent.replacement, false);
+    assert.deepEqual(changeSetEvent.resource_changes, []);
+    const diagnosticRow = { action: 'Modify', logical_id: 'CDKMetadata', resource_type: 'AWS::CDK::Metadata',
+      action_type: 'Modify', replacement: 'Conditional', declared_diagnostic: true, excluded: DECLARED_DIAGNOSTIC_EXCLUSION };
+    assert.deepEqual(changeSetEvent.diagnostic_changes, [diagnosticRow]);
+    assert.deepEqual(changeSetEvent.changes, changeSetEvent.diagnostic_changes);
+    const convergedEvent = record.events.find((event) => event.type === 'runtime-change-set-converged');
+    assert.equal(convergedEvent.executed, false);
+    assert.deepEqual(convergedEvent.diagnostic_changes, changeSetEvent.diagnostic_changes,
+      'the accepted no-op records the diagnostic it excluded');
+    assert.equal(record.events.some((event) => event.type === 'runtime-change-set-rejected'), false);
+    assert.equal(record.events.some((event) => event.type === 'service-deployment-record'), true);
+    assert.equal(JSON.parse(readFileSync(path.join(directory, 'service-deployment.json'), 'utf8')).record_type, 'anywear_service_deployment');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// Issue #195 acceptance: only AWS::CDK::Metadata is declared diagnostics. A
+// conditional replacement on a real resource still fails closed before execution,
+// and the fail-closed path deletes the change set while preserving the delta as
+// operation evidence.
+test('a Modify with Replacement: Conditional on a real resource fails closed, records the delta and deletes the change set', async () => {
+  const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'Conditional' } }] } });
+  const record = { events: [] };
+  await assert.rejects(deployRuntime({ env: env(), release, record, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
+  /must not change the stack; the change set lists 1: Modify ComputeRuntimeApiServiceD2475D0A \(Conditional\)/);
+  assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'a real delta never executes');
+  assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), 'the fail-closed path deletes the change set');
+  const rejected = record.events.find((event) => event.type === 'runtime-change-set-rejected');
+  assert.equal(rejected.result, 'failed-closed');
+  assert.deepEqual(rejected.changes, [{ action: 'Modify', logical_id: 'ComputeRuntimeApiServiceD2475D0A',
+    resource_type: 'AWS::ECS::Service', action_type: 'Modify', replacement: 'Conditional' }]);
+  assert.deepEqual(rejected.diagnostic_changes, []);
+  const deleted = record.events.find((event) => event.type === 'runtime-change-set-deleted');
+  assert.equal(deleted.reason, 'fail-closed');
+  assert.equal(record.events.some((event) => event.type === 'service-deployment-record'), false);
 });
 
 // Issue #195 acceptance: the change-set execute failure writes no v5 record and
