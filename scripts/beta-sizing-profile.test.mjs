@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-sizing-profile.mjs';
 
-// Sizing is a release-slice parameter. It is set by AnyWear-Service's release
-// chain; Infra only reads the retained values to report Beta state.
+// Sizing is a release-slice parameter. It is set by Infra's `deploy-runtime`
+// operation; the state observer only reads the retained values to report Beta state.
 test('a pre-profile workload reads the source defaults', () => {
   assert.equal(retainedBetaSizingProfile({}), 's1');
   assert.equal(retainedBetaSizingTelemetry({}), 'false');

@@ -5,7 +5,7 @@ import { BASE_EXPORTS } from './base-exports';
 
 // Issue #166: the Egress stack is the disposable network edge of Beta. It holds
 // only the paid, recreatable egress resources, so stopping Beta is deleting this
-// stack and the Service-owned Runtime stack while the Base stack (VPC, subnets,
+// stack and the Infra-owned Runtime stack while the Base stack (VPC, subnets,
 // route tables/associations, Aurora, S3, Cognito, ECR, SQS, SSM, CloudFront)
 // stays untouched.
 //

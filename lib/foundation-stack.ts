@@ -110,7 +110,7 @@ export class FoundationStack extends cdk.Stack {
     createRole('BetaClientPublishRole', 'client-publish', betaSubject('AnyWear-Client', 1176104200));
     createRole('BetaE2EQualificationRole', 'e2e-qualification', betaSubject('AnyWear-E2E', 1317091305));
     // Issue #166 M4: a Base deploy resolves its API origin by reading the
-    // Service-owned Runtime stack (an absent stack is a `ValidationError` that
+    // Infra-owned Runtime stack (an absent stack is a `ValidationError` that
     // still requires authorization) and, before the MOVE, the legacy Workload
     // stack. Those reads run under this runtime role, whose live read policy is
     // the Base stack's `DedicatedPolicy` and does not yet cover the renamed

@@ -1,8 +1,8 @@
 import { runtimeStackName } from '@git-malu/stage-contracts';
 
 // One writer per environment. Infra deploys the persistent Beta Base stack and
-// AnyWear-Service deploys the Runtime stack, so no Base mutation may cross a
-// Runtime deployment. CloudFormation only reports a stack as terminal in these
+// the Runtime stack, so no Base mutation may cross a Runtime deployment.
+// CloudFormation only reports a stack as terminal in these
 // statuses; a missing stack is not terminal either, and every reader fails closed.
 export const runtimeStack = runtimeStackName('beta');
 export const terminalStackStatuses = Object.freeze(new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']));

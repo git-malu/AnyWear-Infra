@@ -35,7 +35,7 @@ export function buildProductionPromotionPlan({ release, qualification, stableRel
     required_before_rollout: ['Authenticate both registry accounts and exact scoped roles.', 'Prove selected and previous rollback digest retention.',
       'Read back destination OCI digest equal to the qualified source digest.', 'Complete both scan-on-push results under the approved scan policy.',
       'Observe actual applied Production DB schema using the selected immutable image and bounded read-only command.'],
-    schema: { identity: 'Service release chain; no cross-repository schema pin from Infra',
+    schema: { identity: 'Runtime deployment record; no cross-repository schema pin from Infra',
       migration: 'A separate explicit reviewed forward migration operation; never implicit in promotion.',
       rollback: 'Restore the previous verified Workload image only; retain compatible completed schema extensions.' },
     rollout: 'WorkloadStack only, then actual ECS task digest, health and schema verification; preserve prior compute for rollback.',

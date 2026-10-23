@@ -23,7 +23,7 @@ function stackAbsenceError(stackName) {
 }
 
 // The Base stack is the only stack a restore deploys. The Runtime slice is
-// AnyWear-Service's; it must exist and stay terminal, but is never deployed.
+// Infra's; it must exist and stay terminal, but this operation never deploys it.
 function mockIo(options = {}) {
   const calls = []; const stages = []; const states = []; let recovered; let deployCount = 0;
   let platform = { StackName: 'AnyWearPlatformStack-beta',

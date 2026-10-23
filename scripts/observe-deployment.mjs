@@ -37,12 +37,12 @@ export function liveObservationIo() {
 // the stacks Infra still produces (Foundation, the Beta stage base, Billing) and
 // the stage-base resources Infra owns: the two Service-built Lambdas, the two task
 // queues and the Client distribution. The release slice — task definitions, ECS
-// services, API distribution, alarms — is owned and observed by AnyWear-Service's
-// release chain; it is deliberately not read here, so this record cannot claim an
-// observation it no longer produces.
+// services, API distribution, alarms — is deployed and recorded by Infra's
+// `deploy-runtime` operation; it is deliberately not read here, so this record
+// cannot claim an observation it no longer produces.
 //
 // `requireRuntime` is true only for the `runtime` family (`observe`), which
-// qualifies the running slice and therefore needs the Service-owned Runtime stack
+// qualifies the running slice and therefore needs the Infra-owned Runtime stack
 // present. A `beta-deploy` observation (Foundation/Billing/Base/Egress/restore)
 // runs before M6 or while Beta is stopped, so it must not read or require Runtime;
 // the record body never included that stack.
@@ -73,9 +73,9 @@ export async function observeDeployment({ infraSha, io = liveObservationIo(), en
   }
   const platform = outputMap(actualStacks.get('AnyWearPlatformStack-beta'));
   if (requireRuntime) {
-    // Issue #166: Beta runs when the Service-owned Runtime stack exists. The Base
+    // Issue #166: Beta runs when the Infra-owned Runtime stack exists. The Base
     // activity output is gone; the Runtime read is not added to the recorded stack
-    // set because that slice is produced and observed by AnyWear-Service.
+    // set because that slice is deployed and recorded by `deploy-runtime`.
     const runtime = await describeStack(io, runtimeStack, region);
     assertRuntimeReady(runtime, 'Authenticated deployment observation');
   }

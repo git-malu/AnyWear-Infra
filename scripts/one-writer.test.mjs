@@ -69,13 +69,13 @@ test('describeStack treats only the exact CloudFormation absence sentences as ab
   }
 });
 
-test('deploy-platform reads the Service-owned Runtime stack terminal before any deploy', async () => {
+test('deploy-platform reads the Infra-owned Runtime stack terminal before any deploy', async () => {
   for (const runtimeStatus of ['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE']) {
     const io = operationMock({ runtimeStatus });
     assert.equal(await deployOperationStack(io, 'deploy-platform'), baseName);
     assert.deepEqual(io.deployments, [baseName]);
     assert.deepEqual(io.calls.map(call => call.slice(0, 2)), [['cloudformation', 'describe-stacks'], ['deploy', baseName]]);
-    assert.ok(io.calls[0].includes(runtimeStack), 'the read targets the Service-owned Runtime stack');
+    assert.ok(io.calls[0].includes(runtimeStack), 'the read targets the Infra-owned Runtime stack');
   }
 });
 

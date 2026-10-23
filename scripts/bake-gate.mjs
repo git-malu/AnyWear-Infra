@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Issue #162: the bounded 600-second six-signal deployment bake.
 //
-// The Service release chain runs this after `cdk deploy` returned and the
+// The `deploy-runtime` operation runs this after `cdk deploy` returned and the
 // deployed stack identity was read back, and before `service-deployment.json` is
 // written. It reads the six named signals live from the deployed state - never
 // the deployed alarm states, which are recorded only as evidence - and fails

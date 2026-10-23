@@ -12,7 +12,7 @@ function stackAbsenceError(stackName) {
 }
 
 // The read-only state operation must observe the stopped state without failing:
-// Base is present and the Service-owned Runtime stack is simply absent.
+// Base is present and the Infra-owned Runtime stack is simply absent.
 function stateIo({ runtime = undefined, runtimeError } = {}) {
   return {
     async aws(args) {

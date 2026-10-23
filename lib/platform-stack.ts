@@ -726,8 +726,8 @@ export class PlatformStack extends cdk.Stack {
     }
   }
 
-  // The Beta API distribution. Issue #166 moves this resource out of the
-  // Service-owned Runtime stack with a one-time CloudFormation stack refactor.
+  // The Beta API distribution. Issue #166 moved this resource out of the
+  // Runtime stack with a one-time CloudFormation stack refactor.
   // The config is the live recorded shape: the pinned logical ID, the literal
   // origin id the live resource uses and a literal origin DNS name (the live ALB
   // `ApiLoadBalancerDnsName` the deployment passes as context). A same-stack

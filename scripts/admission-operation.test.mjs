@@ -10,8 +10,8 @@ import { createRuntimeIo } from './runtime-operation.mjs';
 import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
-// The release slice is deployed by AnyWear-Service; these drivers act on the
-// revision the Workload stack reports. The fixture records that revision in the
+// The release slice is deployed by Infra's `deploy-runtime`; these drivers act on
+// the revision the Runtime stack reports. The fixture records that revision in the
 // stack parameters, so no selection or manifest participates.
 const digest = `sha256:${'4'.repeat(64)}`; const serviceSha = '1'.repeat(40);
 const infraSha = '5'.repeat(40);

@@ -20,7 +20,7 @@ function assertAdmissionExecutor(env) {
 }
 
 // Issue #166: admission acts on the deployed compute only. Beta runs when the
-// Service-owned Runtime stack exists; the Base stack stays persistent and no
+// Infra-owned Runtime stack exists; the Base stack stays persistent and no
 // `BetaActive` output describes partial activation.
 function assertRunningBeta(platform, runtime, purpose) {
   if (!stableStatuses.has(platform?.StackStatus)) throw new Error(`Stable Beta Base stack required to ${purpose}`);

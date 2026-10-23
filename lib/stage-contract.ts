@@ -18,9 +18,10 @@ export const STAGE_CONTRACT_CONSUMER = 'AnyWear-Infra AnyWearRuntimeStack-beta';
 // 2026-10-18 from the then-live `AnyWearWorkloadStack-beta` parameters with
 // `aws cloudformation describe-stacks --stack-name AnyWearWorkloadStack-beta` in
 // account 650880818323 / region ap-east-1. That stack was retired and deleted by
-// #166's Base/Runtime split, so no live Workload read exists. Both values are
-// identifiers, not secret values: the published ARN names the secret, it does not
-// contain key material. A change to them is a reviewed source diff.
+// #166's Base/Runtime split, so no live Workload stack remains to read those
+// parameter values from. Both values are identifiers, not secret values: the
+// published ARN names the secret, it does not contain key material. A change to
+// them is a reviewed source diff.
 // `deploy-runtime` passes them to the Runtime template as its two plain parameters.
 const REVIEWED_BETA_STAGE_BASE = Object.freeze({
   vlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ',
