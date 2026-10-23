@@ -207,7 +207,7 @@
     "identity_revision": {
       "issue": 183,
       "recorded_at": "2026-10-23",
-      "change": "Removed the BetaSizingTelemetry String parameter of AnyWearRuntimeStack-beta and the BETA_SIZING_TELEMETRY entry it fed in both Beta containers, together with the Service sizing observations that read it. The Beta Runtime baseline, its normalised beta/legacy, beta/roles-added and beta/retired phase hashes, its template sha256 and the beta identity phases were re-recorded from that source; the production template and prod phase hashes are unchanged because the parameter was Beta-only. The live check accepts this record's single accepted_live_predecessors entry as the transition's starting template, while the synthesized-identity check and the post-deploy read-back stay exact against the recorded roles-added identity.",
+      "change": "Removed the BetaSizingTelemetry String parameter of AnyWearRuntimeStack-beta and the BETA_SIZING_TELEMETRY entry it fed in both Beta containers, together with the Service sizing observations that read it. The Beta Runtime baseline, its normalised beta/legacy, beta/roles-added and beta/retired phase hashes, its template sha256 and the beta identity phases were re-recorded from that source; the production template and prod phase hashes are unchanged because the parameter was Beta-only. The transition deployed on 2026-10-23 (`mutate.yml` `deploy-runtime` run 39929648413), so the one recorded predecessor is now retired: the live check accepts only the recorded roles-added identity, and the synthesized-identity check and the post-deploy read-back stay exact against it.",
       "previous_templates": {
         "beta-active/AnyWearRuntimeStack-beta.template.json": "4e62ddf0efd630134e81bb71f30937f9ef959e6926a033753da1f37af2630ff9",
         "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
@@ -223,10 +223,7 @@
           "roles-added": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55",
           "retired": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55"
         }
-      },
-      "accepted_live_predecessors": [
-        "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
-      ]
+      }
     },
     "source_files": {
       "lib/runtime-stack.ts": "cb679b436fb5fdcdd31bb0f74cb73ffd117f7b2d",
@@ -240,11 +237,11 @@
     "source_file_hashes": "Git blob hashes of the current files at the #183 change head, in this repository's paths; they are not the 4f2ba555 move-anchor blobs. #195 compared the moved files with `git rev-parse 4f2ba555:infra/<path>`; after that anchor the #195 synthesiser change and later reviewed changes altered runtime-stack.ts, compute-runtime.ts, platform-inputs.ts and bake-gate.mjs, and issue #183 altered runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline. cleanup-operation.ts and the prod Runtime baseline still match their move-anchor blobs, so five of the seven entries differ from the anchor. source_sha above stays 4f2ba555ec293771551c0d23266af7038d95383e because scripts/synth-matrix.mjs asserts it as the move anchor, not as a claim that the current bytes equal it.",
     "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e; that statement describes the move anchor only. The #195 synthesiser change replaced the retired own-credentials synthesiser with the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes. After the anchor, runtime-stack.ts, compute-runtime.ts, platform-inputs.ts, bake-gate.mjs and the Beta Runtime baseline changed again; issue #183 accounts for runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline (removal of the Beta sizing-telemetry parameter and its container environment entry), so the beta phase hashes and the beta template sha256 in this record are measured from the #183 source (templates/, phase_hashes.beta, identity_phases and identity_revision). cleanup-operation.ts and the prod Runtime baseline still match the anchor, and the prod template and prod phase hashes are unchanged because the parameter was Beta-only. The legacy/roles-added/retired phase hashes are measured from source, not copied from the live stack.",
     "live_verification": {
-      "recorded_at": "2026-10-22",
+      "recorded_at": "2026-10-23",
       "live_stack": "AnyWearRuntimeStack-beta",
       "live_status": "UPDATE_COMPLETE",
-      "live_original_normalised_sha256": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
-      "note": "Analysis recorded the live roles-added phase at the same normalised hash; the operation asserts the synthesized hash before mutation and the deployed Original hash after deploy."
+      "live_original_normalised_sha256": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be",
+      "note": "`mutate.yml` `deploy-runtime` run 39929648413 (attempt 1, head 1b0abb1) deployed and qualified the transition: the 600-second bake passed with 40 probes, the schema boundary compared compatible, and the deployed template's normalised Original hash is the recorded roles-added identity."
     },
     "alarm_extension": {
       "issue": 162,
