@@ -17,7 +17,6 @@ test/support/*.d.ts
 .service-artifacts/
 .qualification/
 .qualification-verifier/
-deployment-evidence/
 runtime-evidence/
 app-access-evidence/
 cdk.matrix/
