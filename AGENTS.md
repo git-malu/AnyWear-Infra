@@ -103,11 +103,11 @@ and must not be relabeled as an Infra-produced deployment.
   published digests before the first OIDC request. `deploy-egress`/`delete-egress`
   change only the operation-owned `AnyWearEgressStack-beta`; `delete-egress`
   refuses unless the Runtime stack is absent. `production.yml`
-  is `workflow_call`-only and is not an entry. The five admission operations are
-  `admission-status`, `add-testers`, `set-testers`, `open-admission` and
-  `close-admission`; admission is one mode record with no window or expiry,
-  `open-admission` takes no payload, and `close-admission` is the only thing that
-  closes. Preserve session restrictions for
+  is `workflow_call`-only and is not an entry. The three tester operations are
+  `admission-status`, `add-testers` and `set-testers`; the exact tester allowlist
+  is the only admission input and a tester write is one SSM write with a
+  count/hash read-back, with no admission or lifecycle precondition. Preserve
+  session restrictions for
   final qualification and the protected-executor boundary. Existing OIDC trust is
   repository/environment scoped, not workflow
   scoped; source/session checks do not narrow inherited task-role or downstream

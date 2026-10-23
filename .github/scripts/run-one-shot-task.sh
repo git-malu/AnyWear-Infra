@@ -39,16 +39,18 @@ elif [[ "$role" == "tester-cleanup" ]]; then
     || { echo "Tester cleanup requires a bounded run scope and exact user JSON payload" >&2; exit 2; }
 elif [[ "$role" == "lifecycle" ]]; then
   [[ "$stage" == "beta" ]] || { echo "Lifecycle only supports beta" >&2; exit 2; }
-  [[ "$verify_api_url" =~ ^(suspend|resume|status|set-testers)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
+  # #213 retired the admission mode, so the only lifecycle actions left are the
+  # tester allowlist read and its one write.
+  [[ "$verify_api_url" =~ ^(status|set-testers)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
   if [[ "$verify_api_url" == "set-testers" ]]; then
     jq -e --arg payload "$lifecycle_payload" \
       '($payload | utf8bytelength) <= 4096 and type == "array" and length <= 50 and all(.[]; type == "string")' \
       <<<"$lifecycle_payload" >/dev/null 2>&1 \
       || { echo "Tester list must be a JSON array of at most 50 email strings within 4096 bytes" >&2; exit 2; }
   elif [[ -n "$lifecycle_payload" ]]; then
-    # `resume` takes no payload: the Service has no admission bound to write, and a
-    # stray payload would widen the registered lifecycle command.
-    echo "Only set-testers accepts a lifecycle payload; resume, suspend and status take none" >&2
+    # `status` takes no payload: a stray payload would widen the registered
+    # lifecycle command.
+    echo "Only set-testers accepts a lifecycle payload; status takes none" >&2
     exit 2
   fi
 elif [[ "$role" == "verify" ]]; then

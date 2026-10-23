@@ -125,10 +125,10 @@ function policyValueUpperBound(value: any, template: Record<string, any>): any {
 describe('Platform safety controls', () => {
   it.each([
     ['dev', 'c45a8484eff8aabe92a894d5db6df813457ec863678a55eba153605d00098161'],
-    // Includes the Beta-only scoped AdminInitiateAuth grant. The Beta hash moves
-    // with the admission parameter set: one mode record and the tester allowlist
-    // replace the two boolean parameters, so exactly two SSM ARNs remain.
-    ['beta', 'c86fc2f59b97a97b932565443c53a5d96311a73d012950a39079885108ef60d4'],
+    // Includes the Beta-only scoped AdminInitiateAuth grant. #213 removed the
+    // admission mode parameter, so the Beta hash was re-recorded from the new
+    // source: exactly one SSM admission ARN (the tester allowlist) remains.
+    ['beta', 'ea0988605fea9f6f1cafcd533a2b7b5f93b88485a2dde860516d08fd705ba397'],
     ['prod', '12feb7f5939fc6e88051f7b16871a679f6d47f6e5eb73c8fb54b44307d0d528b'],
   ] as const)('preserves pre-quota-repair effective pipeline grants for %s', (stage, baselineHash) => {
     const app = new cdk.App({ context: cdkConfig.context });
@@ -297,7 +297,11 @@ describe('Platform safety controls', () => {
     expect(forAction('ssm:PutParameter')).toHaveLength(0);
     expect(forAction('application-autoscaling:RegisterScalableTarget')).toHaveLength(0);
     expect(forAction('sqs:GetQueueAttributes')[0].Resource).toHaveLength(4);
-    expect(forAction('ssm:GetParameter')[0].Resource).toHaveLength(2);
+    // #213: the pipeline role reads only the tester allowlist, so CDK collapses the
+    // one-element resource list to a single ARN object.
+    const pipelineSsmRead = [forAction('ssm:GetParameter')[0].Resource].flat();
+    expect(pipelineSsmRead).toHaveLength(1);
+    expect(JSON.stringify(pipelineSsmRead)).toContain('TesterAllowlist');
   });
 
   it('preserves only exact cost families with a separate required request tag and Beta region bound', () => {
@@ -372,14 +376,35 @@ describe('Platform safety controls', () => {
     }
   });
 
-  it('lets the API read the immutable E2E marker without making it client-writable', () => {
+  it('keeps custom:e2e_bootstrap in the pool schema but out of the app client read attributes', () => {
     const resources = Object.values(synthesizePlatform('beta').Resources) as any[];
+    const userPool = resources.find((resource) => resource.Type === 'AWS::Cognito::UserPool');
+    // AWS cannot delete a custom attribute from an existing pool, so the schema
+    // keeps it; #213 made it inert by removing the client's read attribute.
+    expect(userPool.Properties.Schema).toEqual(expect.arrayContaining([
+      expect.objectContaining({ Name: 'e2e_bootstrap', AttributeDataType: 'String', Mutable: false }),
+    ]));
     const userPoolClient = resources.find((resource) => resource.Type === 'AWS::Cognito::UserPoolClient');
 
     expect(userPoolClient.Properties.ReadAttributes).toEqual(expect.arrayContaining([
-      'email', 'email_verified', 'custom:e2e_bootstrap',
+      'email', 'email_verified',
     ]));
+    expect(userPoolClient.Properties.ReadAttributes).not.toContain('custom:e2e_bootstrap');
     expect(userPoolClient.Properties.WriteAttributes).not.toContain('custom:e2e_bootstrap');
+  });
+
+  it('gives the PreSignUp trigger a ten-second timeout for its one admission read', () => {
+    for (const stage of ['dev', 'beta']) {
+      const resources = Object.values(synthesizePlatform(stage).Resources) as any[];
+      const preSignUp = resources.find((resource) => resource.Type === 'AWS::Lambda::Function'
+        && resource.Properties.FunctionName === `${stage}-anywear-pre-sign-up`);
+      expect(preSignUp.Properties.Timeout).toBe(10);
+      // The PostConfirmation timeout is unchanged: the trigger's deadline is not a
+      // shared Lambda default.
+      const sync = resources.find((resource) => resource.Type === 'AWS::Lambda::Function'
+        && resource.Properties.FunctionName === `${stage}-anywear-post-confirmation-sync`);
+      expect(sync.Properties.Timeout).toBe(30);
+    }
   });
 
   it('enables admin password auth only for the Beta Cognito client', () => {
@@ -665,18 +690,23 @@ describe('Platform safety controls', () => {
     ))).toBe(false);
   });
 
-  it('creates runtime-owned Beta admission parameters with fail-closed defaults only in Beta', () => {
+  it('creates the one Beta admission parameter with the empty default only in Beta', () => {
     const beta = synthesizePlatform('beta');
-    const betaParameters = Object.values(beta.Resources).filter(
+    const betaParameterNames = Object.values(beta.Resources)
+      .filter((resource: any) => resource.Type === 'AWS::SSM::Parameter')
+      .map((resource: any) => resource.Properties.Name as string);
+    // #213: `/anywear/beta/tester_allowlist` is the only admission parameter. The
+    // retired mode name is composed here so this test does not spell it out.
+    const retiredModeName = ['admission', 'mode'].join('_');
+    expect(betaParameterNames.some((name) => name.includes(retiredModeName))).toBe(false);
+    const betaAdmissionParameters = Object.values(beta.Resources).filter(
       (resource: any) => resource.Type === 'AWS::SSM::Parameter'
-        && ['/anywear/beta/admission_mode', '/anywear/beta/tester_allowlist']
-          .includes(resource.Properties.Name),
+        && resource.Properties.Name === '/anywear/beta/tester_allowlist',
     ) as any[];
-    expect(betaParameters.map((parameter) => parameter.Properties)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ Name: '/anywear/beta/admission_mode', Type: 'String', Value: '{"mode":"closed"}' }),
+    expect(betaAdmissionParameters.map((parameter) => parameter.Properties)).toEqual([
       expect.objectContaining({ Name: '/anywear/beta/tester_allowlist', Type: 'String', Value: '[]' }),
-    ]));
-    expect(betaParameters).toHaveLength(2);
+    ]);
+    expect(betaParameterNames.filter((name) => name === '/anywear/beta/tester_allowlist')).toHaveLength(1);
     const betaPolicies = Object.values(beta.Resources).filter((resource: any) => resource.Type === 'AWS::IAM::Policy');
     const verificationGrant = betaPolicies.flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
       .find((statement: any) => JSON.stringify(statement.Action).includes('cognito-idp:AdminUpdateUserAttributes'));
@@ -695,21 +725,27 @@ describe('Platform safety controls', () => {
     for (const stage of ['dev', 'prod']) {
       const template = synthesizePlatform(stage);
       expect(Object.values(template.Resources).some((resource: any) => resource.Type === 'AWS::SSM::Parameter'
-        && /\/(admission_mode|tester_allowlist)$/.test(resource.Properties.Name))).toBe(false);
+        && /\/tester_allowlist$/.test(resource.Properties.Name))).toBe(false);
       expect(JSON.stringify(template)).not.toContain('cognito-idp:AdminUpdateUserAttributes');
       expect(JSON.stringify(template)).not.toContain('cognito-idp:AdminGetUser');
       expect(JSON.stringify(template)).not.toContain('cognito-idp:AdminInitiateAuth');
     }
   });
 
-  it('limits both Beta Cognito triggers and lifecycle to the two admission parameters', () => {
+  it('gives the PreSignUp trigger and the lifecycle task the tester allowlist only', () => {
     const template = synthesizePlatform('beta');
     const resources = Object.values(template.Resources) as any[];
-    const expectedNames = ['admission_mode', 'tester_allowlist'];
-    const expectedParameterIds = expectedNames.map((name) => Object.entries(template.Resources).find(
+    const expectedParameterId = Object.entries(template.Resources).find(
       ([, resource]: [string, any]) => resource.Type === 'AWS::SSM::Parameter'
-        && resource.Properties.Name === `/anywear/beta/${name}`,
-    )![0]);
+        && resource.Properties.Name === '/anywear/beta/tester_allowlist',
+    )![0];
+    const ssmStatements = (resource: any) => {
+      const roleId = resource.Properties.Role['Fn::GetAtt'][0];
+      const policies = resources.filter((candidate) => candidate.Type === 'AWS::IAM::Policy'
+        && candidate.Properties.Roles.some((role: any) => role.Ref === roleId));
+      return policies.flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+        .filter((statement: any) => JSON.stringify(statement.Action).includes('ssm:'));
+    };
     for (const functionName of ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync']) {
       const trigger = resources.find((resource) => resource.Type === 'AWS::Lambda::Function'
         && resource.Properties.FunctionName === functionName);
@@ -717,17 +753,22 @@ describe('Platform safety controls', () => {
       // the same paths, and the stopped state is carried by the stack outputs.
       expect(trigger.Properties.Environment?.Variables?.BETA_ACTIVE).toBeUndefined();
       expect(JSON.stringify(trigger.Properties.Environment ?? {})).not.toContain('BETA_ACTIVE');
-      const roleId = trigger.Properties.Role['Fn::GetAtt'][0];
-      const policies = resources.filter((resource) => resource.Type === 'AWS::IAM::Policy'
-        && resource.Properties.Roles.some((role: any) => role.Ref === roleId));
-      const statements = policies.flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
-        .filter((statement: any) => JSON.stringify(statement.Action).includes('ssm:'));
-      expect(statements).toHaveLength(1);
-      expect(statements[0].Action).toEqual(['ssm:GetParameter', 'ssm:GetParameters']);
-      expect(statements[0].Resource).toHaveLength(2);
-      expect(statements[0].Resource.map((resource: any) => resource['Fn::Join'][1].at(-1).Ref))
-        .toEqual(expectedParameterIds);
-      expect(JSON.stringify(statements[0].Resource)).not.toContain('*');
+      const statements = ssmStatements(trigger);
+      if (functionName === 'beta-anywear-pre-sign-up') {
+        // Registration is the one admission decision, so only this trigger reads
+        // the list.
+        expect(statements).toHaveLength(1);
+        expect(statements[0].Action).toEqual(['ssm:GetParameter', 'ssm:GetParameters']);
+        // A one-element resource list is a single ARN object in the template.
+        const resources = [statements[0].Resource].flat();
+        expect(resources).toHaveLength(1);
+        expect(resources.map((resource: any) => resource['Fn::Join'][1].at(-1).Ref))
+          .toEqual([expectedParameterId]);
+        expect(JSON.stringify(resources)).not.toContain('*');
+      } else {
+        // PostConfirmation provisions without reading admission: no SSM grant.
+        expect(statements).toHaveLength(0);
+      }
     }
     const lifecycleRoleId = Object.entries(template.Resources).find(([, resource]: [string, any]) => (
       resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-anywear-lifecycle-task'
@@ -738,10 +779,11 @@ describe('Platform safety controls', () => {
       .filter((statement: any) => JSON.stringify(statement.Action).includes('ssm:'));
     expect(lifecycleStatements).toHaveLength(1);
     expect(lifecycleStatements[0].Action).toEqual(['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter']);
-    expect(lifecycleStatements[0].Resource).toHaveLength(2);
-    expect(lifecycleStatements[0].Resource.map((resource: any) => resource['Fn::Join'][1].at(-1).Ref))
-      .toEqual(expectedParameterIds);
-    expect(JSON.stringify(lifecycleStatements[0].Resource)).not.toContain('*');
+    const lifecycleResources = [lifecycleStatements[0].Resource].flat();
+    expect(lifecycleResources).toHaveLength(1);
+    expect(lifecycleResources.map((resource: any) => resource['Fn::Join'][1].at(-1).Ref))
+      .toEqual([expectedParameterId]);
+    expect(JSON.stringify(lifecycleResources)).not.toContain('*');
   });
 
   it('publishes exactly the 35 unconditional Beta stage-contract parameters without duplicates', () => {
@@ -749,7 +791,8 @@ describe('Platform safety controls', () => {
     const parameters = resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter');
     const names = parameters.map((parameter) => parameter.Properties.Name);
     expect(new Set(names).size).toBe(names.length);
-    expect(parameters).toHaveLength(42);
+    // #213 removed the admission mode parameter: 42 -> 41 published parameters.
+    expect(parameters).toHaveLength(41);
     const stageContract = parameters.filter((parameter) => (
       parameter.Properties.Description?.startsWith('AnyWear-Infra AnyWearRuntimeStack-beta stage contract: ')));
     expect(stageContract).toHaveLength(35);
@@ -778,10 +821,10 @@ describe('Platform safety controls', () => {
     expect(resources.some((resource) => resource.Type === 'AWS::IAM::Role'
       && resource.Properties.RoleName === 'beta-anywear-tester-cleanup-task')).toBe(false);
     expect(stageContract.some((parameter) => parameter.Properties.Name === '/anywear/beta/cleanup_task_role_arn')).toBe(false);
-    // The four reused published names and the three runtime-owned parameters
-    // keep their existing single resource.
+    // The five reused published names and the one runtime-owned admission
+    // parameter keep their existing single resource.
     for (const name of ['cognito_user_pool_id', 'cognito_client_id', 's3_bucket_name', 'qweather_api_host',
-      'admission_mode', 'tester_allowlist', 'aws_region']) {
+      'tester_allowlist', 'aws_region']) {
       expect(parameters.filter((parameter) => parameter.Properties.Name === `/anywear/beta/${name}`)).toHaveLength(1);
     }
     for (const stage of ['dev', 'prod']) {
@@ -1055,7 +1098,7 @@ describe('Explicit infrastructure identity cutover', () => {
       return value;
     };
     const preContractParameters = ['cognito_user_pool_id', 'cognito_client_id', 'aws_region', 's3_bucket_name',
-      'qweather_api_host', 'admission_mode', 'tester_allowlist', 'infra_selection', 'infra_deployment']
+      'qweather_api_host', 'tester_allowlist', 'infra_selection', 'infra_deployment']
       .map((parameter) => `arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/${parameter}`).sort();
     const stageContractPrefix = 'arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*';
     const ssmInventory = (name: string) => {

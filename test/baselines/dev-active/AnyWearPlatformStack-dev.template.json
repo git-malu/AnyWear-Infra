@@ -261,7 +261,8 @@
       "Arn"
      ]
     },
-    "Runtime": "nodejs24.x"
+    "Runtime": "nodejs24.x",
+    "Timeout": 10
    },
    "DependsOn": [
     "PreSignUpLambdaServiceRoleFA160DE8"
@@ -493,7 +494,6 @@
     ],
     "GenerateSecret": false,
     "ReadAttributes": [
-     "custom:e2e_bootstrap",
      "email",
      "email_verified"
     ],

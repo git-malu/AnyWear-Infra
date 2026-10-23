@@ -1,10 +1,14 @@
-import { canonicalJson, parseJson } from './json-contract.mjs';
-import { ADMISSION_MODE_PARAMETER, isAdmissionProvablyClosed, parseAdmissionModeValue } from './admission-mode.mjs';
+import { canonicalJson, parseJson, sha256 } from './json-contract.mjs';
 
-// The tester allowlist is itself an admission parameter, so its canonical form
-// lives here with the rest of the admission state. `tester-allowlist.mjs`
-// re-exports it, which lets the admission reader and the tester operation share
-// one normalization without importing each other.
+// Beta admission after #213 is one input at one decision point: the exact tester
+// allowlist, read only by Cognito PreSignUp at registration. There is no mode, no
+// window and no second parameter; the allowlist constrains registration only, so
+// an existing account is never re-gated by its current contents.
+export const TESTER_ALLOWLIST_PARAMETER = '/anywear/beta/tester_allowlist';
+
+// The canonical tester list: sorted, unique, lowercase, at most 50 exact
+// addresses within the SSM value budget. The same function is the parser, so the
+// writer and every reader agree on one byte string.
 export function normalizeTesterEmails(bytes) {
   const emails = parseJson(bytes);
   if (!Array.isArray(emails) || emails.length > 50 || emails.some(email => typeof email !== 'string')) throw new Error('At most 50 exact tester emails required');
@@ -15,68 +19,29 @@ export function normalizeTesterEmails(bytes) {
   return payload;
 }
 
-// One mode record and the tester allowlist. The record is one key with one of two
-// mode words and carries no bound, so there is no second admission value — and no
-// clock — to disagree with it. Opening never changes the tester list.
-export const admissionParameterNames = Object.freeze({
-  admission_mode: ADMISSION_MODE_PARAMETER,
-  tester_emails: '/anywear/beta/tester_allowlist',
-});
+// The Service→Infra status contract: the allowlist hash is the lowercase-hex
+// sha256 of the canonical JSON array of normalized addresses.
+export const testerAllowlistHash = emails => sha256(canonicalJson(emails));
 
 export function unavailableAdmissionState() {
-  return { admission_mode: 'unavailable', admission_mode_source: 'unavailable',
-    admission_mode_reason: 'unavailable', admission_recorded_mode: 'unavailable',
-    admission_recorded_keys: 'unavailable', tester_emails: 'unavailable' };
+  return { tester_emails: 'unavailable' };
 }
 
-export function canonicalTesterList(value) {
-  return parseJson(normalizeTesterEmails(canonicalJson(value)));
-}
-
+// Read only the allowlist. A present-but-malformed value is a failed read, not a
+// value to interpret: there is no fail-closed mode word any more.
 export async function readAdmissionState(io) {
-  const entries = Object.entries(admissionParameterNames);
-  // Read every field even when another read fails, so failure evidence preserves
-  // the actual known values without converting missing/malformed values to false.
-  // A mode value that is present but cannot prove closure is not a failed read:
-  // the shared parser resolves it closed, fail-closed, with its reason kept.
-  const reads = await Promise.allSettled(entries.map(async ([key, name]) => {
-    const parameter = (await io.aws(['ssm', 'get-parameter', '--name', name])).Parameter;
-    if (parameter?.Name !== undefined && parameter.Name !== name) throw new Error('Unexpected admission parameter identity');
-    if (key === 'tester_emails') return parseJson(normalizeTesterEmails(parameter?.Value));
-    return parseAdmissionModeValue(parameter?.Value);
-  }));
-  const state = unavailableAdmissionState();
-  // `admissionParameterNames` is ordered: the mode record contributes its named
-  // fields and observed key list, and the tester list contributes its normalized
-  // array.
-  if (reads[0].status === 'fulfilled') Object.assign(state, reads[0].value);
-  if (reads[1].status === 'fulfilled') state.tester_emails = reads[1].value;
-  if (reads.some(read => read.status === 'rejected')) {
-    const error = new Error('Complete valid Beta admission state unavailable');
-    error.observedAdmissionState = state;
-    throw error;
-  }
-  return state;
+  const parameter = (await io.aws(['ssm', 'get-parameter', '--name', TESTER_ALLOWLIST_PARAMETER])).Parameter;
+  if (parameter?.Name !== undefined && parameter.Name !== TESTER_ALLOWLIST_PARAMETER) throw new Error('Unexpected tester allowlist parameter identity');
+  return { tester_emails: parseJson(normalizeTesterEmails(parameter?.Value)) };
 }
 
-// Evidence-only reads must record what was actually observed without turning a
-// failed read into a failed operation. Sanitized unavailable fields keep the
-// difference between "closed" and "unreadable" visible in the record.
+// Evidence-only reads record what was observed without turning a failed read into
+// a failed operation. A sanitized `unavailable` keeps "empty" distinct from
+// "unreadable" in the run evidence.
 export async function observeAdmissionState(io) {
   try {
     return { state: await readAdmissionState(io), result: 'observed' };
-  } catch (error) {
-    return { state: error.observedAdmissionState ?? unavailableAdmissionState(), result: 'unavailable' };
+  } catch {
+    return { state: unavailableAdmissionState(), result: 'unavailable' };
   }
-}
-
-// Closure that a mutating fence can act on. It refuses an unreadable mirror and a
-// mirror whose value cannot prove closure; only a `closed` record this repository
-// wrote proves it. Nothing closes on its own, so there is no elapsed-time case to
-// accept.
-export function assertProvableAdmissionClosure(state, message) {
-  if (!isAdmissionProvablyClosed(state)) {
-    throw new Error(`${message}: ${state?.admission_mode ?? 'unavailable'} (${state?.admission_mode_reason ?? 'unreadable'})`);
-  }
-  return state;
 }

@@ -11,7 +11,6 @@ import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mj
 import { changedStackNames } from './operation-stacks.mjs';
 import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
-import { runCloseAdmission, runOpenAdmission, assertMigrationAdmissionClosed } from './admission-operation.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertTerminalRuntime, assertRuntimeAbsent, assertRuntimeReady, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
@@ -28,7 +27,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const testerOperationActions = Object.freeze({
   'admission-status': 'status', 'add-testers': 'add', 'set-testers': 'set',
 });
-const admissionRecoveryOperations = ['close-admission', 'open-admission', 'restore-release'];
+// The tester operations and `restore-release` take no tester payload. #213 retired
+// the admission open/close operations, so release recovery is the only remaining
+// recovery entry here.
+const admissionRecoveryOperations = ['restore-release'];
 // A dispatch surface is a workflow, not an operation. These inputs now exist on
 // every operation of their entry, so their per-operation scope is enforced here
 // (before credentials) instead of by the file that carries them.
@@ -57,7 +59,7 @@ export function validateOperationInputs(env = process.env) {
     throw new Error('Only deployment and release recovery may vary identity phase and retention protection');
   }
   if (admissionRecoveryOperations.includes(operation)) {
-    if (normalizeTesterEmails(env.TESTER_EMAILS) !== '[]') throw new Error('Admission and release recovery accept no tester mutation payload');
+    if (normalizeTesterEmails(env.TESTER_EMAILS) !== '[]') throw new Error('Release recovery accepts no tester mutation payload');
   }
   if (Object.hasOwn(testerOperationActions, operation)) {
     const payload = normalizeTesterEmails(env.TESTER_EMAILS);
@@ -321,7 +323,7 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
     async oneShot(role, revision, argument = '', payload) {
       if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');
       assertOneShotAllowed(env, role, argument, payload);
-      // Pre-mutation preflight (#165): a migration or admission one-shot changes
+      // Pre-mutation preflight (#165): a migration or tester one-shot changes
       // data, so the policy simulation runs first. A deny stops the operation
       // before the task is registered or started.
       await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose, assume, run });
@@ -481,18 +483,14 @@ export async function runOperation(env = process.env, {
     }
     return;
   }
-  if (operation === 'close-admission') await runCloseAdmission({ io, infraSha: env.GITHUB_SHA, env });
-  else if (operation === 'open-admission') await runOpenAdmission({ io, infraSha: env.GITHUB_SHA, env });
-  else if (operation === 'restore-release') await runRestoreRelease({ io, infraSha: env.GITHUB_SHA, env });
+  if (operation === 'restore-release') await runRestoreRelease({ io, infraSha: env.GITHUB_SHA, env });
   else if (Object.hasOwn(testerOperationActions, operation)) await runTesterAllowlist(testerOperationActions[operation], env.TESTER_EMAILS, io);
   else if (operation === 'migrate') {
-    // A forward migration runs only against an admission mirror that proves
-    // closed admission. Nothing closes on its own any more, so a stale `testers`
-    // record must be closed explicitly with `close-admission` before this fence
-    // admits; an unprovable record is refused until that happens. The migration
-    // runs on the revision the release slice reports, never on a locally selected
-    // image: Infra no longer chooses a Service release.
-    await assertMigrationAdmissionClosed(io);
+    // A forward migration runs against the deployed slice only. #213 removed the
+    // admission-mode fence: the allowlist constrains registration, so neither
+    // `migrate` nor `restore-release` nor `state` reads admission state. The
+    // migration runs on the revision the release slice reports, never on a locally
+    // selected image: Infra does not choose a Service release.
     const runtime = await stackRead(io, runtimeStack);
     assertRuntimeReady(runtime, 'migrate');
     await io.oneShot('migrate', workloadRevision(runtime));

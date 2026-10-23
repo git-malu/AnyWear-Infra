@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { observeBetaState } from './observe-beta-state.mjs';
 import { runtimeStack } from './one-writer.mjs';
-import { canonicalJson } from './json-contract.mjs';
+import { sha256 } from './json-contract.mjs';
 
 const baseName = 'AnyWearPlatformStack-beta';
 
@@ -12,8 +12,10 @@ function stackAbsenceError(stackName) {
 }
 
 // The read-only state operation must observe the stopped state without failing:
-// Base is present and the Infra-owned Runtime stack is simply absent.
-function stateIo({ runtime = undefined, runtimeError } = {}) {
+// Base is present and the Infra-owned Runtime stack is simply absent. The only
+// admission value the observer reads is the tester allowlist; any other SSM read
+// fails the test.
+function stateIo({ runtime = undefined, runtimeError, allowlist = '[]', allowlistError } = {}) {
   return {
     async aws(args) {
       if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
@@ -28,21 +30,23 @@ function stateIo({ runtime = undefined, runtimeError } = {}) {
       }
       if (args[0] === 'ssm' && args[1] === 'get-parameter') {
         const name = args[args.length - 1];
-        if (name.endsWith('tester_allowlist')) return { Parameter: { Name: name, Value: '[]' } };
-        return { Parameter: { Name: name, Value: canonicalJson({ mode: 'closed' }) } };
+        assert.equal(name, '/anywear/beta/tester_allowlist', 'the state observer reads only the allowlist');
+        if (allowlistError) throw allowlistError;
+        return { Parameter: { Name: name, Value: allowlist } };
       }
       throw new Error(`Unexpected AWS call ${args.join(' ')}`);
     },
   };
 }
+const allowlistHash = emails => sha256(JSON.stringify(emails));
 
 test('read-only state observes the stopped state: Base present, Runtime absent, no throw', async () => {
-  const state = await observeBetaState(stateIo());
+  const state = await observeBetaState(stateIo({ allowlist: '["a@example.com"]' }));
   assert.deepEqual(state.stacks, [
     { stack_name: baseName, status: 'UPDATE_COMPLETE' },
     { stack_name: runtimeStack, status: 'ABSENT', runtime_exists: false },
   ]);
-  assert.equal(state.admission.admission_mode, 'closed');
+  assert.deepEqual(state.admission, { tester_count: 1, tester_allowlist_hash: allowlistHash(['a@example.com']) });
   assert.equal(state.qualification, 'not-applicable');
   assert.equal(Object.hasOwn(state, 'beta_sizing'), false);
 });
@@ -69,4 +73,11 @@ test('read-only state still fails on a non-absence Runtime read failure', async 
   const throttle = Object.assign(new Error('aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
     { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
   await assert.rejects(observeBetaState(stateIo({ runtimeError: throttle })), /Complete Beta state observation unavailable/);
+});
+
+test('an unreadable allowlist is reported as unavailable, never as an empty list', async () => {
+  const error = await observeBetaState(stateIo({ allowlistError: new Error('AccessDenied') }))
+    .then(() => undefined, (cause) => cause);
+  assert.ok(error, 'the observation fails closed');
+  assert.deepEqual(error.observedState.admission, { tester_count: 'unavailable', tester_allowlist_hash: 'unavailable' });
 });

@@ -214,7 +214,7 @@ closed until a reviewed protection condition is available again.
 
 Capture live Original CFN templates and physical resource maps independently from
 the source-synth matrix. Preserve stack/construct/logical/resource identities,
-SSM names/runtime admission values, exports, endpoints and unchanged database
+SSM names and runtime values, exports, endpoints and unchanged database
 behavior. The legacy `AnyWearInfraStack-dev` is outside this migration.
 
 The baseline import retains independently proven component producers. Preserve
@@ -238,24 +238,22 @@ Exercise reviewed `restore-release` as the Base recovery path; it deploys only
 verifies a candidate release. (The former `deploy-workload` path no longer exists
 in Infra; #166 renamed the slice to `AnyWearRuntimeStack-beta`, and since #195 the
 slice's CDK source and deploy chain are in this repository.)
-`restore-release` requires a provably closed admission record
-(`{"mode":"closed"}`) and an existing terminal Runtime stack ("start first")
+`restore-release` requires an existing terminal Runtime stack ("start first")
 before CFN, reads the Runtime terminal before and after its own deploy, and
 redeploys only Base; stable stack status is required for the CloudFormation
-mutation itself. Failures preserve observed state and require an explicitly
-reviewed recovery; no automatic sibling deploy, revert or admission reopening
-occurs.
+mutation itself. It reads no admission state after #213: the tester allowlist
+constrains registration only, so it is neither a precondition nor a postcondition
+of a Base recovery. Failures preserve observed state and require an explicitly
+reviewed recovery; no automatic sibling deploy or revert occurs.
 
-Admission is mode-only after #159: `/anywear/beta/admission_mode` is
-`{"mode":"closed"}` or `{"mode":"testers"}`, with no window or expiry.
-`open-admission` opens the tester lane with a payload-free lifecycle `resume` and
-prints one `admission-open-proof` line (mode, source, tester count and hash, SSM
-record key set, database status field absence, SSM/DB agreement);
-`close-admission` is the only thing that closes. Removing the window removed
-automatic closure, so an interrupted or failed open leaves admission open until an
-explicit `close-admission` and an `admission-status` read-back; no recovery step
-here and no scheduled task closes it. Verify closed admission from the SSM mode
-record and an `admission-status` read-back before any restore dispatch.
+Admission after #213 is one input: `/anywear/beta/tester_allowlist` (a JSON array
+of at most 50 exact emails within 4096 bytes, default `[]`), read only by Cognito
+`PreSignUp` at registration. There is no mode, no window and no expiry.
+`admission-status` reads the tester count and hash through the deployed Service
+lifecycle `status` command and compares them with one SSM read-back;
+`add-testers`/`set-testers` perform one SSM write with no admission or lifecycle
+precondition and the same read-back. `migrate`, `restore-release` and
+`runtime.yml state` carry no admission precondition and read no admission state.
 
 Current dispatches use `mutate.yml` for maintenance, `deploy-egress`/
 `delete-egress` for the disposable network edge, and `restore-release`. Beta
@@ -340,4 +338,4 @@ There is no inactive Base deployment path. Every protected Base deploy requires 
 terminal Base stack and a terminal Runtime stack when Runtime exists; the
 postcondition is exactly that observed state, not a `BetaActive` output. A Base
 mutation fails closed while Runtime is non-terminal (one writer). Preserve actual
-stack statuses, Runtime existence and admission readback on failure.
+stack statuses and Runtime existence on failure.

@@ -1,7 +1,6 @@
-import { readAdmissionState, assertClosedAdmission } from './admission-operation.mjs';
 import { assertProtectedExecutor } from './operation-boundaries.mjs';
 import { assertTerminalRuntime, assertRuntimeReady, describeStack, terminalStackStatuses, runtimeStack } from './one-writer.mjs';
-import { canonicalJson, sha256, SHA } from './json-contract.mjs';
+import { SHA } from './json-contract.mjs';
 
 const platformName = 'AnyWearPlatformStack-beta';
 const runtimeName = runtimeStack;
@@ -30,10 +29,12 @@ function assertContext(infraSha, env) {
   }
 }
 
-// Closed admission and a live Runtime are the preconditions. Stable stack status
-// is a CloudFormation mutation-safety requirement, not an activation requirement.
-// A missing Runtime means the operator must start first (deploy-egress, then the
-// Service deploy) instead of restoring an environment nothing is serving.
+// Closed admission and a live Runtime were the old preconditions; #213 removed the
+// admission surface, so a restore reads no admission state. A live Runtime and a
+// stable stack status remain: stable CloudFormation status is a mutation-safety
+// requirement, not an activation requirement. A missing Runtime means the operator
+// must start first (deploy-egress, then the Service deploy) instead of restoring
+// an environment nothing is serving.
 function assertRestoreTarget(platform) {
   if (!stableStatuses.has(platform?.StackStatus)) throw new Error(`Restore requires stable ${platformName}`);
   if (outputs(platform).EcsClusterName !== 'beta-anywear') throw new Error('Restore is restricted to beta-anywear');
@@ -77,14 +78,6 @@ async function assertDistributionDeployed(io, platform) {
   }
 }
 
-function redactedAdmission(state) {
-  return { admission_mode: state.admission_mode,
-    admission_mode_source: state.admission_mode_source,
-    admission_recorded_mode: state.admission_recorded_mode,
-    admission_recorded_keys: state.admission_recorded_keys,
-    tester_count: state.tester_emails.length, tester_allowlist_sha256: sha256(canonicalJson(state.tester_emails)) };
-}
-
 async function failureReadback(io, stage) {
   const observed = { failure_stage: stage };
   for (const [key, name] of [['base', platformName], ['runtime', runtimeName]]) {
@@ -96,19 +89,6 @@ async function failureReadback(io, stage) {
       observed[`${key}_status`] = 'unavailable'; observed[`${key}_exists`] = 'unavailable';
     }
   }
-  // The shared reader preserves each independently known field even when another
-  // SSM value is malformed/unavailable. Never retain raw tester addresses.
-  let admission;
-  try { admission = await readAdmissionState(io); }
-  catch (error) { admission = error.observedAdmissionState; }
-  for (const key of ['admission_mode', 'admission_recorded_mode']) {
-    const value = admission?.[key];
-    observed[key] = typeof value === 'string' || value === null ? value : 'unavailable';
-  }
-  observed.admission_recorded_keys = Array.isArray(admission?.admission_recorded_keys)
-    ? admission.admission_recorded_keys : 'unavailable';
-  observed.tester_count = Array.isArray(admission?.tester_emails) ? admission.tester_emails.length : 'unavailable';
-  observed.tester_allowlist_sha256 = Array.isArray(admission?.tester_emails) ? sha256(canonicalJson(admission.tester_emails)) : 'unavailable';
   return observed;
 }
 
@@ -122,19 +102,16 @@ const say = event => process.stdout.write(`${JSON.stringify({ operation: 'restor
 export async function runRestoreRelease({ io, infraSha, env = process.env }) {
   // Reject source/context before any authenticated read or deploy.
   assertContext(infraSha, env);
-  let stage = 'preconditions'; let originalAdmission; let lastAdmission;
-  const closed = async () => {
-    assertContext(infraSha, env);
-    lastAdmission = await readAdmissionState(io);
-    assertClosedAdmission(lastAdmission, originalAdmission);
-  };
+  let stage = 'preconditions';
+  // A restore reads no admission state: #213 removed the mode, and the allowlist
+  // constrains registration only, so it is neither a precondition nor a
+  // postcondition of recovering the Base stack.
   const phase = async (name, action) => {
     stage = name;
     say({ stage, result: 'began' });
     assertContext(infraSha, env);
-    await closed();
     const result = await action();
-    await closed();
+    assertContext(infraSha, env);
     say({ stage, result: 'succeeded' });
     return result;
   };
@@ -147,8 +124,6 @@ export async function runRestoreRelease({ io, infraSha, env = process.env }) {
     // A stopped environment first runs `deploy-egress` and the Service deploy.
     assertRuntimeStarted(runtime);
     const originalPlatformInterface = selectOutputs(outputs(platform), platformInterfaceKeys);
-    originalAdmission = await readAdmissionState(io);
-    assertClosedAdmission(originalAdmission, originalAdmission); lastAdmission = originalAdmission;
     say({ stage, result: 'succeeded' });
 
     const readSelected = async () => {
@@ -161,12 +136,12 @@ export async function runRestoreRelease({ io, infraSha, env = process.env }) {
     await phase('platform-deploy', () => io.deploy(platformName));
     await phase('platform-readback', readSelected);
     await phase('final-readback', readSelected);
-    return { restored_stack: platformName, admission: redactedAdmission(lastAdmission) };
+    return { restored_stack: platformName };
   } catch (error) {
     const observed = await failureReadback(io, stage);
-    // The readback is a run fact: the step log names the failed stage, both stack
-    // statuses and the redacted admission state, and the thrown message carries
-    // "explicit recovery required". Nothing here resumes a sibling deployment.
+    // The readback is a run fact: the step log names the failed stage and both
+    // stack statuses, and the thrown message carries "explicit recovery required".
+    // Nothing here resumes a sibling deployment or reads admission state.
     say({ result: 'failed', ...observed });
     throw new Error(`Beta Base restore failed at ${stage}; explicit recovery required; Base=${observed.base_status} (${observed.base_exists}), Runtime=${observed.runtime_status} (${observed.runtime_exists})`, { cause: error });
   }

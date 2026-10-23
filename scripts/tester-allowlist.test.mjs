@@ -1,17 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalJson } from './json-contract.mjs';
+import { canonicalJson, sha256 } from './json-contract.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
 const selector = { image: { service_sha: '1'.repeat(40), digest: `sha256:${'2'.repeat(64)}` } };
-function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.digest } = {}) {
+const testers = ['existing@example.com'];
+function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.digest,
+  initialTesters = testers, statusOverride } = {}) {
   const calls = [];
-  // The tester write refuses while admission is not provably closed, and it must
-  // leave the recorded decision exactly as it found it.
-  const mirror = { mode: 'closed' };
-  let testers = ['existing@example.com'];
+  let current = [...initialTesters];
   // Issue #166: the Base stack publishes the public API URL; the Runtime stack
   // exists while Beta runs and reports the pinned revision.
   const platform = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE',
@@ -36,18 +35,18 @@ function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.
     }
     if (args[0] === 'ssm') {
       const name = args.at(-1);
-      if (name.endsWith('tester_allowlist')) return { Parameter: { Name: name, Value: canonicalJson(testers) } };
-      assert.equal(name, '/anywear/beta/admission_mode');
-      return { Parameter: { Name: name, Value: canonicalJson(mirror) } };
+      assert.equal(name, '/anywear/beta/tester_allowlist', 'the tester surface reads only the allowlist');
+      return { Parameter: { Name: name, Value: canonicalJson(current) } };
     }
     return {};
   }, async verifyHealth() { calls.push(['health']); }, async oneShot(role, revision, action, payload) {
     calls.push([role, revision, action, payload]);
-    // `set-testers` replaces the exact list and changes no admission state.
-    if (action === 'set-testers') testers = JSON.parse(payload);
+    // `set-testers` replaces the exact list and reads no admission state.
+    if (action === 'set-testers') current = JSON.parse(payload);
     if (action === 'status') {
-      return { admission_mode: 'closed', admission_record: 'closed',
-        database_record_differs: false, tester_count: testers.length, database_policy_matches_ssm: true };
+      const line = { action: 'status', tester_count: current.length,
+        tester_allowlist_hash: sha256(canonicalJson(current)) };
+      return statusOverride ? statusOverride(line, current) : line;
     }
   } };
 }
@@ -63,7 +62,7 @@ async function captureStdout(run) {
 test('Infra tester add merges exact emails on the revision the Runtime stack reports; a non-running Runtime performs no task', async () => {
   const io = ioFixture();
   await runTesterAllowlist('add', '[" NEW@example.com ", "new@example.com"]', io);
-  const lifecycle = io.calls.find(call => call[0] === 'lifecycle');
+  const lifecycle = io.calls.find(call => call[0] === 'lifecycle' && call[2] === 'set-testers');
   assert.equal(lifecycle[2], 'set-testers');
   assert.equal(lifecycle[3], '["existing@example.com","new@example.com"]');
   for (const options of [{ runtimeStatus: null }, { runtimeStatus: 'UPDATE_IN_PROGRESS' }]) {
@@ -74,50 +73,51 @@ test('Infra tester add merges exact emails on the revision the Runtime stack rep
   await assert.rejects(runTesterAllowlist('cleanup', '[]', io));
   for (const input of ['["*@example.com"]', '["@example.com"]', JSON.stringify(Array(51).fill('a@example.com'))]) assert.throws(() => normalizeTesterEmails(input));
 });
-test('tester operations print the admission read-back their evidence rests on, with admission unchanged', async () => {
+test('a tester write proves the persisted list from the status line and one SSM read-back', async () => {
   const io = ioFixture();
   const { lines } = await captureStdout(() => runTesterAllowlist('add', '["new@example.com"]', io));
   assert.equal(lines.length, 1);
   const line = JSON.parse(lines[0]);
   assert.equal(line.operation, 'add-testers');
-  // The mirror is self-describing, so the two snapshots show the write changed the
-  // tester list but no admission state: the same mode, the same recorded key set,
-  // no reportable bound. The line is redacted and never names an address.
-  const keys = ['admission_mode', 'admission_recorded_mode', 'admission_recorded_keys', 'tester_count'];
-  for (const snapshot of [line.before, line.after]) {
-    assert.deepEqual(Object.keys(snapshot).sort(), [...keys].sort());
-    assert.equal(snapshot.admission_mode, 'closed');
-    assert.equal(snapshot.admission_recorded_mode, 'closed');
-    assert.deepEqual(snapshot.admission_recorded_keys, ['mode']);
-    assert.equal(Object.hasOwn(snapshot, 'admission_window_expires_at'), false);
-    assert.equal(Object.hasOwn(snapshot, 'lifecycle_status_sha256'), false);
-  }
-  assert.equal(line.before.tester_count, 1);
-  assert.equal(line.after.tester_count, 2);
+  assert.equal(line.tester_count, 2);
+  assert.equal(line.tester_allowlist_hash, sha256(canonicalJson(['existing@example.com', 'new@example.com'])));
+  assert.equal(line.matches, true);
+  // The write is one one-shot plus its status read-back; no mode is read or written.
+  assert.deepEqual(io.calls.filter(call => call[0] === 'lifecycle').map(call => call[2]).sort(),
+    ['set-testers', 'status']);
   assert.equal(/@example\.com/.test(lines[0]), false, 'the printed line never carries tester addresses');
 });
-test('admission status publishes the effective decision, the raw record and their disagreement separately', async () => {
-  const io = ioFixture();
-  const { lines } = await captureStdout(() => runTesterAllowlist('status', '[]', io, selector));
+test('a write whose status line disagrees with the SSM read-back fails closed', async () => {
+  const io = ioFixture({ statusOverride: line => ({ ...line, tester_count: 1 }) });
+  await assert.rejects(runTesterAllowlist('add', '["new@example.com"]', io),
+    /tester count\/hash differs from the SSM allowlist/);
+  const wrongHash = ioFixture({ statusOverride: line => ({ ...line, tester_allowlist_hash: 'b'.repeat(64) }) });
+  await assert.rejects(runTesterAllowlist('add', '["new@example.com"]', wrongHash),
+    /tester count\/hash differs from the SSM allowlist/);
+});
+test('admission status reports the count and hash the SSM allowlist actually holds', async () => {
+  const io = ioFixture({ initialTesters: ['a@example.com', 'b@example.com'] });
+  const { lines } = await captureStdout(() => runTesterAllowlist('status', '[]', io));
   assert.equal(lines.length, 1);
   const event = JSON.parse(lines[0]);
+  assert.deepEqual(Object.keys(event).sort(), ['matches', 'operation', 'tester_allowlist_hash', 'tester_count']);
   assert.equal(event.operation, 'admission-status');
-  // The effective decision is what every gate uses; the raw record is reported
-  // beside it, so a status line cannot say "testers are admitted" about a closed
-  // environment. One boolean cannot serve both jobs.
-  assert.equal(event.mirror.admission_mode, 'closed');
-  assert.equal(event.mirror.admission_recorded_mode, 'closed');
-  assert.deepEqual(event.mirror.admission_recorded_keys, ['mode']);
-  assert.equal(event.effective_matches, true);
-  assert.equal(event.database_record_differs, false);
-  assert.equal(event.mirror_record_differs, false);
-  assert.equal(event.database.admission_mode, 'closed');
-  assert.equal(event.database.admission_record, 'closed');
-  assert.equal(Object.hasOwn(event.database, 'admission_window_expires_at'), false);
-  assert.equal(event.database.tester_count, 1);
+  assert.equal(event.tester_count, 2);
+  assert.equal(event.tester_allowlist_hash, sha256(canonicalJson(['a@example.com', 'b@example.com'])));
+  assert.equal(event.matches, true);
   assert.equal(/@example\.com/.test(lines[0]), false, 'the status line never carries tester addresses');
   // A status read mutates nothing.
-  assert.equal(io.calls.some(call => call[2] === 'set-testers'), false);
+  assert.deepEqual(io.calls.filter(call => call[0] === 'lifecycle').map(call => call[2]), ['status']);
+});
+test('a status line that is not the #213 contract fails closed', async () => {
+  for (const override of [
+    line => ({ action: 'status', tester_count: line.tester_count }),
+    line => ({ action: 'status', tester_allowlist_hash: line.tester_allowlist_hash }),
+    line => ({ action: 'set-testers', tester_count: line.tester_count, tester_allowlist_hash: line.tester_allowlist_hash }),
+  ]) {
+    const io = ioFixture({ statusOverride: override });
+    await assert.rejects(runTesterAllowlist('status', '[]', io));
+  }
 });
 test('tester operation validates protected executor and explicit normalized payload before credentials', () => {
   const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: '4'.repeat(40),
