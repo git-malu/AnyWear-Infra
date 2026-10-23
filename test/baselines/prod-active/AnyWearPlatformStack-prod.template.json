@@ -936,7 +936,6 @@
     ],
     "GenerateSecret": false,
     "ReadAttributes": [
-     "custom:e2e_bootstrap",
      "email",
      "email_verified"
     ],

@@ -746,30 +746,17 @@
         "ssm:GetParameters"
        ],
        "Effect": "Allow",
-       "Resource": [
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "AdmissionModeD89A5929"
-           }
-          ]
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:aws:ssm:ap-east-1:650880818323:parameter",
+          {
+           "Ref": "TesterAllowlist62C82ADF"
+          }
          ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "TesterAllowlist62C82ADF"
-           }
-          ]
-         ]
-        }
-       ]
+        ]
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -802,7 +789,8 @@
       "Arn"
      ]
     },
-    "Runtime": "nodejs24.x"
+    "Runtime": "nodejs24.x",
+    "Timeout": 10
    },
    "DependsOn": [
     "PreSignUpLambdaServiceRoleDefaultPolicyF5A5F3AC",
@@ -882,37 +870,6 @@
    "Properties": {
     "PolicyDocument": {
      "Statement": [
-      {
-       "Action": [
-        "ssm:GetParameter",
-        "ssm:GetParameters"
-       ],
-       "Effect": "Allow",
-       "Resource": [
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "AdmissionModeD89A5929"
-           }
-          ]
-         ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "TesterAllowlist62C82ADF"
-           }
-          ]
-         ]
-        }
-       ]
-      },
       {
        "Action": [
         "secretsmanager:DescribeSecret",
@@ -1059,14 +1016,6 @@
    "UpdateReplacePolicy": "Retain",
    "DeletionPolicy": "Retain"
   },
-  "AdmissionModeD89A5929": {
-   "Type": "AWS::SSM::Parameter",
-   "Properties": {
-    "Name": "/anywear/beta/admission_mode",
-    "Type": "String",
-    "Value": "{\"mode\":\"closed\"}"
-   }
-  },
   "TesterAllowlist62C82ADF": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
@@ -1206,7 +1155,6 @@
     ],
     "GenerateSecret": false,
     "ReadAttributes": [
-     "custom:e2e_bootstrap",
      "email",
      "email_verified"
     ],
@@ -1927,30 +1875,17 @@
       {
        "Action": "ssm:GetParameter",
        "Effect": "Allow",
-       "Resource": [
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "AdmissionModeD89A5929"
-           }
-          ]
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:aws:ssm:ap-east-1:650880818323:parameter",
+          {
+           "Ref": "TesterAllowlist62C82ADF"
+          }
          ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "TesterAllowlist62C82ADF"
-           }
-          ]
-         ]
-        }
-       ]
+        ]
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -2611,30 +2546,17 @@
         "ssm:PutParameter"
        ],
        "Effect": "Allow",
-       "Resource": [
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "AdmissionModeD89A5929"
-           }
-          ]
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:aws:ssm:ap-east-1:650880818323:parameter",
+          {
+           "Ref": "TesterAllowlist62C82ADF"
+          }
          ]
-        },
-        {
-         "Fn::Join": [
-          "",
-          [
-           "arn:aws:ssm:ap-east-1:650880818323:parameter",
-           {
-            "Ref": "TesterAllowlist62C82ADF"
-           }
-          ]
-         ]
-        }
-       ]
+        ]
+       }
       },
       {
        "Action": "sqs:GetQueueAttributes",
