@@ -15,9 +15,15 @@ test('Node 24 CommonJS require() can load the ESM package', () => {
   assert.equal(loaded.STAGE_CONTRACT_CONDITIONAL_PARAMETERS.length, 1);
   assert.equal(loaded.STAGE_CONTRACT_READ_PARAMETERS.length, 36);
   assert.equal(typeof loaded.stageParameters, 'function');
-  assert.equal(typeof loaded.validateServiceDeploymentRecord, 'function');
+  // Issue #207: the record/gate-block validator is gone; the bake-control builders
+  // and the template/task-definition identity are what a CommonJS consumer loads.
+  assert.equal(typeof loaded.validateDeploymentGate, 'undefined');
+  assert.equal(typeof loaded.validateServiceDeploymentRecord, 'undefined');
+  assert.equal(typeof loaded.deploymentAlarmNames, 'function');
+  assert.equal(loaded.DEPLOYMENT_GATE_DURATION_SECONDS, 600);
   assert.equal(typeof loaded.normaliseDeployedTemplate, 'function');
   assert.equal(typeof loaded.canonicalDeployedTemplateHash, 'function');
+  assert.equal(typeof loaded.stableTaskDefinition, 'function');
   assert.equal(loaded.SERVICE_RUNTIME_STACK.workflow_path, '.github/workflows/mutate.yml');
   assert.equal(loaded.serviceDeployRoleName, undefined);
 });

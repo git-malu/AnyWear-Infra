@@ -72,10 +72,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    # The trigger set is published before any credential, from the same predicate
-    # the record gate reads: the `observe` job's `if` cannot drift from it.
-    outputs:
-      requires_accepted_observation: ${{ steps.observation-requirement.outputs.requires_accepted_observation }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,37 +81,39 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Publish whether this operation requires the accepted record
-        id: observation-requirement
-        run: node scripts/observation-requirement.mjs
       - name: Validate operation family and reviewed Service release identity
-        run: |
-          mkdir -p deployment-evidence
-          node scripts/check-operation.mjs
-  # The only job that reads the Service release. It reads the release and its tag
-  # ref over the REST API, requires the three names the stage base consumes to be
-  # present, uploaded and digest-valid (extras such as a legacy manifest are
-  # ignored) and downloads only those three. It holds a read-only App token (only
-  # when the operation takes a release) and never an OIDC identity or an
-  # environment.
+        run: node scripts/check-operation.mjs
+  # The only job that reads the Service release. It proves the release and its tag
+  # ref over the REST API, requires the asset names this operation consumes to be
+  # present, uploaded and digest-valid, and downloads only those. It holds a
+  # read-only App token (only when the operation takes a release) and never an OIDC
+  # identity or an environment. It publishes the release BYTES as the transport
+  # artifact and the PUBLISHED DIGESTS as this job's `release_assets` output; the
+  # deploy job proves both before it requests a credential.
   verify:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      release_assets: ${{ steps.verify.outputs.release_assets }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/verify-operation
+        id: verify
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-  # The only job that acquires AWS credentials. It is scheduled after `verify`,
-  # re-hashes the three travelled release files once against the verified record
-  # and only then binds the artifact to this dispatch and requests the restricted
-  # session; the operation records the ECR digest of the release's immutable tag.
+  # The only job that acquires AWS credentials. It is scheduled after `verify` and
+  # its first step proves the travelled release bytes against the published digests
+  # and strictly loads the schema asset or runtime policy; only then does
+  # `runtime-operation.mjs` request the restricted session. A failed or partial
+  # mutation leaves a non-success run with no gate step using `continue-on-error`,
+  # and a mutation that landed before a later refusal appends one summary line
+  # naming the stack it already changed.
   deploy:
     needs: verify
     environment: beta
@@ -126,112 +124,21 @@ jobs:
       id-token: write
     # The role ARNs are environment-scoped repository variables, so they resolve
     # only in this job, the one that declares `beta`. Nothing before it reads them.
+    # `VERIFIED_RELEASE_ASSETS` is the verify job's output: the published digest of
+    # each asset this operation consumes, and nothing else.
     env:
       INFRA_DEPLOY_ROLE_ARN: ${{ vars.INFRA_DEPLOY_ROLE_ARN }}
       INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
+      VERIFIED_RELEASE_ASSETS: ${{ needs.verify.outputs.release_assets }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Download verified inputs and the selected release directory
+      - name: Download the Service release bytes that travelled from verify
+        if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime'
         uses: actions/download-artifact@v4
         with:
-          name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          name: service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}
           path: .
       - uses: ./.github/actions/deploy-operation
-  # The accepted `anywear_infra_deployment` v3 producer of this deployment run
-  # (#181). A separate credential job: the read-only runtime role only, no deploy
-  # role, no App token, no verified-inputs artifact and no verify artifact
-  # download, so the record type can never be written from the job that holds the
-  # mutation role. It waits for the mutation because the chain fails when either
-  # the deploy or this observation fails, and `record` fails closed when no
-  # accepted record exists.
-  observe:
-    needs: [preflight, deploy]
-    if: needs.deploy.result == 'success' && needs.preflight.outputs.requires_accepted_observation == 'true'
-    environment: beta
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm ci
-      - name: Observe the accepted deployment record with the read-only runtime session
-        run: node scripts/observe-accepted-record.mjs
-      - name: Preserve the accepted deployment record
-        uses: actions/upload-artifact@v4
-        with:
-          name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence/deployment-record.json
-          retention-days: 90
-          if-no-files-found: error
-  # No environment, no OIDC, no write permission: validate and checksum exactly
-  # what the credential jobs produced.
-  record:
-    needs: [deploy, observe]
-    if: always() && needs.deploy.result != 'skipped'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    env:
-      DEPLOY_JOB_RESULT: ${{ needs.deploy.result }}
-      OBSERVE_JOB_RESULT: ${{ needs.observe.result }}
-      REQUIRE_DEPLOYMENT_RECORD: 'true'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm ci
-      - name: Download the operation evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence
-      - name: Download the accepted record when this operation produced one
-        uses: actions/download-artifact@v4
-        with:
-          name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence/accepted
-        continue-on-error: true
-      - name: Download the mutation job's family observation
-        uses: actions/download-artifact@v4
-        with:
-          name: infra-family-observation-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence/family
-        continue-on-error: true
-      - name: Validate, checksum and preserve the operation and deployment records
-        run: node scripts/record-deployment.mjs
-      # `always()`: a missing accepted record marks the operation record incomplete
-      # and exits non-zero, and that mark is the evidence the operator needs. The
-      # operation record and its checksum are therefore uploaded even when the
-      # accepted record was never produced.
-      - name: Preserve the validated records and their checksums
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: infra-record-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            deployment-evidence/accepted/deployment-record.json
-            deployment-evidence/accepted/deployment-record.json.sha256
-            deployment-evidence/family/deployment-record.json
-            deployment-evidence/family/deployment-record.json.sha256
-            deployment-evidence/operation-record.json
-            deployment-evidence/operation-record.json.sha256
-          retention-days: 90
-          if-no-files-found: error

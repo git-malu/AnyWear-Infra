@@ -79,7 +79,7 @@ test('the loader returns the asset, its travelled bytes and the bare 64-hex dige
   assert.deepEqual(Buffer.from(loaded.bytes), Buffer.from(assetBytes));
   assert.equal(loaded.sha256, sha256(assetBytes));
   assert.match(loaded.sha256, /^[a-f0-9]{64}$/);
-  // The published verified-inputs form is the same digest with its algorithm.
+  // The published release-digest form is the same digest with its algorithm.
   assert.equal(assetDigest(assetBytes), `sha256:${sha256(assetBytes)}`);
 });
 

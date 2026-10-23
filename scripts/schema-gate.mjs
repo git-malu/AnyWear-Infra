@@ -1,10 +1,5 @@
 import { canonicalJson, parseJson, sha256, exact, matches, integer, HASH, SHA, DIGEST } from './json-contract.mjs';
 import {
-  SCHEMA_BOUNDARY_READER_SOURCES,
-  schemaBoundaryPrefixHash,
-  validateSchemaBoundary,
-} from '@git-malu/stage-contracts';
-import {
   SCHEMA_ASSET_NAME,
   SCHEMA_MIGRATION_TAG,
   loadSchemaAsset,
@@ -33,9 +28,124 @@ export const APPLIED_SCHEMA_RECORD_VERSION = 1;
 export const APPLIED_SCHEMA_MAX_ROWS = 256;
 export const SCHEMA_JOURNAL_ACTION = 'schema-journal';
 export const SCHEMA_BOUNDARY_EVENT = 'schema-boundary';
-// The two reader identities come from the package, the single source of the
-// record's `reader.source` values.
-export const SCHEMA_READER_SOURCES = SCHEMA_BOUNDARY_READER_SOURCES;
+// The two reader identities. `selected-image` is the release under test;
+// `deployed-image` is the one bounded fallback when the release image predates
+// the `schema-journal` reader. They are the gate's own vocabulary since #207: the
+// comparison is no longer a cross-repository record member.
+export const SCHEMA_READER_SOURCES = Object.freeze(['selected-image', 'deployed-image']);
+
+// The admitted comparison body the gate builds and validates before it lets the
+// deployment proceed. It is logged (and refused by name) rather than written to a
+// record, so the shape is owned here instead of in the versioned package.
+export const SCHEMA_BOUNDARY_FIELDS = Object.freeze(
+  ['result', 'asset', 'applied', 'comparison', 'reader']);
+export const SCHEMA_BOUNDARY_ASSET_FIELDS = Object.freeze(
+  ['sha256', 'current_version', 'minimum_version', 'minimum_migration_count', 'journal_length']);
+export const SCHEMA_BOUNDARY_APPLIED_FIELDS = Object.freeze(['schema_version', 'journal_length']);
+export const SCHEMA_BOUNDARY_COMPARISON_FIELDS = Object.freeze(
+  ['checked_entries', 'prefix_sha256', 'pending_migrations']);
+export const SCHEMA_BOUNDARY_READER_FIELDS = Object.freeze(['source', 'service_sha', 'image_digest']);
+// A gate admits one comparison only.
+export const SCHEMA_BOUNDARY_RESULTS = Object.freeze(['compatible']);
+
+/**
+ * The canonical hash of the compared `{ created_at, sha256 }` prefix.
+ *
+ * `entries` are the compared release/live pairs in journal order, each with the
+ * migration creation time (the Drizzle journal `when`) and the 64-hex
+ * `sha256(<drizzle/<tag>.sql bytes>)`. A caller passes the first `checked_entries`
+ * pairs, so the hash identifies exactly what was compared and not the pending
+ * tail.
+ */
+export function schemaBoundaryPrefixHash(entries) {
+  if (!Array.isArray(entries) || entries.length > 256) throw new Error('Invalid schema boundary prefix');
+  const prefix = entries.map((entry) => {
+    exact(entry, ['created_at', 'sha256'], 'schema boundary prefix entry');
+    return {
+      created_at: integer(entry.created_at, 'schema boundary prefix migration time', 0),
+      sha256: matches(entry.sha256, HASH, 'schema boundary prefix migration hash'),
+    };
+  });
+  return sha256(canonicalJson(prefix));
+}
+
+function validateSchemaBoundaryAsset(asset) {
+  exact(asset, SCHEMA_BOUNDARY_ASSET_FIELDS, 'schema boundary asset');
+  matches(asset.sha256, HASH, 'schema boundary asset digest');
+  integer(asset.current_version, 'schema boundary current version');
+  integer(asset.minimum_version, 'schema boundary minimum version');
+  integer(asset.minimum_migration_count, 'schema boundary minimum migration count');
+  integer(asset.journal_length, 'schema boundary journal length');
+  if (asset.minimum_version > asset.current_version) throw new Error('Invalid schema boundary version range');
+  if (asset.minimum_migration_count > asset.journal_length) {
+    throw new Error('Schema boundary minimum migration count exceeds the release journal');
+  }
+  // Equal versions mean the release supports its whole journal: a minimum equal
+  // to the current version cannot exclude a migration the release itself applies.
+  if (asset.current_version === asset.minimum_version
+    && asset.minimum_migration_count !== asset.journal_length) {
+    throw new Error('Equal schema boundary versions must require the whole release journal');
+  }
+  return asset;
+}
+
+function validateSchemaBoundaryApplied(applied, asset) {
+  exact(applied, SCHEMA_BOUNDARY_APPLIED_FIELDS, 'schema boundary applied');
+  integer(applied.schema_version, 'schema boundary applied version', 0);
+  integer(applied.journal_length, 'schema boundary applied journal length', 0);
+  if (applied.schema_version < asset.minimum_version) {
+    throw new Error('Schema boundary applied version is below the release minimum');
+  }
+  if (applied.journal_length > asset.journal_length) {
+    throw new Error('Schema boundary applied journal is longer than the release journal');
+  }
+  return applied;
+}
+
+function validateSchemaBoundaryComparison(comparison, asset, applied) {
+  exact(comparison, SCHEMA_BOUNDARY_COMPARISON_FIELDS, 'schema boundary comparison');
+  integer(comparison.checked_entries, 'schema boundary checked entries', 0);
+  integer(comparison.pending_migrations, 'schema boundary pending migrations', 0);
+  matches(comparison.prefix_sha256, HASH, 'schema boundary prefix hash');
+  if (comparison.checked_entries !== applied.journal_length) {
+    throw new Error('Schema boundary checked entries differ from the applied journal length');
+  }
+  if (comparison.checked_entries > asset.journal_length) {
+    throw new Error('Schema boundary checked entries exceed the release journal');
+  }
+  if (comparison.pending_migrations !== asset.journal_length - comparison.checked_entries) {
+    throw new Error('Schema boundary pending migrations differ from the release journal tail');
+  }
+  if (comparison.checked_entries < asset.minimum_migration_count) {
+    throw new Error('Schema boundary checked entries are below the minimum migration count');
+  }
+  return comparison;
+}
+
+function validateSchemaBoundaryReader(reader) {
+  exact(reader, SCHEMA_BOUNDARY_READER_FIELDS, 'schema boundary reader');
+  if (!SCHEMA_READER_SOURCES.includes(reader.source)) throw new Error('Invalid schema boundary reader source');
+  matches(reader.service_sha, SHA, 'schema boundary reader Service');
+  matches(reader.image_digest, DIGEST, 'schema boundary reader image');
+  return reader;
+}
+
+/**
+ * Validate one admitted comparison before the gate trusts it.
+ *
+ * Every relation the gate can prove is checked: the exact member sets, the
+ * admitted result, the version/count range, the journal/prefix arithmetic and the
+ * reader identity.
+ */
+export function validateSchemaBoundary(boundary) {
+  exact(boundary, SCHEMA_BOUNDARY_FIELDS, 'schema boundary');
+  if (!SCHEMA_BOUNDARY_RESULTS.includes(boundary.result)) throw new Error('Invalid schema boundary result');
+  const asset = validateSchemaBoundaryAsset(boundary.asset);
+  const applied = validateSchemaBoundaryApplied(boundary.applied, asset);
+  validateSchemaBoundaryComparison(boundary.comparison, asset, applied);
+  validateSchemaBoundaryReader(boundary.reader);
+  return boundary;
+}
 
 // The existing verification one-shot family and the exact command the verify
 // action registers. The stopped task identity, its log destination and its
@@ -296,7 +406,7 @@ async function readProbeJournal({ io, readLog, launched, readers, source }) {
  * only when the selected image exits 0 without a marker, and never a fallback
  * after a non-zero exit. At most two launches.
  */
-export async function readSchemaBoundaryEvidence({ io, release, deployedRevision, record,
+export async function readSchemaBoundaryEvidence({ io, release, deployedRevision,
   probe = probeAppliedSchema, readLog = readAppliedSchemaLog } = {}) {
   const releaseRevision = {
     serviceCommit: release?.serviceCommit, imageDigest: release?.imageDigest };
@@ -424,16 +534,12 @@ export function compareSchemaBoundary({ asset, applied, reader, assetSha256 }) {
  * 3. Compare, push exactly one `schema-boundary` event, and return the v6 body
  *    or throw the named refusal carrying every violation.
  */
-export async function runSchemaBoundaryGate({ io, env, release, deployedRevision, record,
+export async function runSchemaBoundaryGate({ io, env, release, deployedRevision,
   directory = SELECTED_RELEASE_DIRECTORY,
   loadAsset = loadSchemaAsset, probe = probeAppliedSchema, readLog = readAppliedSchemaLog,
   compare = compareSchemaBoundary, assetValidator = validateSchemaAsset }) {
   const releaseIdentity = { tag: release?.releaseTag ?? 'unavailable',
     service_commit: release?.serviceCommit ?? 'unavailable' };
-  const refused = (event, error) => {
-    record?.events.push({ type: SCHEMA_BOUNDARY_EVENT, result: 'refused', ...event });
-    return error;
-  };
   let loaded;
   let assetSha256 = 'unavailable';
   try {
@@ -445,29 +551,11 @@ export async function runSchemaBoundaryGate({ io, env, release, deployedRevision
     const violations = [violation('asset-invalid',
       `a strictly valid travelled ${SCHEMA_ASSET_NAME} (schema_version 1, record_type anywear_service_schema)`,
       detail)];
-    throw refused({
-      reason: 'asset-invalid', violations, version_ahead: false,
-      asset: { sha256: assetSha256 }, release: releaseIdentity, reader: null, readers: [],
-      applied_rows: [], detail,
-    }, new SchemaBoundaryError('asset-invalid',
+    throw new SchemaBoundaryError('asset-invalid',
       `${SCHEMA_ASSET_NAME} was refused before any AWS call: ${detail}`, violations,
-      { reader: null, readers: [], applied_rows: [] }));
+      { reader: null, readers: [], applied_rows: [] });
   }
-  let evidence;
-  try {
-    evidence = await readSchemaBoundaryEvidence({ io, release, deployedRevision, record, probe, readLog });
-  } catch (error) {
-    if (!(error instanceof SchemaBoundaryError)) throw error;
-    const observed = error.evidence ?? {};
-    throw refused({
-      reason: error.reason, violations: error.violations, version_ahead: false,
-      asset: { sha256: assetSha256 }, release: releaseIdentity,
-      reader: observed.reader ?? null, readers: observed.readers ?? [],
-      applied_rows: observed.applied_rows ?? [],
-      applied: observed.applied ?? null,
-      detail: error.message.slice(0, 500),
-    }, error);
-  }
+  const evidence = await readSchemaBoundaryEvidence({ io, release, deployedRevision, probe, readLog });
   const compared = compare({ asset: loaded.asset, applied: evidence.applied,
     reader: evidence.reader, assetSha256 });
   const appliedSummary = {
@@ -477,21 +565,13 @@ export async function runSchemaBoundaryGate({ io, env, release, deployedRevision
   if (compared.violations.length) {
     const reason = compared.violations[0].reason;
     const detail = describeViolations(compared.violations);
-    throw refused({
-      reason, violations: compared.violations, version_ahead: compared.versionAhead,
-      asset: { sha256: assetSha256 }, release: releaseIdentity,
-      reader: evidence.reader, readers: evidence.readers,
-      applied_rows: evidence.applied.applied, applied: appliedSummary, detail,
-    }, new SchemaBoundaryError(reason, detail, compared.violations,
-      { reader: evidence.reader, readers: evidence.readers, applied_rows: evidence.applied.applied }));
+    throw new SchemaBoundaryError(reason, detail, compared.violations,
+      { reader: evidence.reader, readers: evidence.readers, applied_rows: evidence.applied.applied });
   }
-  record?.events.push({
-    type: SCHEMA_BOUNDARY_EVENT, result: 'compatible', reason: 'compatible', violations: [],
-    version_ahead: compared.versionAhead,
-    asset: { sha256: assetSha256 }, release: releaseIdentity,
-    reader: evidence.reader, readers: evidence.readers,
-    applied_rows: evidence.applied.applied, applied: appliedSummary,
-    boundary: compared.boundary,
-  });
+  // The verdict is a run fact: the step log names the boundary the deployment is
+  // admitted against. No record carries it (#207).
+  process.stdout.write(`${JSON.stringify({ gate: SCHEMA_BOUNDARY_EVENT, result: 'compatible',
+    release: releaseIdentity, asset: { sha256: assetSha256 }, applied: appliedSummary,
+    comparison: compared.boundary.comparison, reader: evidence.reader })}\n`);
   return compared.boundary;
 }

@@ -1,14 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFileSync } from 'node:fs';
-import { readFile, appendFile, writeFile } from 'node:fs/promises';
+import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { parseJson, sha256, canonicalJson, matches, DIGEST, SHA } from './json-contract.mjs';
+import { parseJson, canonicalJson, matches, DIGEST, SHA } from './json-contract.mjs';
 import { workloadRevision } from './workload-revision.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
-import { createOperationRecord, recordRecovery, validateServiceRelease } from './operation-record.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
@@ -172,21 +171,18 @@ export async function deployOperationStack(io, operation) {
 }
 // The stop sequence is Runtime (Infra's `stop-runtime`) then Egress. This
 // operation is the second step only: it refuses while the Runtime stack exists.
-export async function deleteOperationStack(io, operation, record) {
+// The retained EIP is the allocation the next start must reuse, so its output is
+// proven before the destroy removes it and the stack's outputs.
+export async function deleteOperationStack(io, operation) {
   const [stack] = changedStackNames(operation);
   if (operation !== 'delete-egress' || stack !== egressStack) {
     throw new Error(`Operation ${operation} has no stack to delete`);
   }
   assertRuntimeAbsent(await stackRead(io, runtimeStack), operation);
-  if (record) {
-    // The retained EIP is the allocation the next start must reuse. Read it
-    // before the destroy removes the stack and its output.
-    const egress = await stackRead(io, egressStack);
-    const allocationId = outputOf(egress, 'EgressNatEipAllocationId');
-    if (typeof allocationId !== 'string' || !allocationId) {
-      throw new Error('delete-egress requires the EgressNatEipAllocationId output before deleting the stack');
-    }
-    record.events.push({ type: 'egress-nat-eip', action: 'delete', stack_name: egressStack, allocation_id: allocationId });
+  const egress = await stackRead(io, egressStack);
+  const allocationId = outputOf(egress, 'EgressNatEipAllocationId');
+  if (typeof allocationId !== 'string' || !allocationId) {
+    throw new Error('delete-egress requires the EgressNatEipAllocationId output before deleting the stack');
   }
   await io.destroy(stack);
   return stack;
@@ -256,7 +252,7 @@ export async function credentialEnvironment(kind, env = process.env, purpose = '
   return { ...cleanAwsEnvironment(env), AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken,
     AWS_REGION: 'ap-east-1', AWS_DEFAULT_REGION: 'ap-east-1' };
 }
-export async function createRuntimeIo(env = process.env, record, { run = execute, assume = credentialEnvironment, purpose = 'operation', directory = SELECTED_RELEASE_DIRECTORY } = {}) {
+export async function createRuntimeIo(env = process.env, { run = execute, assume = credentialEnvironment, purpose = 'operation', directory = SELECTED_RELEASE_DIRECTORY, changedStacks = [] } = {}) {
   const credentials = new Map();
   const roleEnv = async kind => {
     validateOperationInputs(env);
@@ -271,6 +267,7 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
   };
   const io = {
     region: 'ap-east-1', now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    changedStacks,
     async aws(args, awsRegion) {
       assertAwsAllowed(env, args, purpose);
       if (awsRegion) args = [...args, '--region', awsRegion];
@@ -278,15 +275,7 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       if (explicitRegion >= 0 && !['ap-east-1', 'us-east-1'].includes(args[explicitRegion + 1])) throw new Error('Unexpected operation region');
       const awsEnv = await roleEnv('runtime');
       const result = await run('aws', [...args, ...(explicitRegion < 0 ? ['--region', 'ap-east-1'] : []), '--output', 'json'], { env: awsEnv, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
-      const observed = result.stdout.trim() ? parseJson(result.stdout) : {};
-      if (args[0] === 'ecs' && args[1] === 'register-task-definition') {
-        record?.events.push({ type: 'runtime-task-definition', task_definition_arn: observed.taskDefinition?.taskDefinitionArn ?? 'unavailable' });
-      }
-      if (args[0] === 'ecs' && args[1] === 'run-task') {
-        record?.events.push({ type: 'runtime-task-started', task_arns: (observed.tasks ?? []).map(task => task.taskArn),
-          result: observed.failures?.length ? 'failed' : 'observed' });
-      }
-      return observed;
+      return result.stdout.trim() ? parseJson(result.stdout) : {};
     },
     // Issue #195: the Runtime change-set driver runs under the restricted deploy
     // session, never the read-only runtime session. Every call is checked against
@@ -301,8 +290,8 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       return result.stdout.trim() ? parseJson(result.stdout) : {};
     },
     // The CDK CLI creates this run's change set under the bootstrap deploy role.
-    // `--no-execute` means it records the delta and stops; the operation describes
-    // it, judges it and then executes or deletes it through `awsAs`.
+    // `--no-execute` records the delta and stops; the operation describes it,
+    // judges it and then executes or deletes it through `awsAs`.
     async deployRuntimeChangeSet({ args }) {
       if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
       if (env.INFRA_OPERATION !== 'deploy-runtime') throw new Error('Only deploy-runtime may create a Runtime change set');
@@ -310,7 +299,6 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       const awsEnv = await roleEnv('deploy');
       await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', args, { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
-      record?.events.push({ type: 'runtime-cdk-change-set', stack_name: runtimeStack, result: 'created' });
     },
     // A synchronous runner for the bake's AWS reads. It resolves the runtime
     // session once and checks every call against the same reviewed allow-list;
@@ -336,15 +324,11 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
         { cwd: root, env: { ...awsEnv, BASH_ENV: path.join(root, '.github/scripts/operation-hook.sh'), INFRA_REPOSITORY_DIRECTORY: root }, timeout: 4_200_000, maxBuffer: 10 * 1024 * 1024 });
       } catch (error) {
-        record?.events.push({ type: 'one-shot-failed', role, action: argument,
-          task_arns: [...new Set([...String(error.stdout ?? '').matchAll(/^Task ARN: (arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32})$/gm)].map(match => match[1]))],
-          task_definition_arns: [...new Set([...String(error.stdout ?? '').matchAll(/^Task definition: (arn:aws:ecs:ap-east-1:650880818323:task-definition\/beta-anywear-[a-z0-9-]+:[1-9][0-9]*)$/gm)].map(match => match[1]))], result: 'failed' });
         throw new Error('One-shot execution failed; preserve task resources and inspect redacted run evidence');
       }
       const tasks = [...new Set([...result.stdout.matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       const definitions = [...new Set([...result.stdout.matchAll(/^Task definition: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       if (tasks.length !== 1 || definitions.length !== 1) throw new Error('Unique one-shot identity missing');
-      record?.events.push({ type: 'one-shot-identity', role, action: argument, task_arn: tasks[0], task_definition_arn: definitions[0] });
       const task = (await io.aws(['ecs', 'describe-tasks', '--cluster', 'beta-anywear', '--tasks', tasks[0]])).tasks?.[0];
       const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', definitions[0]])).taskDefinition;
       const actualContainer = task?.containers?.find(item => item.name === 'OneShot');
@@ -353,16 +337,9 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
         || actualContainer.imageDigest !== revision.digest) throw new Error('Actual one-shot image/result differs from the deployed revision');
       if (role === 'lifecycle' && canonicalJson(container.command) !== canonicalJson(['node', 'dist/ops/beta-lifecycle.js', argument,
         ...(payload === undefined ? [] : [payload])])) throw new Error('Actual lifecycle command differs from the requested action');
-      record?.events.push({ type: 'one-shot', role, action: argument, service_sha: revision.commit, image_digest: revision.digest,
-        task_arn: tasks[0], task_definition_arn: definitions[0], command_sha256: sha256(canonicalJson(container.command)),
-        ...(payload === undefined ? {} : { payload_sha256: sha256(payload) }), result: 'stopped-success' });
       process.stdout.write(result.stdout); process.stderr.write(result.stderr);
       if (role === 'lifecycle' && argument === 'status') {
         const status = await readLifecycleStatus(io, task, definition);
-        record?.events.push({ type: 'lifecycle-status', task_arn: tasks[0], task_definition_arn: definitions[0],
-          status_sha256: sha256(canonicalJson(status)), admission_mode: status.admission_mode,
-          admission_record: status.admission_record, tester_count: status.tester_count,
-          database_policy_matches_ssm: status.database_policy_matches_ssm });
         return status;
       }
     },
@@ -391,11 +368,8 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       const tasks = [...new Set([...String(result.stdout ?? '').matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       const definitions = [...new Set([...String(result.stdout ?? '').matchAll(/^Task definition: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       if (tasks.length !== 1 || definitions.length !== 1) {
-        record?.events.push({ type: 'one-shot-probe', role, action: argument, service_sha: revision.commit,
-          image_digest: revision.digest, result: 'launch-failed' });
         throw new Error('One-shot probe identity missing; inspect redacted run evidence');
       }
-      record?.events.push({ type: 'one-shot-identity', role, action: argument, task_arn: tasks[0], task_definition_arn: definitions[0] });
       const task = (await io.aws(['ecs', 'describe-tasks', '--cluster', 'beta-anywear', '--tasks', tasks[0]])).tasks?.[0];
       const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', definitions[0]])).taskDefinition;
       const actualContainer = task?.containers?.find(item => item.name === 'OneShot');
@@ -409,10 +383,6 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
         throw new Error('Actual verify command differs from the requested action');
       }
       const exitCode = Number.isSafeInteger(actualContainer.exitCode) ? actualContainer.exitCode : 'unavailable';
-      record?.events.push({ type: 'one-shot-probe', role, action: argument, service_sha: revision.commit,
-        image_digest: revision.digest, task_arn: tasks[0], task_definition_arn: definitions[0],
-        command_sha256: sha256(canonicalJson(container?.command)), exit_code: exitCode,
-        result: exitCode === 0 ? 'stopped-success' : 'stopped-failure' });
       process.stdout.write(String(result.stdout ?? ''));
       if (result.stderr) process.stderr.write(String(result.stderr));
       return { exitCode, task, definition };
@@ -430,13 +400,11 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
-      // Record the completed mutation immediately: a later retention failure must
-      // still leave `partial`/`requires-explicit-recovery` evidence, not `failed`
-      // as if the deploy had not happened.
-      record?.events.push({ type: 'stack-deploy', stack_name: stack, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
+      // The mutation landed: record it as a changed stack so a later failure still
+      // names what the run already altered in its step summary.
+      changedStacks.push(stack);
       if (stack === baseStack) {
         await enforceBetaPlatformLogRetention(io, { ref: env.GITHUB_REF, enabled: env.ENABLE_BETA_MUTATION });
-        record?.events.push({ type: 'beta-platform-log-retention', stack_name: stack, result: 'complete' });
       }
     },
     // The stop paths. `delete-egress` is the second stop step and destroys only
@@ -455,22 +423,8 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
-      record?.events.push({ type: 'stack-destroy', stack_name: stack, source_repository: env.GITHUB_REPOSITORY, source_sha: env.GITHUB_SHA, result: 'complete' });
+      changedStacks.push(stack);
     },
-    recordRecovery(outcome) { if (record) recordRecovery(record, outcome); },
-    recordLifecycleState(observed) { record?.events.push({ type: 'observed-lifecycle-state', ...observed }); },
-    recordAdmissionState({ state, ...event }) {
-      const { tester_emails, ...values } = state ?? {};
-      record?.events.push({ type: 'admission-state', ...event, state: { ...values,
-        tester_count: Array.isArray(tester_emails) ? tester_emails.length : 'unavailable',
-        tester_emails_sha256: Array.isArray(tester_emails) ? sha256(canonicalJson(tester_emails)) : 'unavailable' } });
-    },
-    recordRestoreStage(event) { record?.events.push({ type: 'restore-stage', ...event }); },
-    // The post-open proof is recorded exactly as the admission driver built and
-    // asserted it: one event that says open, no bound, both surfaces agree.
-    recordAdmissionOpenProof(proof) { record?.events.push(proof); },
-    recordRestoreState(observed) { record?.events.push({ type: 'restore-state', ...observed }); },
-    recordBetaSizingState(observed) { record?.events.push({ type: 'beta-sizing-state', ...observed }); },
     async http(url) {
       const response = await fetch(url, { headers: { 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error('Deployed application identity unavailable');
@@ -489,39 +443,39 @@ export async function createRuntimeIo(env = process.env, record, { run = execute
   };
   return io;
 }
-export async function runOperation(env = process.env) {
+export async function runOperation(env = process.env, { createIo = createRuntimeIo } = {}) {
   const inputs = validateOperationInputs(env);
-  const record = createOperationRecord({ env, release: inputs.service_release });
+  const operation = env.INFRA_OPERATION;
+  // The stacks this run has already mutated. If a later gate refuses, the step
+  // summary names them: a red run that already changed a stack is the platform
+  // fact the operator decides the follow-up from, and it replaces the retired
+  // record's `partial`/`requires-explicit-recovery` verdict.
+  const changedStacks = [];
   try {
-  const io = await createRuntimeIo(env, record);
+  const io = await createIo(env, { changedStacks });
   if ((await io.aws(['sts', 'get-caller-identity'])).Account !== account) throw new Error('Wrong runtime account');
-  for (const row of record.stack_manifest) {
-    const template = (await io.aws(['cloudformation', 'get-template', '--stack-name', row.stack_name, '--template-stage', 'Original', '--region', row.region])).TemplateBody;
-    record.original_stack_templates.push({ stack_name: row.stack_name, region: row.region, template_sha256: sha256(canonicalJson(typeof template === 'string' ? parseJson(template) : template)) });
-  }
-  // A release operation records the image digest its Service commit was
-  // published under. Resolve it from the immutable ECR tag under the operation's
-  // own session before the deploy; a missing or ambiguous tag fails with no
-  // mutation. Every other operation keeps `service_release = null`.
+  // A release operation resolves the image digest its Service commit was published
+  // under from the immutable ECR tag, under the operation's own session and before
+  // the deploy. A missing or ambiguous tag fails with no mutation. Every other
+  // operation takes no release. The service half of the four controls stays: the
+  // deploy still proves the tag→commit binding and the image digest it deploys.
+  let serviceRelease = null;
   if (inputs.service_release) {
-    record.service_release = validateServiceRelease({ ...inputs.service_release,
-      imageDigest: await resolveServiceImageDigest(io, inputs.service_release.serviceCommit) });
+    serviceRelease = { ...inputs.service_release,
+      imageDigest: await resolveServiceImageDigest(io, inputs.service_release.serviceCommit) };
   }
-  if (env.INFRA_OPERATION === 'state') {
-    try { record.state_observation = await observeBetaState(io); }
-    catch (error) { record.state_observation = error.observedState; throw error; }
-    finally {
-      record.events.push({ type: 'final-stack-state', ...Object.fromEntries((record.state_observation?.stacks ?? []).flatMap(stack => {
-        const key = stack.stack_name.includes('Platform') ? 'base' : 'runtime';
-        return [[`${key}_status`, stack.status], [`${key}_exists`, key === 'runtime' ? stack.runtime_exists : true]];
-      })) });
+  if (operation === 'state') {
+    // Read-only state is a run fact: the observed status is printed to the step log
+    // and the summary, never written to a record. A failed read still throws with
+    // the partial state preserved on the error.
+    const state = await observeBetaState(io);
+    process.stdout.write(`${JSON.stringify(state)}\n`);
+    if (env.GITHUB_STEP_SUMMARY) {
+      await appendFile(env.GITHUB_STEP_SUMMARY,
+        `Beta state: ${state.stacks.map(stack => `${stack.stack_name}=${stack.status}`).join('; ')}\n`);
     }
-    record.final_observation = 'not-applicable';
-    record.result = 'succeeded';
-    if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, 'requires_qualification=false\n');
     return;
   }
-  const operation = env.INFRA_OPERATION;
   if (operation === 'close-admission') await runCloseAdmission({ io, infraSha: env.GITHUB_SHA, env });
   else if (operation === 'open-admission') await runOpenAdmission({ io, infraSha: env.GITHUB_SHA, env });
   else if (operation === 'restore-release') await runRestoreRelease({ io, infraSha: env.GITHUB_SHA, env });
@@ -536,21 +490,19 @@ export async function runOperation(env = process.env) {
     await assertMigrationAdmissionClosed(io);
     const runtime = await stackRead(io, runtimeStack);
     assertRuntimeReady(runtime, 'migrate');
-    const revision = workloadRevision(runtime);
-    record.observed_service_revision = { service_sha: revision.commit, image_digest: revision.digest };
-    await io.oneShot('migrate', revision);
+    await io.oneShot('migrate', workloadRevision(runtime));
   } else if (operation === 'deploy-runtime') {
     // Issue #195: one operation deploys a Service release, resolves the image
-    // digest, records the change set, bakes the six signals and writes the v5
-    // record. It produces its own accepted record, so no `observe` job follows.
-    await deployRuntime({ io, env, record, release: record.service_release });
+    // digest, judges the change set and bakes the six signals in this same
+    // mutating job. Its job conclusion is the verdict; nothing follows it.
+    await deployRuntime({ io, env, release: serviceRelease });
   } else if (operation === 'stop-runtime') {
-    await stopRuntime({ io, env, record });
+    await stopRuntime({ io, env });
   } else if (operation === 'delete-egress') {
-    await deleteOperationStack(io, operation, record);
-  } else if (operation !== 'observe') {
+    await deleteOperationStack(io, operation);
+  } else {
     // The Base and account-wide stacks take no release input; only the Base stack
-    // consumes Service-built Lambda assets, and its deploy proves those bytes
+    // consumes Service-built Lambda assets, and its deploy proved those bytes
     // through the reviewed release identity before credentials. A Base deploy
     // additionally reads the Infra-owned Runtime stack terminal first (one
     // writer) and takes its live API origin.
@@ -558,19 +510,25 @@ export async function runOperation(env = process.env) {
   }
   const base = await stackRead(io, baseStack);
   const runtime = await stackRead(io, runtimeStack);
-  record.events.push({ type: 'final-stack-state', base_status: base?.StackStatus ?? 'unavailable',
-    runtime_status: runtime?.StackStatus ?? 'unavailable', runtime_exists: runtimeExists(runtime) });
   if (!terminalStackStatuses.has(base?.StackStatus)) throw new Error(`The Base stack is not terminal after ${operation}`);
-  // `deploy-runtime` writes the accepted v5 record itself; every other mutating
-  // operation still needs the separate read-only observation job.
-  const requiresQualification = operation === 'deploy-runtime' ? 'false' : 'true';
-  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `runtime_exists=${runtimeExists(runtime)}\nrequires_qualification=${requiresQualification}\n`);
+  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `runtime_exists=${runtimeExists(runtime)}\n`);
   if (env.GITHUB_STEP_SUMMARY) {
     const release = inputs.service_release ? ` Service release ${inputs.service_release.releaseTag}@${inputs.service_release.serviceCommit}.` : '';
     await appendFile(env.GITHUB_STEP_SUMMARY, `Infra operation ${operation}; source ${env.GITHUB_SHA}.${release}\n`);
   }
-  record.result = 'succeeded';
-  } catch (error) { record.result = 'failed'; throw error; }
-  finally { await writeFile('deployment-evidence/operation-record.json', canonicalJson(record)); }
+  } catch (error) {
+    // A mutation that landed and then failed a later gate still ends with a
+    // non-success run; this one summary line makes "changed but unqualified"
+    // legible from the run itself. Nothing reports the operation complete.
+    if (changedStacks.length) {
+      const names = [...new Set(changedStacks)].join(', ');
+      process.stderr.write(`Infra operation ${operation} already changed ${names} before failing; the run is failed and the change is unqualified.\n`);
+      if (env.GITHUB_STEP_SUMMARY) {
+        await appendFile(env.GITHUB_STEP_SUMMARY,
+          `Infra operation ${operation} already changed ${names} and did not complete: the run is failed and the change is unqualified. Follow the Beta runbook's decision procedure.\n`);
+      }
+    }
+    throw error;
+  }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await runOperation();

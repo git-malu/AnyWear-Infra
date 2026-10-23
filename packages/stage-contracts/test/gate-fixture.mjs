@@ -1,8 +1,10 @@
-// Shared fixtures for the v4 Service deployment record and its bake gate.
+// Shared shape fixture for one healthy 600-second six-signal bake.
 //
-// These are shape fixtures only: they describe one healthy 600-second bake for
-// `AnyWearRuntimeStack-beta` and are mutated by the negative tests. Nothing here
-// reads AWS, the filesystem or a clock.
+// Issue #207 retired the record gate block this fixture used to feed, so only the
+// bake's own output shape remains: the six signals with their thresholds,
+// comparisons, alarm names and read identities. It is a shape fixture only —
+// nothing here reads AWS, the filesystem or a clock — and the behavioural tests
+// live in AnyWear-Infra's `scripts/bake-gate.test.mjs`.
 import {
   DEPLOYMENT_GATE_COMPARISONS,
   DEPLOYMENT_GATE_THRESHOLDS,
@@ -15,26 +17,6 @@ export const IMAGE_DIGEST = `sha256:${'c'.repeat(64)}`;
 export const STAGE = 'beta';
 export const STARTED_AT = '2026-10-18T00:00:00.000Z';
 export const ENDED_AT = '2026-10-18T00:10:00.000Z';
-export const SCHEMA_ASSET_SHA256 = 'e'.repeat(64);
-export const SCHEMA_PREFIX_SHA256 = 'd'.repeat(64);
-
-/**
- * One admitted v6 `schema_boundary` block for the healthy record fixtures.
- *
- * Shape fixture only: the versions, counts and prefix hash are representative
- * values, not a recomputation of any particular journal. The negative tests clone
- * and mutate it; the gate tests use the fixture files for real hashes.
- */
-export function schemaBoundaryBlock() {
-  return {
-    result: 'compatible',
-    asset: { sha256: SCHEMA_ASSET_SHA256, current_version: 22, minimum_version: 20,
-      minimum_migration_count: 24, journal_length: 26 },
-    applied: { schema_version: 22, journal_length: 26 },
-    comparison: { checked_entries: 26, prefix_sha256: SCHEMA_PREFIX_SHA256, pending_migrations: 0 },
-    reader: { source: 'selected-image', service_sha: SERVICE_SHA, image_digest: IMAGE_DIGEST },
-  };
-}
 
 function signal(name, value, reads, exceptions = []) {
   return {

@@ -86,8 +86,8 @@ removal. The Runtime stack's execution role is the CDK bootstrap role because th
 rebind happened before the removal.
 The Runtime stack's CDK source, baselines and deploy chain now live in this
 repository (`lib/runtime-stack.ts`, `deployScope=runtime`), and `deploy-runtime`
-with the Beta stage contract produces the v6 `anywear_service_deployment`
-record, including the admitted `schema_boundary` comparison.
+with the Beta stage contract deploys it, admits the pre-mutation schema
+comparison and bakes the six signals in the same job.
 
 `beta-infra-runtime-role` (Platform `DedicatedPolicy`) gains two read-only
 statements for the deployment bake (#195): `cloudwatch:DescribeAlarms` on
@@ -100,46 +100,47 @@ operation-scoped; no managed policy or account-wide grant is added.
 
 [`packages/stage-contracts/`](packages/stage-contracts/README.md) is the
 dependency-free, versioned source of the stage-contract names/kinds, the stack
-identities, the v6 `anywear_service_deployment` validators (the v3 core plus the
-required 600-second bake gate and the admitted `schema_boundary` comparison), the
-gate's one stage-free threshold table, the schema-boundary prefix hash, the
-deployed-template normalisation and the two Infra deployment roles' scope. It is
-`@git-malu/stage-contracts` `0.5.0`; the `stage-contracts-v0.5.0` tag is a post-merge publication step created at
-Deployment, not by this change (`0.3.0` is the newest published tag and `0.4.0`
-was never tagged), and the package is packed with `npm pack`. The package is
-consumed in this repository as an in-repo dependency with one consumer
-repository: there is no cross-repository pin, no vendored tarball and no
-Service deploy job. Publishing is the separate tag-triggered
-[publish workflow](.github/workflows/publish-stage-contracts.yml)
-(`packages: write`, `GITHUB_TOKEN`). `lib/stage-contract.ts` and the runtime
-record scripts consume or re-export the package, and `npm run check` runs its
-tests.
+identities, the deployed-template normalisation, the task-definition identity and
+the 600-second bake gate's one stage-free threshold table and name builders. It is
+`@git-malu/stage-contracts` `0.6.0`; the `stage-contracts-v0.6.0` tag is a
+post-merge publication step created at Deployment, not by this change (`0.3.0` is
+the newest published tag and `0.4.0`/`0.5.0` were never tagged), and the package
+is packed with `npm pack`. The package is consumed in this repository as an in-repo
+dependency with no installed second consumer: there is no cross-repository pin, no
+vendored tarball and no Service deploy job. Publishing is the separate
+tag-triggered [publish workflow](.github/workflows/publish-stage-contracts.yml)
+(`packages: write`, `GITHUB_TOKEN`). `lib/stage-contract.ts`, the Runtime deploy
+and the bake consume or re-export the package, and `npm run check` runs its tests.
 
-Infra's own `anywear_infra_deployment` record stays schema v3 and keeps the
-seven-member core (`DEPLOYMENT_RECORD_MEMBERS`); it is never forced to produce a
-`gate` or a `schema_boundary`. The pre-gate v3 Service shape was never produced
-(the Service deployment pin is deferred), and historical v2 records remain
-readable for the audit path only.
+Issue #207 retired the operation/deployment evidence chain: there is no
+`anywear_infra_operation`, `anywear_infra_verified_inputs`,
+`anywear_infra_release_inputs`, `anywear_infra_deployment`,
+`anywear_infra_family_observation` or `anywear_service_deployment` record, no
+`.sha256` companion and no `record` job, and `@git-malu/stage-contracts` no longer
+exports their validators. An operator audits an operation from platform facts: the
+run and its job/step conclusions, the GitHub Environment deployment, CloudFormation
+stack events and stack status, the immutable release tag→commit with per-asset
+digests, the ECR image digest and the live `/health` and `/readyz` endpoints.
 
 ## Operations
 
 Infra exposes **3 entries / 2 manual dispatch surfaces / 1 switch**
-(`ENABLE_BETA_MUTATION`): one automatic source check and one release/observe
+(`ENABLE_BETA_MUTATION`): one automatic source check and one manual operation
 chain per deployable unit. `production.yml` stays in the tree but is
 `workflow_call`-only, so it is not an entry.
 
 | Entry | Trigger | Purpose |
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
-| [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state \| observe` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks or schema qualification. `observe`: the manual accepted `anywear_infra_deployment` v3 producer for the stacks Infra owns |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. A deployment that changes a configured stack also produces the accepted `anywear_infra_deployment` v3 record in the same run: `preflight` → `verify` → `deploy` → `observe` → `record`. `deploy-runtime` produces its own v6 `anywear_service_deployment` record from the `deploy` job and is outside that v3 trigger set |
+| [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks, no mutation and no artifact |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. Every run is one `preflight` → `verify` → `deploy` chain; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. The run's job and step conclusions are the verdict |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
 | [bin/infra.ts](bin/infra.ts), `deployScope=egress` | CLI | Separate disposable `AnyWearEgressStack-beta` scope; no Service artifact input |
 | [migrate-beta-split.mjs](scripts/migrate-beta-split.mjs) | CLI (Deployment-gated) | One-time Base/Runtime split: three separately authorized stages, validation-only by default; see its runbook |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | CLI | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
-| [observe-deployment.mjs](scripts/observe-deployment.mjs) | CLI | Authenticate the deployed stage-base templates, Lambdas, queues, Client and stage-contract parameters |
+| [prove-release-bytes.mjs](scripts/prove-release-bytes.mjs) | CLI (deploy step) | Prove the travelled release bytes against the published digests and load the schema asset before any credential |
 
 The `mutate.yml` menu is a superset of the retired per-family files. A dispatch
 surface is per workflow, so `identity_phase`, `retention_protection`,
@@ -156,41 +157,29 @@ standalone `verify` operation is retired, and the
 longer runs a release-verification task.
 
 `mutate.yml` is one credential-timing chain: `preflight` (no environment, no
-`id-token`, no App token; publishes `requires_accepted_observation` from the
-shared trigger set before any credential) → `verify` (read-only release token only
-when the operation takes a Service release; reads the release and downloads the
-operation's consumed set — three stage-base files, or only `service-schema.json`
-for `deploy-runtime`) → `deploy` (**the only job** that holds the mutation role:
-`environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN`, scheduled after
-`verify`) → `observe` (only when the operation changes a configured stack and the
-mutation succeeded: the second credential job, with the read-only
-`INFRA_RUNTIME_ROLE_ARN` only and no mutation role) → `record` (no environment, no
-`id-token`, no `environment:`). `runtime.yml` keeps the same invariant:
-`preflight` holds no credentials, `state` and `observe` are the two credential
-jobs, and `record` holds none. `state` runs with the stage switch closed;
-`observe` stays behind it because it produces the accepted deployment record.
+`id-token`, no App token; rejects a forbidden operation and an unexpected release
+identity before any credential) → `verify` (**the only job that reads the Service
+release**: read-only App token only when the operation takes a Service release,
+`contents: read`, no environment and no OIDC; it reads the release and tag ref
+over the REST API, downloads the operation's consumed set — three stage-base
+files, or only `service-schema.json` for `deploy-runtime` — publishes those bytes
+as `service-release-bytes-<run_id>-<run_attempt>` and publishes the digests as its
+`release_assets` output) → `deploy` (**the only job** that holds an AWS
+credential: `environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN` and
+`INFRA_RUNTIME_ROLE_ARN`, scheduled after `verify`; its first step is
+`prove-release-bytes.mjs`, which re-derives the dispatch, requires the digest
+output to be exactly the operation's asset set, hashes each travelled file and
+strictly loads the schema asset or runtime policy **before** the step that
+requests the OIDC token). `runtime.yml` is `preflight` → `state`, where `state` is
+the one credential job and runs with the stage switch closed.
 
-`state` and `observe` share `runtime.yml`, so the record family is derived from
-the **operation**, not the file: `observe` keeps family `runtime` (the manual
-accepted deployment-record producer), while `state` keeps family `beta-observe`
-and can never be stamped `anywear_infra_deployment`. `deploy-*`/`restore-release`
-keep `beta-deploy`, `migrate` keeps `beta-schema`, and the admission operations
-keep `beta-admission`, so cross-repository record families stay stable. A
-deployment chain that changes a configured stack (`deploy-foundation`,
-`deploy-billing`, `deploy-platform`, `restore-release`) produces the accepted
-record inside the same run: its `observe` job writes the v3 record with producer
-`.github/workflows/mutate.yml` and that run's id/attempt/source SHA, and the
-mutation job's own evidence is uploaded as
-`infra-family-observation-<run-id>-<attempt>`. `deploy-egress`/`delete-egress`,
-`deploy-runtime`, `migrate`, the admission operations and read-only `state` are
-outside that trigger set: the Egress stop/start drill reports its family
-observation and is never marked incomplete for lacking an accepted record,
-`deploy-runtime` writes the v6 `anywear_service_deployment` record itself (the
-passed bake plus the admitted `schema_boundary` comparison) and runs
-no separate `observe` job, a migration or admission write changes no recorded
-stack, and `state` makes no record claim. The trigger set is
-derived from the frozen stack tables in [operation-stacks.mjs](scripts/operation-stacks.mjs)
-by [observation-record.mjs](scripts/observation-record.mjs), not restated in YAML.
+Neither entry has an observation or record job. A mutation that landed and then
+failed a later gate leaves a red run, and the failing step appends one
+`$GITHUB_STEP_SUMMARY` line naming the stack it already changed, so "changed but
+unqualified" is readable from the run itself; the [Beta
+runbook](docs/runbooks/beta-infrastructure.md#evidence-and-operation-recovery)
+carries the follow-up decision procedure. No step uses `continue-on-error`, so a
+failed or partial operation can never read as complete.
 
 Every Beta entry requires exact reviewed main and protected `beta`; the three
 operations that take a Service release identity also require the reviewed
@@ -234,19 +223,19 @@ agrees with SSM and the mirror holds a `closed` record, and then proves the open
 through the lifecycle status read-back. That read-back requires the running Service
 to stop reporting the removed `admission_window_expires_at` field, so the absence
 is the executable proof that the deployed revision has no window semantics; a
-Service image from before this batch is refused. The operation record carries one
-`admission-open-proof` event: the mode, its source, the tester count and hash, the
+Service image from before this batch is refused. The step log then prints the
+`admission-open-proof` line: the mode, its source, the tester count and hash, the
 SSM record key set (`["mode"]`), the database status field absence and SSM/DB
-agreement, so the record itself says "open, no bound, both surfaces agree".
+agreement, so the run itself says "open, no bound, both surfaces agree".
 Opening is the tester lane: the list is unchanged and no non-tester is admitted.
 
 **Close is the only thing that closes.** `close-admission` restores the recorded
-`closed` decision through the pinned lifecycle `suspend` and records whether it
+`closed` decision through the pinned lifecycle `suspend` and reports whether it
 ended an open admission (`ordinary`) or one already closed. There is no automatic
 closure and no time-based backstop: if `open-admission` is interrupted after its
 resume attempt, admission stays open until an explicit `close-admission` and an
 `admission-status` read-back. The failed-open path issues one recovery-only
-`suspend`, re-asserts the recorded decision and records `close_kind=failed-open`;
+`suspend`, re-asserts the recorded decision and reports `close_kind=failed-open`;
 no operator input can request that action, and it does not make an interrupted open
 self-healing.
 
@@ -262,34 +251,19 @@ runbook](docs/runbooks/beta-infrastructure.md#admission-open-and-close)
 carries the mode-only contract, the post-open proof and the resident environment
 repair.
 
-Both manual entries share `anywear-infra-runtime` without cancellation. A run of
-either entry can produce the accepted `anywear_infra_deployment` v3 record, and
-record type and family are derived from the dispatched operation: `runtime.yml`
-`observe` and the deployment chain's `observe` job both write it, each bound to its
-own run, attempt, source SHA and workflow path. The record covers the stacks Infra
-still produces (Foundation, the Beta stage base, Billing), the stage-contract
-parameters the run read and a derived schema content hash; it contains no
-`selection`. The Infra `deploy-runtime` operation produces the v6
-`anywear_service_deployment` for `AnyWearRuntimeStack-beta` from the same generic
-contract; the record types and families stay distinct, so neither record type can
-claim the other's stacks. Other operations emit `anywear_infra_family_observation`
-with their actual workflow path (`mutate.yml` for the absorbed families); this is
-not an accepted E2E deployment input. For an operation outside the accepted-record
-trigger set, that family observation is required exactly when the operation
-record's `result` is `succeeded`. Such an operation publishes its operation record
-alone when the result is `failed` or `partial` — the record's `result`,
-`final_observation` and `recovery` state what happened and what recovery the
-operator owes — while a succeeded one whose observation never arrived still fails
-the `record` job. A deployment chain uploads the accepted
-record as `infra-deployment-<run-id>-<attempt>` containing
-`deployment-record.json`, and a succeeded mutation job's family observation as
-`infra-family-observation-<run-id>-<attempt>`, so the accepted contract and the
-chain's own evidence never share an artifact name. When the accepted record is
-missing after a completed mutation, the credential-free `record` job marks the
-operation record `partial` with `requires-explicit-recovery` and an
-`accepted-deployment-record` event, preserves it through its `if: always()` upload
-and fails the run. Read-only `state` emits sanitized `anywear_infra_state` inside
-its operation record and makes no DB/policy/schema claim. See the [Beta
+Both manual entries share `anywear-infra-runtime` without cancellation. Each run
+leaves no artifact beyond the transport one: `service-release-bytes-<run_id>-
+<run_attempt>`, whose only content is `.service-artifacts/selected/`, retained one
+day, read by the deploy job's byte proof. It is a deploy input, not evidence: it
+carries the Service release's own bytes, no AnyWear-authored JSON, no schema, no
+producer identity, no verdict and no `.sha256` companion. The published digest set
+is the `verify` job's `release_assets` output and is never written to a file or
+uploaded. Everything else an operator needs is a platform fact: the run and step
+conclusions, the Environment deployment, CloudFormation's own stack events, the
+release's tag→commit and per-asset digests, the ECR image digest and the live
+endpoints. The infrequent exceptions are documented and labelled: the frozen
+account-recovery diagnostic in `AnyWear-E2E` replays one pinned historical run's
+artifacts and reads no new run. See the [Beta
 runbook](docs/runbooks/beta-infrastructure.md) for dispatch schemas, permissions,
 lifecycle authority and recovery.
 
@@ -327,9 +301,9 @@ only those three, and re-hash each travelled byte once in the deploy job before
 any credential. `deploy-runtime` takes the same identity but downloads only the
 release's `service-schema.json`, re-hashes it once and strictly validates it
 before credentials, then compares it with the live applied journal before any
-stack mutation (the `schema_boundary` member of the v6 record). The deploy
-records the release tag, Service commit and the ECR
-digest of the immutable `service-artifacts-<service_commit>` tag. There is no
+stack mutation. The deploy resolves the release tag, Service commit and the ECR
+digest of the immutable `service-artifacts-<service_commit>` tag, and they are
+readable from the run log and the stack's own parameters. There is no
 committed selection, no release manifest, no vendored Service parser
 and no cross-repository native-attestation path; publication ZIP/receipt/handshake
 ceremony stays retired. See the

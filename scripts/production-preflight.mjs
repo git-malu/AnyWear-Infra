@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { parseJson, sha256, HASH, SHA, DIGEST, canonicalJson, exact, matches, integer } from './json-contract.mjs';
-import { stageContractSchemaHash, validateStageInputs } from './deployment-contract.mjs';
+import { stageContractSchemaHash, validateStageInputs } from '@git-malu/stage-contracts';
 import { configuredStacks } from './operation-stacks.mjs';
 
 const execute = promisify(execFile);

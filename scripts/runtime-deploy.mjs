@@ -1,14 +1,12 @@
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   canonicalDeployedTemplateHash,
-  stageContractSchemaHash,
   stableTaskDefinition,
   taskDefinitionContentHash,
-  validateServiceDeploymentRecord,
   normaliseDeployedTemplate,
 } from '@git-malu/stage-contracts';
 import { canonicalJson, parseJson, sha256, DIGEST, SHA } from './json-contract.mjs';
@@ -23,7 +21,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const RUNTIME_STACK = runtimeStack;
 export const BASE_STACK = 'AnyWearPlatformStack-beta';
 export const RUNTIME_REGION = 'ap-east-1';
-export const SERVICE_DEPLOYMENT_PATH = 'deployment-evidence/service-deployment.json';
 export const PHASE = 'roles-added';
 // The six template parameters a `deploy-runtime` passes. The first two identify
 // the release, the sizing pair is retained from the live stack (the reviewed
@@ -174,8 +171,9 @@ export function classifyChangeSet(changeSet) {
   const noChanges = /didn'?t contain changes|did not contain changes/i.test(reason);
   const failed = status === 'FAILED' && !noChanges;
   // A set whose only changes are declared diagnostics is converged: the
-  // normalised templates are equal, and the deployment record hashes the same
-  // normalised identity. The diagnostic rows stay visible for the record.
+  // normalised templates are equal, so the CDKMetadata payload is not a stack
+  // change and never a reason to refuse. The diagnostic rows stay visible in the
+  // returned classification for the run log.
   const converged = !failed && (noChanges || resourceChanges.length === 0);
   return Object.freeze({
     converged, failed, status, execution_status: executionStatus, reason, changes,
@@ -219,7 +217,7 @@ async function describeChangeSet(io, stack, changeSetName) {
 
 // The deploy session describes, executes or deletes this run's change set and
 // nothing else (#195). Both the converged no-op and the fail-closed delta leave no
-// AVAILABLE change set behind; the record keeps the classification instead, so no
+// AVAILABLE change set behind; the thrown classification names the delta, so no
 // later describe of a deleted set is required.
 async function deleteChangeSet(io, stack, changeSetName) {
   await io.awsAs('deploy', ['cloudformation', 'delete-change-set', '--stack-name', stack,
@@ -337,43 +335,17 @@ export async function readRuntimeHealth(apiBaseUrl, release, { fetchImpl = fetch
 }
 
 /**
- * Build and validate the v6 record. The template hash is the canonical deployed
- * hash after the declared normalisation, so it is directly comparable with the
- * recorded baseline; `schemaBoundary` is the comparison the gate admitted before
- * any mutation.
+ * The deployed identity a `deploy-runtime` proved: the read-back parameter pair,
+ * the normalised template hash and the `/health` floor. It is a return value for
+ * the caller and the run log, never a record (#207).
  */
-export function buildRuntimeDeploymentRecord({ env, inputs, templateSha256, observed, gate, schemaBoundary }) {
-  const record = {
-    schema_version: 6,
-    record_type: 'anywear_service_deployment',
-    producer: {
-      repository: env.GITHUB_REPOSITORY,
-      sha: env.GITHUB_SHA,
-      workflow_path: '.github/workflows/mutate.yml',
-      workflow_ref: env.GITHUB_WORKFLOW_REF,
-      run_id: Number(env.GITHUB_RUN_ID),
-      run_attempt: Number(env.GITHUB_RUN_ATTEMPT),
-    },
-    stacks: [{
-      name: RUNTIME_STACK,
-      region: RUNTIME_REGION,
-      producer_repository: env.GITHUB_REPOSITORY,
-      producer_sha: env.GITHUB_SHA,
-      template_sha256: templateSha256,
-    }],
-    inputs,
-    observed,
-    schema: { content_sha256: stageContractSchemaHash(inputs) },
-    gate,
-    schema_boundary: schemaBoundary,
-  };
-  return validateServiceDeploymentRecord(record);
-}
-
-export async function writeServiceDeployment(record, file = SERVICE_DEPLOYMENT_PATH) {
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${canonicalJson(record)}`);
-  return file;
+export function deployedIdentity({ release, minimumClientVersion, templateSha256 }) {
+  return Object.freeze({
+    service_sha: release.serviceCommit,
+    image_digest: release.imageDigest,
+    minimum_client_version: minimumClientVersion,
+    template_sha256: templateSha256,
+  });
 }
 
 /** Resolve the deployed parameters as a plain map for the retain/compare checks. */
@@ -395,10 +367,10 @@ export function runtimePinnedRevision(stack) {
   return { serviceCommit, imageDigest };
 }
 
-/** `deploy-runtime`: one converged-or-additive mutation that produces the v6 record. */
-export async function deployRuntime({ io, env, record, release,
+/** `deploy-runtime`: one converged-or-additive mutation, judged and baked in place. */
+export async function deployRuntime({ io, env, release,
   synthesize = synthesizeRuntimeTemplate, health = readRuntimeHealth, bake = runBakeGate,
-  schemaGate = runSchemaBoundaryGate, outputPath = SERVICE_DEPLOYMENT_PATH }) {
+  schemaGate = runSchemaBoundaryGate }) {
   assertRuntimePhase('deploy-runtime', env);
   const base = await describeStack(io, BASE_STACK);
   if (!terminalStackStatuses.has(base?.StackStatus)) {
@@ -413,18 +385,12 @@ export async function deployRuntime({ io, env, record, release,
   const identityUnchanged = stackExists && deployed.get('ServiceCommitSha') === release.serviceCommit
     && deployed.get('ServiceImageDigest') === release.imageDigest;
   const deployedRevision = runtimePinnedRevision(runtime);
-  const roleArnBefore = runtime?.RoleARN ?? 'absent';
-  // The pre-state event states the stack's last-update time so a refusal in this
-  // same record proves the stack was not touched.
-  record?.events.push({ type: 'runtime-pre-state', base_status: base?.StackStatus, runtime_status: runtime?.StackStatus ?? 'absent',
-    runtime_exists: stackExists, runtime_last_updated_time: runtime?.LastUpdatedTime ?? 'absent',
-    stack_role_arn: roleArnBefore, release_identity_unchanged: identityUnchanged });
 
   const deployValues = await readRuntimeDeployValues(io);
   // The bake's queue URLs and ECS cluster are contract values from the same
-  // reviewed 39-name read whose bytes the record hashes; they are never
-  // account/region literals or guessed queue names. Both fail closed here, before
-  // the change set exists, if the contract value is missing or malformed.
+  // reviewed 39-name read; they are never account/region literals or guessed queue
+  // names. Both fail closed here, before the change set exists, if the contract
+  // value is missing or malformed.
   const contract = await readRuntimeStageContract(io);
   const inputs = contract.inputs;
   const cluster = runtimeEcsClusterName(contract.values);
@@ -433,13 +399,11 @@ export async function deployRuntime({ io, env, record, release,
   // Issue #194: the schema-boundary gate runs after the stage-contract read and
   // parameter resolution and before synthesis, the change set or any other
   // mutation. A SchemaBoundaryError propagates: nothing after this line runs.
-  const schemaBoundary = await schemaGate({ io, env, record, deployedRevision,
+  await schemaGate({ io, env, deployedRevision,
     release: { releaseTag: release.releaseTag, serviceCommit: release.serviceCommit,
       imageDigest: release.imageDigest },
     directory: SELECTED_RELEASE_DIRECTORY });
   const synthesized = await synthesize(env);
-  record?.events.push({ type: 'runtime-synthesized-template', raw_sha256: synthesized.raw_sha256,
-    normalised_sha256: synthesized.normalised_sha256, recorded_phase_sha256: synthesized.expected, identity_phase: PHASE });
 
   // A running stack's deployed template must already be the recorded identity;
   // otherwise the change set is drift, not this release, and must fail closed.
@@ -461,32 +425,20 @@ export async function deployRuntime({ io, env, record, release,
   });
   const changeSet = await describeChangeSet(io, RUNTIME_STACK, changeSetName);
   const classification = classifyChangeSet(changeSet);
-  record?.events.push({ type: 'runtime-change-set', name: changeSetName, ...classification });
 
   if (classification.converged) {
+    // The reviewed converged no-op: nothing executes, and the read-back below
+    // still proves the deployed identity. A declared diagnostic delta (the
+    // CDKMetadata Analytics payload) is not a stack change.
     if (changeSet !== undefined) {
       await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
-    }
-    if (identityUnchanged) {
-      // The reviewed converged no-op: nothing executes, and the read-back below
-      // still proves the deployed identity. A declared diagnostic delta (the
-      // CDKMetadata Analytics payload) is recorded here as well as in the
-      // change-set event so the no-op's evidence names what it excluded.
-      record?.events.push({ type: 'runtime-change-set-converged', executed: false,
-        diagnostic_changes: classification.diagnostic_changes });
     }
   } else if (identityUnchanged) {
-    // The design's fail-closed path: preserve the reviewed delta as evidence and
-    // delete the change set rather than leave it AVAILABLE for a later
-    // `describe-change-set`. The `runtime-change-set` event above already holds
-    // the classification and the full changes list, so the record does not depend
-    // on the deleted set.
-    record?.events.push({ type: 'runtime-change-set-rejected', name: changeSetName, result: 'failed-closed',
-      reason: classification.failed ? 'change set failed' : 'a converged Runtime release must not change the stack',
-      changes: classification.resource_changes, diagnostic_changes: classification.diagnostic_changes });
+    // The design's fail-closed path: delete the change set rather than leave it
+    // AVAILABLE for a later `describe-change-set`, then throw with the delta the
+    // classification already names.
     if (changeSet !== undefined) {
       await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
-      record?.events.push({ type: 'runtime-change-set-deleted', name: changeSetName, reason: 'fail-closed' });
     }
     assertConvergedChangeSet(classification);
   } else if (!stackExists) {
@@ -494,13 +446,10 @@ export async function deployRuntime({ io, env, record, release,
     await io.awsAs('deploy', ['cloudformation', 'execute-change-set', '--stack-name', RUNTIME_STACK,
       '--change-set-name', changeSetName]);
     await waitForTerminalStack(io, RUNTIME_STACK);
-    record?.events.push({ type: 'runtime-change-set-executed', executed: true, mode: 'create' });
   } else {
     await io.awsAs('deploy', ['cloudformation', 'execute-change-set', '--stack-name', RUNTIME_STACK,
       '--change-set-name', changeSetName]);
     await waitForTerminalStack(io, RUNTIME_STACK);
-    record?.events.push({ type: 'runtime-change-set-executed', executed: true, mode: 'update',
-      replacement: classification.replacement, changes: classification.changes });
   }
 
   // Read back the deployed template and parameters, then prove the identity.
@@ -511,7 +460,6 @@ export async function deployRuntime({ io, env, record, release,
   const body = (await io.aws(['cloudformation', 'get-template', '--stack-name', RUNTIME_STACK,
     '--template-stage', 'Original'])).TemplateBody;
   const template = typeof body === 'string' ? parseJson(body) : body;
-  const rawTemplateSha256 = sha256(canonicalJson(template));
   const templateSha256 = canonicalDeployedTemplateHash(template);
   if (templateSha256 !== synthesized.expected) {
     throw new Error(`The deployed Runtime template normalises to ${templateSha256}, not the recorded ${PHASE} identity ${synthesized.expected}`);
@@ -523,13 +471,12 @@ export async function deployRuntime({ io, env, record, release,
       throw new Error(`The deployed Runtime parameter ${key} does not match the requested deployment`);
     }
   }
-  const roleArnAfter = stack.RoleARN ?? 'absent';
-  record?.events.push({ type: 'runtime-deployed-template', raw_sha256: rawTemplateSha256,
-    normalised_sha256: templateSha256, identity_phase: PHASE });
-  record?.events.push({ type: 'runtime-stack-role', before: roleArnBefore, after: roleArnAfter,
-    execution_role_source: 'standard CDK bootstrap synthesizer (cdk-hnb659fds-cfn-exec-role)' });
 
-  const ecs = await observeEcsIdentities(io, release, cluster);
+  // The two ECS service identities stay a fail-closed proof of the deployed
+  // release: an ACTIVE service at its desired count, one COMPLETED rollout, and a
+  // task definition carrying the deployed image digest. The result is logged, not
+  // recorded (#207).
+  await observeEcsIdentities(io, release, cluster);
   const apiBaseUrl = new Map(inputs.map((row) => [row.parameter, row])).has('/anywear/beta/api_base_url')
     ? (await io.aws(['ssm', 'get-parameter', '--name', '/anywear/beta/api_base_url'])).Parameter?.Value : undefined;
   if (typeof apiBaseUrl !== 'string' || !/^https:\/\//.test(apiBaseUrl)) throw new Error('The stage contract api_base_url is unavailable');
@@ -539,53 +486,31 @@ export async function deployRuntime({ io, env, record, release,
     serviceSha: release.serviceCommit, imageDigest: release.imageDigest,
     now: io.now, sleep: io.sleep, fetchImpl: fetch, runAws: await io.runtimeAwsRunner() });
   if (gate.result !== 'passed') {
-    record?.events.push({ type: 'release-bake', result: 'failed', gate });
     const failures = gate.signals.filter((signal) => signal.state !== 'not-breaching')
       .map((signal) => ({ signal: signal.name, state: signal.state, exceptions: signal.exceptions }));
     throw new Error(`The 600-second bake failed: ${JSON.stringify(failures)}`);
   }
-  record?.events.push({ type: 'release-bake', result: 'passed', name: gate.name,
-    duration_seconds: gate.duration_seconds, probes_sent: gate.probe.probes_sent });
-
-  const deployment = buildRuntimeDeploymentRecord({ env, inputs, templateSha256,
-    observed: {
-      service_sha: release.serviceCommit,
-      image_digest: release.imageDigest,
-      minimum_client_version: minimumClientVersion,
-      ecs,
-      endpoints: { api: apiBaseUrl },
-    }, gate, schemaBoundary });
-  const file = await writeServiceDeployment(deployment, outputPath);
-  if (record) {
-    record.service_deployment = { path: file, template_sha256: templateSha256,
-      service_sha: release.serviceCommit, image_digest: release.imageDigest, minimum_client_version: minimumClientVersion };
-  }
-  record?.events.push({ type: 'service-deployment-record', path: file, template_sha256: templateSha256,
-    service_sha: release.serviceCommit, image_digest: release.imageDigest });
-  return deployment;
+  // The bake's verdict is a run fact: the deploy step log carries it, and no
+  // record member does.
+  process.stdout.write(`${JSON.stringify({ gate: gate.name, result: gate.result,
+    duration_seconds: gate.duration_seconds, probes_sent: gate.probe.probes_sent,
+    service_sha: release.serviceCommit, image_digest: release.imageDigest,
+    minimum_client_version: minimumClientVersion, template_sha256: templateSha256 })}\n`);
+  return deployedIdentity({ release, minimumClientVersion, templateSha256 });
 }
 
 /** `stop-runtime`: delete only the release slice; absent is the accepted no-op. */
-export async function stopRuntime({ io, env, record }) {
+export async function stopRuntime({ io, env }) {
   assertRuntimePhase('stop-runtime', env);
   const base = await describeStack(io, BASE_STACK);
   if (!terminalStackStatuses.has(base?.StackStatus)) {
     throw new Error(`stop-runtime requires a terminal Base stack; observed ${base?.StackStatus ?? 'unavailable'}`);
   }
   const runtime = await describeStack(io, RUNTIME_STACK);
-  if (!runtimeExists(runtime)) {
-    record?.events.push({ type: 'runtime-stop-extent', extent: 'absent', executed: false });
-    return 'absent';
-  }
+  if (!runtimeExists(runtime)) return 'absent';
   if (!terminalStackStatuses.has(runtime.StackStatus)) {
     throw new Error(`stop-runtime requires a terminal Runtime stack; observed ${runtime.StackStatus}`);
   }
-  record?.events.push({ type: 'runtime-pre-state', base_status: base?.StackStatus, runtime_status: runtime.StackStatus,
-    runtime_exists: true, runtime_last_updated_time: runtime.LastUpdatedTime ?? 'absent',
-    stack_role_arn: runtime.RoleARN ?? 'absent' });
   await io.destroy(RUNTIME_STACK);
-  record?.events.push({ type: 'runtime-stack-role', before: runtime.RoleARN ?? 'absent', after: 'absent',
-    execution_role_source: 'stack deleted' });
-  record?.events.push({ type: 'runtime-stop', stack_name: RUNTIME_STACK, result: 'complete' });
   return 'destroyed';
 }

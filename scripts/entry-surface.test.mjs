@@ -63,55 +63,44 @@ test('the workflow directory is exactly the three Beta entries plus the callable
   assert.equal(credentialJobs(workflows['publish-stage-contracts.yml']).length, 0);
 });
 
-test('mutate.yml keeps one preflight → verify → deploy → observe → record chain and no workload deploy', async () => {
+test('mutate.yml keeps one preflight → verify → deploy chain and no workload deploy', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'observe', 'record']);
-  const { preflight, verify, deploy, observe, record } = mutate.jobs;
+  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy']);
+  const { preflight, verify, deploy } = mutate.jobs;
 
   assert.equal(preflight.needs, undefined);
   assert.equal(verify.needs, 'preflight');
   assert.equal(deploy.needs, 'verify', 'credentials are acquired only after verification');
-  assert.deepEqual(observe.needs, ['preflight', 'deploy'], 'the accepted observation waits for the mutation');
-  assert.deepEqual(record.needs, ['deploy', 'observe'], 'the record gate sees both credential jobs');
 
-  // Two credential jobs, and they never share a role: only `deploy` holds the
-  // mutation role, the accepted producer `observe` holds only the read-only
-  // runtime role and cannot mutate. `record` holds neither environment nor OIDC.
+  // One credential job, and it is the only one: `preflight` and `verify` have no
+  // environment and no OIDC identity.
+  assert.deepEqual(credentialJobs(mutate), ['deploy']);
   const roleHolders = name => Object.entries(mutate.jobs)
     .filter(([, job]) => JSON.stringify(job).includes(name)).map(([jobName]) => jobName);
-  assert.deepEqual(credentialJobs(mutate), ['deploy', 'observe']);
   assert.deepEqual(roleHolders('INFRA_DEPLOY_ROLE_ARN'), ['deploy'], 'exactly one job can mutate');
-  assert.deepEqual(roleHolders('INFRA_RUNTIME_ROLE_ARN'), ['deploy', 'observe']);
-  assert.equal(observe.env.INFRA_DEPLOY_ROLE_ARN, undefined, 'the accepted producer must not hold the mutation role');
-  for (const job of [deploy, observe]) {
-    assert.equal(job.environment, 'beta');
-    assert.equal(holdsIdToken(job), true);
+  assert.deepEqual(roleHolders('INFRA_RUNTIME_ROLE_ARN'), ['deploy']);
+  assert.equal(deploy.environment, 'beta');
+  assert.equal(holdsIdToken(deploy), true);
+  for (const job of [preflight, verify]) {
+    assert.equal(declaresEnvironment(job), false);
+    assert.equal(holdsIdToken(job), false);
   }
-  assert.equal(declaresEnvironment(preflight), false);
-  assert.equal(holdsIdToken(preflight), false);
-  assert.equal(declaresEnvironment(record), false);
-  assert.equal(holdsIdToken(record), false);
-  assert.equal(record.environment, undefined);
-
-  // The accepted record can only be written by the job that does not hold the
-  // mutation role, and only when the credential-free preflight published the
-  // trigger-set decision and the mutation succeeded.
-  assert.match(JSON.stringify(observe.steps), /scripts\/observe-accepted-record\.mjs/);
-  assert.equal(/observe-accepted-record|accepted\/deployment-record/.test(JSON.stringify(deploy.steps)), false,
-    'the mutation job must not write the accepted record');
-  assert.match(observe.if, /needs\.deploy\.result == 'success'/);
-  assert.match(observe.if, /needs\.preflight\.outputs\.requires_accepted_observation == 'true'/);
-  assert.equal(preflight.outputs.requires_accepted_observation,
-    '${{ steps.observation-requirement.outputs.requires_accepted_observation }}');
-  const requirement = preflight.steps.find(step => step.id === 'observation-requirement');
-  assert.ok(requirement, 'preflight publishes the trigger-set decision');
-  assert.equal(requirement.run, 'node scripts/observation-requirement.mjs');
-  // The observe job downloads no verify artifact and has no release token.
-  assert.equal(/APP_PRIVATE_KEY|verify-operation/.test(JSON.stringify(observe)), false);
+  // `verify` holds the read-only App token and nothing else.
+  assert.deepEqual(verify.permissions, { contents: 'read' });
 
   // The credential-free preflight is the stage-switch gate.
   assert.match(preflight.if, /github\.ref == 'refs\/heads\/main'/);
   assert.match(preflight.if, /vars\.ENABLE_BETA_MUTATION == 'true'/);
+  // #207 retired the trigger-set output and the observation/record jobs with the
+  // record they produced.
+  assert.equal(preflight.outputs, undefined, 'the retired trigger-set output is gone');
+  assert.equal(Object.hasOwn(mutate.jobs, 'observe'), false);
+  assert.equal(Object.hasOwn(mutate.jobs, 'record'), false);
+
+  // Exactly two things cross from `verify` to `deploy`: the release bytes as the
+  // transport artifact, and the published digest set as this job output.
+  assert.deepEqual(verify.outputs, { release_assets: '${{ steps.verify.outputs.release_assets }}' });
+  assert.equal(deploy.env.VERIFIED_RELEASE_ASSETS, '${{ needs.verify.outputs.release_assets }}');
 
   assert.deepEqual(mutate.on.workflow_dispatch.inputs.operation.options, mutateOperations);
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.required, true);
@@ -146,71 +135,107 @@ test('mutate.yml keeps one preflight → verify → deploy → observe → recor
 
 test('no AWS credential precedes the release identity and travelled-byte checks', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  // `verify` is the only pre-deploy job that reads the Service release, and it
-  // has no AWS credential surface at all: the release identity read and the three
-  // downloads happen before any environment or OIDC identity exists.
+  // `verify` is the only pre-deploy job that reads the Service release, and it has
+  // no AWS credential surface at all: the release identity read, the three
+  // downloads and the byte upload happen before any environment or OIDC identity.
   assert.equal(mutate.jobs.verify.environment, undefined);
   assert.equal(mutate.jobs.verify.permissions?.['id-token'], undefined);
-  assert.deepEqual(credentialJobs(mutate), ['deploy', 'observe']);
+  assert.deepEqual(credentialJobs(mutate), ['deploy']);
   assert.equal(mutate.jobs.deploy.needs, 'verify');
   const verifyStep = mutate.jobs.verify.steps.find(step => step.uses === './.github/actions/verify-operation');
   assert.ok(verifyStep, 'the verify job runs the release-identity composite');
   assert.equal(mutate.jobs.deploy.steps.some(step => step.uses === './.github/actions/deploy-operation'), true);
 
   // The verify composite validates the operation/identity shape, mints the
-  // read-only Service token and then reads the release identity and downloads
-  // exactly the three consumed names.
+  // read-only Service token, reads the release identity, downloads exactly the
+  // consumed names and publishes the bytes and the digest output.
   const verify = await loadAction('verify-operation');
   const verifyRun = verify.runs.steps.map(step => step.run ?? '').join('\n');
   assert.match(verifyRun, /node scripts\/check-operation\.mjs/);
   assert.match(verifyRun, /node scripts\/verify-operation-inputs\.mjs/);
   assert.equal(verify.runs.steps.some(step => /download-artifact|assume-role|configure-aws-credentials/.test(
     `${step.uses ?? ''} ${step.run ?? ''}`)), false, 'the verify job downloads no credential surface');
+  assert.deepEqual(Object.keys(verify.outputs), ['release_assets']);
 
-  // The deploy composite re-hashes the three travelled files (one hash per file)
-  // before the operation step that requests the restricted STS session.
+  // The deploy composite proves the travelled bytes against the published digests
+  // (one hash per file) before the operation step that requests the restricted STS
+  // session, and nothing runs after that step.
   const deploy = await loadAction('deploy-operation');
   const steps = deploy.runs.steps;
-  const bindIndex = steps.findIndex(step => step.run === 'node scripts/check-verified-inputs.mjs');
+  const proveIndex = steps.findIndex(step => step.run === 'node scripts/prove-release-bytes.mjs');
   const operationIndex = steps.findIndex(step => step.run === 'node scripts/runtime-operation.mjs');
-  assert.ok(bindIndex >= 0, 'the deploy job binds the verified inputs');
-  assert.ok(operationIndex > bindIndex, 'the byte re-hash precedes the credential-requesting operation');
-  assert.equal(steps[bindIndex].if, "inputs.verify_artifact == 'true'");
-  // Nothing between the bind and the operation may acquire a credential.
-  for (const step of steps.slice(bindIndex, operationIndex)) {
+  assert.ok(proveIndex >= 0, 'the deploy job proves the travelled release bytes');
+  assert.ok(operationIndex > proveIndex, 'the byte proof precedes the credential-requesting operation');
+  assert.equal(steps[proveIndex].if, "inputs.verify_artifact == 'true'");
+  // Nothing between the proof and the operation may acquire a credential.
+  for (const step of steps.slice(proveIndex, operationIndex)) {
     assert.equal(/configure-aws-credentials|assume-role|oidc/i.test(`${step.uses ?? ''} ${step.run ?? ''}`), false,
-      'no credential step may sit between the byte check and the operation');
+      'no credential step may sit between the byte proof and the operation');
   }
+  assert.equal(steps.slice(operationIndex + 1).length, 0,
+    'nothing runs after the credential-requesting operation: no record step');
 });
 
-test('runtime.yml keeps state runnable with the switch closed and observe switch-gated', async () => {
+test('the only artifact a protected mutating run publishes is the release bytes, retained one day', async () => {
+  const mutate = await loadWorkflow('mutate.yml');
+  const verify = await loadAction('verify-operation');
+  const uploads = verify.runs.steps.filter(step => String(step.uses ?? '').startsWith('actions/upload-artifact'));
+  assert.equal(uploads.length, 1, 'the verify composite publishes exactly one artifact');
+  const upload = uploads[0];
+  assert.equal(upload.with.name, 'service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}');
+  assert.equal(upload.with.path, '.service-artifacts/selected');
+  assert.equal(upload.with['retention-days'], 1);
+  assert.equal(upload.with['if-no-files-found'], 'error');
+  assert.match(upload.if, /deploy-platform/);
+  assert.match(upload.if, /restore-release/);
+  assert.match(upload.if, /deploy-runtime/);
+
+  // The deploy job downloads the same per-run name with the unchanged `path: .`,
+  // so `.service-artifacts/selected` is the directory the schema gate and the
+  // stage-base CDK deploy consume.
+  const downloads = mutate.jobs.deploy.steps
+    .filter(step => String(step.uses ?? '').startsWith('actions/download-artifact'));
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].with.name, 'service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}');
+  assert.equal(downloads[0].with.path, '.');
+
+  // No protected operation workflow or composite publishes an `infra-` evidence
+  // artifact any more. `check.yml` is the automatic source-check entry, not a
+  // protected operation, so its own matrix artifacts are outside this census.
+  for (const file of ['mutate.yml', 'runtime.yml', 'production.yml']) {
+    const text = await readFile(workflowFile(file), 'utf8');
+    assert.equal(/name:\s*infra-/.test(text), false, `${file} must not publish an infra- artifact`);
+  }
+  const deployComposite = await readFile(actionFile('deploy-operation'), 'utf8');
+  assert.equal(/upload-artifact/.test(deployComposite), false, 'the mutating job publishes no artifact');
+  assert.equal(/name:\s*infra-/.test(deployComposite), false);
+  assert.equal(/name:\s*infra-/.test(await readFile(actionFile('verify-operation'), 'utf8')), false);
+});
+
+test('runtime.yml keeps state runnable with the switch closed and publishes no evidence', async () => {
   const runtime = await loadWorkflow('runtime.yml');
-  assert.deepEqual(Object.keys(runtime.jobs), ['preflight', 'state', 'observe', 'record']);
-  const { preflight, state, observe, record } = runtime.jobs;
+  assert.deepEqual(Object.keys(runtime.jobs), ['preflight', 'state']);
+  const { preflight, state } = runtime.jobs;
 
   assert.equal(preflight.needs, undefined);
   assert.equal(state.needs, 'preflight');
-  assert.equal(observe.needs, 'preflight');
-  assert.deepEqual(record.needs, ['state', 'observe']);
 
-  // Both observation jobs are credential jobs; the record job is not.
-  assert.deepEqual(credentialJobs(runtime), ['state', 'observe']);
-  for (const job of [state, observe]) {
-    assert.equal(job.environment, 'beta');
-    assert.equal(holdsIdToken(job), true);
-  }
-  assert.equal(declaresEnvironment(record), false);
-  assert.equal(holdsIdToken(record), false);
-  assert.equal(record.environment, undefined);
-  assert.equal(record.if, "always() && (needs.state.result == 'success' || needs.observe.result == 'success')");
+  // `state` is the one credential job; there is no observation or record job.
+  assert.deepEqual(credentialJobs(runtime), ['state']);
+  assert.equal(state.environment, 'beta');
+  assert.equal(holdsIdToken(state), true);
+  assert.equal(declaresEnvironment(preflight), false);
+  assert.equal(holdsIdToken(preflight), false);
 
-  // `state` works with the stage switch closed; only `observe` is switch-gated.
+  // `state` works with the stage switch closed.
   assert.equal(state.if, "github.ref == 'refs/heads/main' && inputs.operation == 'state'");
   assert.equal(/ENABLE_BETA_MUTATION/.test(state.if), false, 'state must run with the switch closed');
-  assert.match(observe.if, /vars\.ENABLE_BETA_MUTATION == 'true'/);
-  assert.match(observe.if, /inputs\.operation == 'observe'/);
-  assert.deepEqual(runtime.on.workflow_dispatch.inputs.operation.options, ['state', 'observe']);
+  assert.deepEqual(runtime.on.workflow_dispatch.inputs.operation.options, ['state']);
   assert.equal(runtime.on.workflow_dispatch.inputs.operation.required, true);
+  assert.equal(Object.hasOwn(runtime.jobs, 'observe'), false);
+  assert.equal(Object.hasOwn(runtime.jobs, 'record'), false);
+  const deployStep = state.steps.find(step => step.uses === './.github/actions/deploy-operation');
+  assert.equal(deployStep.with.verify_artifact, 'false', 'read-only state has no verify artifact to prove');
 });
 
 test('exactly one ENABLE_* switch name exists across workflows and non-test executable sources', async () => {

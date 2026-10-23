@@ -129,7 +129,8 @@ test('deploy-runtime simulates DescribeChangeSet on the Runtime stack ARN', () =
 // would leave the Platform deploy — the operation that installs them — blocked.
 test('only deploy-runtime simulates and is granted the bake reads', () => {
   const operations = Object.values(workflowOperations).flat();
-  assert.equal(operations.length, 16);
+  // 15 operations: #207 retired `observe` with the record it produced.
+  assert.equal(operations.length, 15);
   const bakeReads = ['cloudwatch/get-metric-statistics', 'cloudwatch/describe-alarms', 'logs/filter-log-events'];
   assert.deepEqual(Object.keys(readOperations).sort(), [...bakeReads].sort());
   for (const pair of bakeReads) {
@@ -137,7 +138,7 @@ test('only deploy-runtime simulates and is granted the bake reads', () => {
     assert.deepEqual(readOperations[pair], ['deploy-runtime']);
   }
   for (const operation of operations) {
-    const workflow = ['state', 'observe'].includes(operation) ? 'runtime' : 'mutate';
+    const workflow = operation === 'state' ? 'runtime' : 'mutate';
     const env = operationEnvironment(operation, workflow);
     const plan = new Set(simulationRequests('runtime', env, 'operation').map((request) => request.pair));
     const sessionActions = new Set(JSON.parse(sessionPolicy('runtime', env, 'operation'))
@@ -170,7 +171,7 @@ test('a missing base grant fails closed before any mutation', async () => {
     if (command !== 'aws') throw new Error('a mutation must not run');
     return simulation({ denyAction: 'logs:DescribeLogGroups' })(command, args);
   };
-  const io = await createRuntimeIo(operationEnvironment('migrate'), undefined, {
+  const io = await createRuntimeIo(operationEnvironment('migrate'), {
     purpose: 'operation', assume: async () => ({ AWS_ACCESS_KEY_ID: 'x' }), run: deny,
   });
   await assert.rejects(io.oneShot('migrate', { digest: `sha256:${'a'.repeat(64)}`, commit: 'b'.repeat(40) }),
@@ -191,7 +192,7 @@ test('a denied Egress destroy stops before npx cdk destroy', async () => {
     if (command !== 'aws') throw new Error('a mutation must not run');
     return simulation({ denyAction: 'cloudformation:DescribeStacks' })(command, args);
   };
-  const io = await createRuntimeIo(operationEnvironment('delete-egress'), undefined, {
+  const io = await createRuntimeIo(operationEnvironment('delete-egress'), {
     purpose: 'operation', assume: async () => ({ AWS_ACCESS_KEY_ID: 'x' }), run: deny,
   });
   await assert.rejects(io.destroy('AnyWearEgressStack-beta'), (error) => error.denial === true);
@@ -211,7 +212,7 @@ test('deploy-runtime still fails closed when the runtime role denies a bake read
       if (command !== 'aws') throw new Error('a mutation must not run');
       return simulation({ denyAction: denied })(command, args);
     };
-    const io = await createRuntimeIo(env, undefined, {
+    const io = await createRuntimeIo(env, {
       purpose: 'operation', assume: async () => ({ AWS_ACCESS_KEY_ID: 'x' }), run: deny });
     await assert.rejects(io.deployRuntimeChangeSet(
       { args: ['cdk', 'deploy', 'AnyWearRuntimeStack-beta', '--no-execute'] }), (error) => {

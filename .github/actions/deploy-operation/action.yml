@@ -1,9 +1,9 @@
 name: Execute reviewed Beta operation
-description: Execute the operation under a restricted OIDC session, observe the accepted record and finalize evidence
+description: Prove the travelled release bytes, then execute the operation under a restricted OIDC session
 inputs:
   verify_artifact:
     default: 'true'
-    description: Bind a verify-job artifact before any credential; false only for a read-only state run with no separate verify job
+    description: Prove the verify job's release bytes before any credential; false only for a read-only state run with no separate verify job
 runs:
   using: composite
   steps:
@@ -12,65 +12,26 @@ runs:
         node-version: 24
     - run: npm ci
       shell: bash
-    - name: Bind the verified inputs and re-hash the three travelled release files before any credential
+    # The pre-credential byte and identity proof (#207). It re-derives this
+    # dispatch from its own inputs, requires the verify job's `release_assets`
+    # output to be exactly the operation's consumed asset set, hashes each
+    # travelled file once against the published digest and strictly loads the
+    # schema asset or runtime policy. It runs before any step that can request an
+    # OIDC token, so no credential exists while the bytes are unproven.
+    - name: Prove the travelled release bytes against the published digests before any credential
       if: inputs.verify_artifact == 'true'
       shell: bash
-      run: node scripts/check-verified-inputs.mjs
+      run: node scripts/prove-release-bytes.mjs
     # A job that has no verify job of its own (read-only `state`) still validates
     # the operation and its reviewed context before any credential.
     - name: Validate operation inputs before any credential
       if: inputs.verify_artifact == 'false'
       shell: bash
-      run: |
-        mkdir -p deployment-evidence
-        node scripts/check-operation.mjs
+      run: node scripts/check-operation.mjs
+    # This is the first step that can request an OIDC token. There is no step after
+    # it that writes a record: the operation's own job conclusion and the platform
+    # facts are the evidence.
     - name: Execute the operation with restricted OIDC sessions
       id: operation
       shell: bash
       run: node scripts/runtime-operation.mjs
-    - name: Observe final authenticated deployment with a restricted observation session
-      id: observation
-      if: steps.operation.outputs.requires_qualification == 'true'
-      shell: bash
-      run: node scripts/observe-operation.mjs
-    - name: Preserve exact final observation record
-      if: steps.operation.outputs.requires_qualification == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        # The producer names its own artifact (`observe-operation.mjs` writes
-        # INFRA_OBSERVATION_ARTIFACT): the accepted record owns the
-        # `infra-deployment-<run-id>-<attempt>` name the E2E producer convention
-        # expects, while a mutation job's family observation is
-        # `infra-family-observation-<run-id>-<attempt>`. An unset name fails this
-        # upload instead of overwriting another contract's artifact.
-        name: ${{ env.INFRA_OBSERVATION_ARTIFACT }}
-        path: deployment-evidence/deployment-record.json
-        retention-days: 90
-        if-no-files-found: error
-    # Issue #195: `deploy-runtime` writes the v5 `anywear_service_deployment`
-    # record in the mutating job itself (the record cannot describe a deployment
-    # that did not happen). It owns the same `infra-deployment-<run>-<attempt>`
-    # artifact name the record job downloads and validates.
-    - name: Preserve the v5 Service deployment record
-      if: env.INFRA_OPERATION == 'deploy-runtime' && steps.operation.outcome == 'success'
-      uses: actions/upload-artifact@v4
-      with:
-        name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-        path: deployment-evidence/service-deployment.json
-        retention-days: 90
-        if-no-files-found: error
-    - name: Record final observation outcome
-      if: always()
-      shell: bash
-      env:
-        OPERATION_OUTCOME: ${{ steps.operation.outcome }}
-        OBSERVATION_OUTCOME: ${{ steps.observation.outcome }}
-      run: node scripts/finalize-operation.mjs
-    - name: Preserve operation and recovery evidence
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
-        path: deployment-evidence/operation-record.json
-        retention-days: 90
-        if-no-files-found: warn

@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { workflowOperations, operationFamilies, operationBoundary, operationEvidence, families, assertOneShotAllowed,
+import { workflowOperations, operationFamilies, operationBoundary, operationRoles, families, assertOneShotAllowed,
   assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads,
   verifyActions } from './operation-boundaries.mjs';
 
 const infraSha = '5'.repeat(40);
 const env = (operation, overrides = {}) => {
-  const workflow = ['state', 'observe'].includes(operation) ? 'runtime' : 'mutate';
+  const workflow = operation === 'state' ? 'runtime' : 'mutate';
   return { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
     GITHUB_RUN_ID: '11', GITHUB_RUN_ATTEMPT: '1', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
     GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/.github/workflows/${workflow}.yml@refs/heads/main`,
@@ -15,7 +15,7 @@ const env = (operation, overrides = {}) => {
 
 test('the workflow map and family derivation cover every operation', () => {
   assert.deepEqual(Object.keys(workflowOperations).sort(), ['.github/workflows/mutate.yml', '.github/workflows/runtime.yml']);
-  assert.deepEqual(workflowOperations['.github/workflows/runtime.yml'], ['state', 'observe']);
+  assert.deepEqual(workflowOperations['.github/workflows/runtime.yml'], ['state']);
   assert.deepEqual(workflowOperations['.github/workflows/mutate.yml'], ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
     'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission']);
@@ -24,11 +24,15 @@ test('the workflow map and family derivation cover every operation', () => {
     const boundary = operationBoundary(env(operation));
     assert.ok(boundary.family, `family required for ${operation}`);
     assert.equal(boundary.readOnly, operation === 'state');
-    assert.ok(operationEvidence[operation], `evidence entry required for ${operation}`);
+    assert.ok(operationRoles[operation], `role allow-list required for ${operation}`);
   }
   for (const operation of ['open-admission', 'close-admission']) assert.equal(operationFamilies[operation], 'beta-admission');
   // Issue #166 adds the disposable Egress operations to the same deploy family.
   for (const operation of ['deploy-egress', 'delete-egress']) assert.equal(operationFamilies[operation], 'beta-deploy');
+  // #207 retired `observe` with the record it produced; it is no longer a
+  // dispatch of any workflow.
+  assert.throws(() => operationBoundary(env('observe', { GITHUB_WORKFLOW_REF:
+    'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main' })), /forbidden for this workflow family/);
   assert.throws(() => operationBoundary(env('deploy-workload')), /forbidden for this workflow family/);
   assert.throws(() => operationBoundary(env('suspend-admission')), /forbidden for this workflow family/);
   assert.throws(() => operationBoundary(env('resume-admission')), /forbidden for this workflow family/);
@@ -36,19 +40,19 @@ test('the workflow map and family derivation cover every operation', () => {
 });
 
 test('one-shot roles are exactly the release-slice drivers that remain', () => {
-  assert.deepEqual(operationEvidence.observe.roles, []);
-  assert.deepEqual(operationEvidence['deploy-platform'].roles, []);
-  assert.deepEqual(operationEvidence['restore-release'].roles, []);
-  assert.deepEqual(operationEvidence.migrate.roles, ['migrate']);
-  assert.deepEqual(operationEvidence['close-admission'].roles, ['lifecycle']);
-  assert.deepEqual(operationEvidence['open-admission'].roles, ['lifecycle']);
+  assert.deepEqual(operationRoles['deploy-egress'], []);
+  assert.deepEqual(operationRoles['deploy-platform'], []);
+  assert.deepEqual(operationRoles['restore-release'], []);
+  assert.deepEqual(operationRoles.migrate, ['migrate']);
+  assert.deepEqual(operationRoles['close-admission'], ['lifecycle']);
+  assert.deepEqual(operationRoles['open-admission'], ['lifecycle']);
   // Issue #194: `deploy-runtime` gains the existing `verify` family for the
   // pre-mutation schema-journal read; no other operation gains one.
-  assert.deepEqual(operationEvidence['deploy-runtime'].roles, ['verify']);
+  assert.deepEqual(operationRoles['deploy-runtime'], ['verify']);
   assert.deepEqual(families(env('deploy-runtime'), 'operation'), ['verify']);
   assert.deepEqual(verifyActions('deploy-runtime'), ['schema-journal']);
   assert.deepEqual(verifyActions('deploy-platform'), []);
-  assert.deepEqual(families(env('observe'), 'qualification'), []);
+  assert.deepEqual(families(env('deploy-platform'), 'qualification'), []);
   assert.deepEqual(families(env('migrate'), 'operation'), ['migrate']);
   assert.deepEqual(families(env('state'), 'operation'), []);
   assert.throws(() => families(env('state'), 'qualification'), /Read-only observation cannot qualify/);
@@ -92,12 +96,12 @@ test('deploy authority is limited to the configured stack set', () => {
   assert.throws(() => assertDeployAllowed(env('deploy-platform'), 'AnyWearEgressStack-beta'), /forbidden/);
   assert.throws(() => assertDeployAllowed(env('deploy-platform'), 'AnyWearWorkloadStack-beta'), /forbidden/);
   assert.throws(() => assertDeployAllowed(env('deploy-platform'), 'AnyWearRuntimeStack-beta'), /forbidden/);
-  assert.throws(() => assertDeployAllowed(env('observe'), 'AnyWearPlatformStack-beta'), /forbidden/);
+  assert.throws(() => assertDeployAllowed(env('deploy-egress'), 'AnyWearPlatformStack-beta'), /forbidden/);
 });
 
 test('AWS allow-list keeps reads, one-shots and retention updates scoped', () => {
   assertAwsAllowed(env('migrate'), ['cloudformation', 'describe-stacks']);
-  assertAwsAllowed(env('observe'), ['ssm', 'get-parameters']);
+  assertAwsAllowed(env('deploy-platform'), ['ssm', 'get-parameters']);
   assert.throws(() => assertAwsAllowed(env('state'), ['ssm', 'get-parameters']), /forbidden/);
   assert.throws(() => assertAwsAllowed(env('migrate'), ['ssm', 'get-parameter', '--name', '/x', '--with-decryption']), /decryption is forbidden/);
   assert.throws(() => assertAwsAllowed(env('deploy-platform'), ['ecs', 'run-task']), /forbidden/);
@@ -132,7 +136,7 @@ test('AWS allow-list keeps reads, one-shots and retention updates scoped', () =>
 test('session policies carry only the operation\'s own families', () => {
   const deploy = sessionPolicy('deploy', env('deploy-platform'));
   assert.match(deploy, /cdk-hnb659fds-deploy-role-650880818323-ap-east-1/);
-  assert.throws(() => sessionPolicy('deploy', env('observe')), /Deploy credentials are forbidden/);
+  assert.throws(() => sessionPolicy('deploy', env('state')), /Deploy credentials are forbidden/);
   const migration = sessionPolicy('runtime', env('migrate'));
   assert.match(migration, /beta-anywear-migrate/);
   assert.doesNotMatch(migration, /beta-anywear-lifecycle/);
@@ -184,16 +188,16 @@ test('the runtime read set is scoped to the operation that performs the read', (
 });
 
 test('the protected executor gate binds repository, workflow, source, account and region', () => {
-  assert.equal(assertProtectedExecutor(infraSha, env('observe')).sha, infraSha);
+  assert.equal(assertProtectedExecutor(infraSha, env('deploy-platform')).sha, infraSha);
   for (const overrides of [{ GITHUB_SHA: '6'.repeat(40) }, { GITHUB_SHA: 'short' }, { GITHUB_REF: 'refs/heads/other' },
     { AWS_ACCOUNT_ID: '1' }, { AWS_REGION: 'us-east-1' },
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Client/.github/workflows/x.yml@refs/heads/main' }]) {
-    assert.throws(() => assertProtectedExecutor(infraSha, env('observe', overrides)));
+    assert.throws(() => assertProtectedExecutor(infraSha, env('deploy-platform', overrides)));
   }
   // AnyWear-E2E executes from its own pinned checkout and states the observed
   // Infra revision explicitly. Its run SHA is the executor identity, so it must
   // not be forced to equal the Infra helper SHA.
-  const e2e = (overrides = {}) => env('observe', { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_SHA: '6'.repeat(40),
+  const e2e = (overrides = {}) => env('deploy-platform', { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_SHA: '6'.repeat(40),
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main', ...overrides });
   const executor = assertProtectedExecutor(infraSha, e2e());
   assert.equal(executor.repository, 'git-malu/AnyWear-E2E');

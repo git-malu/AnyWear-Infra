@@ -1,11 +1,11 @@
-name: Beta state and qualified observation
+name: Beta state
 run-name: Beta ${{ inputs.operation }} at ${{ github.sha }}
 on:
   workflow_dispatch:
     inputs:
       operation:
         type: choice
-        options: [state, observe]
+        options: [state]
         required: true
 permissions:
   contents: read
@@ -33,8 +33,8 @@ env:
   INFRA_RETENTION_PROTECTION: 'true'
   GH_TELEMETRY: disabled
 jobs:
-  # No credentials: reject a forbidden operation before either observation job can
-  # request an environment or an OIDC identity.
+  # No credentials: reject a forbidden operation before the state job can request
+  # an environment or an OIDC identity.
   preflight:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -51,11 +51,10 @@ jobs:
           node-version: 24
       - run: npm ci
       - name: Validate operation family and reviewed inputs
-        run: |
-          mkdir -p deployment-evidence
-          node scripts/check-operation.mjs
+        run: node scripts/check-operation.mjs
   # Read-only state works with the stage switch closed: it runs no task, changes
-  # nothing and emits no deployment record.
+  # nothing and publishes no evidence artifact. #207 retired the `observe`
+  # operation with the record it produced; `state` is the read-only entry.
   state:
     needs: preflight
     if: github.ref == 'refs/heads/main' && inputs.operation == 'state'
@@ -77,72 +76,3 @@ jobs:
       - uses: ./.github/actions/deploy-operation
         with:
           verify_artifact: 'false'
-  # The accepted `anywear_infra_deployment` v3 producer. It observes the stacks
-  # Infra still produces; the release slice is deployed and recorded by the
-  # `deploy-runtime` operation. It stays behind the stage switch.
-  observe:
-    needs: preflight
-    if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true' && inputs.operation == 'observe'
-    environment: beta
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-      id-token: write
-    # The runtime role ARN is an environment-scoped repository variable, so it
-    # resolves only in a job that declares `beta`. Nothing before it reads it.
-    env:
-      INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: ./.github/actions/verify-operation
-        with:
-          app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: ./.github/actions/deploy-operation
-  # No environment, no OIDC: validate and checksum exactly what the credential
-  # job produced.
-  record:
-    needs: [state, observe]
-    if: always() && (needs.state.result == 'success' || needs.observe.result == 'success')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    env:
-      REQUIRE_DEPLOYMENT_RECORD: ${{ inputs.operation != 'state' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm ci
-      - name: Download the operation evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: infra-operation-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence
-      - name: Download the deployment record when the operation produced one
-        uses: actions/download-artifact@v4
-        with:
-          name: infra-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-evidence
-        continue-on-error: true
-      - name: Validate, checksum and preserve the operation and deployment records
-        run: node scripts/record-deployment.mjs
-      - name: Preserve the validated records and their checksums
-        uses: actions/upload-artifact@v4
-        with:
-          name: infra-record-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            deployment-evidence/deployment-record.json
-            deployment-evidence/deployment-record.json.sha256
-            deployment-evidence/operation-record.json
-            deployment-evidence/operation-record.json.sha256
-          retention-days: 90
-          if-no-files-found: error

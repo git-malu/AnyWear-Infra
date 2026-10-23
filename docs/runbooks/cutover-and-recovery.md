@@ -81,9 +81,11 @@ must be present, uploaded and digest-valid; extras such as the retired legacy
 manifest are ignored), and only those three files (`pre-sign-up.zip`,
 `post-confirmation.zip`, `runtime-policy.json`) are downloaded. The deploy job
 re-hashes each travelled byte once against those published digests before any
-credential, then records the release tag, Service commit and the ECR digest of the
-immutable `service-artifacts-<service_commit>` tag. Every other operation rejects
-a release identity. Deployment records are v3 and contain no `selection`.
+credential, then resolves the release tag, Service commit and the ECR digest of the
+immutable `service-artifacts-<service_commit>` tag into the deploy's log and the
+stack's parameters. Every other operation rejects a release identity. No operation
+writes a deployment record (#207): the run, the Environment deployment, the
+stack's own events and the release/ECR identities are the audit facts.
 
 The protected Beta job first checks exact main/workflow/account/region and
 operation, plus the release identity only for the two operations that take one,
@@ -247,26 +249,21 @@ occurs.
 Admission is mode-only after #159: `/anywear/beta/admission_mode` is
 `{"mode":"closed"}` or `{"mode":"testers"}`, with no window or expiry.
 `open-admission` opens the tester lane with a payload-free lifecycle `resume` and
-records one `admission-open-proof` event (mode, source, tester count and hash, SSM
+prints one `admission-open-proof` line (mode, source, tester count and hash, SSM
 record key set, database status field absence, SSM/DB agreement);
 `close-admission` is the only thing that closes. Removing the window removed
 automatic closure, so an interrupted or failed open leaves admission open until an
 explicit `close-admission` and an `admission-status` read-back; no recovery step
-here and no scheduled task closes it. Verify closed admission from that record
-before any restore dispatch.
+here and no scheduled task closes it. Verify closed admission from the SSM mode
+record and an `admission-status` read-back before any restore dispatch.
 
 Current dispatches use `mutate.yml` for maintenance, `deploy-egress`/
 `delete-egress` for the disposable network edge, and `restore-release`. Beta
 stops by deleting Runtime then Egress and starts by recreating Egress then
 Runtime; the persistent Base stack is never deleted and no stopped Base template
-exists. A separately coordinated fixed `runtime.yml` `observe` run produces the v3
-`anywear_infra_deployment` record after changes; mutation family observations
-identify their actual workflow (`mutate.yml`). E2E v3 qualification consumes no
-deployment record and observes the platform itself, so the legacy-producer/pin
-acceptance rule is inert and retires in Wave 2 (#180); the record remains
-deployment evidence and #181's lineage. The Runtime slice's own record is produced
-by this repository's `deploy-runtime` operation (`anywear_service_deployment` v6).
-Read-only
+exists. After a change, read the run's job/step conclusions, the `beta`
+Environment deployment and the scoped stack's CloudFormation events; E2E v3
+qualification consumes no Infra record and observes the platform itself. Read-only
 `runtime.yml` `state` remains available with the stage switch closed, including
 recovery diagnosis, and cannot start tasks or qualify database/schema state.
 
@@ -306,11 +303,12 @@ helpers stop. Verify Service cannot assume CDK roles, Client cannot push Service
 images/deploy CFN, and E2E cannot reconcile infrastructure. Retire Service CDK/runtime
 entry points only after their recovery obligations and consumer migrations finish.
 
-Observe new post-retirement Original templates and actual runtime identities,
-publish a new trusted completed-success Infra deployment record, then run final
+Observe new post-retirement Original templates and actual runtime identities from
+the run's conclusions, the Environment deployment and the stacks' own events, then
+run final
 E2E v3 qualification in its scheduled window: it reads the deployed tuple and
 takes its own authenticated before/after observations. Pre-retirement
-rehearsal hashes cannot substitute. Preserve deployment/operation/recovery records,
+rehearsal hashes cannot substitute. Preserve the run ids and conclusions,
 sealed Service release identities, signed releases and publisher identities, authenticated
 before/after observations and exact source/run/attempt/artifact hashes before root
 registration, repository reconciliation or resource cleanup.

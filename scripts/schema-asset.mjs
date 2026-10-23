@@ -107,7 +107,7 @@ export function schemaAssetSummary(asset, sha256Hex) {
   };
 }
 
-/** The published `sha256:<hex>` digest form used by `verified-inputs`. */
+/** The published `sha256:<hex>` digest form the release digest set carries. */
 export function assetDigest(bytes) {
   return `sha256:${sha256(bytes)}`;
 }

@@ -19,10 +19,11 @@ function admissionEvidence(admission) {
     tester_emails_sha256: Array.isArray(testers) ? sha256(canonicalJson(testers)) : 'unavailable' };
 }
 
-// This records infrastructure/SSM state only; it cannot establish DB/schema equality.
+// This reports infrastructure/SSM state only; it cannot establish DB/schema
+// equality. The result is a run fact printed to the step log, not a record (#207).
 export async function observeBetaState(io) {
   const stacks = [];
-  const state = { schema_version: 1, record_type: 'anywear_infra_state', stacks, qualification: 'not-applicable' };
+  const state = { stacks, qualification: 'not-applicable' };
   try {
   const baseName = 'AnyWearPlatformStack-beta';
   const base = await describeStack(io, baseName);

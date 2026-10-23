@@ -54,15 +54,15 @@ test('role ARNs resolve only inside jobs that declare the beta environment', asy
     }
   }
   // The migrated layout is explicit: the mutation role only in the deploy job of
-  // mutate.yml, the runtime role in its deploy/observe jobs and in each runtime
-  // credential job. The accepted producer is a separate credential job that never
-  // holds the mutation role (#181).
+  // mutate.yml and the runtime role in the two credential jobs. #207 retired the
+  // separate observation producer, so no job holds a read-only identity beside the
+  // mutation role any more.
   const mutate = await loadWorkflow('.github/workflows/mutate.yml');
   const runtime = await loadWorkflow('.github/workflows/runtime.yml');
   assert.deepEqual(holders(mutate, 'INFRA_DEPLOY_ROLE_ARN'), ['deploy']);
-  assert.deepEqual(holders(mutate, 'INFRA_RUNTIME_ROLE_ARN'), ['deploy', 'observe']);
-  assert.deepEqual(holders(runtime, 'INFRA_RUNTIME_ROLE_ARN'), ['state', 'observe']);
-  assert.equal(holders(mutate, 'INFRA_DEPLOY_ROLE_ARN').includes('observe'), false);
+  assert.deepEqual(holders(mutate, 'INFRA_RUNTIME_ROLE_ARN'), ['deploy']);
+  assert.deepEqual(holders(runtime, 'INFRA_RUNTIME_ROLE_ARN'), ['state']);
+  assert.equal(holders(mutate, 'INFRA_DEPLOY_ROLE_ARN').length, 1);
   assert.deepEqual(holders(mutate, 'INFRA_DEPLOY_ROLE_ARN').filter(name => mutate.jobs[name].environment !== 'beta'), []);
   assert.deepEqual(holders(runtime, 'INFRA_RUNTIME_ROLE_ARN').filter(name => runtime.jobs[name].environment !== 'beta'), []);
 });
@@ -102,9 +102,7 @@ test('the single stage switch stays repository-scoped so the job gate can see it
   assert.match(mutate.jobs.preflight.if, /vars\.ENABLE_BETA_MUTATION == 'true'/);
   assert.equal(mutate.jobs.deploy.if, undefined, 'the credential job keeps its needs-based scheduling');
   const runtime = await loadWorkflow('.github/workflows/runtime.yml');
-  assert.match(runtime.jobs.observe.if, /vars\.ENABLE_BETA_MUTATION == 'true'/);
   assert.equal(/ENABLE_BETA_MUTATION/.test(runtime.jobs.state.if), false, 'state must run with the switch closed');
-  assert.equal(runtime.jobs.record.environment, undefined);
   for (const workflow of [mutate, runtime]) {
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
       if (job.environment !== 'beta') continue;

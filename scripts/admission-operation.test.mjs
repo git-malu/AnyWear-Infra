@@ -285,21 +285,6 @@ test('a failed open closes back to the recorded decision and names the close kin
   assert.equal(io.proofs.length, 0);
 });
 
-test('the runtime io records the post-open proof verbatim and keeps the key set in state events', async () => {
-  const record = { events: [] };
-  const io = await createRuntimeIo({}, record, { assume: async () => ({}), run: async () => ({ stdout: '{}', stderr: '' }) });
-  const proof = { type: 'admission-open-proof', schema_version: 1, mode: 'testers', mode_source: 'record',
-    no_bound: true, surfaces_agree: true };
-  io.recordAdmissionOpenProof(proof);
-  assert.deepEqual(record.events, [proof]);
-  io.recordAdmissionState({ phase: 'opened', result: 'observed',
-    state: { admission_mode: 'testers', admission_mode_source: 'record', admission_mode_reason: null,
-      admission_recorded_mode: 'testers', admission_recorded_keys: ['mode'], tester_emails: originalTesters } });
-  assert.deepEqual(record.events[1].state.admission_recorded_keys, ['mode']);
-  assert.equal(record.events[1].state.tester_count, 2);
-  assert.equal(Object.hasOwn(record.events[1].state, 'admission_window_expires_at'), false);
-});
-
 test('a failure before the resume attempt records no recovery close', async () => {
   const io = mockIo({ operation: 'open-admission', now: NOW, mirror: openRecord });
   await assert.rejects(open(io));

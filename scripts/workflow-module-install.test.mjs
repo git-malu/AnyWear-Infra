@@ -3,17 +3,14 @@ import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import yaml from 'js-yaml';
 
-// Regression guard for observe run 39102443422: the `record` job ran
+// Regression guard for observe run 39102443422: a credential-free job ran
 // `node scripts/record-deployment.mjs` without installing dependencies, so the
 // module's pinned `@git-malu/stage-contracts` import failed with
-// ERR_MODULE_NOT_FOUND and the run could not produce a pinnable record. Both
-// record jobs had the same gap: `runtime.yml`'s observation record and
-// `mutate.yml`'s mutation record.
-//
-// The rule is structural rather than a list of job names: every job that runs a
-// repository module must install the pinned dependencies before its first
-// module-using step. Every workflow is scanned, so a newly added job of that
-// shape — in either entry or any other workflow — fails until it installs.
+// ERR_MODULE_NOT_FOUND. Those record jobs retired with #207, so the anchor is now
+// the rule rather than the job: every job that runs a repository module must
+// install the pinned dependencies before its first module-using step. Every
+// workflow is scanned, so a newly added job of that shape — in either entry or any
+// other workflow — fails until it installs.
 const workflowDirectory = new URL('../.github/workflows/', import.meta.url);
 
 // A shell command uses a repository module when it executes a module from the
@@ -72,10 +69,10 @@ test('every job that runs a repository module installs dependencies before it', 
   // Keep the rule observable: the scan still finds module-running jobs, so a
   // broken pattern cannot make this test pass vacuously.
   assert.ok(checked.length > 0, 'the scan still finds repository-module jobs');
-  // Regression anchors: the two record jobs this change fixed stay covered by the
-  // derived rule.
-  for (const recordJob of ['runtime.yml#record', 'mutate.yml#record']) {
-    assert.ok(checked.includes(recordJob), `${recordJob} is covered by the module scan`);
+  // Regression anchors: the credential-free preflight jobs run a repository module
+  // and stay covered by the derived rule.
+  for (const moduleJob of ['runtime.yml#preflight', 'mutate.yml#preflight']) {
+    assert.ok(checked.includes(moduleJob), `${moduleJob} is covered by the module scan`);
   }
 
   const exemptionFor = violation => installOrderExemptions
