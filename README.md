@@ -53,7 +53,7 @@ group name/ARN. One further name, `cleanup_task_role_arn`, is published only
 while the identity phase creates the cleanup task role
 (`identityPhase !== 'legacy'`). They join the four existing published names
 (`cognito_user_pool_id`, `cognito_client_id`, `s3_bucket_name`,
-`qweather_api_host`); the runtime-owned `admission_mode`, `tester_allowlist` and
+`qweather_api_host`); the runtime-owned `tester_allowlist` and
 `aws_region` parameters are not duplicated. Values come from the existing
 Base resources; nothing reads another stack at deploy time. The ten values
 added by the issue #158 extension replace the remaining weak
@@ -133,7 +133,7 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks, no mutation and no artifact |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `open-admission`, `close-admission`. Every run is one `preflight` → `verify` → `deploy` chain; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. The run's job and step conclusions are the verdict |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`. Every run is one `preflight` → `verify` → `deploy` chain; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. The run's job and step conclusions are the verdict |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -150,8 +150,9 @@ per-operation scope in preflight, before any credential. Only a `deploy-*`
 operation or `restore-release` may vary identity phase and retention protection;
 every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
-`deploy-runtime` and `restore-release` take a Service release identity. Admission
-takes no bound input: lifecycle `resume` is invoked with no payload at all. The
+`deploy-runtime` and `restore-release` take a Service release identity. There is
+no admission-mode or bound input: the only admission value is the exact tester
+allowlist. The
 standalone `verify` operation is retired: Infra's operation chain runs no
 cross-repository release-verification task. The `verify` family remains for exactly
 one use — the schema-boundary gate's bounded, read-only `schema-journal` probe
@@ -205,53 +206,36 @@ effective authority; the dedicated role names do not establish Beta resource
 isolation. Production activation variables cannot bypass its source blocker; keep
 both deployment/readiness gates disabled through #54.
 
-Admission has one representation: `/anywear/beta/admission_mode`, a `String`
-parameter whose value is a small JSON record with exactly one key. `{"mode":"closed"}`
-admits nothing; `{"mode":"testers"}` admits only an exact-listed tester or the
-anchored synthetic E2E namespace, until an explicit close. `open` does not exist:
-Beta is tester-only by contract. Every reader applies the same fail-closed rules —
-a missing, malformed, duplicated-key, non-canonical, unknown-mode, extra-key,
-wrong-type or unparseable value reads closed, as does anything that is not exactly
-one `mode` key, including the retired two-key record that carried `expires_at`. The
-decision is a mode and nothing else: there is no bound, no clock and no expiry.
-The tester list is the separate `/anywear/beta/tester_allowlist`, and opening never
-changes it.
+Admission is one input and one decision. `/anywear/beta/tester_allowlist` is a
+`String` parameter holding a JSON array of at most 50 exact email addresses within
+4096 bytes; its stack default is `[]`. Cognito `PreSignUp` reads it once for every
+`triggerSource`, with one attempt and a two-second deadline inside a ten-second
+Lambda timeout, and admits exactly a normalized member. A missing, malformed,
+oversized, unavailable or denied read refuses registration with the same message
+and a distinct log reason. Registration is the only admission decision: no
+authenticated API or task path reads the allowlist, and an account that exists can
+use every feature whatever the list holds. There is no mode, no window, no expiry
+and no second admission parameter.
 
-`open-admission` is the only operation an operator can request that opens
-admission, and the only one whose one-shot authority lists the lifecycle `resume`
-action. It takes no payload — the Service has no bound to write — refuses before
-resuming unless the database decision is provably closed, the database policy
-agrees with SSM and the mirror holds a `closed` record, and then proves the open
-through the lifecycle status read-back. That read-back requires the running Service
-to stop reporting the removed `admission_window_expires_at` field, so the absence
-is the executable proof that the deployed revision has no window semantics; a
-Service image from before this batch is refused. The step log then prints the
-`admission-open-proof` line: the mode, its source, the tester count and hash, the
-SSM record key set (`["mode"]`), the database status field absence and SSM/DB
-agreement, so the run itself says "open, no bound, both surfaces agree".
-Opening is the tester lane: the list is unchanged and no non-tester is admitted.
+The three surviving operations are `admission-status`, `add-testers` and
+`set-testers`. A tester write (`add-testers` or `set-testers`) is one SSM write
+through the deployed Service `set-testers` one-shot, with no admission or lifecycle
+precondition; the run then reads the allowlist back from SSM and compares its count
+and hash with the Service status line. `admission-status` prints
+`{"operation":"admission-status","tester_count":N,"tester_allowlist_hash":"<64 hex>","matches":true}`
+and nothing else about admission; a write prints the same count/hash proof for the
+list it persisted. The hash is the lowercase-hex
+`sha256(JSON.stringify(<normalized, sorted, unique, lowercase emails>))`, so the
+status line and the SSM value are comparable without either surface carrying an
+address.
 
-**Close is the only thing that closes.** `close-admission` restores the recorded
-`closed` decision through the pinned lifecycle `suspend` and reports whether it
-ended an open admission (`ordinary`) or one already closed. There is no automatic
-closure and no time-based backstop: if `open-admission` is interrupted after its
-resume attempt, admission stays open until an explicit `close-admission` and an
-`admission-status` read-back. The failed-open path issues one recovery-only
-`suspend`, re-asserts the recorded decision and reports `close_kind=failed-open`;
-no operator input can request that action, and it does not make an interrupted open
-self-healing.
-
-A tester write (`add-testers` / `set-testers` through the lifecycle `set-testers`
-action) writes the exact list and changes no admission state, so the flow is
-`add-testers` (optional) then `open-admission`. `admission-status` reports the
-effective mode every gate uses, the recorded mode, the record's key set and whether
-those raw records disagree. The standalone `migrate` operation refuses unless the
-mirror proves closed admission with a `closed` record — never a record that merely
-reads closed because it is unreadable — so a stale `testers` record must be closed
-explicitly first. [Beta
-runbook](docs/runbooks/beta-infrastructure.md#admission-open-and-close)
-carries the mode-only contract, the post-open proof and the resident environment
-repair.
+Neither `migrate` nor `restore-release` nor `runtime.yml state` has an admission
+precondition: the mode parameter is gone and none of the three reads it. `state`
+reports the allowlist count and hash beside the stack facts. The pool keeps the
+`custom:e2e_bootstrap` schema attribute (AWS cannot delete it), but it is inert:
+no reader, no writer and not part of the app client's read attributes. The [Beta
+runbook](docs/runbooks/beta-infrastructure.md#tester-allowlist-and-status) carries
+the write/read-back contract and the registration failure modes.
 
 Both manual entries share `anywear-infra-runtime` without cancellation. Each run
 leaves no artifact beyond the transport one: `service-release-bytes-<run_id>-
