@@ -108,24 +108,24 @@
     "application_region": "ap-east-1",
     "identity_phase": "legacy",
     "templates": {
-      "beta-active/AnyWearRuntimeStack-beta.template.json": "49fec436921b1592c748edaa128f934e13751264051c46e5aaaac7d3200ca1db",
-      "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
+      "beta-active/AnyWearRuntimeStack-beta.template.json": "c735fa6cf9430d99ce077be4d080687d4402f7f76f1f9d9058d5d227d68b75ce",
+      "prod-active/AnyWearRuntimeStack-prod.template.json": "cd339fc8776f5ce7872296c115e6af1da1384ee8c45e6b091088837c49926fba"
     },
     "identity_phases": {
-      "legacy": "b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c",
-      "roles-added": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be",
-      "retired": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be"
+      "legacy": "24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4",
+      "roles-added": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745",
+      "retired": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745"
     },
     "phase_hashes": {
       "beta": {
-        "legacy": "b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c",
-        "roles-added": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be",
-        "retired": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be"
+        "legacy": "24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4",
+        "roles-added": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745",
+        "retired": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745"
       },
       "prod": {
-        "legacy": "d9a990fc4882aab32471ac5fbcc6a91178fabb3e55d38b4c52b73e5c3a46309b",
-        "roles-added": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55",
-        "retired": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55"
+        "legacy": "41288539e5fec413dc361d4d515ce70f4469c7b221b813735c620e20e3b0752f",
+        "roles-added": "aa40dd032a22cb9be5dbff292b52161967b18cbcd5c2c1774f4064b7396f0581",
+        "retired": "aa40dd032a22cb9be5dbff292b52161967b18cbcd5c2c1774f4064b7396f0581"
       }
     },
     "normalisation": [
@@ -210,37 +210,59 @@
       ]
     },
     "identity_revision": {
-      "issue": 183,
+      "issue": 220,
       "recorded_at": "2026-10-23",
-      "change": "Removed the BetaSizingTelemetry String parameter of AnyWearRuntimeStack-beta and the BETA_SIZING_TELEMETRY entry it fed in both Beta containers, together with the Service sizing observations that read it. The Beta Runtime baseline, its normalised beta/legacy, beta/roles-added and beta/retired phase hashes, its template sha256 and the beta identity phases were re-recorded from that source; the production template and prod phase hashes are unchanged because the parameter was Beta-only. The transition deployed on 2026-10-23 (`mutate.yml` `deploy-runtime` run 39929648413), so the one recorded predecessor is now retired: the live check accepts only the recorded roles-added identity, and the synthesized-identity check and the post-deploy read-back stay exact against it.",
+      "change": "Aligned the three deployed age alarms with the 300-second bake's recorded calibration. Both oldest-message alarms moved from threshold 300 to 150 seconds, keeping period 300 s and evaluationPeriods 2, and the outbox alarm moved from 300000 to 150000 milliseconds, keeping period 60 s and evaluationPeriods 2; all three read DEPLOYMENT_GATE_THRESHOLDS from @git-malu/stage-contracts 0.7.0. The outbox metric filter lost its `defaultValue: 0`, because a default is published whenever the pattern does not match and made a non-empty backlog with no age look healthy, and a second static-value filter publishes the 150001 ms sentinel (threshold + 1) only when a matched worker line reports outboxBacklog > 0 with a null or absent outboxOldestAgeMs. The alarm set, names, metric, statistic, periods and evaluation periods are unchanged. Both Runtime templates, all six phase hashes and the three Beta identity phases were re-recorded from that source; the alarms are stage-free, so the prod template moves with Beta. The live template stays ed4e99ee... until the authorized deploy-runtime applies this non-replacement delta under the unchanged Service release, so that hash is recorded as the accepted live predecessor and the post-deploy Original must normalise to the recorded roles-added identity.",
       "previous_templates": {
-        "beta-active/AnyWearRuntimeStack-beta.template.json": "4e62ddf0efd630134e81bb71f30937f9ef959e6926a033753da1f37af2630ff9",
+        "beta-active/AnyWearRuntimeStack-beta.template.json": "49fec436921b1592c748edaa128f934e13751264051c46e5aaaac7d3200ca1db",
         "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
       },
       "previous_phase_hashes": {
         "beta": {
-          "legacy": "454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37",
-          "roles-added": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
-          "retired": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
+          "legacy": "b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c",
+          "roles-added": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be",
+          "retired": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be"
         },
         "prod": {
           "legacy": "d9a990fc4882aab32471ac5fbcc6a91178fabb3e55d38b4c52b73e5c3a46309b",
           "roles-added": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55",
           "retired": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55"
         }
-      }
+      },
+      "accepted_live_predecessors": [
+        "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be"
+      ]
     },
     "source_files": {
       "lib/runtime-stack.ts": "cb679b436fb5fdcdd31bb0f74cb73ffd117f7b2d",
-      "lib/compute-runtime.ts": "cf0fbfd9a9ef919737e052bee04f8bc7a8e6a41d",
+      "lib/compute-runtime.ts": "83ed6d334fa6335a55ed06898ae25864ce694553",
       "lib/cleanup-operation.ts": "8fc68752c1f2169d7c3f6f603dbbf9eaca7f4bd5",
       "lib/platform-inputs.ts": "05382c7721df146963aa8b7a09ab3ed30158a6bc",
-      "scripts/bake-gate.mjs": "840606d953ec0eabd3503878c803145827f5dd1f",
-      "test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json": "0e3e3369a3f7a4d863cfb73bce452eb7958507d2",
-      "test/baselines/prod-active/AnyWearRuntimeStack-prod.template.json": "b4fa6794189f0be748f08295988fbbeffefd6db1"
+      "scripts/bake-gate.mjs": "8bd8f10ff1401b7501d84a3707a4216fa4d68307",
+      "test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json": "0ee693e95fb3544cc93deb023da9d9e65cbb1c3a",
+      "test/baselines/prod-active/AnyWearRuntimeStack-prod.template.json": "8b11dc3c21fb2191011f151cb195489ca98d9bb0"
     },
-    "source_file_hashes": "Git blob hashes of the current files at the #183 change head, in this repository's paths; they are not the 4f2ba555 move-anchor blobs. #195 compared the moved files with `git rev-parse 4f2ba555:infra/<path>`; after that anchor the #195 synthesiser change and later reviewed changes altered runtime-stack.ts, compute-runtime.ts, platform-inputs.ts and bake-gate.mjs, and issue #183 altered runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline. cleanup-operation.ts and the prod Runtime baseline still match their move-anchor blobs, so five of the seven entries differ from the anchor. source_sha above stays 4f2ba555ec293771551c0d23266af7038d95383e because scripts/synth-matrix.mjs asserts it as the move anchor, not as a claim that the current bytes equal it.",
-    "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e; that statement describes the move anchor only. The #195 synthesiser change replaced the retired own-credentials synthesiser with the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes. After the anchor, runtime-stack.ts, compute-runtime.ts, platform-inputs.ts, bake-gate.mjs and the Beta Runtime baseline changed again; issue #183 accounts for runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline (removal of the Beta sizing-telemetry parameter and its container environment entry), so the beta phase hashes and the beta template sha256 in this record are measured from the #183 source (templates/, phase_hashes.beta, identity_phases and identity_revision). cleanup-operation.ts and the prod Runtime baseline still match the anchor, and the prod template and prod phase hashes are unchanged because the parameter was Beta-only. The legacy/roles-added/retired phase hashes are measured from source, not copied from the live stack.",
+    "source_file_hashes": "Git blob hashes of the Runtime files this record binds, in this repository's paths. The two Runtime template entries and lib/compute-runtime.ts are recorded at the issue #220 change head (the deployed age-alarm calibration and the added missing-age metric filter); scripts/bake-gate.mjs is recorded at the #219 change head, because #219 recalibrated the bake window in that file after the #183 record without re-recording this member, and the issue #220 alarm calibration pairs with it. lib/runtime-stack.ts, lib/cleanup-operation.ts and lib/platform-inputs.ts are unchanged since the #183 head. None of these are the 4f2ba555 move-anchor blobs. #195 compared the moved files with `git rev-parse 4f2ba555:infra/<path>`; after that anchor the #195 synthesiser change and later reviewed changes altered runtime-stack.ts, compute-runtime.ts, platform-inputs.ts and bake-gate.mjs, issue #183 altered runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline, issue #219 altered bake-gate.mjs, and issue #220 altered compute-runtime.ts and both Runtime baselines. cleanup-operation.ts still matches its move-anchor blob. source_sha above stays 4f2ba555ec293771551c0d23266af7038d95383e because scripts/synth-matrix.mjs asserts it as the move anchor, not as a claim that the current bytes equal it.",
+    "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e; that statement describes the move anchor only. The #195 synthesiser change replaced the retired own-credentials synthesiser with the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes. After the anchor, runtime-stack.ts, compute-runtime.ts, platform-inputs.ts, bake-gate.mjs and the Beta Runtime baseline changed again; issue #183 accounts for runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline (removal of the Beta sizing-telemetry parameter and its container environment entry). Issue #219 recalibrated the bake to 300 seconds in scripts/bake-gate.mjs and @git-malu/stage-contracts 0.7.0 without moving the Runtime template bytes. Issue #220 then recorded the deployed age alarms' calibration in lib/compute-runtime.ts and the fail-closed missing-age metric filter, so both Runtime templates, all six phase hashes and the three Beta identity phases moved together, because the alarm thresholds are stage-free; the templates, phase_hashes, identity_phases, source_files and identity_revision members are measured from that source, not copied from the live stack. cleanup-operation.ts still matches the anchor, and the prod template differs from the #183 value only by the same stage-free alarm change.",
+    "alarm_calibration": {
+      "issue": 220,
+      "source": "@git-malu/stage-contracts 0.7.0",
+      "sqs_oldest_message_age": {
+        "deployed_threshold_seconds": 150,
+        "period_seconds": 300,
+        "evaluation_periods": 2,
+        "paired_gate_threshold": "sqs_oldest_message_age.max_seconds = 150",
+        "relation": "threshold equal; detection deliberately later, because two consecutive five-minute SQS periods make the alarm later than the bake that refused the same age"
+      },
+      "outbox_oldest_age": {
+        "deployed_threshold_milliseconds": 150000,
+        "period_seconds": 60,
+        "evaluation_periods": 2,
+        "missing_age_sentinel_milliseconds": 150001,
+        "paired_gate_threshold": "outbox_oldest_age.max_age_milliseconds = 150000",
+        "relation": "threshold equal; a non-empty backlog with a null or absent age publishes the sentinel, which is the first value above the threshold"
+      }
+    },
     "live_verification": {
       "recorded_at": "2026-10-23",
       "live_stack": "AnyWearRuntimeStack-beta",

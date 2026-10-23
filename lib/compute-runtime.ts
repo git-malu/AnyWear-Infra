@@ -14,7 +14,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { deploymentAlarmNames } from '@git-malu/stage-contracts';
+import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmNames } from '@git-malu/stage-contracts';
 import type { PlatformDatabase } from './platform-inputs';
 
 export interface ComputeRuntimeProps {
@@ -412,6 +412,14 @@ export class ComputeRuntime extends Construct {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
     });
     addAction(autoTaggingDlqAlarm);
+    // Issue #220: both oldest-message alarms carry the deployment gate's own
+    // recorded age limit, read from the one pinned package constant, so a bake
+    // that refuses a stalled queue at 150 seconds can never leave a deployed alarm
+    // configured for the retired 600-second calibration (300 s). The period stays
+    // at Amazon SQS's five-minute publication interval and `evaluationPeriods: 2`
+    // is the pre-existing anti-flap calibration; that makes the alarm's *detection*
+    // deliberately later than the gate's, while the age limit is shared.
+    const sqsOldestMessageAgeSeconds = DEPLOYMENT_GATE_THRESHOLDS.sqs_oldest_message_age.max_seconds;
     for (const [id, queue, alarmName] of [
       ['VtoAgeAlarm', props.vtoQueue, alarmNames.sqs_oldest_message_age[0]],
       ['AutoTaggingAgeAlarm', props.autoTaggingQueue, alarmNames.sqs_oldest_message_age[1]],
@@ -420,7 +428,7 @@ export class ComputeRuntime extends Construct {
         ...alarmProps,
         alarmName,
         metric: queue.metricApproximateAgeOfOldestMessage(),
-        threshold: 300,
+        threshold: sqsOldestMessageAgeSeconds,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         evaluationPeriods: 2,
       });
@@ -515,13 +523,42 @@ export class ComputeRuntime extends Construct {
     // and `outboxBacklog`; the filter turns it into the metric the alarm reads.
     // The `$.outboxOldestAgeMs` metric value requires a JSON filter pattern; a
     // literal pattern is only valid with a static metric value.
+    //
+    // Issue #220 removed the `defaultValue: 0`. AWS publishes a filter's default
+    // when the pattern does not match an event or a period, not only when a matched
+    // line's field is missing, so the 0 default is what made a non-empty backlog
+    // with no age look healthy. This filter now publishes nothing it cannot extract.
     const workerOutboxMetrics = new logs.MetricFilter(this, 'WorkerOutboxMetricFilter', {
       logGroup: workerLogGroup,
       filterPattern: logs.FilterPattern.stringValue('$.msg', '=', 'Durable task outbox metrics'),
       metricNamespace: 'AnyWear/Worker',
       metricName: 'OutboxOldestAgeMs',
       metricValue: '$.outboxOldestAgeMs',
-      defaultValue: 0,
+      unit: cloudwatch.Unit.MILLISECONDS,
+    });
+    // Issue #220 fail-closed half: a matched worker line with a non-empty backlog
+    // and a null or absent age publishes the static sentinel, one millisecond above
+    // the alarm threshold and derived from the same package constant, so the two
+    // cannot drift. A static metric value is emitted only on a pattern match, so a
+    // healthy line, an idle worker and an empty backlog with a null age publish
+    // nothing and stay OK under `TreatMissingData: notBreaching`; only a non-empty
+    // backlog with no age can produce 150001 ms. The bake names the same case
+    // ("backlog > 0 with a null age is breaching"), which the deployed alarm could
+    // not report while a missing age read as 0.
+    const outboxOldestAgeMilliseconds = DEPLOYMENT_GATE_THRESHOLDS.outbox_oldest_age.max_age_milliseconds;
+    new logs.MetricFilter(this, 'WorkerOutboxMissingAgeFilter', {
+      logGroup: workerLogGroup,
+      filterPattern: logs.FilterPattern.all(
+        logs.FilterPattern.stringValue('$.msg', '=', 'Durable task outbox metrics'),
+        logs.FilterPattern.numberValue('$.outboxBacklog', '>', 0),
+        logs.FilterPattern.any(
+          logs.FilterPattern.isNull('$.outboxOldestAgeMs'),
+          logs.FilterPattern.notExists('$.outboxOldestAgeMs'),
+        ),
+      ),
+      metricNamespace: 'AnyWear/Worker',
+      metricName: 'OutboxOldestAgeMs',
+      metricValue: `${outboxOldestAgeMilliseconds + 1}`,
       unit: cloudwatch.Unit.MILLISECONDS,
     });
     const outboxOldestAgeAlarm = new cloudwatch.Alarm(this, 'OutboxOldestAgeAlarm', {
@@ -531,7 +568,9 @@ export class ComputeRuntime extends Construct {
         statistic: cloudwatch.Stats.MAXIMUM,
         period: cdk.Duration.minutes(1),
       }),
-      threshold: 300000,
+      // Issue #220: the gate's own recorded outbox age limit, in milliseconds
+      // (150000 ms), so a real age breaches at the same point the bake refuses it.
+      threshold: outboxOldestAgeMilliseconds,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       evaluationPeriods: 2,
     });

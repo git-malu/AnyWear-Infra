@@ -229,15 +229,30 @@ export function classifyChangeSet(changeSet) {
   });
 }
 
-/** A converged release identity must not produce a real delta; this fails closed. */
-export function assertConvergedChangeSet(classification) {
+/**
+ * Issue #220: the board-authorized admission rule for a change set created under
+ * an unchanged Service release identity.
+ *
+ * A dispatched release that is already deployed may still carry a reviewed,
+ * non-replacement Runtime template delta: an Infra-owned alarm or metric-filter
+ * change has to land between Service releases. The synthesis check and the
+ * post-deploy read-back still require that delta to normalise to the recorded
+ * `roles-added` identity, so it must be reviewed into
+ * `test/baselines/provenance.json` first. This guard admits exactly that delta —
+ * every real change an `Add` or a `Modify` with `Replacement: 'False'` — and
+ * refuses everything else: any `Remove`, any `Add`/`Modify` whose `Replacement`
+ * is `True` or `Conditional`, and a change set that failed. Declared CDK diagnostic
+ * metadata is never a real change, so it cannot appear in this judgement.
+ */
+export function assertReleaseStableChangeSet(classification) {
   if (classification.failed) throw new Error(`The Runtime change set failed: ${classification.reason || classification.status}`);
-  if (!classification.converged) {
-    // Only real resources are named: a CDKMetadata diagnostic row is declared
-    // metadata and cannot be the reason a release fails closed.
-    const changes = classification.resource_changes ?? classification.changes;
-    const summary = changes.map((change) => `${change.action} ${change.logical_id} (${change.replacement})`).join(', ');
-    throw new Error(`A converged Runtime release must not change the stack; the change set lists ${changes.length}: ${summary}`);
+  const changes = classification.resource_changes ?? classification.changes;
+  const refused = changes.filter((change) => !((change.action === 'Add' || change.action === 'Modify')
+    && change.replacement === 'False'));
+  if (refused.length) {
+    const summary = refused.map((change) => `${change.action} ${change.logical_id} (${change.replacement})`).join(', ');
+    throw new Error('An unchanged Runtime release admits only Add/Modify changes without replacement; '
+      + `the change set lists ${refused.length} refused: ${summary}`);
   }
 }
 
@@ -283,6 +298,21 @@ async function waitForTerminalStack(io, stack, { timeoutMs = 3_600_000, interval
   }
 }
 
+/**
+ * Assert the synthesized Runtime template normalises to the recorded live
+ * `roles-added` identity. It is separate from the synthesis so the refusal is
+ * testable without a full cloud assembly; issue #220's admission rule depends on
+ * it, because a template delta not reviewed into the record must never reach a
+ * change set.
+ */
+export function assertSynthesizedRuntimeIdentity(template, expected = recordedRuntimePhaseHash()) {
+  const observed = canonicalDeployedTemplateHash(template);
+  if (observed !== expected) {
+    throw new Error(`The synthesized Runtime template normalises to ${observed}, not the recorded ${PHASE} identity ${expected}`);
+  }
+  return observed;
+}
+
 /** Synthesize the Runtime template from the one Infra app and assert its identity. */
 export async function synthesizeRuntimeTemplate(env) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'anywear-runtime-identity-'));
@@ -293,10 +323,7 @@ export async function synthesizeRuntimeTemplate(env) {
     const file = path.join(directory, `${RUNTIME_STACK}.template.json`);
     const template = JSON.parse(await readFile(file, 'utf8'));
     const expected = recordedRuntimePhaseHash();
-    const observed = canonicalDeployedTemplateHash(template);
-    if (observed !== expected) {
-      throw new Error(`The synthesized Runtime template normalises to ${observed}, not the recorded ${PHASE} identity ${expected}`);
-    }
+    const observed = assertSynthesizedRuntimeIdentity(template, expected);
     return { template, raw_sha256: sha256(canonicalJson(template)), normalised_sha256: observed, expected };
   } finally {
     await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -483,16 +510,25 @@ export async function deployRuntime({ io, env, release,
     if (changeSet !== undefined) {
       await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
     }
-  } else if (identityUnchanged) {
-    // The design's fail-closed path: delete the change set rather than leave it
-    // AVAILABLE for a later `describe-change-set`, then throw with the delta the
-    // classification already names.
-    if (changeSet !== undefined) {
-      await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
-    }
-    assertConvergedChangeSet(classification);
   } else {
-    if (!stackExists) assertCreateOnlyChangeSet(classification);
+    if (identityUnchanged) {
+      // Issue #220: the live stack already carries the dispatched release, so the
+      // change set can only be an Infra-owned template delta. The board authorized
+      // admitting a reviewed, non-replacement one and executing it; a removal or a
+      // replacement still fails closed. The refused path deletes the change set
+      // before it throws, so nothing is left AVAILABLE for a later execution, and
+      // the error names the delta the classification already reports.
+      try {
+        assertReleaseStableChangeSet(classification);
+      } catch (error) {
+        if (changeSet !== undefined) {
+          await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
+        }
+        throw error;
+      }
+    } else if (!stackExists) {
+      assertCreateOnlyChangeSet(classification);
+    }
     await io.awsAs('deploy', ['cloudformation', 'execute-change-set', '--stack-name', RUNTIME_STACK,
       '--change-set-name', changeSetName]);
     // The change set landed. Record it here, at the mutation, before the stack

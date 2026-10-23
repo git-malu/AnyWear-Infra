@@ -10,10 +10,11 @@ import {
   RUNTIME_DEPLOY_PARAMETER_KEYS,
   RUNTIME_STACK,
   acceptedLiveRuntimeHashes,
-  assertConvergedChangeSet,
   assertCreateOnlyChangeSet,
   assertLiveRuntimeIdentity,
+  assertReleaseStableChangeSet,
   assertRuntimePhase,
+  assertSynthesizedRuntimeIdentity,
   classifyChangeSet,
   deployRuntime,
   readRuntimeHealth,
@@ -54,8 +55,8 @@ const env = (overrides = {}) => ({
 });
 const TEMPLATE = JSON.parse(readFileSync('test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json', 'utf8'));
 const SYNTHESIZED = { template: TEMPLATE, raw_sha256: 'a'.repeat(64),
-  normalised_sha256: 'b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c',
-  expected: 'b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c' };
+  normalised_sha256: '24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4',
+  expected: '24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4' };
 // The fixture synthesises the legacy-phase baseline (`TEMPLATE`), whose normalised
 // hash is its own `expected`, while the recorded roles-added identity differs. The
 // live-template acceptance set is a deploy seam, so the fixture pins it to that
@@ -273,33 +274,31 @@ test('the CDK arguments pass one stack-qualified flag per parameter and disable 
     identityPhase: 'roles-added', retentionProtection: 'true' }), /exactly the five reviewed parameters/);
 });
 
-// Issue #183 step 8: the recorded Runtime identity transition deployed on
-// 2026-10-23 (run 39929648413), so its one recorded live predecessor is retired and
-// the live record accepts only the recorded roles-added identity. The read path
-// keeps its predecessor support — inert and fail-closed for the live record — while
-// the synthesis check and the post-deploy read-back stay exact against the recorded
-// identity, which the deploy tests above prove with the fixture-pinned seam.
-test('the live record accepts only the recorded identity, with its one predecessor retired', () => {
-  const RECORDED = 'ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be';
-  const PREDECESSOR = '6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f';
-  // Against the live record the accepted set is exactly the recorded identity: the
-  // pre-transition template the deploy started from is no longer accepted.
-  assert.deepEqual(acceptedLiveRuntimeHashes(), [RECORDED]);
+// Issue #220 re-records the Runtime identity for the alarm-calibration template
+// change. Because the change must land under the live Service release identity, the
+// pre-#220 live template (ed4e99ee..., the #183 transition's deployed hash) is
+// recorded as the one accepted live predecessor; the synthesis check and the
+// post-deploy read-back stay exact against the recorded roles-added identity, which
+// the deploy tests below prove with the fixture-pinned seam.
+test('the live record accepts the recorded identity plus its one recorded predecessor', () => {
+  const RECORDED = '2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745';
+  const PREDECESSOR = 'ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be';
+  // The recorded identity is the target of the next deploy; the template the
+  // deploy starts from is the one accepted predecessor.
+  assert.deepEqual(acceptedLiveRuntimeHashes(), [RECORDED, PREDECESSOR]);
   assert.equal(acceptedLiveRuntimeHashes()[0], recordedRuntimePhaseHash());
   assert.doesNotThrow(() => assertLiveRuntimeIdentity(RECORDED));
   assert.equal(assertLiveRuntimeIdentity(RECORDED), RECORDED);
-  assert.throws(() => assertLiveRuntimeIdentity(PREDECESSOR), /not the recorded roles-added identity/);
+  assert.doesNotThrow(() => assertLiveRuntimeIdentity(PREDECESSOR));
   assert.throws(() => assertLiveRuntimeIdentity('f'.repeat(64)), /not the recorded roles-added identity/);
   // An empty accepted set can never pass.
   assert.throws(() => assertLiveRuntimeIdentity(RECORDED, []), /accepted Runtime live identities are unavailable/);
-  // The absent-member case is now the live record itself: it carries no predecessor
-  // member and its reader yields none.
+  // The record carries exactly the one transition predecessor; its reader yields it.
   const liveRecord = JSON.parse(readFileSync('test/baselines/provenance.json', 'utf8'));
-  assert.equal(Object.hasOwn(liveRecord.runtime_identity.identity_revision, 'accepted_live_predecessors'), false);
-  assert.deepEqual(recordedLivePredecessors(liveRecord.runtime_identity.identity_revision), []);
-  // A record that does carry one predecessor still yields [recorded, predecessor] and
-  // accepts it, so the read path stays inert rather than removed; a malformed list or
-  // entry fails closed instead of widening the drift allowance.
+  assert.deepEqual(liveRecord.runtime_identity.identity_revision.accepted_live_predecessors, [PREDECESSOR]);
+  assert.deepEqual(recordedLivePredecessors(liveRecord.runtime_identity.identity_revision), [PREDECESSOR]);
+  // A record without the member yields none, and a malformed list or entry fails
+  // closed instead of widening the drift allowance.
   const record = (identityRevision) => ({ runtime_identity: { identity_phases: { 'roles-added': RECORDED },
     identity_revision: identityRevision } });
   assert.deepEqual(acceptedLiveRuntimeHashes(record(undefined)), [RECORDED]);
@@ -329,9 +328,15 @@ test('a change set is classified as converged or as a delta, and the guards fail
   ] });
   assert.equal(delta.converged, false);
   assert.equal(delta.replacement, true);
-  assert.throws(() => assertConvergedChangeSet(delta), /must not change the stack/);
-  assert.throws(() => assertConvergedChangeSet({ ...classifyChangeSet({ Status: 'FAILED', StatusReason: 'AccessDenied' }) }),
+  // Issue #220: the unchanged-release guard refuses the conditional replacement.
+  assert.throws(() => assertReleaseStableChangeSet(delta),
+    /only Add\/Modify changes without replacement; the change set lists 1 refused: Modify ComputeRuntimeApiServiceD2475D0A \(Conditional\)/);
+  assert.throws(() => assertReleaseStableChangeSet({ ...classifyChangeSet({ Status: 'FAILED', StatusReason: 'AccessDenied' }) }),
     /change set failed/);
+  // A non-replacement Add or Modify is what the board authorized: admitted.
+  assert.doesNotThrow(() => assertReleaseStableChangeSet(classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
+    { Type: 'Add', ResourceChange: { LogicalResourceId: 'A', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } },
+    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'B', ResourceType: 'AWS::CloudWatch::Alarm', Replacement: 'False' } }] })));
   assert.doesNotThrow(() => assertCreateOnlyChangeSet(classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
     { Type: 'Add', ResourceChange: { LogicalResourceId: 'A', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } }] })));
   assert.throws(() => assertCreateOnlyChangeSet(delta), /created only with Add changes/);
@@ -350,16 +355,17 @@ test('a change set is classified as converged or as a delta, and the guards fail
   assert.deepEqual(diagnostic.resource_changes, []);
   assert.deepEqual(diagnostic.diagnostic_changes, [diagnosticRow]);
   assert.deepEqual(diagnostic.changes, [diagnosticRow]);
-  assert.doesNotThrow(() => assertConvergedChangeSet(diagnostic));
+  assert.doesNotThrow(() => assertReleaseStableChangeSet(diagnostic));
 
-  // A real resource keeps the unchanged fail-closed guard even when a diagnostic
-  // row is present: only real rows count and only their replacement flags report.
+  // A real non-replacement Modify beside a diagnostic row is admitted by the issue
+  // #220 rule; only real rows count and only their replacement flags report.
   const mixed = classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
     { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } },
     { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] });
   assert.equal(mixed.converged, false);
   assert.equal(mixed.replacement, false, 'the diagnostic row does not raise the replacement flag');
-  assert.throws(() => assertConvergedChangeSet(mixed), /the change set lists 1: Modify ComputeRuntimeApiServiceD2475D0A \(False\)/);
+  assert.deepEqual(mixed.resource_changes.map((change) => change.logical_id), ['ComputeRuntimeApiServiceD2475D0A']);
+  assert.doesNotThrow(() => assertReleaseStableChangeSet(mixed));
 });
 
 test('only the recorded live identity phase passes for the Runtime operations', () => {
@@ -478,15 +484,79 @@ test('the bake receives the contract queue URLs and cluster, not hardcoded names
   assert.equal(/beta-anywear-vto'|sqs\.ap-east-1\.amazonaws\.com/.test(source), false);
 });
 
-test('an unchanged release identity cannot produce a delta: Add, Remove and Modify still fail closed and delete the change set', async () => {
-  for (const action of ['Add', 'Modify', 'Remove']) {
-    const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-      { Type: action, ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] } });
-    await assert.rejects(deploy({ env: env(), release, io,
-      synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }), /must not change the stack/, action);
-    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, action);
-    assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), `${action}: fail-closed delete`);
+// Issue #220 (board-authorized): under an unchanged release identity a reviewed,
+// non-replacement Runtime template delta is admitted, executed and baked. Every
+// `Remove`, and any `Add`/`Modify` whose replacement is `True` or `Conditional`,
+// still deletes the change set and fails closed with the named delta.
+test('an unchanged release identity admits only a non-replacement Add/Modify delta; Remove and every replacement fail closed', async () => {
+  const changesFor = (changes) => ({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: changes });
+  const row = (action, replacement, logicalId = 'ComputeRuntimeWorkerOutboxMissingAgeFilterCE0F140F') => ({
+    Type: action,
+    ResourceChange: { LogicalResourceId: logicalId, ResourceType: 'AWS::Logs::MetricFilter', Replacement: replacement },
+  });
+  // Admitted: the two rows are the shape this issue's own change set has — an Add
+  // and a Modify, neither a replacement.
+  for (const [action, replacement] of [['Add', 'False'], ['Modify', 'False']]) {
+    const { io, calls } = fakeIo({ changeSet: changesFor([
+      row('Modify', 'False', 'ComputeRuntimeVtoAgeAlarm02DEBB57'),
+      row(action, replacement),
+    ]) });
+    const captured = capturingBake();
+    const deployment = await deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+      health: HEALTH, bake: captured.bake });
+    assert.equal(deployment.template_sha256, SYNTHESIZED.normalised_sha256, action);
+    assert.ok(calls.some((call) => call.args?.includes('execute-change-set')), `${action}: the admitted delta executes`);
+    assert.equal(calls.some((call) => call.args?.includes('delete-change-set')), false,
+      `${action}: an admitted change set is executed, not deleted`);
+    assert.equal(captured.baked.length, 1, `${action}: the admitted delta still bakes`);
+    assert.deepEqual(io.changedStacks, [RUNTIME_STACK], `${action}: the executed delta is recorded as changed`);
   }
+  // Refused: a Remove, and any Add/Modify whose replacement is not `False`. One
+  // refused row refuses the whole set.
+  for (const [label, changes] of [
+    ['Remove', [row('Remove', 'False')]],
+    ['Modify/True', [row('Modify', 'True')]],
+    ['Modify/Conditional', [row('Modify', 'Conditional')]],
+    ['Add/True', [row('Add', 'True')]],
+    ['Add/Conditional', [row('Add', 'Conditional')]],
+    ['Modify/False plus Remove', [row('Modify', 'False'), row('Remove', 'False', 'ComputeRuntimeVtoAgeAlarm02DEBB57')]],
+  ]) {
+    const { io, calls } = fakeIo({ changeSet: changesFor(changes) });
+    const captured = capturingBake();
+    await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+      health: HEALTH, bake: captured.bake }), /only Add\/Modify changes without replacement/, label);
+    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, `${label}: refused before execution`);
+    assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), `${label}: the refused change set is deleted`);
+    assert.equal(captured.baked.length, 0, `${label}: no bake`);
+    assert.deepEqual(io.changedStacks, [], `${label}: nothing changed`);
+  }
+  // The widened rule admits nothing else: a different release identity keeps the
+  // existing execute path, and the converged no-op and the Add-only create path
+  // have their own tests below.
+  {
+    const { io, calls } = fakeIo({ runtime: liveStack({ identityUnchanged: false }),
+      changeSet: changesFor([row('Modify', 'False', 'ComputeRuntimeVtoAgeAlarm02DEBB57')]) });
+    await deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE });
+    assert.ok(calls.some((call) => call.args?.includes('execute-change-set')),
+      'a different release identity still executes under the existing path');
+  }
+});
+
+// Issue #220: the admitted delta must still normalise to the recorded roles-added
+// identity, so an unreviewed template is refused before any change-set call.
+test('a synthesized Runtime template that does not normalise to the recorded identity is refused', async () => {
+  // The fixture template is the recorded legacy-phase baseline; the same
+  // normalisation runs with the fixture's own hash and with a wrong one.
+  assert.equal(assertSynthesizedRuntimeIdentity(SYNTHESIZED.template, SYNTHESIZED.expected), SYNTHESIZED.expected);
+  assert.throws(() => assertSynthesizedRuntimeIdentity(SYNTHESIZED.template, 'f'.repeat(64)),
+    /normalises to [a-f0-9]{64}, not the recorded roles-added identity/);
+  const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeVtoAgeAlarm02DEBB57', ResourceType: 'AWS::CloudWatch::Alarm', Replacement: 'False' } }] } });
+  await assert.rejects(deploy({ env: env(), release, io,
+    synthesize: async () => { assertSynthesizedRuntimeIdentity(SYNTHESIZED.template, 'f'.repeat(64)); },
+    health: HEALTH, bake: BAKE }), /not the recorded roles-added identity/);
+  assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false, 'no change-set call after a synthesis-identity refusal');
+  assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false);
 });
 
 // Issue #195 acceptance: a converged release's only change is the CDKMetadata
@@ -507,16 +577,16 @@ test('a CDKMetadata-only change set is converged: it executes nothing and is del
     'the operation does not depend on describing the deleted change set');
 });
 
-// Issue #195 acceptance: only AWS::CDK::Metadata is declared diagnostics. A
-// conditional replacement on a real resource still fails closed before execution,
-// and the fail-closed path deletes the change set.
+// Issue #195 acceptance, kept by #220: only AWS::CDK::Metadata is declared
+// diagnostics. A conditional replacement on a real resource still fails closed
+// before execution, and the fail-closed path deletes the change set.
 test('a Modify with Replacement: Conditional on a real resource fails closed and deletes the change set', async () => {
   const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
     { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'Conditional' } }] } });
   await assert.rejects(deploy({ env: env(), release, io,
     synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
-  /must not change the stack; the change set lists 1: Modify ComputeRuntimeApiServiceD2475D0A \(Conditional\)/);
-  assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'a real delta never executes');
+  /only Add\/Modify changes without replacement; the change set lists 1 refused: Modify ComputeRuntimeApiServiceD2475D0A \(Conditional\)/);
+  assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'a replacement never executes');
   assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), 'the fail-closed path deletes the change set');
 });
 
