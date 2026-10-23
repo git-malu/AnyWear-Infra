@@ -1,6 +1,6 @@
 import { canonicalJson, sha256 } from './json-contract.mjs';
 import { readAdmissionState } from './admission-operation.mjs';
-import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-sizing-profile.mjs';
+import { retainedBetaSizingProfile } from './beta-sizing-profile.mjs';
 import { runtimeStack, describeStack } from './one-writer.mjs';
 
 const unavailable = value => (value === undefined ? 'unavailable' : value);
@@ -42,7 +42,7 @@ export async function observeBetaState(io) {
     stacks.push({ stack_name: runtimeStack, status: runtime.StackStatus, runtime_exists: true });
     const parameters = Object.fromEntries((runtime.Parameters ?? []).map(row => [row.ParameterKey, row.ParameterValue]));
     state.beta_sizing = { beta_api_sizing_profile: retainedBetaSizingProfile(parameters),
-      beta_sizing_telemetry: retainedBetaSizingTelemetry(parameters), runtime_verification: 'not-applicable' };
+      runtime_verification: 'not-applicable' };
   }
   state.admission = admissionEvidence(await readAdmissionState(io));
   return state;

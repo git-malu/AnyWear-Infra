@@ -103,19 +103,19 @@
     "application_region": "ap-east-1",
     "identity_phase": "legacy",
     "templates": {
-      "beta-active/AnyWearRuntimeStack-beta.template.json": "4e62ddf0efd630134e81bb71f30937f9ef959e6926a033753da1f37af2630ff9",
+      "beta-active/AnyWearRuntimeStack-beta.template.json": "49fec436921b1592c748edaa128f934e13751264051c46e5aaaac7d3200ca1db",
       "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
     },
     "identity_phases": {
-      "legacy": "454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37",
-      "roles-added": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
-      "retired": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
+      "legacy": "b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c",
+      "roles-added": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be",
+      "retired": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be"
     },
     "phase_hashes": {
       "beta": {
-        "legacy": "454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37",
-        "roles-added": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
-        "retired": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
+        "legacy": "b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c",
+        "roles-added": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be",
+        "retired": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be"
       },
       "prod": {
         "legacy": "d9a990fc4882aab32471ac5fbcc6a91178fabb3e55d38b4c52b73e5c3a46309b",
@@ -204,17 +204,41 @@
         "worker_security_group_id"
       ]
     },
-    "source_files": {
-      "infra/lib/runtime-stack.ts": "2ebc8469d6bed0fd100a01b3d51bb5dc94b6931a",
-      "infra/lib/compute-runtime.ts": "dff2516fa521c5390c3081200025a7ab718967dc",
-      "infra/lib/cleanup-operation.ts": "8fc68752c1f2169d7c3f6f603dbbf9eaca7f4bd5",
-      "infra/lib/platform-inputs.ts": "8d1a5b75662ba60a8d803491d6dfe4c64793ae76",
-      "infra/scripts/bake-gate.mjs": "3e0d41036ae1eae9218eaf90277750ae2e1ef57c",
-      "infra/test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json": "3ebf10b4ba9937450c095772abd207ea25f31ad5",
-      "infra/test/baselines/prod-active/AnyWearRuntimeStack-prod.template.json": "2a3c8c6a8a52f77dc7f6ab5b57c88c80c98b7a95"
+    "identity_revision": {
+      "issue": 183,
+      "recorded_at": "2026-10-23",
+      "change": "Removed the BetaSizingTelemetry String parameter of AnyWearRuntimeStack-beta and the BETA_SIZING_TELEMETRY entry it fed in both Beta containers; the Beta Runtime baseline, its normalised phase hashes and its template sha256 were re-recorded from that source. The production template is unchanged because the parameter was Beta-only. At this recording issue #214 still owns scripts/runtime-deploy.mjs, so the live check that will consume accepted_live_predecessors is not implemented yet; the single recorded predecessor is accepted when that edit lands.",
+      "previous_templates": {
+        "beta-active/AnyWearRuntimeStack-beta.template.json": "4e62ddf0efd630134e81bb71f30937f9ef959e6926a033753da1f37af2630ff9",
+        "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
+      },
+      "previous_phase_hashes": {
+        "beta": {
+          "legacy": "454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37",
+          "roles-added": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f",
+          "retired": "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
+        },
+        "prod": {
+          "legacy": "d9a990fc4882aab32471ac5fbcc6a91178fabb3e55d38b4c52b73e5c3a46309b",
+          "roles-added": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55",
+          "retired": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55"
+        }
+      },
+      "accepted_live_predecessors": [
+        "6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f"
+      ]
     },
-    "source_file_hashes": "Git blob hashes at 4f2ba555ec293771551c0d23266af7038d95383e: the moved file was compared with `git rev-parse 4f2ba555:infra/<path>` before the stack synthesiser changed. runtime-stack.ts changed only its synthesiser (own-credentials -> standard cdk-hnb659fds), so the moved bytes prove the source identity.",
-    "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e. Only the stack synthesiser changed: the retired own-credentials synthesiser was replaced by the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes (the phase hashes and the template comparison prove it). The legacy/roles-added/retired phase hashes are measured from this moved source, which is the pre-change source, not copied from the live stack.",
+    "source_files": {
+      "lib/runtime-stack.ts": "cb679b436fb5fdcdd31bb0f74cb73ffd117f7b2d",
+      "lib/compute-runtime.ts": "cf0fbfd9a9ef919737e052bee04f8bc7a8e6a41d",
+      "lib/cleanup-operation.ts": "8fc68752c1f2169d7c3f6f603dbbf9eaca7f4bd5",
+      "lib/platform-inputs.ts": "05382c7721df146963aa8b7a09ab3ed30158a6bc",
+      "scripts/bake-gate.mjs": "840606d953ec0eabd3503878c803145827f5dd1f",
+      "test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json": "0e3e3369a3f7a4d863cfb73bce452eb7958507d2",
+      "test/baselines/prod-active/AnyWearRuntimeStack-prod.template.json": "b4fa6794189f0be748f08295988fbbeffefd6db1"
+    },
+    "source_file_hashes": "Git blob hashes of the current files at the #183 change head, in this repository's paths. They are not the AnyWear-Service move-anchor blobs: #195 compared the moved files with `git rev-parse 4f2ba555:infra/<path>`, and later reviewed changes (the cdk-hnb659fds synthesiser, the #201 stage-contract consumer rename, #207 and #183) changed runtime-stack.ts, platform-inputs.ts, bake-gate.mjs and the Beta Runtime baseline after that anchor. source_sha above stays 4f2ba555ec293771551c0d23266af7038d95383e because scripts/synth-matrix.mjs asserts it as the move anchor, not as a claim that the current bytes equal it.",
+    "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e; that statement describes the move anchor only. The #195 synthesiser change replaced the retired own-credentials synthesiser with the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes. Issue #183 then removed the Beta sizing-telemetry parameter and its container environment entry, so the Beta template and two of the four source modules no longer match the move anchor; the beta phase hashes and the beta template sha256 in this record are measured from the #183 source (templates/, phase_hashes.beta, identity_phases and identity_revision), while the prod template and the prod phase hashes are unchanged because the parameter was Beta-only. The legacy/roles-added/retired phase hashes are measured from source, not copied from the live stack.",
     "live_verification": {
       "recorded_at": "2026-10-22",
       "live_stack": "AnyWearRuntimeStack-beta",
