@@ -2,14 +2,14 @@
 
 Versioned, dependency-free source of the AnyWear Beta stage contract, the
 Base/Egress/Runtime stack identities, the deployed-template normalisation, the
-task-definition identity, and the 600-second six-signal bake gate's stage-free
+task-definition identity, and the 300-second six-signal bake gate's stage-free
 constants and name builders.
 
 | | |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.6.0` |
-| Tag | `stage-contracts-v0.6.0` (created at Deployment, not by the change that bumps the version; `stage-contracts-v0.5.0` is the newest published tag) |
+| Version | `0.7.0` |
+| Tag | `stage-contracts-v0.7.0` (created at Deployment, not by the change that bumps the version; `stage-contracts-v0.6.0` is the newest published tag) |
 | Registry | GitHub Packages (`https://npm.pkg.github.com`) |
 | Runtime | Node.js 24+, plain ESM (`.mjs`) with `.d.ts`; no build step, no runtime dependency |
 
@@ -55,7 +55,7 @@ constants and name builders.
   `DEPLOYMENT_GATE_THRESHOLDS` and `DEPLOYMENT_GATE_COMPARISONS` (one stage-free
   table), `DEPLOYMENT_SQS_DEPTH_ATTRIBUTES`, `deploymentBakeName`,
   `deploymentAlarmName`, `deploymentAlarmNames` and `deploymentQueueNames`. The
-  bake itself — the 600-second window, the probe budget, each signal's
+  bake itself — the 300-second window, the probe budget, each signal's
   value/threshold/comparison self-consistency, the deployed alarm names and
   observed states, and each signal's exact read identity and minimum data points —
   is evaluated by AnyWear-Infra's `scripts/bake-gate.mjs` and fails the `deploy`
@@ -65,6 +65,18 @@ constants and name builders.
   attributes from `GetQueueAttributes` (`DEPLOYMENT_SQS_DEPTH_ATTRIBUTES`). The
   age is not a `GetQueueAttributes` attribute; `ApproximateNumberOfMessagesVisible`
   is not a valid attribute name, so neither can appear in a read.
+
+### Changed in 0.7.0 (issue #219)
+
+The bake window shortens to 300 seconds and every completeness rule is
+recalibrated to what that window produces: 20 probes at the unchanged 15-second
+cadence, an ALB `RequestCount` floor of 15 (75% of 20), five one-minute
+`RequestCount` periods, 10 ECS and 10 SQS samples, 300-second
+`TargetResponseTime` p95 and `ApproximateAgeOfOldestMessage` periods aligned to
+the next 5-minute clock boundary, a 150-second queue age, a 150000 ms outbox age
+and four outbox log lines. The gate keeps the same six signals, structure and
+fail-closed predicate, the thresholds remain one stage-free table, and a
+Production activation revisits these numbers at that point.
 
 ### Removed in 0.6.0 (issue #207)
 
@@ -104,14 +116,14 @@ The conditional `cleanup_task_role_arn` definition is included in
 
 ```sh
 npm test    # node --test test/*.test.mjs
-npm pack    # git-malu-stage-contracts-0.6.0.tgz
+npm pack    # git-malu-stage-contracts-0.7.0.tgz
 ```
 
 ## Publishing
 
 Publishing is a separate, tag-triggered workflow
 (`.github/workflows/publish-stage-contracts.yml`) with `packages: write`. Pushing
-the annotated tag `stage-contracts-v0.6.0` runs the package tests, asserts the
+the annotated tag `stage-contracts-v0.7.0` runs the package tests, asserts the
 tag equals `stage-contracts-v<package version>`, and publishes with
 `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` to
 `https://npm.pkg.github.com`. It holds no AWS credential and no deployment

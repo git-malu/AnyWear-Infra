@@ -538,7 +538,7 @@ test('a change-set execute failure fails the run before the bake', async () => {
 test('a breaching or insufficient-data bake fails the run', async () => {
   const healthy = gateBlock();
   const breaching = { ...healthy, result: 'failed', signals: healthy.signals.map((signal, index) => (index === 3
-    ? { ...signal, state: 'breaching', exceptions: ['vto oldest-message age 301s exceeds 300s'] }
+    ? { ...signal, state: 'breaching', exceptions: ['vto oldest-message age 151s exceeds 150s'] }
     : signal)) };
   const insufficient = failedGate({ stage: 'beta', cluster: 'beta-anywear',
     logGroup: '/anywear/beta/worker', serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST });
@@ -549,7 +549,7 @@ test('a breaching or insufficient-data bake fails the run', async () => {
       StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
     await assert.rejects(deploy({ env: env(), release, io,
       synthesize: async () => SYNTHESIZED, health: HEALTH, bake: async () => gate }),
-    /The 600-second bake failed/, label);
+    /The 300-second bake failed/, label);
     // A converged no-op still never executes a change set before a failed bake.
     assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, label);
   }
@@ -670,7 +670,7 @@ test('a bake refusal after the change set executed appends exactly one summary l
         acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE,
         bake: async () => failedGate({ stage: 'beta', cluster: 'beta-anywear', logGroup: '/anywear/beta/worker',
           serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST }) },
-    }), /The 600-second bake failed/);
+    }), /The 300-second bake failed/);
     assert.ok(calls.some((call) => call.args?.includes('execute-change-set')), 'the change set executed first');
     const lines = (await readFile(summary, 'utf8')).trim().split('\n');
     assert.equal(lines.length, 1, 'exactly one summary line');

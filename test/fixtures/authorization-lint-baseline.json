@@ -305,7 +305,7 @@
     {
       "stack": "AnyWearPlatformStack-beta",
       "id": "Resource::arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*",
-      "reason": "The 600-second bake records the deployed bake and queue alarm states under the reviewed `beta-anywear-*` alarm prefix; the alarm names are the only wildcard position and no alarm is written."
+      "reason": "The 300-second bake records the deployed bake and queue alarm states under the reviewed `beta-anywear-*` alarm prefix; the alarm names are the only wildcard position and no alarm is written."
     },
     {
       "stack": "AnyWearPlatformStack-beta",

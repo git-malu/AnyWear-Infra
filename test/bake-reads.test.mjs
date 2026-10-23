@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '@git-malu/stage-contracts';
 
-// Every AWS CLI call the 600-second bake runs. Since #195 the bake runs inside
+// Every AWS CLI call the 300-second bake runs. Since #195 the bake runs inside
 // the Infra `deploy-runtime` operation under the read-only runtime session as
 // `beta-infra-runtime-role`; its bake grants live in
 // `lib/beta-role-grants.ts` and render into the Platform stack's

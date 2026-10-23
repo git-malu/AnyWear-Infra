@@ -436,7 +436,7 @@ export class ComputeRuntime extends Construct {
     });
     addAction(apiCpuAlarm);
 
-    // Issue #162 bake alarms. Each one is a deployed, named entity the 600-second
+    // Issue #162 bake alarms. Each one is a deployed, named entity the 300-second
     // deployment bake reads; the bake's own pass/fail never reads alarm state.
     const alb5xxRate = new cloudwatch.MathExpression({
       // AWS's recommended 5% 5xx alarm, over 60-second sums. MAX takes one time

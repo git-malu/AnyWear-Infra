@@ -11,7 +11,7 @@
 // Issue #207 retired the operation/deployment record chain, so the record
 // validators (`anywear_infra_*`, `anywear_service_deployment`) and the
 // record-gate block validators are gone. The controls that remain are the
-// schema-boundary gate, the 600-second six-signal bake, deployment authorization
+// schema-boundary gate, the 300-second six-signal bake, deployment authorization
 // and the pre-credential release-byte proof; only their stage-free constants and
 // builders live here. The schema-boundary comparison shape is owned by the gate
 // that produces it, not by this package.
@@ -294,7 +294,7 @@ const DEPLOYMENT_INPUT_FIELDS = Object.freeze(['parameter', 'version', 'value_sh
 // ---------------------------------------------------------------------------
 // Deployment bake gate (Issue #162)
 //
-// `deploy-runtime` runs a bounded 600-second bake that reads the six named
+// `deploy-runtime` runs a bounded 300-second bake that reads the six named
 // signals live from the deployed state and fails the deploy job on any breach or
 // on missing evidence. The gate's result is the job conclusion and the run log;
 // no record carries it. The constants and name builders below are the stage-free
@@ -308,10 +308,10 @@ const DEPLOYMENT_INPUT_FIELDS = Object.freeze(['parameter', 'version', 'value_sh
 // or short data is `insufficient` and fails the gate exactly like `breaching`.
 
 export const DEPLOYMENT_GATE_NAME_SUFFIX = 'anywear-deployment-bake';
-export const DEPLOYMENT_GATE_DURATION_SECONDS = 600;
+export const DEPLOYMENT_GATE_DURATION_SECONDS = 300;
 export const DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS = 15;
-export const DEPLOYMENT_GATE_REQUEST_FLOOR = 30;
-export const DEPLOYMENT_GATE_MAX_PROBES = 40;
+export const DEPLOYMENT_GATE_REQUEST_FLOOR = 15;
+export const DEPLOYMENT_GATE_MAX_PROBES = 20;
 export const DEPLOYMENT_GATE_SIGNAL_NAMES = Object.freeze([
   'alb_5xx_rate',
   'alb_p95_latency',
@@ -337,9 +337,9 @@ export const DEPLOYMENT_GATE_THRESHOLDS = Object.freeze({
   alb_5xx_rate: Object.freeze({ max_5xx: 0, min_requests: DEPLOYMENT_GATE_REQUEST_FLOOR }),
   alb_p95_latency: Object.freeze({ max_milliseconds: 5000 }),
   ecs_running_not_desired: Object.freeze({ max_gap_seconds: 120 }),
-  sqs_oldest_message_age: Object.freeze({ max_seconds: 300 }),
+  sqs_oldest_message_age: Object.freeze({ max_seconds: 150 }),
   sqs_dlq_depth: Object.freeze({ max_depth: 0 }),
-  outbox_oldest_age: Object.freeze({ max_age_milliseconds: 300000 }),
+  outbox_oldest_age: Object.freeze({ max_age_milliseconds: 150000 }),
 });
 
 const DEPLOYMENT_GATE_SIGNAL_DEFINITIONS = Object.freeze({

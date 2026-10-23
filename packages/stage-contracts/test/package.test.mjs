@@ -11,8 +11,8 @@ const packageJson = JSON.parse(read('package.json'));
 
 test('the package identity is the reviewed name, version and tag', () => {
   assert.equal(packageJson.name, '@git-malu/stage-contracts');
-  assert.equal(packageJson.version, '0.6.0');
-  assert.equal(`stage-contracts-v${packageJson.version}`, 'stage-contracts-v0.6.0');
+  assert.equal(packageJson.version, '0.7.0');
+  assert.equal(`stage-contracts-v${packageJson.version}`, 'stage-contracts-v0.7.0');
   assert.equal(packageJson.type, 'module');
   assert.equal(packageJson.license, 'UNLICENSED');
   assert.equal(packageJson.engines.node, '>=24');
@@ -86,10 +86,10 @@ test('every removed record/gate export is undefined and every kept export is pre
   for (const name of KEPT_EXPORTS) {
     assert.notEqual(pkg[name], undefined, `${name} must stay exported`);
   }
-  assert.equal(pkg.DEPLOYMENT_GATE_DURATION_SECONDS, 600);
+  assert.equal(pkg.DEPLOYMENT_GATE_DURATION_SECONDS, 300);
   assert.equal(pkg.DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS, 15);
-  assert.equal(pkg.DEPLOYMENT_GATE_MAX_PROBES, 40);
-  assert.equal(pkg.DEPLOYMENT_GATE_REQUEST_FLOOR, 30);
+  assert.equal(pkg.DEPLOYMENT_GATE_MAX_PROBES, 20);
+  assert.equal(pkg.DEPLOYMENT_GATE_REQUEST_FLOOR, 15);
   assert.equal(pkg.STAGE_CONTRACT_PARAMETERS.length, 35);
   assert.equal(pkg.STAGE_CONTRACT_CONDITIONAL_PARAMETERS.length, 1);
   assert.equal(pkg.STAGE_CONTRACT_READ_PARAMETERS.length, 36);
