@@ -285,11 +285,13 @@ const STAGE_INPUT_DEFINITIONS: ReadonlyMap<string, StageParameter> = new Map([
  * The content identity of the stage-contract surface, computed with the
  * package's own schema function.
  *
- * `stageContractSchemaHash` hashes the sorted `{parameter, version}` pairs a
- * deployment records. At synth time no SSM version exists, so this pins the
- * *name surface* at contract generation 1; a package change that renames,
- * removes or reorders a definition changes the hash. The deployment record keeps
- * each parameter's real SSM `Version`, so this constant is never recorded as one.
+ * `stageContractSchemaHash` hashes the sorted `{parameter, version}` pairs of a
+ * stage-input row set. At synth time no SSM version exists, so this pins the
+ * *name surface* at contract generation 1: a package change that renames, removes
+ * or reorders a definition changes the hash, and the pinned value below fails
+ * before synthesis. It is a source-level fingerprint: a deploy reads each
+ * parameter's real SSM `Version` from the live contract, and no artifact writes
+ * this constant as an input version (#207).
  */
 export const STAGE_CONTRACT_SURFACE_HASH = stageContractSchemaHash(
   STAGE_CONTRACT_DEFINITIONS.map((definition) => ({
