@@ -6,14 +6,16 @@ import { account, region } from './deployment-contract.mjs';
 
 const execute = promisify(execFile);
 
-// The enforced preflight (#165). Before any mutation, the deploy job simulates
-// the effective authorization of the two roles it actually uses: the base
-// identity policies with iam:SimulatePrincipalPolicy, and the generated session
-// policy with iam:SimulateCustomPolicy. Both must allow every required read; the
-// effective permission is the intersection of the two, so proving them separately
-// is sound. PolicyInputList is additive (it does not intersect), which is why the
-// session policy is simulated as its own custom policy rather than added to the
-// principal simulation.
+// The enforced preflight (#165). Before a runtime-session mutation the operation
+// simulates the effective authorization of the runtime role: the base identity
+// policy with iam:SimulatePrincipalPolicy, and the generated session policy with
+// iam:SimulateCustomPolicy. Both must allow every required read; the effective
+// permission is the intersection of the two, so proving them separately is sound.
+// PolicyInputList is additive (it does not intersect), which is why the session
+// policy is simulated as its own custom policy rather than added to the principal
+// simulation. There is one plan, derived from the reviewed reads table; the CDK
+// deploy, change-set and destroy paths run no simulation at all (#214), because a
+// hardcoded guess at the CDK CLI's call surface cannot fail for a new CDK read.
 export const PREFLIGHT_MARKER = 'preflight';
 export const SIMULATE_ACTIONS = Object.freeze(['iam:SimulatePrincipalPolicy', 'iam:SimulateCustomPolicy']);
 
@@ -29,15 +31,8 @@ const TASK_FUNCTIONS = Object.freeze(['beta-anywear-pre-sign-up', 'beta-anywear-
   'AnyWearPlatformStack-beta-*'].map((name) => arn('lambda', `function:${name}`)));
 // The runtime role reads the full published stage contract plus the admission and
 // tester parameter surface; the simulator plan uses every reviewed name rather
-// than a representative subset.
-// The deploy role reads only the public platform names, the admission names and
-// the two record parameters (lib/beta-role-grants.ts); the stage-contract prefix is
-// granted to the runtime and E2E roles, not to the deploy role.
-const DEPLOY_PARAMETER_NAMES = Object.freeze(['cognito_user_pool_id', 'cognito_client_id', 'aws_region',
-  's3_bucket_name', 'qweather_api_host', 'admission_mode', 'tester_allowlist',
-  'infra_selection', 'infra_deployment']);
-const DEPLOY_PARAMETER_ARNS = Object.freeze(DEPLOY_PARAMETER_NAMES.map((name) =>
-  `arn:aws:ssm:${region}:${account}:parameter/anywear/beta/${name}`));
+// than a representative subset. The deploy session no longer has a plan: the CDK
+// CLI's own call surface is not modelled here (#214).
 
 const STAGE_PARAMETER_ARNS = Object.freeze([...new Set([...STAGE_CONTRACT_PARAMETERS,
   '/anywear/beta/admission_mode', '/anywear/beta/tester_allowlist',
@@ -72,8 +67,7 @@ export const READ_RESOURCES = Object.freeze({
   // DescribeLogGroups is account-level: its list form has no resource type, so a
   // log-group/log-stream ARN (even an empty-name form) is an implicit deny.
   'logs/describe-log-groups': Object.freeze(['*']),
-  // Issue #195: the bake's live reads (`deploy-runtime` only, `readOperations`)
-  // and the change-set evidence.
+  // Issue #195: the bake's live reads (`deploy-runtime` only, `readOperations`).
   'cloudwatch/get-metric-statistics': Object.freeze(['*']),
   'cloudwatch/describe-alarms': Object.freeze(['beta-anywear-alb-5xx', 'beta-anywear-api-p95-latency',
     'beta-anywear-ecs-running-not-desired', 'beta-anywear-vto-oldest-message',
@@ -82,7 +76,6 @@ export const READ_RESOURCES = Object.freeze({
     .map((name) => arn('cloudwatch', `alarm:${name}`))),
   'logs/filter-log-events': Object.freeze(['/anywear/beta/worker', '/anywear/beta/worker:*']
     .map((name) => arn('logs', `log-group:${name}`))),
-  'cloudformation/describe-change-set': Object.freeze([arn('cloudformation', 'changeSet/*')]),
 });
 
 // Reads that are not simulated, each with the reason. A new reviewed read must be
@@ -131,36 +124,14 @@ export class AuthorizationPreflightError extends Error {
 }
 
 // Runtime reads come from the reviewed reads table in operation-boundaries.mjs,
-// scoped by `operationReads` to the reads the dispatched operation performs; the
-// deploy session's own reads are the CDK CLI path. Mutations are not simulated:
+// scoped by `operationReads` to the reads the dispatched operation performs. The
+// runtime session is the only preflight session (#214); the CDK deploy,
+// change-set and destroy paths run no simulation. Mutations are not simulated:
 // the preflight proves the reads before the mutation begins. The scope narrows
 // what an operation must already hold; it never removes a read the operation
 // performs, so `deploy-runtime` — the only operation that runs the bake — still
 // simulates the bake reads and still fails closed when the role lacks them.
 export function simulationRequests(kind, env, purpose = 'operation') {
-  if (kind === 'deploy') {
-    const requests = [
-      { pair: 'cloudformation/describe-stacks', actions: ['cloudformation:DescribeStacks'], resources: [STACKS[1]] },
-      { pair: 'ssm/get-parameter', actions: ['ssm:GetParameter'], resources: DEPLOY_PARAMETER_ARNS },
-      { pair: 'ec2/describe-managed-prefix-lists', actions: ['ec2:DescribeManagedPrefixLists'], resources: ['*'] },
-    ];
-    // Issue #195: `deploy-runtime` describes the change set it will execute under
-    // this session. `ExecuteChangeSet`/`DeleteChangeSet` are mutations and are
-    // not simulated; the read is the evidence the operation judges.
-    // The simulated resource is the Runtime stack ARN, not a change-set ARN: the
-    // IAM policy simulator returns implicitDeny for `cloudformation:DescribeChangeSet`
-    // on every change-set ARN form even under a policy that allows the action on
-    // `*` (form probes 2026-10-22; run 39787035530 failed on the change-set form),
-    // while the stack ARN form is evaluable. The deploy role's DedicatedPolicy and
-    // the generated session policy both grant the action on the real stack and
-    // change-set forms, so this keeps the action a simulated gate rather than a
-    // `SIMULATION_SKIPS` entry.
-    if (env.INFRA_OPERATION === 'deploy-runtime') {
-      requests.push({ pair: 'cloudformation/describe-change-set', actions: ['cloudformation:DescribeChangeSet'],
-        resources: [stack('AnyWearRuntimeStack-beta')] });
-    }
-    return requests;
-  }
   if (kind !== 'runtime') throw new Error(`Unknown preflight session ${kind}`);
   const requests = [];
   for (const pair of operationReads(env)) {

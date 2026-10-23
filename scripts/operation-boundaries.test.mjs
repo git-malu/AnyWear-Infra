@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { workflowOperations, operationFamilies, operationBoundary, operationRoles, families, assertOneShotAllowed,
   assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads,
   verifyActions } from './operation-boundaries.mjs';
+import { SIMULATE_ACTIONS } from './authorization-preflight.mjs';
 
 const infraSha = '5'.repeat(40);
 const env = (operation, overrides = {}) => {
@@ -154,6 +155,18 @@ test('session policies carry only the operation\'s own families', () => {
   assert.doesNotMatch(runtime, /beta-anywear-lifecycle-task|beta-anywear-migration-task/);
   assert.ok(runtime.length < 2048, `deploy-runtime session policy is ${runtime.length} bytes`);
   assert.equal(JSON.parse(runtime).Version, '2012-10-17');
+  // Issue #214: the preflight simulates the runtime session only, so only the
+  // runtime session policy carries the simulator actions. The deploy session's
+  // copy is gone; both roles' identity grants stay (#196 owns narrowing those).
+  const actionsOf = (policy) => JSON.parse(policy).Statement.flatMap((statement) => [statement.Action].flat());
+  for (const action of SIMULATE_ACTIONS) {
+    assert.equal(actionsOf(sessionPolicy('deploy', env('deploy-platform'), 'operation')).includes(action), false,
+      `the deploy session policy must not carry ${action}`);
+    for (const operation of ['deploy-platform', 'deploy-runtime']) {
+      assert.equal(actionsOf(sessionPolicy('runtime', env(operation), 'operation')).includes(action), true,
+        `the ${operation} runtime session policy must carry ${action}`);
+    }
+  }
 });
 
 // Issue #195: the bake runs only inside `deploy-runtime`, and its two new grants
