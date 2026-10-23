@@ -235,7 +235,7 @@
     },
     "source_files": {
       "lib/runtime-stack.ts": "cb679b436fb5fdcdd31bb0f74cb73ffd117f7b2d",
-      "lib/compute-runtime.ts": "2d49d2f2c9bb11bdd3f5db83575780383a59eb00",
+      "lib/compute-runtime.ts": "83ed6d334fa6335a55ed06898ae25864ce694553",
       "lib/cleanup-operation.ts": "8fc68752c1f2169d7c3f6f603dbbf9eaca7f4bd5",
       "lib/platform-inputs.ts": "05382c7721df146963aa8b7a09ab3ed30158a6bc",
       "scripts/bake-gate.mjs": "8bd8f10ff1401b7501d84a3707a4216fa4d68307",
