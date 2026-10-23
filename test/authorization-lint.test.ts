@@ -193,6 +193,42 @@ describe('IaC policy lint (#165)', () => {
     ]);
   });
 
+  it('fails when one wildcard statement is injected into either real synthesized stack', () => {
+    // Inject into a clone of each real synthesized template, never the stack, the
+    // fixture or the recorded observation. The injected statement reuses the
+    // bare-`*` form already pinned for both stacks, so the cdk-nag finding-id set
+    // cannot move and only the per-stack count can fail the check.
+    for (const { name, template } of entries) {
+      const pinned = baseline.templates.find((entry) => entry.stack === name)?.wildcard_statement_count;
+      expect(pinned).toBeGreaterThan(0);
+      expect(baseline.findings.some((finding) => finding.stack === name && finding.id === 'Resource::*')).toBe(true);
+      expect(wildcardStatementCount(template)).toBe(pinned);
+      const injected = structuredClone(template);
+      injected.Resources.AuthorizationLintInjectedPolicy = {
+        Type: 'AWS::IAM::Policy',
+        Properties: {
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: 'ecs:DeregisterTaskDefinition', Resource: '*' }],
+          },
+          PolicyName: 'authorization-lint-injected-policy',
+        },
+      };
+      const injectedCount = wildcardStatementCount(injected);
+      expect(injectedCount).toBe((pinned as number) + 1);
+      const problems = compareLint(baseline, { findings: observed.findings,
+        counts: { ...observed.counts, [name]: injectedCount } });
+      expect(problems).toEqual([
+        `${name}: wildcard-bearing statement count ${(pinned as number) + 1} does not match the pinned ${pinned}`,
+      ]);
+      // Count-only failure: the id set comparison stays quiet.
+      expect(problems.join('\n')).not.toMatch(/new AwsSolutions-IAM5 finding|stale baseline entry/);
+      // The recorded state is untouched by the clone or the comparison.
+      expect(wildcardStatementCount(template)).toBe(pinned);
+      expect(observed.counts[name]).toBe(pinned);
+    }
+  });
+
   it('reports a synthetic new wildcard on a control stack as a cdk-nag finding', () => {
     // The negative control: a wildcard the baseline does not carry must surface
     // from cdk-nag itself, not only from the fixture comparison.
