@@ -262,4 +262,13 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   e2e.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['sqs:ReceiveMessage', 'sqs:ChangeMessageVisibility'], resources: [p.autoTaggingDeadLetterQueue.queueArn],
   }));
+  // Issue #217: the E2E `reconcile` operation diffs the Beta pool's
+  // `AdminCreateUser` CloudTrail events over the 7-day lookback to find
+  // identities no lifecycle manifest names. `cloudtrail:LookupEvents` has no
+  // resource-level scope, so the statement is exactly that one read-only action
+  // on `*`, bound to the Beta region like the other regional reads above. No
+  // other CloudTrail action and no account-wide Cognito listing is added.
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudtrail:LookupEvents'], resources: ['*'], conditions: regional,
+  }));
 }

@@ -69,6 +69,80 @@ const RUNTIME_CLEANUP_ALLOWANCE = Object.freeze({
   ]),
 });
 
+// Issue #217 grants on two dedicated Beta identities. Both policies are new
+// relative to the recorded legacy baseline, so the reviewed dedicated-identity
+// allowances admit the whole policy. These predicates pin the permission surface
+// those policies add to exactly the statements reviewed for #217, so a different
+// action, resource, prefix or condition fails the comparison instead of riding
+// the resource-level allowance. The cleanup role carries no other S3 statement
+// and the E2E qualification policy no other CloudTrail statement.
+const WARDROBE_BUCKET = /^AnyWearWardrobeBucket[A-F0-9]{8}$/;
+const CLEANED_PREFIXES = Object.freeze(['wearable-items/*', 'base-photos/*']);
+const statementActions = (statement) => [statement.Action].flat();
+const statementKeys = (value, keys) => value !== null && typeof value === 'object'
+  && JSON.stringify(Object.keys(value).sort()) === JSON.stringify(keys);
+const same = (left, right) => JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+function wardrobeObjectPrefixArn(value, prefix) {
+  const join = value?.['Fn::Join'];
+  if (!Array.isArray(join) || join[0] !== '' || !Array.isArray(join[1]) || join[1].length !== 2) return false;
+  const [bucket, suffix] = join[1];
+  return WARDROBE_BUCKET.test(bucket?.['Fn::GetAtt']?.[0] ?? '') && bucket['Fn::GetAtt'][1] === 'Arn'
+    && suffix === `/${prefix}`;
+}
+function wardrobeBucketArn(value) {
+  return WARDROBE_BUCKET.test(value?.['Fn::GetAtt']?.[0] ?? '') && value['Fn::GetAtt'][1] === 'Arn';
+}
+// Exactly the two #217 statements: `s3:DeleteObject` on the two per-user prefix
+// object ARNs and `s3:ListBucket` on the bucket ARN under the two-prefix
+// `s3:prefix` condition. Anything else that touches S3 on this role returns
+// `undefined` and stays a rejected difference.
+function cleanupTaskRoleS3Grants(policy) {
+  const statements = policy.Properties?.PolicyDocument?.Statement;
+  if (!Array.isArray(statements)) return undefined;
+  const s3 = statements.filter((statement) => statementActions(statement)
+    .some((action) => typeof action === 'string' && action.startsWith('s3:')));
+  if (s3.length !== 2) return undefined;
+  const remove = s3.find((statement) => same(statementActions(statement), ['s3:DeleteObject']));
+  const list = s3.find((statement) => same(statementActions(statement), ['s3:ListBucket']));
+  if (!remove || !list) return undefined;
+  // `minimizePolicies` sorts a statement's resource array, so compare the two
+  // prefix ARNs as the exact set rather than in source order.
+  if (!statementKeys(remove, ['Action', 'Effect', 'Resource']) || remove.Effect !== 'Allow'
+    || !Array.isArray(remove.Resource) || remove.Resource.length !== CLEANED_PREFIXES.length
+    || !CLEANED_PREFIXES.every((prefix) => remove.Resource.some((resource) => wardrobeObjectPrefixArn(resource, prefix)))) {
+    return undefined;
+  }
+  if (!statementKeys(list, ['Action', 'Condition', 'Effect', 'Resource']) || list.Effect !== 'Allow'
+    || !wardrobeBucketArn(list.Resource)
+    || !statementKeys(list.Condition, ['StringLike'])
+    || !same(list.Condition, { StringLike: { 's3:prefix': [...CLEANED_PREFIXES] } })) return undefined;
+  return [remove, list];
+}
+// Exactly one read-only `cloudtrail:LookupEvents` statement on `*`, bound to the
+// region the file already uses for the other regional reads. The grant has no
+// resource-level scope, so the region condition is the bound; a second CloudTrail
+// action, another resource or a missing condition returns `undefined`.
+function cloudTrailLookupStatement(policy) {
+  const statements = policy.Properties?.PolicyDocument?.Statement;
+  if (!Array.isArray(statements)) return undefined;
+  const cloudtrail = statements.filter((statement) => statementActions(statement)
+    .some((action) => typeof action === 'string' && action.startsWith('cloudtrail:')));
+  if (cloudtrail.length !== 1) return undefined;
+  const [statement] = cloudtrail;
+  // `minimizePolicies` merges statements with equal Effect/Resource/Condition,
+  // so this grant may share its statement with the pre-existing regional reads.
+  // The whole policy must still carry exactly this one CloudTrail action.
+  const actions = statementActions(statement);
+  if (!actions.every((action) => typeof action === 'string')
+    || !same(actions.filter((action) => action.startsWith('cloudtrail:')), ['cloudtrail:LookupEvents'])) return undefined;
+  if (!statementKeys(statement, ['Action', 'Condition', 'Effect', 'Resource'])) return undefined;
+  const region = statement.Condition?.StringEquals?.['aws:RequestedRegion'];
+  const regionBound = (typeof region === 'string' && region.length > 0)
+    || same(region, { Ref: 'AWS::Region' });
+  return statement.Effect === 'Allow' && statement.Resource === '*' && regionBound
+    && same(statement.Condition, { StringEquals: { 'aws:RequestedRegion': region } }) ? statement : undefined;
+}
+
 // These are the complete extraction exceptions. Role additions/retirement are
 // independently inspected; all application resources/outputs remain exact.
 export function compareTemplates(before, after, { phase = 'legacy', stage, stackName, ecrImageRetention = false } = {}) {
@@ -89,7 +163,36 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
       && ((/^CleanupTaskRole[A-F0-9]{8}$/.test(id) && resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-anywear-tester-cleanup-task')
         || (/^CleanupTaskRoleDefaultPolicy[A-F0-9]{8}$/.test(id) && resource.Type === 'AWS::IAM::Policy'
           && resource.Properties.Roles?.length === 1 && /^CleanupTaskRole[A-F0-9]{8}$/.test(resource.Properties.Roles[0]?.Ref ?? '')));
-    if (cleanup) { allowed.push({ path: `/Resources/${id}`, reason: 'Dedicated Beta cleanup task identity', after: resource }); delete candidate.Resources[id]; continue; }
+    if (cleanup) {
+      // Issue #217: the cleanup policy must carry exactly the reviewed S3 grant;
+      // any other S3 surface on this role stays a rejected difference.
+      const grants = resource.Type === 'AWS::IAM::Policy' ? cleanupTaskRoleS3Grants(resource) : true;
+      if (grants) {
+        allowed.push({ path: `/Resources/${id}`, reason: 'Dedicated Beta cleanup task identity', after: resource });
+        if (Array.isArray(grants)) {
+          allowed.push({ path: `/Resources/${id}/Properties/PolicyDocument/Statement`, after: grants,
+            reason: 'Issue #217: cleanup task role deletes captured users\' S3 objects' });
+        }
+        delete candidate.Resources[id];
+      }
+      continue;
+    }
+    const e2eQualification = stackName === 'AnyWearPlatformStack-beta' && phase !== 'legacy'
+      && !baseline.Resources?.[id] && resource.Type === 'AWS::IAM::Policy'
+      && /^E2EQualificationRoleDedicatedPolicy[A-F0-9]{8}$/.test(id)
+      && JSON.stringify(resource.Properties?.Roles) === JSON.stringify(['beta-e2e-qualification-role']);
+    if (e2eQualification) {
+      // Issue #217: the qualification policy must carry exactly the reviewed
+      // read-only CloudTrail statement; any other CloudTrail surface is rejected.
+      const grant = cloudTrailLookupStatement(resource);
+      if (grant) {
+        allowed.push({ path: `/Resources/${id}`, reason: 'Dedicated Beta identity resource', after: resource });
+        allowed.push({ path: `/Resources/${id}/Properties/PolicyDocument/Statement`, after: [grant],
+          reason: 'Issue #217: E2E qualification role reads CloudTrail AdminCreateUser events' });
+        delete candidate.Resources[id];
+      }
+      continue;
+    }
     const dedicatedStack = stackName === 'AnyWearFoundationStack'
       || (stackName === 'AnyWearPlatformStack-beta' && resource.Type === 'AWS::IAM::Policy');
     if (!baseline.Resources?.[id] && phase !== 'legacy' && dedicatedStack && dedicatedResource(id, resource)) {

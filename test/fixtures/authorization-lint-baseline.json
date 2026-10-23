@@ -4,7 +4,7 @@
   "source": "AwsSolutions-IAM5 findings from the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta, plus the count of wildcard-bearing policy statements in each stack's template. Regenerate with the same inputs test/authorization-lint.test.ts synthesizes. A wildcard-bearing statement is one whose Action or Resource carries a `*` in any AWS::IAM::Policy, AWS::IAM::ManagedPolicy or role-inline policy document, and `id` is the cdk-nag rule argument verbatim with `arn:<AWS::Partition>` normalized to `arn:aws`. Every entry carries a reviewed reason.",
   "templates": [
     { "stack": "AnyWearFoundationStack", "wildcard_statement_count": 12 },
-    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 79 }
+    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 81 }
   ],
   "findings": [
     {
@@ -105,7 +105,17 @@
     {
       "stack": "AnyWearPlatformStack-beta",
       "id": "Resource::*",
-      "reason": "Twenty-six statements: account-level reads that have no resource type (ECS DescribeTaskDefinition/ListTasks, EC2 DescribeManagedPrefixLists, CloudWatch GetMetricStatistics, RDS Describe*, CloudWatch Logs DescribeLogGroups, application-autoscaling Describe*), ecr:GetAuthorizationToken in the pipeline and one-shot-execution roles, the IAM simulator pair on the deploy and runtime roles, and the CDK LogRetention provider's logs:PutRetentionPolicy/DeleteRetentionPolicy. cdk-nag collapses every bare `*` into one id, so the per-stack count guards an added `*` statement."
+      "reason": "Twenty-seven statements: account-level reads that have no resource type (ECS DescribeTaskDefinition/ListTasks, EC2 DescribeManagedPrefixLists, CloudWatch GetMetricStatistics, RDS Describe*, CloudWatch Logs DescribeLogGroups, application-autoscaling Describe*), the E2E qualification role's read-only `cloudtrail:LookupEvents` (#217, which has no resource-level scope), ecr:GetAuthorizationToken in the pipeline and one-shot-execution roles, the IAM simulator pair on the deploy and runtime roles, and the CDK LogRetention provider's logs:PutRetentionPolicy/DeleteRetentionPolicy. cdk-nag collapses every bare `*` into one id, so the per-stack count guards an added `*` statement."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/wearable-items/*",
+      "reason": "Issue #217: the Beta tester-cleanup task role deletes a captured user's `wearable-items/<sub>/` objects before their rows are removed. The wildcard is the per-user object key under that fixed prefix; the bucket ARN is the CDK GetAtt of the retained Base-owned wardrobe bucket, and the role's only other S3 statement is the matching `base-photos/` delete plus the two-prefix ListBucket. No other bucket or prefix is granted."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/base-photos/*",
+      "reason": "Issue #217: the same Beta tester-cleanup task role deletes a captured user's `base-photos/<sub>/` objects. The wildcard is the per-user object key under that fixed prefix and the bucket ARN is the same retained Base-owned wardrobe bucket GetAtt, so the delete scope is exactly the two per-user prefixes the cleanup operation reads from `S3_BUCKET_NAME`."
     },
     {
       "stack": "AnyWearPlatformStack-beta",

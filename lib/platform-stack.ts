@@ -442,6 +442,27 @@ export class PlatformStack extends cdk.Stack {
             actions: ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility'],
             resources: [this.vtoDeadLetterQueue.queueArn, this.autoTaggingDeadLetterQueue.queueArn],
           }));
+          // Issue #217: the versioned cleanup operation's `cleanupTesterRecords`
+          // deletes each captured user's objects under `wearable-items/<sub>/`
+          // and `base-photos/<sub>/` before it removes their rows; the task
+          // definition already passes `S3_BUCKET_NAME` as the wardrobe bucket.
+          // The statement stays split: delete is scoped to the two per-user
+          // prefixes, while `ListBucket` sits on the bucket ARN under an
+          // `s3:prefix` condition, so a `ListObjectsV2` for either
+          // `wearable-items/<sub>/` or `base-photos/<sub>/` is admitted and a
+          // listing outside those two prefixes is not.
+          this.cleanupTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            actions: ['s3:DeleteObject'],
+            resources: [
+              this.wardrobeBucket.arnForObjects('wearable-items/*'),
+              this.wardrobeBucket.arnForObjects('base-photos/*'),
+            ],
+          }));
+          this.cleanupTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            actions: ['s3:ListBucket'],
+            resources: [this.wardrobeBucket.bucketArn],
+            conditions: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*'] } },
+          }));
           new cdk.CfnOutput(this, 'CleanupTaskRoleArn', { value: this.cleanupTaskRole.roleArn });
         }
         this.lifecycleTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
