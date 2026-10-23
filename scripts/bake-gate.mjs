@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Issue #162: the bounded 300-second six-signal deployment bake.
+// Issue #162 added the bounded six-signal deployment bake gate; issue #219
+// calibrated its window to 300 seconds.
 //
 // The `deploy-runtime` operation runs this after `cdk deploy` returned and the
 // deployed stack identity was read back. It reads the six named signals live from
@@ -35,7 +36,9 @@ export const INGESTION_TIMEOUT_MS = 180_000;
 export const DEADLINE_SLACK_MS = 120_000;
 // The whole-window CloudWatch period: `TargetResponseTime` p95 and each work
 // queue's `ApproximateAgeOfOldestMessage` Maximum cover exactly the bake, so the
-// period and the window cannot drift apart.
+// period and the window cannot drift apart. Each read must return exactly one
+// datapoint; a second period would straddle the window boundary and aggregate
+// pre-deployment data.
 export const METRIC_PERIOD_SECONDS = 300;
 export const MIN_ECS_SAMPLES = 10;
 export const MIN_SQS_SAMPLES = 10;
@@ -194,8 +197,10 @@ async function readSqs(runAws, queueUrls, at) {
 }
 
 // The oldest-message age is not a GetQueueAttributes result. Read the AWS/SQS
-// ApproximateAgeOfOldestMessage Maximum over the bake window per work queue; a
-// missing datapoint is handled by the idle rule in evaluateBake.
+// ApproximateAgeOfOldestMessage Maximum over the bake window per work queue and
+// record how many periods the read returned. A missing datapoint is handled by
+// the idle rule in evaluateBake; two or more are rejected there, because extra
+// periods would straddle the window boundary and aggregate pre-deployment time.
 async function readQueueAges(runAws, stage, startMs, endMs) {
   const queues = deploymentQueueNames(stage);
   const read = (queueName) => {
@@ -203,7 +208,10 @@ async function readQueueAges(runAws, stage, startMs, endMs) {
       namespace: 'AWS/SQS', metricName: 'ApproximateAgeOfOldestMessage', dimensionName: 'QueueName',
       dimension: queueName, startMs, endMs, period: METRIC_PERIOD_SECONDS, statistic: 'Maximum',
     });
-    return values.length === 0 ? undefined : Math.max(...values);
+    return {
+      datapoints: values.length,
+      seconds: values.length === 0 ? undefined : Math.max(...values),
+    };
   };
   return { vto: read(queues.vto), auto_tagging: read(queues.auto_tagging) };
 }
@@ -447,11 +455,14 @@ export function evaluateBake({
     const sqs = observations.sqs;
     const samples = sqs?.samples ?? [];
     const ages = sqs?.ages ?? {};
+    const ageDatapoints = (queue) => ages[queue]?.datapoints ?? 0;
     const ageReads = [
       { source: 'cloudwatch', namespace: 'AWS/SQS', metric_name: 'ApproximateAgeOfOldestMessage',
-        dimensions: { QueueName: queueNames.vto }, statistic: 'Maximum', period_seconds: METRIC_PERIOD_SECONDS, datapoints: 1 },
+        dimensions: { QueueName: queueNames.vto }, statistic: 'Maximum', period_seconds: METRIC_PERIOD_SECONDS,
+        datapoints: ageDatapoints('vto') },
       { source: 'cloudwatch', namespace: 'AWS/SQS', metric_name: 'ApproximateAgeOfOldestMessage',
-        dimensions: { QueueName: queueNames.auto_tagging }, statistic: 'Maximum', period_seconds: METRIC_PERIOD_SECONDS, datapoints: 1 },
+        dimensions: { QueueName: queueNames.auto_tagging }, statistic: 'Maximum', period_seconds: METRIC_PERIOD_SECONDS,
+        datapoints: ageDatapoints('auto_tagging') },
       { source: 'sqs', queue_name: queueNames.vto, attributes: [...DEPLOYMENT_SQS_DEPTH_ATTRIBUTES], samples: samples.length },
       { source: 'sqs', queue_name: queueNames.auto_tagging, attributes: [...DEPLOYMENT_SQS_DEPTH_ATTRIBUTES], samples: samples.length },
     ];
@@ -477,8 +488,15 @@ export function evaluateBake({
         }
         if (ages.error) return { error: `${queue} oldest-message age metric was not read: ${ages.error}` };
         const metric = ages[queue];
-        if (metric !== undefined) {
-          const age = Number(metric);
+        // Exactly one 300-second period is the whole-window read. Two or more
+        // periods would straddle the window boundary and include pre-deployment
+        // time, so the signal is insufficient evidence even when the aggregate
+        // would look healthy or breaching.
+        if (metric !== undefined && metric.datapoints > 1) {
+          return { error: `${queue} ApproximateAgeOfOldestMessage returned ${metric.datapoints} periods; exactly 1 whole-window period is required` };
+        }
+        if (metric !== undefined && metric.datapoints === 1) {
+          const age = Number(metric.seconds);
           if (!Number.isFinite(age) || age < 0) return { error: `${queue} returned an invalid oldest-message age` };
           return { maximum: age, idle: idle && age === 0 };
         }
@@ -696,7 +714,8 @@ export async function runBakeGate(options) {
     const albReady = !alb.error && alb.datapoints === 5;
     const p95Ready = !p95.error && p95.seconds.length === 1;
     const outboxReady = !outbox.error && outbox.lines.length >= MIN_OUTBOX_LINES;
-    const agesReady = !sqsAges.error && Number.isFinite(sqsAges.vto) && Number.isFinite(sqsAges.auto_tagging);
+    const agesReady = !sqsAges.error
+      && Number.isFinite(sqsAges.vto?.seconds) && Number.isFinite(sqsAges.auto_tagging?.seconds);
     if (albReady && p95Ready && outboxReady && agesReady) break;
     if (now() >= endsAtMs + INGESTION_TIMEOUT_MS || now() > deadlineAtMs) break;
     await sleep(Math.min(INGESTION_RETRY_MS, endsAtMs + INGESTION_TIMEOUT_MS - now()));

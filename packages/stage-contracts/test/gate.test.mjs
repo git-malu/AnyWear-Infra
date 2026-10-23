@@ -31,6 +31,8 @@ test('the threshold table and comparison strings are stage-free; only names carr
     'sqs_oldest_message_age', 'sqs_dlq_depth', 'outbox_oldest_age',
   ]);
   assert.deepEqual(Object.keys(DEPLOYMENT_GATE_THRESHOLDS).sort(), [...DEPLOYMENT_GATE_SIGNAL_NAMES].sort());
+  assert.equal(DEPLOYMENT_GATE_THRESHOLDS.sqs_oldest_message_age.max_seconds, 150);
+  assert.equal(DEPLOYMENT_GATE_THRESHOLDS.outbox_oldest_age.max_age_milliseconds, 150_000);
   const serialized = JSON.stringify(DEPLOYMENT_GATE_THRESHOLDS);
   for (const stage of ['beta', 'prod']) {
     assert.equal(serialized.includes(stage), false);

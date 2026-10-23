@@ -67,7 +67,9 @@ function baseObservations() {
       })),
     },
     sqs: {
-      ages: { vto: 0, auto_tagging: 0 },
+      // One 300-second period per work queue: the whole-window read the gate
+      // requires. Tests override `datapoints` to prove the exactly-one guard.
+      ages: { vto: { datapoints: 1, seconds: 0 }, auto_tagging: { datapoints: 1, seconds: 0 } },
       samples: Array.from({ length: 10 }, (_, index) => ({
         at: ECS_START + index * 30_000,
         queues: {
@@ -251,14 +253,14 @@ test('a late ECS sampling gap beyond 120s is insufficient', () => {
 
 test('a fresh SQS message crossing 150 seconds fails only sqs_oldest_message_age', () => {
   const observations = baseObservations();
-  observations.sqs.ages.vto = 151;
+  observations.sqs.ages.vto.seconds = 151;
   observations.sqs.samples[4].queues.vto = {
     ...observations.sqs.samples[4].queues.vto,
     ApproximateNumberOfMessages: '1',
   };
   assertFailedWith(evaluate(observations), 'sqs_oldest_message_age', 'breaching');
   const atLimit = baseObservations();
-  atLimit.sqs.ages.vto = 150;
+  atLimit.sqs.ages.vto.seconds = 150;
   atLimit.sqs.samples[4].queues.vto = {
     ...atLimit.sqs.samples[4].queues.vto,
     ApproximateNumberOfMessages: '1',
@@ -277,12 +279,103 @@ test('an active queue with no age datapoint is insufficient', () => {
 });
 
 test('an idle queue with no age datapoint is recorded as age 0', () => {
+  const zeroRead = baseObservations();
+  zeroRead.sqs.ages.auto_tagging = { datapoints: 0 };
+  const absentRead = baseObservations();
+  delete absentRead.sqs.ages.auto_tagging;
+  // A zero-datapoint read is what the runner records for an idle queue; an
+  // absent key is the same evidence. Both keep the idle rule, never insufficiency.
+  for (const observations of [zeroRead, absentRead]) {
+    const gate = evaluate(observations);
+    const signal = signalOf(gate, 'sqs_oldest_message_age');
+    assert.equal(gate.result, 'passed');
+    assert.equal(signal.state, 'not-breaching');
+    assert.equal(signal.value.auto_tagging_seconds, 0);
+    assert.match(signal.exceptions.join('; '), /auto_tagging queue is idle/);
+    const read = signal.reads.find((candidate) => candidate.metric_name === 'ApproximateAgeOfOldestMessage'
+      && candidate.dimensions.QueueName === QUEUES.auto_tagging);
+    assert.equal(read.datapoints, 0);
+  }
+});
+
+test('one whole-window age period for both work queues is the healthy read', () => {
+  const gate = evaluate(baseObservations());
+  const signal = signalOf(gate, 'sqs_oldest_message_age');
+  assert.equal(gate.result, 'passed');
+  assert.equal(signal.state, 'not-breaching');
+  const ageReads = signal.reads.filter((read) => read.metric_name === 'ApproximateAgeOfOldestMessage');
+  assert.deepEqual(ageReads.map((read) => read.dimensions.QueueName), [QUEUES.vto, QUEUES.auto_tagging]);
+  assert.deepEqual(ageReads.map((read) => read.datapoints), [1, 1]);
+});
+
+test('two age periods for one queue are insufficient, record the count and do not poison sqs_dlq_depth', () => {
+  for (const [queue, other] of [['vto', 'auto_tagging'], ['auto_tagging', 'vto']]) {
+    const observations = baseObservations();
+    // The aggregate would look breaching. A two-period read is not the window's
+    // evidence at all, so the signal must be insufficient rather than breaching.
+    observations.sqs.ages[queue] = { datapoints: 2, seconds: 300 };
+    const gate = evaluate(observations);
+    assertFailedWith(gate, 'sqs_oldest_message_age', 'insufficient');
+    const signal = signalOf(gate, 'sqs_oldest_message_age');
+    assert.match(signal.exceptions[0], new RegExp(`${queue} ApproximateAgeOfOldestMessage returned 2 periods`));
+    const ageReads = signal.reads.filter((read) => read.metric_name === 'ApproximateAgeOfOldestMessage');
+    assert.equal(ageReads.find((read) => read.dimensions.QueueName === QUEUES[queue]).datapoints, 2);
+    assert.equal(ageReads.find((read) => read.dimensions.QueueName === QUEUES[other]).datapoints, 1);
+    assert.equal(signalOf(gate, 'sqs_dlq_depth').state, 'not-breaching');
+  }
+});
+
+test('the live runner rejects a two-period age read instead of aggregating it', async () => {
   const observations = baseObservations();
-  delete observations.sqs.ages.auto_tagging;
-  const gate = evaluate(observations);
-  assert.equal(signalOf(gate, 'sqs_oldest_message_age').state, 'not-breaching');
-  assert.equal(signalOf(gate, 'sqs_oldest_message_age').value.auto_tagging_seconds, 0);
-  assert.match(signalOf(gate, 'sqs_oldest_message_age').exceptions.join('; '), /auto_tagging queue is idle/);
+  observations.sqs.ages.vto = { datapoints: 2, seconds: 300 };
+  const clock = virtualClock();
+  const gate = await runBakeGate({
+    stage: STAGE, stack: 'AnyWearRuntimeStack-beta',
+    apiBaseUrl: 'https://d111111abcdef8.cloudfront.net', cluster: CLUSTER,
+    queueUrls: QUEUE_URLS,
+    logGroup: LOG_GROUP, serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST,
+    now: clock.now, sleep: clock.sleep,
+    fetchImpl: async () => new Response('ok', { status: 200 }),
+    runAws: fixtureRunAws({ observations }),
+  });
+  assert.equal(gate.result, 'failed');
+  const signal = signalOf(gate, 'sqs_oldest_message_age');
+  assert.equal(signal.state, 'insufficient');
+  assert.match(signal.exceptions[0], /vto ApproximateAgeOfOldestMessage returned 2 periods/);
+  const read = signal.reads.find((candidate) => candidate.metric_name === 'ApproximateAgeOfOldestMessage'
+    && candidate.dimensions.QueueName === QUEUES.vto);
+  assert.equal(read.datapoints, 2);
+  assert.equal(signalOf(gate, 'sqs_dlq_depth').state, 'not-breaching');
+});
+
+test('the live runner records a zero-datapoint idle queue as age 0 with the idle exception', async () => {
+  const clock = virtualClock();
+  const gate = await runBakeGate({
+    stage: STAGE, stack: 'AnyWearRuntimeStack-beta',
+    apiBaseUrl: 'https://d111111abcdef8.cloudfront.net', cluster: CLUSTER,
+    queueUrls: QUEUE_URLS,
+    logGroup: LOG_GROUP, serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST,
+    now: clock.now, sleep: clock.sleep,
+    fetchImpl: async () => new Response('ok', { status: 200 }),
+    runAws: fixtureRunAws({
+      onMetric: (metric) => {
+        if (metric === 'ApproximateAgeOfOldestMessage') return JSON.stringify({ Datapoints: [] });
+        if (metric === 'TargetResponseTime') return JSON.stringify({ Datapoints: [{ ExtendedStatistics: { p95: 0.12 } }] });
+        const values = metric === 'HTTPCode_Target_5XX_Count' || metric === 'HTTPCode_ELB_5XX_Count'
+          ? Array(5).fill(0) : Array(5).fill(4);
+        return JSON.stringify({ Datapoints: values.map((value) => ({ Sum: value })) });
+      },
+    }),
+  });
+  assert.equal(gate.result, 'passed');
+  const signal = signalOf(gate, 'sqs_oldest_message_age');
+  assert.equal(signal.state, 'not-breaching');
+  assert.deepEqual(signal.value, { vto_seconds: 0, auto_tagging_seconds: 0 });
+  assert.match(signal.exceptions.join('; '), /vto queue is idle/);
+  assert.match(signal.exceptions.join('; '), /auto_tagging queue is idle/);
+  for (const read of signal.reads.filter((candidate) => candidate.metric_name === 'ApproximateAgeOfOldestMessage')) {
+    assert.equal(read.datapoints, 0);
+  }
 });
 
 test('the SQS read requests only valid depth attribute names', async () => {
@@ -412,7 +505,10 @@ function fixtureRunAws({ observations = baseObservations(), onMetric } = {}) {
         const queueName = /^Name=QueueName,Value=(.+)$/.exec(dimensions)[1];
         assert.equal(args[args.indexOf('--statistics') + 1], 'Maximum');
         const age = observations.sqs.ages[queueName.replace(`${STAGE}-anywear-`, '').replaceAll('-', '_')];
-        return JSON.stringify({ Datapoints: age === undefined ? [] : [{ Maximum: age }] });
+        return JSON.stringify({
+          Datapoints: age === undefined
+            ? [] : Array.from({ length: age.datapoints }, () => ({ Maximum: age.seconds })),
+        });
       }
       if (metric === 'TargetResponseTime') {
         return JSON.stringify({ Datapoints: observations.p95.seconds.map((value) => ({ ExtendedStatistics: { p95: value } })) });
