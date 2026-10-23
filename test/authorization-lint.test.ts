@@ -156,19 +156,24 @@ describe('IaC policy lint (#165)', () => {
     };
     expect(compareLint(baseline, exact)).toEqual([]);
 
-    // A wildcard form the baseline does not name is a new finding id.
-    const newForm = structuredClone(exact);
-    newForm.findings.AnyWearFoundationStack.push('Resource::arn:aws:s3:::unreviewed-bucket/*');
-    expect(compareLint(baseline, newForm)).toEqual([
-      'AnyWearFoundationStack: new AwsSolutions-IAM5 finding not in the baseline: Resource::arn:aws:s3:::unreviewed-bucket/*',
-    ]);
+    // A wildcard form the baseline does not name is a new finding id, on either stack.
+    for (const stack of ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta']) {
+      const newForm = structuredClone(exact);
+      newForm.findings[stack].push('Resource::arn:aws:s3:::unreviewed-bucket/*');
+      expect(compareLint(baseline, newForm)).toEqual([
+        `${stack}: new AwsSolutions-IAM5 finding not in the baseline: Resource::arn:aws:s3:::unreviewed-bucket/*`,
+      ]);
+    }
 
-    // A new statement that reuses a pinned form adds no id; only the count moves.
-    const reusedForm = structuredClone(exact);
-    reusedForm.counts['AnyWearPlatformStack-beta'] += 1;
-    expect(compareLint(baseline, reusedForm)).toEqual([
-      'AnyWearPlatformStack-beta: wildcard-bearing statement count 80 does not match the pinned 79',
-    ]);
+    // A new statement that reuses a pinned form adds no id; only the count moves,
+    // on either stack.
+    for (const template of baseline.templates) {
+      const reusedForm = structuredClone(exact);
+      reusedForm.counts[template.stack] = template.wildcard_statement_count + 1;
+      expect(compareLint(baseline, reusedForm)).toEqual([
+        `${template.stack}: wildcard-bearing statement count ${template.wildcard_statement_count + 1} does not match the pinned ${template.wildcard_statement_count}`,
+      ]);
+    }
 
     // A wildcard removed from a stack while the baseline entry stays is stale.
     const stale = structuredClone(exact);
