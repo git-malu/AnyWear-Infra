@@ -1553,7 +1553,7 @@
     "Namespace": "AWS/SQS",
     "Period": 300,
     "Statistic": "Maximum",
-    "Threshold": 300,
+    "Threshold": 150,
     "TreatMissingData": "notBreaching"
    }
   },
@@ -1575,7 +1575,7 @@
     "Namespace": "AWS/SQS",
     "Period": 300,
     "Statistic": "Maximum",
-    "Threshold": 300,
+    "Threshold": 150,
     "TreatMissingData": "notBreaching"
    }
   },
@@ -1863,10 +1863,26 @@
     },
     "MetricTransformations": [
      {
-      "DefaultValue": 0,
       "MetricName": "OutboxOldestAgeMs",
       "MetricNamespace": "AnyWear/Worker",
       "MetricValue": "$.outboxOldestAgeMs",
+      "Unit": "Milliseconds"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeWorkerOutboxMissingAgeFilterCE0F140F": {
+   "Type": "AWS::Logs::MetricFilter",
+   "Properties": {
+    "FilterPattern": "{ ($.msg = \"Durable task outbox metrics\") && ($.outboxBacklog > 0) && (($.outboxOldestAgeMs IS NULL) || ($.outboxOldestAgeMs NOT EXISTS)) }",
+    "LogGroupName": {
+     "Ref": "ComputeRuntimeWorkerLogGroupF6DEE804"
+    },
+    "MetricTransformations": [
+     {
+      "MetricName": "OutboxOldestAgeMs",
+      "MetricNamespace": "AnyWear/Worker",
+      "MetricValue": "150001",
       "Unit": "Milliseconds"
      }
     ]
@@ -1882,7 +1898,7 @@
     "Namespace": "AnyWear/Worker",
     "Period": 60,
     "Statistic": "Maximum",
-    "Threshold": 300000,
+    "Threshold": 150000,
     "TreatMissingData": "notBreaching"
    }
   }

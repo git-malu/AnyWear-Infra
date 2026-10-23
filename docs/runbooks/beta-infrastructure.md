@@ -288,7 +288,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job proves the travelled bytes against those published digests before any credential and resolves the release tag, Service commit and ECR image digest. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin. The Environment deployment, the stack's events and the step log are the deployment's record |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
-| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service release identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed release's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set, executes it or takes the converged no-op, bakes the unchanged 300-second six-signal gate under the read-only runtime session, reads `/health`, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
+| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service release identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed release's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set: a converged set is deleted and nothing executes; when the live stack already carries the dispatched release, a reviewed `Add`/`Modify` delta with `Replacement: False` is admitted and executes, while any `Remove` or any replacement is deleted and refused with the named delta (issue #220); an absent stack stays Add-only, and a different release identity executes as before. It then bakes the unchanged 300-second six-signal gate under the read-only runtime session, reads `/health`, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice, and read no admission state |
 | ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image; no admission precondition |
@@ -427,10 +427,14 @@ environment entry it fed — was removed by #183 together with the Service sizin
 observations that read it, so no sizing or telemetry input remains. The
 `deploy-runtime` transition that dropped both from the live stack completed on
 2026-10-23 (run 39929648413, a passed 600-second bake with 40 probes under the
-then-current calibration), so the recorded Runtime identity now accepts only the
-recorded roles-added identity, and its one recorded live predecessor is retired. A
-stop/start is never the way to drop a retained parameter: a stop deletes the
-Runtime stack, and a start already deploys a template without it.
+then-current calibration), and its recorded identity accepted only the roles-added
+template it deployed. Issue #220 records the next Runtime identity transition — the
+age-alarm calibration — so until that deploy the live check accepts the recorded
+roles-added template plus one recorded live predecessor, the `ed4e99ee…` template
+the #183 transition deployed; the post-deploy `Original` must normalise to the new
+recorded roles-added identity. A stop/start is never the way to drop a retained
+parameter: a stop deletes the Runtime stack, and a start already deploys a template
+without it.
 
 ## Tester allowlist and status
 
@@ -679,6 +683,46 @@ failed or partial run still ends visibly failed.
 | Schema boundary gate | `scripts/schema-gate.mjs`, `scripts/schema-asset.mjs` | A deployment must not replace a runtime whose database the release image cannot read; the refusal names the release's expectation and the database's state before CloudFormation changes anything. |
 | 300-second six-signal bake | `scripts/bake-gate.mjs`; thresholds, alarm and signal names from `@git-malu/stage-contracts` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. |
 | Pre-credential byte and identity check | `scripts/release-inputs.mjs` + `scripts/prove-release-bytes.mjs` | The bytes about to be deployed must be the bytes the reviewed release published, and that must be true before an AWS credential exists. |
+
+**The deployed age alarms' calibration (issue #220)**
+
+The bake and the deployed CloudWatch alarms state age limits, and since issue #220
+they state the same limit from the same place. Both thresholds and the outbox
+sentinel are computed from `DEPLOYMENT_GATE_THRESHOLDS` in
+`@git-malu/stage-contracts` (`0.7.0`), the table the 300-second bake reads, so a
+later gate recalibration reaches the deployed alarms on the next Runtime deploy.
+No threshold has a stage branch: Beta and Production synthesize the same values.
+
+| Deployed alarm | Threshold | Period × evaluationPeriods | Effective detection | Paired gate threshold | Relation |
+| --- | --- | --- | --- | --- | --- |
+| `<stage>-anywear-vto-oldest-message` | 150 s (was 300 s) | 300 s × 2 | two consecutive five-minute SQS periods above 150 s: about 10 minutes plus SQS publication lag | `sqs_oldest_message_age.max_seconds = 150` | threshold equal; detection deliberately later |
+| `<stage>-anywear-auto-tagging-oldest-message` | 150 s (was 300 s) | 300 s × 2 | same | same | threshold equal; detection deliberately later |
+| `<stage>-anywear-outbox-oldest-age` | 150000 ms (was 300000 ms) | 60 s × 2 | about 1–2 minutes; immediately (subject to the two-period rule) when a non-empty backlog is reported without an age | `outbox_oldest_age.max_age_milliseconds = 150000` | threshold equal; detection inside the bake window |
+
+**The 150001 ms sentinel.** The outbox alarm reads `AnyWear/Worker`
+`OutboxOldestAgeMs`, and two metric filters on `/anywear/beta/worker` publish it. The
+first extracts `$.outboxOldestAgeMs` and has no default: issue #220 removed its
+`defaultValue: 0`, because AWS publishes a metric filter's default whenever the
+pattern does not match, not only when a matched line's field is missing, so the 0
+made a non-empty backlog with no age look healthy. The second filter matches
+`msg = "Durable task outbox metrics" && outboxBacklog > 0 && (outboxOldestAgeMs IS
+NULL || NOT EXISTS)` and publishes the static value `150001`. A metric reading
+exactly `150001 ms` therefore means **the worker reported a non-empty backlog with
+no age** — read that same metrics line's `outboxBacklog`; it is the first value above
+`GreaterThanThreshold` 150000 and is computed as threshold + 1, so it cannot drift
+from the alarm. Only a pattern match can emit it, so a healthy line, an idle worker
+and an empty backlog with a null age publish nothing and stay OK under
+`TreatMissingData: notBreaching`.
+
+**Why SQS detection is deliberately later than the bake.** Amazon SQS publishes
+`ApproximateAgeOfOldestMessage` every five minutes. A shorter alarm period would
+evaluate mostly empty windows, and `TreatMissingData: notBreaching` would punch
+holes in detection; `evaluationPeriods: 2` is the pre-existing anti-flap
+calibration, and dropping it to 1 would page on a single five-minute statistic. The
+bake is the **deployment-window** control: it refuses a stalled queue within one
+300-second window. These three alarms are the **continuing surface** an operator
+watches between deployments, and their roughly ten-minute SQS latency is that
+surface's recorded property, not a defect.
 
 **The one artifact a mutating run publishes**
 

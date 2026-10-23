@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { App, type Stack } from 'aws-cdk-lib';
-import { deploymentAlarmName } from '@git-malu/stage-contracts';
+import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmName, deploymentAlarmNames } from '@git-malu/stage-contracts';
 import { PLATFORM_REGION, platformInputs, type Stage } from '../lib/platform-inputs';
 import { BOOTSTRAP_QUALIFIER, RuntimeStack } from '../lib/runtime-stack';
 
@@ -77,18 +77,106 @@ test.each(VARIANTS.map((variant) => [variant.name, variant] as const))(
         expect(pattern.endsWith('}')).toBe(true);
       }
     }
-    // The outbox filter selects the pino `msg` field and keeps the JSON metric
-    // value; the default covers a null outboxOldestAgeMs on an empty backlog.
+    // The outbox age filter selects the pino `msg` field and keeps the JSON metric
+    // value. Issue #220 removed its `defaultValue: 0`: a metric filter's default is
+    // published whenever the pattern does not match, so a missing age no longer
+    // reads as a healthy 0 among the real age datapoints.
     const outbox = filters.find(([, filter]: [string, any]) =>
       filter.Properties.MetricTransformations?.some((transformation: any) =>
-        transformation.MetricName === 'OutboxOldestAgeMs'));
+        transformation.MetricName === 'OutboxOldestAgeMs'
+        && String(transformation.MetricValue).startsWith('$.')));
     expect(outbox).toBeDefined();
     const outboxFilter = (outbox as [string, any])[1];
     expect(outboxFilter.Properties.FilterPattern).toContain('$.msg');
     expect(outboxFilter.Properties.FilterPattern).toContain('Durable task outbox metrics');
     expect(outboxFilter.Properties.MetricTransformations[0].MetricValue).toBe('$.outboxOldestAgeMs');
-    expect(outboxFilter.Properties.MetricTransformations[0].DefaultValue).toBe(0);
+    expect(outboxFilter.Properties.MetricTransformations[0].DefaultValue).toBeUndefined();
   });
+
+test.each(VARIANTS.map((variant) => [variant.name, variant] as const))(
+  '%s carries the recorded age-alarm calibration and the fail-closed outbox mapping',
+  (name, variant) => {
+    const { template } = synthesize(variant);
+    const resources = Object.entries(template.Resources) as Array<[string, any]>;
+    const alarms = resources.filter(([, resource]) => resource.Type === 'AWS::CloudWatch::Alarm');
+    // The alarm set is unchanged by #220: the same nine names, so no alarm was
+    // added, removed or renamed. The autoscaling policies' own alarms are unnamed
+    // and outside this set.
+    const nineSuffixes = ['vto-dlq-not-empty', 'auto-tagging-dlq-not-empty', 'vto-oldest-message',
+      'auto-tagging-oldest-message', 'api-high-cpu', 'alb-5xx', 'api-p95-latency',
+      'ecs-running-not-desired', 'outbox-oldest-age'];
+    const named = alarms.filter(([, alarm]) => typeof alarm.Properties.AlarmName === 'string');
+    expect(named).toHaveLength(9);
+    const byName = new Map(named.map(([, alarm]) => [alarm.Properties.AlarmName, alarm]));
+    expect([...byName.keys()].sort()).toEqual(nineSuffixes.map((suffix) => `${variant.stage}-anywear-${suffix}`).sort());
+    // Every alarm the bake's six signals name is one of them, so `describe-alarms`
+    // still finds each read.
+    for (const names of Object.values(deploymentAlarmNames(variant.stage))) {
+      for (const alarmName of names) expect(byName.has(alarmName)).toBe(true);
+    }
+
+    // The two oldest-message alarms use the gate's recorded age limit, and keep
+    // SQS's five-minute period and the two-period anti-flap calibration. The
+    // threshold is equal to the gate's; the detection is deliberately later,
+    // which the runbook records.
+    const sqsThreshold = DEPLOYMENT_GATE_THRESHOLDS.sqs_oldest_message_age.max_seconds;
+    expect(sqsThreshold).toBe(150);
+    for (const suffix of ['vto-oldest-message', 'auto-tagging-oldest-message']) {
+      const alarm = byName.get(`${variant.stage}-anywear-${suffix}`);
+      expect(alarm).toBeDefined();
+      expect(alarm.Properties.Threshold).toBe(sqsThreshold);
+      expect(alarm.Properties.Period).toBe(300);
+      expect(alarm.Properties.EvaluationPeriods).toBe(2);
+      expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
+    }
+
+    // The outbox alarm keeps its name, metric, statistic, period, evaluation
+    // periods, comparison and missing-data treatment; only the threshold moved.
+    const outboxThreshold = DEPLOYMENT_GATE_THRESHOLDS.outbox_oldest_age.max_age_milliseconds;
+    expect(outboxThreshold).toBe(150000);
+    const outboxAlarm = byName.get(`${variant.stage}-anywear-outbox-oldest-age`);
+    expect(outboxAlarm).toBeDefined();
+    expect(outboxAlarm.Properties.Threshold).toBe(outboxThreshold);
+    expect(outboxAlarm.Properties.Period).toBe(60);
+    expect(outboxAlarm.Properties.EvaluationPeriods).toBe(2);
+    expect(outboxAlarm.Properties.ComparisonOperator).toBe('GreaterThanThreshold');
+    expect(outboxAlarm.Properties.TreatMissingData).toBe('notBreaching');
+    expect(outboxAlarm.Properties.Namespace).toBe('AnyWear/Worker');
+    expect(outboxAlarm.Properties.MetricName).toBe('OutboxOldestAgeMs');
+    expect(outboxAlarm.Properties.Statistic).toBe('Maximum');
+
+    // Both outbox filters publish the one metric the alarm reads, and neither has a
+    // `DefaultValue`: the age filter must not publish 0 for a missing age, and the
+    // missing-age filter's static value is emitted only on a pattern match.
+    const filters = resources.filter(([, resource]) => resource.Type === 'AWS::Logs::MetricFilter');
+    const outboxFilters = filters.filter(([, filter]) => filter.Properties.MetricTransformations?.some(
+      (transformation: any) => transformation.MetricName === 'OutboxOldestAgeMs'));
+    expect(outboxFilters).toHaveLength(2);
+    for (const [, filter] of outboxFilters) {
+      expect(filter.Properties.MetricTransformations).toHaveLength(1);
+      const [transformation] = filter.Properties.MetricTransformations;
+      expect(transformation.MetricNamespace).toBe(outboxAlarm.Properties.Namespace);
+      expect(transformation.MetricName).toBe(outboxAlarm.Properties.MetricName);
+      expect(transformation.DefaultValue).toBeUndefined();
+    }
+    const ageFilter = (outboxFilters.find(([, filter]) =>
+      filter.Properties.MetricTransformations[0].MetricValue === '$.outboxOldestAgeMs') as [string, any])[1];
+    const missingAgeFilter = (outboxFilters.find(([, filter]) =>
+      filter.Properties.MetricTransformations[0].MetricValue !== '$.outboxOldestAgeMs') as [string, any])[1];
+    expect(ageFilter.Properties.FilterPattern).toBe('{ $.msg = "Durable task outbox metrics" }');
+    // The exact rendered fail-closed pattern: a matched worker line with a
+    // non-empty backlog and a null or absent age. An empty backlog with a null age
+    // fails `$.outboxBacklog > 0`, so it matches neither filter and stays OK.
+    expect(missingAgeFilter.Properties.FilterPattern).toBe(
+      '{ ($.msg = "Durable task outbox metrics") && ($.outboxBacklog > 0) '
+      + '&& (($.outboxOldestAgeMs IS NULL) || ($.outboxOldestAgeMs NOT EXISTS)) }');
+    // The sentinel is derived from the same package constant as the alarm
+    // threshold, so the two cannot drift: `GreaterThanThreshold` makes
+    // threshold + 1 the first breaching value, and it is the only static value.
+    expect(missingAgeFilter.Properties.MetricTransformations[0].MetricValue).toBe(`${outboxThreshold + 1}`);
+    expect(missingAgeFilter.Properties.MetricTransformations[0].MetricValue).toBe('150001');
+  },
+);
 
 test.each(VARIANTS.map((variant) => [variant.name, variant] as const))(
   '%s uses supported metric math for the ALB 5xx alarm',
