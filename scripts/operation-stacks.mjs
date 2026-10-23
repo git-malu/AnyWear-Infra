@@ -34,11 +34,6 @@ export const operationOwnedStacks = Object.freeze([
   Object.freeze({ stack_name: 'AnyWearRuntimeStack-beta', region: 'ap-east-1' }),
 ]);
 
-// Every operation with a row in the frozen change table. It is exported rather
-// than restated so the accepted-observation trigger set (#181) is derived from the
-// same table that scopes deployment authority.
-export const mutatingOperations = Object.freeze(Object.keys(stackChanges));
-
 export function configuredStackNames() {
   return configuredStacks.map(stack => stack.stack_name);
 }

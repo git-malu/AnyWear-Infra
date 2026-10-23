@@ -29,7 +29,7 @@ import {
   runtimeEcsClusterName,
   runtimeStageInputBatches,
 } from './runtime-stage-inputs.mjs';
-import { validateOperationInputs } from './runtime-operation.mjs';
+import { runOperation, validateOperationInputs } from './runtime-operation.mjs';
 import { sha256 } from './json-contract.mjs';
 import { failedGate } from './bake-gate.mjs';
 import { SchemaBoundaryError, runSchemaBoundaryGate } from './schema-gate.mjs';
@@ -99,18 +99,29 @@ function liveStack({ identityUnchanged = true, terminal = true } = {}) {
 }
 
 function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
-  runtime = liveStack(), changeSet = undefined, executeError = undefined } = {}) {
+  runtime = liveStack(), changeSet = undefined, executeError = undefined, postExecuteRuntime = undefined } = {}) {
   const calls = [];
+  // The changed-stack set the failed-run summary publishes. It starts as the
+  // fake's own array and `runOperation` re-binds it to the array it owns.
+  const changedStacks = [];
   let runtimeObserved = runtime;
   // A deleted change set can no longer be described. The fail-closed path deletes
   // the set, so a post-delete describe is a test failure: the operation must not
   // depend on re-reading a deleted set.
   let changeSetDeleted = false;
   const io = {
-    calls, now: () => 0, sleep: async () => {},
+    calls, changedStacks, now: () => 0, sleep: async () => {},
+    // The one changed-stack mechanism: the fake proves the operation records a
+    // landed mutation through `io.markChanged`, not by reaching into its own state.
+    markChanged(stack) { io.changedStacks.push(stack); },
     async aws(args) {
       const key = `${args[0]}/${args[1]}`;
       calls.push({ session: 'runtime', key, args });
+      if (key === 'sts/get-caller-identity') return { Account: '650880818323' };
+      if (key === 'ecr/describe-images') {
+        const tag = args[args.indexOf('--image-ids') + 1].replace(/^imageTag=/, '');
+        return { imageDetails: [{ imageTags: [tag], imageDigest: IMAGE_DIGEST }] };
+      }
       if (key === 'cloudformation/describe-stacks') {
         const name = args[args.indexOf('--stack-name') + 1];
         if (name === 'AnyWearPlatformStack-beta') {
@@ -159,7 +170,7 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
       if (args[1] === 'delete-change-set') changeSetDeleted = true;
       if (args[1] === 'execute-change-set') {
         if (executeError) throw executeError;
-        runtimeObserved = liveStack();
+        runtimeObserved = postExecuteRuntime ?? liveStack();
       }
       return {};
     },
@@ -568,4 +579,76 @@ test('a deploy-runtime dispatch from the wrong source, workflow family, account 
     /deploy-runtime requires the explicit Service release tag/);
   assert.throws(() => validateOperationInputs({ ...dispatch, SERVICE_COMMIT: 'not-a-sha' }),
     /Service release source commit/);
+});
+
+// Review I-B1: `deploy-runtime` executes the change set itself, so the mutation has
+// to be recorded at the point it happens — after `execute-change-set` returns and
+// before the stack read-back, the ECS identity proof, `/health` and the bake. A
+// landed update whose later gate refuses must still leave the one step-summary line
+// that says "changed but unqualified"; a converged no-op must leave none.
+const DELTA_CHANGE_SET = { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+  { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] };
+
+// The dispatch `validateOperationInputs` accepts for `deploy-runtime`, plus the step
+// summary the operation's catch appends to.
+const operationEnv = (overrides = {}) => ({ ...env(), GITHUB_REPOSITORY_ID: '1409047265', GITHUB_EVENT_NAME: 'workflow_dispatch',
+  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
+  SERVICE_RELEASE_TAG: release.releaseTag, SERVICE_COMMIT: SERVICE_SHA, ...overrides });
+
+async function withSummary(run) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-runtime-summary-'));
+  try {
+    return await run(path.join(directory, 'summary.md'));
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+test('a bake refusal after the change set executed appends exactly one summary line naming the Runtime stack', async () => {
+  await withSummary(async (summary) => {
+    const { io, calls } = fakeIo({ runtime: liveStack({ identityUnchanged: false }), changeSet: DELTA_CHANGE_SET });
+    const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
+    await assert.rejects(runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }), {
+      createIo,
+      // Only the deploy's own collaborators are fake; the change-set judgement, the
+      // mutation, the read-back and the gate ordering are the production ones.
+      deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH,
+        bake: async () => failedGate({ stage: 'beta', cluster: 'beta-anywear', logGroup: '/anywear/beta/worker',
+          serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST }) },
+    }), /The 600-second bake failed/);
+    assert.ok(calls.some((call) => call.args?.includes('execute-change-set')), 'the change set executed first');
+    const lines = (await readFile(summary, 'utf8')).trim().split('\n');
+    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
+    assert.equal((lines[0].match(/AnyWearRuntimeStack-beta/g) ?? []).length, 1,
+      'the Runtime stack is named exactly once');
+    assert.deepEqual(io.changedStacks, [RUNTIME_STACK], 'the landed mutation is recorded once');
+  });
+});
+
+test('a converged deploy-runtime appends no changed-stack summary line', async () => {
+  await withSummary(async (summary) => {
+    const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+    const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
+    await runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }), {
+      createIo,
+      deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE },
+    });
+    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false,
+      'a converged no-op executes nothing');
+    const lines = (await readFile(summary, 'utf8')).trim().split('\n');
+    assert.equal(lines.length, 1, 'only the completed-operation line');
+    assert.match(lines[0], /Infra operation deploy-runtime; source a{40}\./);
+    assert.equal(lines[0].includes('already changed'), false);
+    assert.deepEqual(io.changedStacks, [], 'a converged no-op records no changed stack');
+  });
+});
+
+test('the executed change set is recorded as changed before the stack read-back can fail', async () => {
+  const { io } = fakeIo({ runtime: liveStack({ identityUnchanged: false }), changeSet: DELTA_CHANGE_SET,
+    postExecuteRuntime: { ...liveStack(), StackStatus: 'ROLLBACK_IN_PROGRESS' } });
+  await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
+    /ended in ROLLBACK_IN_PROGRESS/);
+  assert.deepEqual(io.changedStacks, [RUNTIME_STACK]);
 });

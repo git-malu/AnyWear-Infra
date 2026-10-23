@@ -152,9 +152,11 @@ every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
 `deploy-runtime` and `restore-release` take a Service release identity. Admission
 takes no bound input: lifecycle `resume` is invoked with no payload at all. The
-standalone `verify` operation is retired, and the
-`verify`/`artifact-verify` task families left with the release slice; Infra no
-longer runs a release-verification task.
+standalone `verify` operation is retired: Infra's operation chain runs no
+cross-repository release-verification task. The `verify` family remains for exactly
+one use — the schema-boundary gate's bounded, read-only `schema-journal` probe
+(`beta-anywear-verify`) before a Runtime mutation — and `artifact-verify` stays the
+E2E qualification executor's one-shot family.
 
 `mutate.yml` is one credential-timing chain: `preflight` (no environment, no
 `id-token`, no App token; rejects a forbidden operation and an unexpected release

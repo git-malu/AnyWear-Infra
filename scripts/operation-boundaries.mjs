@@ -123,7 +123,6 @@ export const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-s
 // removed the retired record's `qualified_by`/`evidence` prose: the run's own
 // conclusion and the platform facts are the evidence, not a record column.
 export const operationRoles = Object.freeze({
-  observe: Object.freeze([]),
   state: Object.freeze([]),
   'deploy-foundation': Object.freeze([]),
   'deploy-billing': Object.freeze([]),

@@ -268,6 +268,13 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
   const io = {
     region: 'ap-east-1', now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
     changedStacks,
+    // The mutation landed. One mechanism records it, whichever path made it: the
+    // CDK deploy, the CDK destroy, or the change set `deploy-runtime` executes
+    // itself. `runOperation`'s catch publishes the set when a later gate refuses,
+    // so a landed change is never missing from the "changed but unqualified" line.
+    markChanged(stack) {
+      changedStacks.push(stack);
+    },
     async aws(args, awsRegion) {
       assertAwsAllowed(env, args, purpose);
       if (awsRegion) args = [...args, '--region', awsRegion];
@@ -402,7 +409,7 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       // The mutation landed: record it as a changed stack so a later failure still
       // names what the run already altered in its step summary.
-      changedStacks.push(stack);
+      io.markChanged(stack);
       if (stack === baseStack) {
         await enforceBetaPlatformLogRetention(io, { ref: env.GITHUB_REF, enabled: env.ENABLE_BETA_MUTATION });
       }
@@ -423,7 +430,7 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
-      changedStacks.push(stack);
+      io.markChanged(stack);
     },
     async http(url) {
       const response = await fetch(url, { headers: { 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(15_000) });
@@ -443,7 +450,14 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
   };
   return io;
 }
-export async function runOperation(env = process.env, { createIo = createRuntimeIo } = {}) {
+export async function runOperation(env = process.env, {
+  createIo = createRuntimeIo,
+  // `deploy-runtime` executes its own change set and then runs four gates. This
+  // seam lets the tests inject its collaborators (synthesis, `/health` probe, bake
+  // and schema gate) so a landed-then-refused mutation is credential-free testable;
+  // production passes none and gets the real implementations.
+  deployRuntimeDependencies = {},
+} = {}) {
   const inputs = validateOperationInputs(env);
   const operation = env.INFRA_OPERATION;
   // The stacks this run has already mutated. If a later gate refuses, the step
@@ -495,7 +509,7 @@ export async function runOperation(env = process.env, { createIo = createRuntime
     // Issue #195: one operation deploys a Service release, resolves the image
     // digest, judges the change set and bakes the six signals in this same
     // mutating job. Its job conclusion is the verdict; nothing follows it.
-    await deployRuntime({ io, env, release: serviceRelease });
+    await deployRuntime({ ...deployRuntimeDependencies, io, env, release: serviceRelease });
   } else if (operation === 'stop-runtime') {
     await stopRuntime({ io, env });
   } else if (operation === 'delete-egress') {

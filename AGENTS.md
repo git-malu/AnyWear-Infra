@@ -124,8 +124,9 @@ and must not be relabeled as an Infra-produced deployment.
   digest, admits the pre-mutation schema boundary with one bounded read-only
   `schema-journal` verify task under the existing verification-task role,
   judges and executes the change set, runs the unchanged 600-second six-signal
-  bake under the read-only runtime session, and prints the deployed template hash,
-  parameters, bake result and floor in the mutating job's step log; `stop-runtime`
+  bake under the read-only runtime session, compares the deployed template hash and
+  the six parameters with the requested deployment, and prints the bake result and
+  the `/health` floor in the mutating job's step log; `stop-runtime`
   deletes only that stack,
   and an absent stack is its accepted no-op. The historical runs below evidence
   the pre-#195 path only: Service run 39137577023

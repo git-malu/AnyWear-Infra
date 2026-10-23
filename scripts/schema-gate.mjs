@@ -20,8 +20,8 @@ import { SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 // defect). Every refusal names both sides and leaves the stack untouched.
 //
 // The gate is dependency-injected (`loadAsset`/`probe`/`readLog`/`compare`) so
-// every branch is credential-free testable, and pushes exactly one
-// `schema-boundary` event through the operation record.
+// every branch is credential-free testable. Its verdict is one `schema-boundary`
+// line in the run log and the step's own conclusion; no record carries it (#207).
 
 export const APPLIED_SCHEMA_RECORD_TYPE = 'anywear_applied_schema';
 export const APPLIED_SCHEMA_RECORD_VERSION = 1;
@@ -192,8 +192,8 @@ export class SchemaBoundaryError extends Error {
    * @param {string} detail a message that names the reason and both sides
    * @param {readonly {reason: string, expected: unknown, observed: unknown}[]} violations
    * @param {{reader?: object|null, readers?: object[], applied_rows?: object[]}} evidence
-   *   what the gate observed before refusing, so the operation record can name the
-   *   reader and task identity even when no boundary body exists
+   *   what the gate observed before refusing, so the refusal can name the reader
+   *   and task identity even when no boundary body exists
    */
   constructor(reason, detail, violations = [], evidence = {}) {
     super(`${reason}: ${detail}`);

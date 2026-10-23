@@ -297,8 +297,8 @@ function cloudWatchReads(name, dimension, datapoints) {
  *
  * `observations` may carry `{ error }` for any surface that could not be read.
  * Every state other than `not-breaching` fails the gate; there is no averaging
- * and no majority vote. A failed gate keeps each signal's evidence so the run's
- * operation record can show which signal failed and that the others were healthy.
+ * and no majority vote. A failed gate keeps each signal's evidence so the run log
+ * can show which signal failed and that the others were healthy.
  */
 export function evaluateBake({
   stage, startedAtMs, windowSeconds = DEPLOYMENT_GATE_DURATION_SECONDS, probesSent,
@@ -604,11 +604,10 @@ export function failedGate(options, message = 'The bake could not be evaluated')
 }
 
 /**
- * Run the live 600-second bake and return its gate block.
+ * Run the live 600-second bake and return its gate block either way.
  *
- * The returned block is validated by the pinned package when it passed; a failed
- * block is returned (not thrown) so the caller can persist the evidence before
- * failing the step.
+ * The caller logs the verdict and its failing signals to the run log, then fails
+ * the step on a failed block; nothing persists the block as evidence (#207).
  */
 export async function runBakeGate(options) {
   const {

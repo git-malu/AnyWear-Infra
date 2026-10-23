@@ -441,14 +441,17 @@ export async function deployRuntime({ io, env, release,
       await deleteChangeSet(io, RUNTIME_STACK, changeSetName);
     }
     assertConvergedChangeSet(classification);
-  } else if (!stackExists) {
-    assertCreateOnlyChangeSet(classification);
-    await io.awsAs('deploy', ['cloudformation', 'execute-change-set', '--stack-name', RUNTIME_STACK,
-      '--change-set-name', changeSetName]);
-    await waitForTerminalStack(io, RUNTIME_STACK);
   } else {
+    if (!stackExists) assertCreateOnlyChangeSet(classification);
     await io.awsAs('deploy', ['cloudformation', 'execute-change-set', '--stack-name', RUNTIME_STACK,
       '--change-set-name', changeSetName]);
+    // The change set landed. Record it here, at the mutation, before the stack
+    // read-back, the ECS identity proof, `/health` and the 600-second bake: every
+    // one of those gates can still refuse, and the failed run then names the stack
+    // it already changed. `deploy-runtime` executes the change set itself, so it
+    // records through the same mechanism as `io.deploy`/`io.destroy` instead of
+    // relying on either of them.
+    io.markChanged(RUNTIME_STACK);
     await waitForTerminalStack(io, RUNTIME_STACK);
   }
 
