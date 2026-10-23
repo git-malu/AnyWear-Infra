@@ -207,7 +207,7 @@
     "identity_revision": {
       "issue": 183,
       "recorded_at": "2026-10-23",
-      "change": "Removed the BetaSizingTelemetry String parameter of AnyWearRuntimeStack-beta and the BETA_SIZING_TELEMETRY entry it fed in both Beta containers; the Beta Runtime baseline, its normalised phase hashes and its template sha256 were re-recorded from that source. The production template is unchanged because the parameter was Beta-only. At this recording issue #214 still owns scripts/runtime-deploy.mjs, so the live check that will consume accepted_live_predecessors is not implemented yet; the single recorded predecessor is accepted when that edit lands.",
+      "change": "Removed the BetaSizingTelemetry String parameter of AnyWearRuntimeStack-beta and the BETA_SIZING_TELEMETRY entry it fed in both Beta containers, together with the Service sizing observations that read it. The Beta Runtime baseline, its normalised beta/legacy, beta/roles-added and beta/retired phase hashes, its template sha256 and the beta identity phases were re-recorded from that source; the production template and prod phase hashes are unchanged because the parameter was Beta-only. The live check accepts this record's single accepted_live_predecessors entry as the transition's starting template, while the synthesized-identity check and the post-deploy read-back stay exact against the recorded roles-added identity.",
       "previous_templates": {
         "beta-active/AnyWearRuntimeStack-beta.template.json": "4e62ddf0efd630134e81bb71f30937f9ef959e6926a033753da1f37af2630ff9",
         "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
