@@ -7,7 +7,7 @@ import { runtimeStack } from './one-writer.mjs';
 
 const selector = { image: { service_sha: '1'.repeat(40), digest: `sha256:${'2'.repeat(64)}` } };
 function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.digest } = {}) {
-  const calls = []; const events = [];
+  const calls = [];
   // The tester write refuses while admission is not provably closed, and it must
   // leave the recorded decision exactly as it found it.
   const mirror = { mode: 'closed' };
@@ -24,7 +24,7 @@ function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.
     Outputs: Object.entries({ ApiBaseUrl: 'https://example.cloudfront.net' })
       .map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) };
   const stacks = new Map([['AnyWearPlatformStack-beta', platform], [runtimeStack, runtime]]);
-  return { calls, events, async aws(args) {
+  return { calls, async aws(args) {
     if (args[0] === 'cloudformation') {
       const name = args.at(-1);
       const stack = stacks.get(name);
@@ -49,7 +49,16 @@ function ioFixture({ runtimeStatus = 'UPDATE_COMPLETE', digest = selector.image.
       return { admission_mode: 'closed', admission_record: 'closed',
         database_record_differs: false, tester_count: testers.length, database_policy_matches_ssm: true };
     }
-  }, recordAdmissionState(event) { events.push(structuredClone(event)); } };
+  } };
+}
+// The run's evidence is its printed line, not a record. Capture stdout for the
+// duration of one driver call so a test can assert exactly what an operator sees.
+async function captureStdout(run) {
+  const lines = [];
+  const original = process.stdout.write;
+  process.stdout.write = (chunk) => { lines.push(String(chunk)); return true; };
+  try { return { value: await run(), lines }; }
+  finally { process.stdout.write = original; }
 }
 test('Infra tester add merges exact emails on the revision the Runtime stack reports; a non-running Runtime performs no task', async () => {
   const io = ioFixture();
@@ -65,34 +74,40 @@ test('Infra tester add merges exact emails on the revision the Runtime stack rep
   await assert.rejects(runTesterAllowlist('cleanup', '[]', io));
   for (const input of ['["*@example.com"]', '["@example.com"]', JSON.stringify(Array(51).fill('a@example.com'))]) assert.throws(() => normalizeTesterEmails(input));
 });
-test('tester operations record the admission read-back their evidence claim rests on, with admission unchanged', async () => {
+test('tester operations print the admission read-back their evidence rests on, with admission unchanged', async () => {
   const io = ioFixture();
-  await runTesterAllowlist('add', '["new@example.com"]', io);
-  assert.deepEqual(io.events.map(event => [event.phase, event.result]), [['original', 'observed'], ['written', 'observed']]);
-  // The mirror is self-describing, so the record shows the write changed no
-  // admission state: the same mode, the same recorded key set, no reportable bound.
-  for (const event of io.events) {
-    assert.equal(event.state.admission_mode, 'closed');
-    assert.deepEqual(event.state.admission_recorded_keys, ['mode']);
-    assert.equal(Object.hasOwn(event, 'window_minutes'), false);
-    assert.equal(Object.hasOwn(event.state, 'admission_window_expires_at'), false);
-    assert.equal(Object.hasOwn(event, 'admission_window_source'), false);
-    assert.equal(Object.hasOwn(event, 'lifecycle_status_sha256'), false);
+  const { lines } = await captureStdout(() => runTesterAllowlist('add', '["new@example.com"]', io));
+  assert.equal(lines.length, 1);
+  const line = JSON.parse(lines[0]);
+  assert.equal(line.operation, 'add-testers');
+  // The mirror is self-describing, so the two snapshots show the write changed the
+  // tester list but no admission state: the same mode, the same recorded key set,
+  // no reportable bound. The line is redacted and never names an address.
+  const keys = ['admission_mode', 'admission_recorded_mode', 'admission_recorded_keys', 'tester_count'];
+  for (const snapshot of [line.before, line.after]) {
+    assert.deepEqual(Object.keys(snapshot).sort(), [...keys].sort());
+    assert.equal(snapshot.admission_mode, 'closed');
+    assert.equal(snapshot.admission_recorded_mode, 'closed');
+    assert.deepEqual(snapshot.admission_recorded_keys, ['mode']);
+    assert.equal(Object.hasOwn(snapshot, 'admission_window_expires_at'), false);
+    assert.equal(Object.hasOwn(snapshot, 'lifecycle_status_sha256'), false);
   }
-  assert.deepEqual(io.events[0].state.tester_emails, ['existing@example.com']);
-  assert.deepEqual(io.events[1].state.tester_emails, ['existing@example.com', 'new@example.com']);
+  assert.equal(line.before.tester_count, 1);
+  assert.equal(line.after.tester_count, 2);
+  assert.equal(/@example\.com/.test(lines[0]), false, 'the printed line never carries tester addresses');
 });
 test('admission status publishes the effective decision, the raw record and their disagreement separately', async () => {
   const io = ioFixture();
-  await runTesterAllowlist('status', '[]', io, selector);
-  assert.equal(io.events.length, 1);
-  const [event] = io.events;
-  assert.equal(event.phase, 'status');
+  const { lines } = await captureStdout(() => runTesterAllowlist('status', '[]', io, selector));
+  assert.equal(lines.length, 1);
+  const event = JSON.parse(lines[0]);
+  assert.equal(event.operation, 'admission-status');
   // The effective decision is what every gate uses; the raw record is reported
   // beside it, so a status line cannot say "testers are admitted" about a closed
   // environment. One boolean cannot serve both jobs.
-  assert.equal(event.state.admission_mode, 'closed');
-  assert.equal(event.state.admission_recorded_mode, 'closed');
+  assert.equal(event.mirror.admission_mode, 'closed');
+  assert.equal(event.mirror.admission_recorded_mode, 'closed');
+  assert.deepEqual(event.mirror.admission_recorded_keys, ['mode']);
   assert.equal(event.effective_matches, true);
   assert.equal(event.database_record_differs, false);
   assert.equal(event.mirror_record_differs, false);
@@ -100,6 +115,7 @@ test('admission status publishes the effective decision, the raw record and thei
   assert.equal(event.database.admission_record, 'closed');
   assert.equal(Object.hasOwn(event.database, 'admission_window_expires_at'), false);
   assert.equal(event.database.tester_count, 1);
+  assert.equal(/@example\.com/.test(lines[0]), false, 'the status line never carries tester addresses');
   // A status read mutates nothing.
   assert.equal(io.calls.some(call => call[2] === 'set-testers'), false);
 });

@@ -41,7 +41,7 @@ const guardEnv = (operation) => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
 // way the Service does: the effective mode plus the raw stored mode.
 function mockIo(options = {}) {
   const operation = options.operation ?? 'close-admission';
-  const calls = []; const events = []; const proofs = [];
+  const calls = [];
   const world = { mirror: structuredClone(options.mirror ?? closedRecord), testers: structuredClone(options.testers ?? originalTesters) };
   world.database = structuredClone(options.database ?? { admission_mode: world.mirror.mode, admission_record: world.mirror.mode });
   const now = () => options.now ?? NOW;
@@ -54,7 +54,7 @@ function mockIo(options = {}) {
         VlmConfigArn: 'arn:aws:ssm:ap-east-1:650880818323:parameter/beta-vlm', CloudFrontPrefixListId: 'pl-1234' })
         .map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })) };
   const stacks = new Map([['AnyWearPlatformStack-beta', platform], [runtimeStack, runtime]]);
-  return { calls, events, proofs, world, operation, now, async aws(args) {
+  return { calls, world, operation, now, async aws(args) {
     calls.push(['aws', ...args]);
     if (args[0] === 'cloudformation') {
       const name = args.at(-1);
@@ -99,12 +99,22 @@ function mockIo(options = {}) {
       ...(options.statusField === undefined ? {} : options.statusField) };
     const index = statusReads++;
     return options.status ? options.status(status, index) : status;
-  }, recordAdmissionState(event) { events.push(structuredClone(event)); },
-  recordAdmissionOpenProof(proof) { proofs.push(structuredClone(proof)); } };
+  } };
 }
 const close = (io, extra = {}) => runCloseAdmission({ io, infraSha, env, ...extra });
 const open = (io, extra = {}) => runOpenAdmission({ io, infraSha, env, ...extra });
 const lifecycleActionsRun = io => io.calls.filter(call => call[0] === 'oneShot').map(call => call[3]);
+
+// The run's evidence is its printed line, not a record. Capture stdout for the
+// duration of one driver call so a test can assert exactly what an operator sees.
+async function captureStdout(run) {
+  const lines = [];
+  const original = process.stdout.write;
+  process.stdout.write = (chunk) => { lines.push(String(chunk)); return true; };
+  try { return { value: await run(), lines }; }
+  finally { process.stdout.write = original; }
+}
+const printed = lines => lines.map(line => JSON.parse(line));
 
 test('the mode value and lifecycle status readers stay fail-closed and self-describing', () => {
   const closedDecision = resolveAdmissionDecision('closed');
@@ -161,17 +171,23 @@ test('the mode value and lifecycle status readers stay fail-closed and self-desc
 });
 
 test('close ends an open admission on the revision the release slice reports', async () => {
-  const io = mockIo({ now: NOW, mirror: openRecord }); const result = await close(io);
+  const io = mockIo({ now: NOW, mirror: openRecord });
+  const { value: result, lines } = await captureStdout(() => close(io));
   assert.deepEqual(result.original, openState());
   assert.deepEqual(result.state, closedState());
   assert.equal(result.status.outbox, 2);
   assert.equal(result.close_kind, 'ordinary');
   assert.deepEqual(lifecycleActionsRun(io), ['status', 'suspend', 'status']);
   assert.ok(!io.calls.some(call => ['put-parameter', 'update-stack', 'update-service'].includes(call[2])));
-  assert.deepEqual(io.events.map(event => [event.phase, event.result]), [['original', 'observed'], ['closed', 'observed'], ['closed', 'verified']]);
-  for (const event of io.events) assert.equal(Object.hasOwn(event, 'prior_expires_at'), false);
-  for (const event of io.events.filter(event => event.phase !== 'original')) assert.equal(event.close_kind, 'ordinary');
-  assert.equal(io.events.at(-1).lifecycle_status_sha256, contentHash(result.status));
+  // The close verdict is one printed run line: what it ended and the redacted
+  // admission value the final read-back proved. No record carries it.
+  assert.equal(lines.length, 1);
+  const verdict = JSON.parse(lines[0]);
+  assert.equal(verdict.operation, 'close-admission');
+  assert.equal(verdict.close_kind, 'ordinary');
+  assert.match(verdict.admission, /admission_mode=closed/);
+  assert.match(verdict.admission, /tester_count=2/);
+  assert.equal(Object.hasOwn(verdict, 'lifecycle_status_sha256'), false);
 });
 
 test('close classifies what it ended from the stored database mode', async () => {
@@ -180,11 +196,13 @@ test('close classifies what it ended from the stored database mode', async () =>
     { database: { admission_mode: 'closed', admission_record: 'testers' }, closeKind: 'already-closed' },
     { database: { admission_mode: 'closed', admission_record: 'closed' }, closeKind: 'already-closed' },
   ]) {
-    const io = mockIo({ now: NOW, database }); const result = await close(io);
+    const io = mockIo({ now: NOW, database });
+    const { value: result, lines } = await captureStdout(() => close(io));
     assert.equal(result.close_kind, closeKind, JSON.stringify(database));
-    assert.equal(io.events.at(-1).close_kind, closeKind);
+    assert.equal(JSON.parse(lines[0]).close_kind, closeKind, JSON.stringify(database));
   }
-  const already = mockIo({ now: NOW, mirror: closedRecord }); const alreadyResult = await close(already);
+  const already = mockIo({ now: NOW, mirror: closedRecord });
+  const { value: alreadyResult } = await captureStdout(() => close(already));
   assert.equal(alreadyResult.close_kind, 'already-closed');
   assert.deepEqual(lifecycleActionsRun(already), ['status', 'suspend', 'status']);
 });
@@ -197,9 +215,13 @@ test('source and active-Beta mismatches prevent every close before any lifecycle
   }
   for (const options of [{ runtimeStatus: 'UPDATE_IN_PROGRESS' }, { runtimeStatus: 'UPDATE_ROLLBACK_FAILED' },
     { runtimeStatus: null }, { platformStatus: 'UPDATE_IN_PROGRESS' }]) {
-    const io = mockIo(options); await assert.rejects(close(io));
+    const io = mockIo(options);
+    const { lines } = await captureStdout(() => assert.rejects(close(io),
+      /preserve observed state for explicit recovery/, JSON.stringify(options)));
     assert.equal(lifecycleActionsRun(io).includes('suspend'), false, JSON.stringify(options));
-    assert.equal(io.events.at(-1).phase, 'failed');
+    const failures = printed(lines).filter(line => line.result === 'failed');
+    assert.equal(failures.length, 1);
+    assert.match(failures[0].admission, /admission_mode=/);
   }
 });
 
@@ -213,24 +235,27 @@ test('failed close/readback never implicitly resumes or changes testers', async 
     { status(value, index) { return index === 0 ? value : { ...value, admission_mode: 'testers' }; } },
   ];
   for (const options of cases) {
-    const io = mockIo(options); await assert.rejects(close(io));
+    const io = mockIo(options);
+    const { lines } = await captureStdout(() => assert.rejects(close(io),
+      /preserve observed state for explicit recovery/, JSON.stringify(options)));
     assert.equal(lifecycleActionsRun(io).includes('resume'), false, JSON.stringify(options));
-    assert.equal(io.events.at(-1).phase, 'failed');
+    const failures = printed(lines).filter(line => line.result === 'failed');
+    assert.equal(failures.length, 1);
+    assert.match(failures[0].admission, /admission_mode=/);
   }
 });
 
-test('open records the post-open proof: open, no bound, surfaces agree', async () => {
+test('open prints the post-open proof: open, no bound, surfaces agree', async () => {
   const io = mockIo({ operation: 'open-admission', now: NOW, mirror: closedRecord });
-  const result = await open(io);
+  const { value: result, lines } = await captureStdout(() => open(io));
   assert.deepEqual(result.original, closedState());
   assert.deepEqual(result.state, openState());
   assert.deepEqual(lifecycleActionsRun(io), ['status', 'resume', 'status']);
   // `resume` carries no payload: there is no bound to write.
   assert.equal(io.calls.filter(call => call[0] === 'oneShot').find(call => call[3] === 'resume').length, 4);
-  assert.deepEqual(io.events.map(event => [event.phase, event.result]), [['original', 'observed'], ['opened', 'observed'], ['verified', 'verified']]);
-
-  assert.equal(io.proofs.length, 1);
-  const proof = io.proofs[0];
+  // The proof is one printed run line, not a record member.
+  assert.equal(lines.length, 1);
+  const proof = JSON.parse(lines[0]);
   assert.deepEqual(proof, {
     type: 'admission-open-proof',
     schema_version: 1,
@@ -250,46 +275,50 @@ test('open records the post-open proof: open, no bound, surfaces agree', async (
   assert.ok(!io.calls.some(call => ['put-parameter', 'update-stack', 'update-service'].includes(call[2])));
 });
 
-test('open refuses a legacy two-key mirror before resuming and records no proof', async () => {
+test('open refuses a legacy two-key mirror before resuming and prints no proof', async () => {
   for (const mirrorValue of [canonicalJson(legacyRecord), '{"mode":"closed","expires_at":null}', 'closed']) {
     const io = mockIo({ operation: 'open-admission', now: NOW, mirrorValue });
-    await assert.rejects(open(io), error => {
+    const { lines } = await captureStdout(() => assert.rejects(open(io), error => {
       assert.match(error.cause?.message ?? error.message, /does not prove closed admission/, mirrorValue);
       return true;
-    });
+    }));
     assert.deepEqual(lifecycleActionsRun(io), ['status']);
-    assert.equal(io.proofs.length, 0, mirrorValue);
+    // The refusal happens before the resume attempt, so the only printed line is
+    // the redacted failed-before-request verdict; it never carries a proof.
+    assert.deepEqual(printed(lines).map(line => line.result), ['failed-before-request'], mirrorValue);
+    assert.equal(printed(lines).some(line => line.type === 'admission-open-proof'), false, mirrorValue);
   }
 });
 
 test('open refuses a status that still reports the removed window field', async () => {
   const io = mockIo({ operation: 'open-admission', now: NOW, mirror: closedRecord,
     statusField: { admission_window_expires_at: null } });
-  await assert.rejects(open(io), error => {
-    assert.match(error.message, /closed back to the recorded decision/);
+  const { lines } = await captureStdout(() => assert.rejects(open(io), error => {
+    assert.match(error.message, /closed back to the recorded decision \(close_kind=failed-open\)/);
     assert.match(error.cause.message, /still reports the removed admission window field/);
     return true;
-  });
-  // The failed-open recovery closes it again and records the close kind.
+  }));
+  // The failed-open recovery closes it again, and the printed line plus the thrown
+  // error name that close kind; no proof is printed for a failed open.
   assert.deepEqual(lifecycleActionsRun(io), ['status', 'resume', 'status', 'suspend']);
-  assert.equal(io.events.at(-1).close_kind, 'failed-open');
-  assert.equal(io.proofs.length, 0);
+  assert.deepEqual(printed(lines).map(line => [line.result, line.close_kind]), [['failed-open', 'failed-open']]);
+  assert.equal(printed(lines).some(line => line.type === 'admission-open-proof'), false);
 });
 
 test('a failed open closes back to the recorded decision and names the close kind', async () => {
   const io = mockIo({ operation: 'open-admission', now: NOW, mirror: closedRecord,
     status(value, index) { return index === 0 ? value : { ...value, tester_count: 1 }; } });
-  await assert.rejects(open(io), /closed back to the recorded decision/);
+  const { lines } = await captureStdout(() => assert.rejects(open(io),
+    /closed back to the recorded decision \(close_kind=failed-open\)/));
   assert.deepEqual(lifecycleActionsRun(io), ['status', 'resume', 'status', 'suspend']);
-  assert.equal(io.events.at(-1).close_kind, 'failed-open');
-  assert.equal(io.proofs.length, 0);
+  assert.deepEqual(printed(lines).map(line => [line.result, line.close_kind]), [['failed-open', 'failed-open']]);
 });
 
 test('a failure before the resume attempt records no recovery close', async () => {
   const io = mockIo({ operation: 'open-admission', now: NOW, mirror: openRecord });
-  await assert.rejects(open(io));
+  const { lines } = await captureStdout(() => assert.rejects(open(io)));
   assert.equal(lifecycleActionsRun(io).includes('resume'), false);
   assert.equal(lifecycleActionsRun(io).includes('suspend'), false);
-  assert.equal(io.proofs.length, 0);
+  assert.deepEqual(printed(lines).map(line => line.result), ['failed-before-request']);
 });
 

@@ -140,5 +140,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .
+          # The upload has a single search path (`.service-artifacts/selected`), so
+          # `upload-artifact` uses that directory itself as the artifact root and
+          # stores the files at the artifact root. The download must therefore
+          # target the same directory, or the bytes would land in the workspace
+          # root and `prove-release-bytes.mjs` would fail closed on every release.
+          path: .service-artifacts/selected
       - uses: ./.github/actions/deploy-operation

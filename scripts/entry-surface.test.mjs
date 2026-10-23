@@ -190,14 +190,19 @@ test('the only artifact a protected mutating run publishes is the release bytes,
   assert.match(upload.if, /restore-release/);
   assert.match(upload.if, /deploy-runtime/);
 
-  // The deploy job downloads the same per-run name with the unchanged `path: .`,
-  // so `.service-artifacts/selected` is the directory the schema gate and the
-  // stage-base CDK deploy consume.
+  // The upload has ONE search path, and `upload-artifact` uses the least common
+  // ancestor of the search paths as the artifact root; with a single path that
+  // root is `.service-artifacts/selected` itself, so the release bytes are stored
+  // at the artifact root. The download must therefore extract into that same
+  // directory — the one `prove-release-bytes.mjs`, `schema-gate.mjs` and the
+  // stage-base CDK deploy read. A download to `.` would scatter the bytes into the
+  // workspace root and every release run would fail closed at the byte proof.
   const downloads = mutate.jobs.deploy.steps
     .filter(step => String(step.uses ?? '').startsWith('actions/download-artifact'));
   assert.equal(downloads.length, 1);
   assert.equal(downloads[0].with.name, 'service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}');
-  assert.equal(downloads[0].with.path, '.');
+  assert.equal(downloads[0].with.path, upload.with.path,
+    'the download path must equal the single upload search path, which is the artifact root');
 
   // No protected operation workflow or composite publishes an `infra-` evidence
   // artifact any more. `check.yml` is the automatic source-check entry, not a

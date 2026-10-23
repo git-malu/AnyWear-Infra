@@ -124,19 +124,16 @@ export async function readAdmissionMode(io) {
 }
 
 // The forward-migration fence for the standalone `migrate` operation. It refuses
-// `open` and `unproven` alike, and records what it observed so a refusal is
-// evidence.
+// `open` and `unproven` alike, and prints what it observed so a refusal is a run
+// fact an operator can read.
 export async function assertMigrationAdmissionClosed(io, label = 'the standalone migrate operation') {
   let admission;
   let cause;
   try { admission = await readAdmissionMode(io); }
   catch (error) { cause = error; }
   const proof = admission ? admissionClosureProof(admission) : 'unproven';
-  io.recordAdmissionState?.({ phase: 'migration-fence', proof,
-    state: admission ?? { admission_mode: 'unavailable', admission_mode_source: 'unavailable',
-      admission_mode_reason: 'unavailable', admission_recorded_mode: 'unavailable',
-      admission_recorded_keys: 'unavailable', tester_emails: [] },
-    result: proof === 'closed' ? 'observed' : 'refused' });
+  process.stdout.write(`${JSON.stringify({ fence: 'migration-admission', proof,
+    admission: admission ? describeAdmissionMode(admission) : 'unreadable mirror' })}\n`);
   if (proof !== 'closed') {
     throw new Error(`Admission mirror does not prove closed admission; refusing ${label}: ${admission ? describeAdmissionMode(admission) : 'unreadable mirror'}`, { cause });
   }
