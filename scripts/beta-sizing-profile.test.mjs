@@ -1,17 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-sizing-profile.mjs';
+import { retainedBetaSizingProfile } from './beta-sizing-profile.mjs';
 
-// Sizing is a release-slice parameter. It is set by Infra's `deploy-runtime`
-// operation; the state observer only reads the retained values to report Beta state.
-test('a pre-profile workload reads the source defaults', () => {
+// The retained sizing profile is a release-slice parameter. It is preserved by
+// `deploy-runtime` and never set; the state observer only reads the retained value
+// to report Beta state.
+test('a pre-profile workload reads the source default', () => {
   assert.equal(retainedBetaSizingProfile({}), 's1');
-  assert.equal(retainedBetaSizingTelemetry({}), 'false');
   assert.equal(retainedBetaSizingProfile({ BetaApiSizingProfile: 's2-api' }), 's2-api');
-  assert.equal(retainedBetaSizingTelemetry({ BetaSizingTelemetry: 'true' }), 'true');
 });
 
-test('unknown retained values fail closed and change nothing', () => {
+test('an unknown retained profile fails closed and changes nothing', () => {
   assert.throws(() => retainedBetaSizingProfile({ BetaApiSizingProfile: 's3' }), /Unknown retained Beta API sizing profile/);
-  assert.throws(() => retainedBetaSizingTelemetry({ BetaSizingTelemetry: 'on' }), /Unknown retained Beta sizing telemetry/);
 });

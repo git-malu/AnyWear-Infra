@@ -125,7 +125,7 @@ and must not be relabeled as an Infra-produced deployment.
   `schema-journal` verify task under the existing verification-task role,
   judges and executes the change set, runs the unchanged 600-second six-signal
   bake under the read-only runtime session, compares the deployed template hash and
-  the six parameters with the requested deployment, and prints the bake result and
+  the five parameters with the requested deployment, and prints the bake result and
   the `/health` floor in the mutating job's step log; `stop-runtime`
   deletes only that stack,
   and an absent stack is its accepted no-op. The historical runs below evidence
