@@ -93,6 +93,17 @@ function capturingBake(gate = () => gateBlock()) {
   return { baked, bake: async (options) => { baked.push(options); return gate(); } };
 }
 
+// The real CloudFormation change-set row shape: `Type` is always `Resource` and
+// the action is `ResourceChange.Action`. Issue #220's first deployment was refused
+// because the guard read `Type`; every fixture below is built from this shape so
+// the classifier and both guards are exercised the way a live change set is.
+function changeRow(action, { logicalId, resourceType, replacement = 'False' }) {
+  return {
+    Type: 'Resource',
+    ResourceChange: { Action: action, LogicalResourceId: logicalId, ResourceType: resourceType, Replacement: replacement },
+  };
+}
+
 
 function liveStack({ identityUnchanged = true, terminal = true } = {}) {
   return {
@@ -323,11 +334,16 @@ test('a change set is classified as converged or as a delta, and the guards fail
   });
   assert.equal(classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [] }).converged, true);
   const delta = classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'Conditional' } },
-    { Type: 'Add', ResourceChange: { LogicalResourceId: 'New', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } },
+    changeRow('Modify', { logicalId: 'ComputeRuntimeApiServiceD2475D0A', resourceType: 'AWS::ECS::Service', replacement: 'Conditional' }),
+    changeRow('Add', { logicalId: 'New', resourceType: 'AWS::S3::Bucket' }),
   ] });
   assert.equal(delta.converged, false);
   assert.equal(delta.replacement, true);
+  // The real row keeps the change-set row type in `action` and the real action in
+  // `action_type`; the guards judge the latter (issue #220's deployment defect).
+  assert.equal(delta.changes[0].action, 'Resource');
+  assert.equal(delta.changes[0].action_type, 'Modify');
+  assert.equal(delta.changes[1].action_type, 'Add');
   // Issue #220: the unchanged-release guard refuses the conditional replacement.
   assert.throws(() => assertReleaseStableChangeSet(delta),
     /only Add\/Modify changes without replacement; the change set lists 1 refused: Modify ComputeRuntimeApiServiceD2475D0A \(Conditional\)/);
@@ -335,10 +351,20 @@ test('a change set is classified as converged or as a delta, and the guards fail
     /change set failed/);
   // A non-replacement Add or Modify is what the board authorized: admitted.
   assert.doesNotThrow(() => assertReleaseStableChangeSet(classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
-    { Type: 'Add', ResourceChange: { LogicalResourceId: 'A', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } },
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'B', ResourceType: 'AWS::CloudWatch::Alarm', Replacement: 'False' } }] })));
-  assert.doesNotThrow(() => assertCreateOnlyChangeSet(classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
-    { Type: 'Add', ResourceChange: { LogicalResourceId: 'A', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } }] })));
+    changeRow('Add', { logicalId: 'A', resourceType: 'AWS::S3::Bucket' }),
+    changeRow('Modify', { logicalId: 'B', resourceType: 'AWS::CloudWatch::Alarm' })] })));
+  // The Add-only create path judges the real action too: all-Add rows are
+  // admitted, and one Modify or Remove row refuses the whole set.
+  const createOnly = classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
+    changeRow('Add', { logicalId: 'A', resourceType: 'AWS::S3::Bucket' }),
+    changeRow('Add', { logicalId: 'B', resourceType: 'AWS::CloudFormation::WaitConditionHandle' })] });
+  assert.doesNotThrow(() => assertCreateOnlyChangeSet(createOnly));
+  for (const action of ['Modify', 'Remove']) {
+    const notCreateOnly = classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
+      changeRow('Add', { logicalId: 'A', resourceType: 'AWS::S3::Bucket' }),
+      changeRow(action, { logicalId: 'B', resourceType: 'AWS::S3::Bucket' })] });
+    assert.throws(() => assertCreateOnlyChangeSet(notCreateOnly), /created only with Add changes/, action);
+  }
   assert.throws(() => assertCreateOnlyChangeSet(delta), /created only with Add changes/);
 
   // Issue #195: `AWS::CDK::Metadata` is the declared diagnostic metadata the
@@ -346,8 +372,8 @@ test('a change set is classified as converged or as a delta, and the guards fail
   // change, a delta or a replacement.
   assert.deepEqual(DECLARED_DIAGNOSTIC_RESOURCE_TYPES, ['AWS::CDK::Metadata']);
   const diagnostic = classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] });
-  const diagnosticRow = { action: 'Modify', logical_id: 'CDKMetadata', resource_type: 'AWS::CDK::Metadata',
+    changeRow('Modify', { logicalId: 'CDKMetadata', resourceType: 'AWS::CDK::Metadata', replacement: 'Conditional' })] });
+  const diagnosticRow = { action: 'Resource', logical_id: 'CDKMetadata', resource_type: 'AWS::CDK::Metadata',
     action_type: 'Modify', replacement: 'Conditional', declared_diagnostic: true, excluded: DECLARED_DIAGNOSTIC_EXCLUSION };
   assert.equal(diagnostic.converged, true);
   assert.equal(diagnostic.failed, false);
@@ -360,12 +386,20 @@ test('a change set is classified as converged or as a delta, and the guards fail
   // A real non-replacement Modify beside a diagnostic row is admitted by the issue
   // #220 rule; only real rows count and only their replacement flags report.
   const mixed = classifyChangeSet({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } },
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] });
+    changeRow('Modify', { logicalId: 'ComputeRuntimeApiServiceD2475D0A', resourceType: 'AWS::ECS::Service' }),
+    changeRow('Modify', { logicalId: 'CDKMetadata', resourceType: 'AWS::CDK::Metadata', replacement: 'Conditional' })] });
   assert.equal(mixed.converged, false);
   assert.equal(mixed.replacement, false, 'the diagnostic row does not raise the replacement flag');
   assert.deepEqual(mixed.resource_changes.map((change) => change.logical_id), ['ComputeRuntimeApiServiceD2475D0A']);
   assert.doesNotThrow(() => assertReleaseStableChangeSet(mixed));
+  // The issue #220 deployment shape itself: five real rows, all Add/Modify with
+  // Replacement False, are admitted as one delta.
+  assert.doesNotThrow(() => assertReleaseStableChangeSet(classifyChangeSet({ Status: 'CREATE_COMPLETE', Changes: [
+    changeRow('Modify', { logicalId: 'ComputeRuntimeAutoTaggingAgeAlarmDF06D465', resourceType: 'AWS::CloudWatch::Alarm' }),
+    changeRow('Modify', { logicalId: 'ComputeRuntimeOutboxOldestAgeAlarm3F5E8F76', resourceType: 'AWS::CloudWatch::Alarm' }),
+    changeRow('Modify', { logicalId: 'ComputeRuntimeVtoAgeAlarm02DEBB57', resourceType: 'AWS::CloudWatch::Alarm' }),
+    changeRow('Modify', { logicalId: 'ComputeRuntimeWorkerOutboxMetricFilterD1E82153', resourceType: 'AWS::Logs::MetricFilter' }),
+    changeRow('Add', { logicalId: 'ComputeRuntimeWorkerOutboxMissingAgeFilterCE0F140F', resourceType: 'AWS::Logs::MetricFilter' })] })));
 });
 
 test('only the recorded live identity phase passes for the Runtime operations', () => {
@@ -490,10 +524,25 @@ test('the bake receives the contract queue URLs and cluster, not hardcoded names
 // still deletes the change set and fails closed with the named delta.
 test('an unchanged release identity admits only a non-replacement Add/Modify delta; Remove and every replacement fail closed', async () => {
   const changesFor = (changes) => ({ Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: changes });
-  const row = (action, replacement, logicalId = 'ComputeRuntimeWorkerOutboxMissingAgeFilterCE0F140F') => ({
-    Type: action,
-    ResourceChange: { LogicalResourceId: logicalId, ResourceType: 'AWS::Logs::MetricFilter', Replacement: replacement },
-  });
+  const row = (action, replacement, logicalId = 'ComputeRuntimeWorkerOutboxMissingAgeFilterCE0F140F') =>
+    changeRow(action, { logicalId, resourceType: 'AWS::Logs::MetricFilter', replacement });
+  // The deployment shape this issue produces: three alarm Modify rows, one filter
+  // Modify row and one filter Add row, all `Replacement: False`, are one admitted
+  // delta (run 39985377613 refused exactly these five real rows).
+  {
+    const { io, calls } = fakeIo({ changeSet: changesFor([
+      changeRow('Modify', { logicalId: 'ComputeRuntimeAutoTaggingAgeAlarmDF06D465', resourceType: 'AWS::CloudWatch::Alarm' }),
+      changeRow('Modify', { logicalId: 'ComputeRuntimeOutboxOldestAgeAlarm3F5E8F76', resourceType: 'AWS::CloudWatch::Alarm' }),
+      changeRow('Modify', { logicalId: 'ComputeRuntimeVtoAgeAlarm02DEBB57', resourceType: 'AWS::CloudWatch::Alarm' }),
+      changeRow('Modify', { logicalId: 'ComputeRuntimeWorkerOutboxMetricFilterD1E82153', resourceType: 'AWS::Logs::MetricFilter' }),
+      changeRow('Add', { logicalId: 'ComputeRuntimeWorkerOutboxMissingAgeFilterCE0F140F', resourceType: 'AWS::Logs::MetricFilter' }),
+    ]) });
+    const captured = capturingBake();
+    await deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: captured.bake });
+    assert.ok(calls.some((call) => call.args?.includes('execute-change-set')), 'the real five-row delta executes');
+    assert.equal(captured.baked.length, 1, 'the real five-row delta bakes');
+    assert.deepEqual(io.changedStacks, [RUNTIME_STACK]);
+  }
   // Admitted: the two rows are the shape this issue's own change set has — an Add
   // and a Modify, neither a replacement.
   for (const [action, replacement] of [['Add', 'False'], ['Modify', 'False']]) {
@@ -551,7 +600,7 @@ test('a synthesized Runtime template that does not normalise to the recorded ide
   assert.throws(() => assertSynthesizedRuntimeIdentity(SYNTHESIZED.template, 'f'.repeat(64)),
     /normalises to [a-f0-9]{64}, not the recorded roles-added identity/);
   const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeVtoAgeAlarm02DEBB57', ResourceType: 'AWS::CloudWatch::Alarm', Replacement: 'False' } }] } });
+    changeRow('Modify', { logicalId: 'ComputeRuntimeVtoAgeAlarm02DEBB57', resourceType: 'AWS::CloudWatch::Alarm' })] } });
   await assert.rejects(deploy({ env: env(), release, io,
     synthesize: async () => { assertSynthesizedRuntimeIdentity(SYNTHESIZED.template, 'f'.repeat(64)); },
     health: HEALTH, bake: BAKE }), /not the recorded roles-added identity/);
@@ -565,7 +614,7 @@ test('a synthesized Runtime template that does not normalise to the recorded ide
 // bake.
 test('a CDKMetadata-only change set is converged: it executes nothing and is deleted', async () => {
   const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] } });
+    changeRow('Modify', { logicalId: 'CDKMetadata', resourceType: 'AWS::CDK::Metadata', replacement: 'Conditional' })] } });
   const deployment = await deploy({ env: env(), release, io,
     synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE });
   assert.equal(deployment.template_sha256, SYNTHESIZED.normalised_sha256);
@@ -582,7 +631,7 @@ test('a CDKMetadata-only change set is converged: it executes nothing and is del
 // before execution, and the fail-closed path deletes the change set.
 test('a Modify with Replacement: Conditional on a real resource fails closed and deletes the change set', async () => {
   const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'Conditional' } }] } });
+    changeRow('Modify', { logicalId: 'ComputeRuntimeApiServiceD2475D0A', resourceType: 'AWS::ECS::Service', replacement: 'Conditional' })] } });
   await assert.rejects(deploy({ env: env(), release, io,
     synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
   /only Add\/Modify changes without replacement; the change set lists 1 refused: Modify ComputeRuntimeApiServiceD2475D0A \(Conditional\)/);
@@ -595,7 +644,7 @@ test('a Modify with Replacement: Conditional on a real resource fails closed and
 test('a change-set execute failure fails the run before the bake', async () => {
   const { io, calls } = fakeIo({ runtime: liveStack({ identityUnchanged: false }),
     changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-      { Type: 'Add', ResourceChange: { LogicalResourceId: 'BetaReleaseChange', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } }] },
+      changeRow('Add', { logicalId: 'BetaReleaseChange', resourceType: 'AWS::S3::Bucket' })] },
     executeError: Object.assign(new Error('An error occurred (AccessDenied) when calling the ExecuteChangeSet operation'), {
       stderr: 'An error occurred (AccessDenied)' }) });
   const captured = capturingBake();
@@ -628,7 +677,7 @@ test('a breaching or insufficient-data bake fails the run', async () => {
 test('an absent Runtime stack is an Add-only create that executes, and stop of an absent stack is a no-op', async () => {
   const { io, calls, setRuntime } = fakeIo({ runtime: null,
     changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-      { Type: 'Add', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] } });
+      changeRow('Add', { logicalId: 'ComputeRuntimeApiServiceD2475D0A', resourceType: 'AWS::ECS::Service' })] } });
   const deployment = await deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE });
   assert.equal(deployment.service_sha, SERVICE_SHA);
   assert.ok(calls.some((call) => call.args?.includes('execute-change-set')));
@@ -711,7 +760,7 @@ test('a deploy-runtime dispatch from the wrong source, workflow family, account 
 // landed update whose later gate refuses must still leave the one step-summary line
 // that says "changed but unqualified"; a converged no-op must leave none.
 const DELTA_CHANGE_SET = { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-  { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] };
+  changeRow('Modify', { logicalId: 'ComputeRuntimeApiServiceD2475D0A', resourceType: 'AWS::ECS::Service' })] };
 
 // The dispatch `validateOperationInputs` accepts for `deploy-runtime`, plus the step
 // summary the operation's catch appends to.

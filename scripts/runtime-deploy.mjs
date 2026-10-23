@@ -247,10 +247,14 @@ export function classifyChangeSet(changeSet) {
 export function assertReleaseStableChangeSet(classification) {
   if (classification.failed) throw new Error(`The Runtime change set failed: ${classification.reason || classification.status}`);
   const changes = classification.resource_changes ?? classification.changes;
-  const refused = changes.filter((change) => !((change.action === 'Add' || change.action === 'Modify')
+  // CloudFormation reports each row's `Type` as `Resource`; the action is
+  // `ResourceChange.Action`, which the classifier already parsed as `action_type`.
+  // (Issue #220's first deployment refused every real row because this guard read
+  // `action` — the row type — instead; the tests now use the real row shape.)
+  const refused = changes.filter((change) => !((change.action_type === 'Add' || change.action_type === 'Modify')
     && change.replacement === 'False'));
   if (refused.length) {
-    const summary = refused.map((change) => `${change.action} ${change.logical_id} (${change.replacement})`).join(', ');
+    const summary = refused.map((change) => `${change.action_type} ${change.logical_id} (${change.replacement})`).join(', ');
     throw new Error('An unchanged Runtime release admits only Add/Modify changes without replacement; '
       + `the change set lists ${refused.length} refused: ${summary}`);
   }
@@ -260,7 +264,8 @@ export function assertReleaseStableChangeSet(classification) {
 export function assertCreateOnlyChangeSet(classification) {
   if (classification.failed) throw new Error(`The Runtime change set failed: ${classification.reason || classification.status}`);
   if (classification.converged) return;
-  const notAdd = classification.changes.filter((change) => change.action !== 'Add');
+  // Same real row shape as `assertReleaseStableChangeSet`: `ResourceChange.Action`.
+  const notAdd = classification.changes.filter((change) => change.action_type !== 'Add');
   if (notAdd.length) {
     throw new Error(`A missing Runtime stack must be created only with Add changes; observed ${notAdd.map((change) => change.logical_id).join(', ')}`);
   }
