@@ -9,7 +9,7 @@ constants and name builders.
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
 | Version | `0.6.0` |
-| Tag | `stage-contracts-v0.6.0` (created at Deployment, not by the change that bumps the version; `0.3.0` is the newest published tag — the `0.4.0` and `0.5.0` tags were never created) |
+| Tag | `stage-contracts-v0.6.0` (created at Deployment, not by the change that bumps the version; `stage-contracts-v0.5.0` is the newest published tag) |
 | Registry | GitHub Packages (`https://npm.pkg.github.com`) |
 | Runtime | Node.js 24+, plain ESM (`.mjs`) with `.d.ts`; no build step, no runtime dependency |
 

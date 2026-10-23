@@ -103,8 +103,8 @@ dependency-free, versioned source of the stage-contract names/kinds, the stack
 identities, the deployed-template normalisation, the task-definition identity and
 the 600-second bake gate's one stage-free threshold table and name builders. It is
 `@git-malu/stage-contracts` `0.6.0`; the `stage-contracts-v0.6.0` tag is a
-post-merge publication step created at Deployment, not by this change (`0.3.0` is
-the newest published tag and `0.4.0`/`0.5.0` were never tagged), and the package
+post-merge publication step created at Deployment, not by this change
+(`stage-contracts-v0.5.0` is the newest published tag), and the package
 is packed with `npm pack`. The package is consumed in this repository as an in-repo
 dependency with no installed second consumer: there is no cross-repository pin, no
 vendored tarball and no Service deploy job. Publishing is the separate
