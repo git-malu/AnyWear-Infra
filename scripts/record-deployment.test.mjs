@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { canonicalJson, parseJson } from './json-contract.mjs';
+import { canonicalJson, parseJson, sha256 } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
 import { stageContractSchemaHash, validateDeploymentRecord, validateObservationRecord } from './deployment-contract.mjs';
 import { createOperationRecord } from './operation-record.mjs';
@@ -15,6 +15,10 @@ import { recordDeployment } from './record-deployment.mjs';
 // complete. These tests exercise it in a temporary evidence directory: the accepted
 // record must exist for a trigger operation, and a missing one marks the operation
 // record incomplete before the run fails.
+// Issue #202: outside that trigger set the required evidence follows the operation
+// record's own `result` — a `succeeded` operation still requires its family
+// observation, while a `failed` or `partial` operation publishes its operation
+// record alone and a non-terminal result is refused.
 const infraSha = 'a'.repeat(40);
 const endpoint = 'https://d111111abcdef8.cloudfront.net';
 const inputs = () => [{ parameter: '/anywear/beta/vpc_id', version: '4', value_sha256: 'd'.repeat(64) },
@@ -31,6 +35,11 @@ const body = () => {
     schema: { content_sha256: stageContractSchemaHash(rows) } };
 };
 const runtimeOperations = ['observe', 'state'];
+// Every operation outside the accepted-record trigger set that is not the read-only
+// `state` run. Only their `succeeded` result can be followed by the family
+// observation; a failed or partial operation never produces one.
+const familyScopeOperations = ['deploy-egress', 'delete-egress', 'stop-runtime', 'migrate',
+  'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission'];
 const env = (operation = 'deploy-platform', overrides = {}) => ({
   GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
   GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '2',
@@ -42,12 +51,12 @@ const env = (operation = 'deploy-platform', overrides = {}) => ({
   ...overrides,
 });
 
-async function operationRecord(root, options, { completed = true, outcomes = ['success', 'success'] } = {}) {
+async function operationRecord(root, options, { completed = true, outcomes = ['success', 'success'], finalized = true } = {}) {
   const record = createOperationRecord({ env: options });
   if (completed) {
     record.events.push({ type: 'stack-deploy', stack_name: 'AnyWearPlatformStack-beta', result: 'complete' });
   }
-  finalizeOperationRecord(record, ...outcomes);
+  if (finalized) finalizeOperationRecord(record, ...outcomes);
   await mkdir(path.join(root, 'deployment-evidence'), { recursive: true });
   await writeFile(path.join(root, 'deployment-evidence/operation-record.json'), canonicalJson(record));
   return record;
@@ -175,9 +184,49 @@ test('runtime.yml keeps its single-artifact layout and the manual observe produc
     'deployment-evidence/operation-record.json', 'deployment-evidence/deployment-record.json']);
 });
 
-test('a required family observation that never arrived fails the record job', async () => {
+test('a succeeded operation whose family observation never arrived fails the record job', async () => {
   const root = await tmp();
   const options = env('deploy-egress');
-  await operationRecord(root, options);
+  const record = await operationRecord(root, options);
+  assert.equal(record.result, 'succeeded');
   await assert.rejects(recordDeployment(options, { root, ...quiet }), /requires its family observation record/);
+});
+
+test('every operation outside the trigger set publishes a failed record without a family observation', async () => {
+  for (const operation of familyScopeOperations) {
+    const root = await tmp();
+    const options = env(operation);
+    await operationRecord(root, options, { completed: false, outcomes: ['failure', 'skipped'] });
+    const bytes = await readFile(evidence(root, 'operation-record.json'));
+    const result = await recordDeployment(options, { root, ...quiet });
+    assert.equal(result.operation.result, 'failed', operation);
+    assert.equal(result.operation.final_observation, 'skipped', operation);
+    assert.equal(result.operation.recovery, 'not-required', operation);
+    assert.equal(result.family, undefined, operation);
+    assert.deepEqual(result.checksums.map(row => row.file), ['deployment-evidence/operation-record.json'], operation);
+    // The checksum describes the deploy job's bytes; the record job never rewrites
+    // the operation record on the failed path.
+    assert.equal(await readFile(`${evidence(root, 'operation-record.json')}.sha256`, 'utf8'),
+      `${sha256(bytes)}  operation-record.json\n`, operation);
+  }
+});
+
+test('a partial operation publishes its record and its recovery decision without a family observation', async () => {
+  const root = await tmp();
+  const options = env('migrate');
+  await operationRecord(root, options, { completed: true, outcomes: ['failure', 'failure'] });
+  const result = await recordDeployment(options, { root, ...quiet });
+  assert.equal(result.operation.result, 'partial');
+  assert.equal(result.operation.recovery, 'requires-explicit-recovery');
+  assert.equal(result.operation.final_observation, 'failure');
+  assert.equal(result.family, undefined);
+  assert.deepEqual(result.checksums.map(row => row.file), ['deployment-evidence/operation-record.json']);
+});
+
+test('an operation record without a final result is not complete evidence', async () => {
+  const root = await tmp();
+  const options = env('deploy-egress');
+  const record = await operationRecord(root, options, { finalized: false });
+  assert.equal(record.result, 'running');
+  await assert.rejects(recordDeployment(options, { root, ...quiet }), /has no final result/);
 });

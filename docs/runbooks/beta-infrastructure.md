@@ -829,9 +829,18 @@ stack tables in `scripts/operation-stacks.mjs`: an operation requires the accept
 record exactly when it changes a stack the record lists. The Egress stop/start
 drill changes only the operation-owned `AnyWearEgressStack-beta`, so a correctly
 executed drill is never marked incomplete; a migration or admission write changes
-no recorded stack; `state` claims no record. Those operations keep their
-`anywear_infra_family_observation` (uploaded as
-`infra-family-observation-<run-id>-<attempt>`) as their end-state evidence.
+no recorded stack; `state` claims no record. Outside that trigger set the required
+evidence follows the operation record's own `result`: a `succeeded` operation
+requires its `anywear_infra_family_observation` (uploaded as
+`infra-family-observation-<run-id>-<attempt>`), and its absence still fails the
+`record` job. A `failed` or `partial` operation requires only its operation record,
+which states the `result`, the `final_observation` and the `recovery` decision. The
+mutation job's observation step and its upload run only after the mutation step
+succeeded, so a failed or partial operation can never produce a family observation;
+its operation record is validated, checksummed and published unchanged. Outside the
+accepted-record trigger set, the `record` job refuses an operation record whose
+`result` is not one of `succeeded`, `failed` or `partial` with `The operation record
+has no final result`.
 
 A missing accepted record makes the deployment incomplete. The credential-free
 `record` job validates the operation record against the dispatch, validates the
