@@ -51,8 +51,8 @@ const env = (overrides = {}) => ({
 });
 const TEMPLATE = JSON.parse(readFileSync('test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json', 'utf8'));
 const SYNTHESIZED = { template: TEMPLATE, raw_sha256: 'a'.repeat(64),
-  normalised_sha256: '454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37',
-  expected: '454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37' };
+  normalised_sha256: 'b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c',
+  expected: 'b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c' };
 const HEALTH = async () => 0;
 const BAKE = async () => gateBlock();
 const SSM = ['vlm_config_arn', 'cloudfront_prefix_list_id'].map((name) => ({ name }));
