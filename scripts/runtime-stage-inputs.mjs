@@ -59,7 +59,7 @@ export const RUNTIME_DEPLOY_PARAMETER_INPUTS = Object.freeze([
   '/anywear/beta/vlm_config_arn', '/anywear/beta/cloudfront_prefix_list_id',
 ]);
 
-// The four queue URLs and the ECS cluster name the 600-second bake reads. They are
+// The four queue URLs and the ECS cluster name the 300-second bake reads. They are
 // contract values like every other stage input: the deploy names them by
 // parameter, never by an account/region literal or a guessed queue name. The bake
 // passes the URLs to `sqs get-queue-attributes` and the cluster to

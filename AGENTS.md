@@ -47,7 +47,7 @@ and must not be relabeled as an Infra-produced deployment.
   `.service-artifacts/selected/` and retained one day: it is a deploy input, not
   evidence.
 - The versioned `@git-malu/stage-contracts` package
-  (`packages/stage-contracts/`, currently `0.6.0`) is the single source of the
+  (`packages/stage-contracts/`, currently `0.7.0`) is the single source of the
   stage-contract names/kinds, stack identities, the deployed-template
   normalisation, the task-definition identity and the bake gate's stage-free
   constants and name builders. It is consumed from `file:packages/stage-contracts`;
@@ -123,7 +123,7 @@ and must not be relabeled as an Infra-produced deployment.
   the sealed release's `service-schema.json`, resolves the immutable ECR image
   digest, admits the pre-mutation schema boundary with one bounded read-only
   `schema-journal` verify task under the existing verification-task role,
-  judges and executes the change set, runs the unchanged 600-second six-signal
+  judges and executes the change set, runs the unchanged 300-second six-signal
   bake under the read-only runtime session, compares the deployed template hash and
   the five parameters with the requested deployment, and prints the bake result and
   the `/health` floor in the mutating job's step log; `stop-runtime`

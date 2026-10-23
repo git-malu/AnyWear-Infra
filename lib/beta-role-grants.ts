@@ -177,7 +177,7 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     resources: [arn('cloudformation', 'stack', 'AnyWearRuntimeStack-beta/*'),
       arn('cloudformation', 'changeSet', '*')],
   }));
-  // Issue #195: the 600-second six-signal bake runs inside `deploy-runtime` under
+  // Issue #195: the 300-second six-signal bake runs inside `deploy-runtime` under
   // the read-only runtime session, and its verdict is the step log and the job
   // conclusion (#207). Two read-only statements on the existing read role: the
   // deployed bake alarm states and the worker outbox log lines. No write, no

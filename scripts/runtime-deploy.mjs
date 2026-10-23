@@ -496,7 +496,7 @@ export async function deployRuntime({ io, env, release,
     await io.awsAs('deploy', ['cloudformation', 'execute-change-set', '--stack-name', RUNTIME_STACK,
       '--change-set-name', changeSetName]);
     // The change set landed. Record it here, at the mutation, before the stack
-    // read-back, the ECS identity proof, `/health` and the 600-second bake: every
+    // read-back, the ECS identity proof, `/health` and the 300-second bake: every
     // one of those gates can still refuse, and the failed run then names the stack
     // it already changed. `deploy-runtime` executes the change set itself, so it
     // records through the same mechanism as `io.deploy`/`io.destroy` instead of
@@ -541,7 +541,7 @@ export async function deployRuntime({ io, env, release,
   if (gate.result !== 'passed') {
     const failures = gate.signals.filter((signal) => signal.state !== 'not-breaching')
       .map((signal) => ({ signal: signal.name, state: signal.state, exceptions: signal.exceptions }));
-    throw new Error(`The 600-second bake failed: ${JSON.stringify(failures)}`);
+    throw new Error(`The 300-second bake failed: ${JSON.stringify(failures)}`);
   }
   // The bake's verdict is a run fact: the deploy step log carries it, and no
   // record member does.

@@ -20,7 +20,7 @@ test('Node 24 CommonJS require() can load the ESM package', () => {
   assert.equal(typeof loaded.validateDeploymentGate, 'undefined');
   assert.equal(typeof loaded.validateServiceDeploymentRecord, 'undefined');
   assert.equal(typeof loaded.deploymentAlarmNames, 'function');
-  assert.equal(loaded.DEPLOYMENT_GATE_DURATION_SECONDS, 600);
+  assert.equal(loaded.DEPLOYMENT_GATE_DURATION_SECONDS, 300);
   assert.equal(typeof loaded.normaliseDeployedTemplate, 'function');
   assert.equal(typeof loaded.canonicalDeployedTemplateHash, 'function');
   assert.equal(typeof loaded.stableTaskDefinition, 'function');

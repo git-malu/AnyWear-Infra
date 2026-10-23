@@ -97,7 +97,7 @@ export const reads = {
 // Reads that only some operations perform. A read absent from this table is
 // performed by every operation that uses the runtime session; a listed read is
 // simulated and granted only for the operations named here. Issue #195: the
-// 600-second bake runs only inside `deploy-runtime`, and two of its grants are
+// 300-second bake runs only inside `deploy-runtime`, and two of its grants are
 // installed by a Platform deploy, so requiring them from every runtime-session
 // operation would leave no reviewed operation able to install them.
 export const readOperations = Object.freeze({
