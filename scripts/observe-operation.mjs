@@ -32,8 +32,8 @@ try {
   // A deny or simulation failure stops before the observation does any work.
   await runAuthorizationPreflight({ sessions: ['runtime'], env, purpose: 'qualification', assume: credentialEnvironment });
   // The authenticated observation covers the stacks Infra still produces and the
-  // stage-contract surface it publishes. The release slice is observed by
-  // AnyWear-Service's release chain, never from here. Only the `runtime` family
+  // stage-contract surface it publishes. The release slice is deployed and
+  // recorded by `deploy-runtime`, never from here. Only the `runtime` family
   // (`observe`) qualifies the running slice and requires the Runtime stack; a
   // `beta-deploy` observation runs before M6 or while Beta is stopped, so it never
   // reads or requires Runtime. A `deploy-foundation`/`deploy-billing` observation

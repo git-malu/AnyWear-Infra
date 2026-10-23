@@ -35,7 +35,7 @@ const templates = {
     ],
   },
   'AnyWearBillingStack-beta': { Resources: { BillingBudget: { Type: 'AWS::Budgets::Budget' } } },
-  // Issue #166: the Service-owned Runtime stack exists while Beta runs; the
+  // Issue #166: the Infra-owned Runtime stack exists while Beta runs; the
   // authenticated observation reads it but never adds it to the record's stacks.
   [runtimeStack]: { Resources: { RuntimeService: { Type: 'AWS::ECS::Service' } }, Outputs: [] },
 };
@@ -140,7 +140,7 @@ test('the observer arguments accept exactly the v3 E2E invocation and reject a s
     /Duplicate observer argument --expected/);
 });
 
-test('the observer requires the Service-owned Runtime stack to exist and be terminal', async () => {
+test('the observer requires the Infra-owned Runtime stack to exist and be terminal', async () => {
   for (const runtimeStatus of [null, 'UPDATE_IN_PROGRESS', 'UPDATE_ROLLBACK_FAILED']) {
     await assert.rejects(observeDeployment({ infraSha, io: fixtureIo({ runtimeStatus }), env: executorEnvironment() }),
       /AnyWearRuntimeStack-beta/, String(runtimeStatus));

@@ -12,7 +12,7 @@ Issue #166 turns Beta into three stacks with disjoint lifetimes:
 | --- | --- | --- | --- |
 | `Base` | `AnyWearPlatformStack-beta` (name retained) | AnyWear-Infra | persistent |
 | `Egress` | `AnyWearEgressStack-beta` | AnyWear-Infra | deleted on stop |
-| `Runtime` | `AnyWearRuntimeStack-beta` (replaces `AnyWearWorkloadStack-beta`) | AnyWear-Service | deleted on stop |
+| `Runtime` | `AnyWearRuntimeStack-beta` (replaces `AnyWearWorkloadStack-beta`) | AnyWear-Infra | deleted on stop |
 
 The only resource that changes stack is the API CloudFront distribution: a
 one-time CloudFormation stack-refactor MOVE from the Service-owned legacy stack

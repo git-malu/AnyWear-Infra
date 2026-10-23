@@ -156,11 +156,10 @@ export async function readApiOrigin(io) {
   if (isOrigin(workloadOrigin)) return workloadOrigin;
   throw new Error('A Base deploy requires the live API load-balancer DNS name from the Runtime stack, the literal origin in the adopted Base distribution, or the legacy Workload stack before the MOVE');
 }
-// The stage base and the Runtime slice have different producers: Infra deploys
-// the Base stack and AnyWear-Service deploys the Runtime stack. A Base or Egress
-// mutation must read the Runtime stack terminal before CloudFormation is touched,
-// so the two writers never cross a deployment. A missing Runtime is simply the
-// stopped state; `restore-release` still requires it to exist (start first).
+// Infra deploys both the persistent Base stack and the Runtime stack. A Base or
+// Egress mutation must read the Runtime stack terminal before CloudFormation is
+// touched, so the two operations never cross a deployment. A missing Runtime is
+// simply the stopped state; `restore-release` still requires it to exist (start first).
 export async function deployOperationStack(io, operation) {
   const [stack] = changedStackNames(operation);
   if (!stack) throw new Error(`Operation ${operation} has no stack to deploy`);
@@ -171,8 +170,8 @@ export async function deployOperationStack(io, operation) {
   await io.deploy(stack);
   return stack;
 }
-// The stop sequence is Runtime (AnyWear-Service) then Egress. This operation is
-// the second step only: it refuses while the Runtime stack still exists.
+// The stop sequence is Runtime (Infra's `stop-runtime`) then Egress. This
+// operation is the second step only: it refuses while the Runtime stack exists.
 export async function deleteOperationStack(io, operation, record) {
   const [stack] = changedStackNames(operation);
   if (operation !== 'delete-egress' || stack !== egressStack) {
@@ -553,7 +552,7 @@ export async function runOperation(env = process.env) {
     // The Base and account-wide stacks take no release input; only the Base stack
     // consumes Service-built Lambda assets, and its deploy proves those bytes
     // through the reviewed release identity before credentials. A Base deploy
-    // additionally reads the Service-owned Runtime stack terminal first (one
+    // additionally reads the Infra-owned Runtime stack terminal first (one
     // writer) and takes its live API origin.
     await deployOperationStack(io, operation);
   }

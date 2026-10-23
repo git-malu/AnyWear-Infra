@@ -128,7 +128,7 @@ export const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-s
 const evidenceEntry = (roles, qualified_by, evidence) => Object.freeze({ roles: Object.freeze(roles), qualified_by, evidence });
 export const operationEvidence = Object.freeze({
   observe: evidenceEntry([], 'self',
-    'This run emits the accepted anywear_infra_deployment v3 record for the observed Foundation, Beta stage base and Billing. The release slice is observed by AnyWear-Service\'s release chain.'),
+    'This run emits the accepted anywear_infra_deployment v3 record for the observed Foundation, Beta stage base and Billing. The release slice is deployed and recorded by the deploy-runtime operation.'),
   state: evidenceEntry([], 'not-applicable',
     'Read-only: the operation record carries anywear_infra_state and claims no mutation.'),
   'deploy-foundation': evidenceEntry([], '.github/workflows/runtime.yml',
@@ -152,7 +152,7 @@ export const operationEvidence = Object.freeze({
   'stop-runtime': evidenceEntry([], '.github/workflows/runtime.yml',
     'The operation record carries the observed stack state and proves only AnyWearRuntimeStack-beta was destroyed; no deployment record is produced.'),
   'restore-release': evidenceEntry([], '.github/workflows/runtime.yml',
-    'Restoring the Base stack leaves the Runtime stack observable by the following fixed observation; the Runtime slice is restored by AnyWear-Service.'),
+    'Restoring the Base stack leaves the Runtime stack observable by the following fixed observation; the Runtime slice is restored by the deploy-runtime operation.'),
   migrate: evidenceEntry(['migrate'], '.github/workflows/runtime.yml',
     'The operation record carries the migrate task identity and its stopped-success result on the deployed Service image.'),
   'admission-status': evidenceEntry(['lifecycle'], 'not-applicable',
@@ -214,7 +214,8 @@ export function families(env, purpose) {
   if (purpose === 'qualification') {
     if (boundary.readOnly) throw new Error('Read-only observation cannot qualify with tasks');
     // Observation no longer runs a verification task: the immutable-release
-    // check that produced it moved to the Service release chain.
+    // check that produced it moved into the deployment operations that prove the
+    // sealed release before any credential.
     return [];
   }
   if (purpose !== 'operation') throw new Error('Unknown credential purpose');

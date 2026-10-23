@@ -26,7 +26,7 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     service, resource, resourceName, region,
     arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
   });
-  // Issue #166: the Service-owned release slice is the Runtime stack. These
+  // Issue #166: the release slice is the Infra-owned Runtime stack. These
   // read grants follow the stack identity; they do not widen any action.
   const stackArns = ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearRuntimeStack-beta']
     .map((name) => arn('cloudformation', 'stack', `${name}/*`));

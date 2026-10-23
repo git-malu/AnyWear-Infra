@@ -83,7 +83,7 @@ test('only the phase-dependent cleanup stage-contract parameter may be added out
     Properties: {
       Name: '/anywear/beta/cleanup_task_role_arn', Type: 'String',
       Value: { 'Fn::GetAtt': ['CleanupTaskRoleABCD1234', 'Arn'] },
-      Description: 'AnyWear-Service AnyWearRuntimeStack-beta stage contract: dedicated cleanup task role ARN',
+      Description: 'AnyWear-Infra AnyWearRuntimeStack-beta stage contract: dedicated cleanup task role ARN',
     },
   };
   const added = base();
@@ -112,6 +112,47 @@ test('only the phase-dependent cleanup stage-contract parameter may be added out
   assert.equal(compareTemplates(base(), wrongId, options({ phase: 'roles-added' })).accepted, false);
   assert.equal(compareTemplates(base(), added, options({ phase: 'roles-added',
     stackName: 'AnyWearPlatformStack-prod' })).accepted, false);
+});
+
+test('the stage-contract description consumer rename is the only description delta allowed', () => {
+  const before = base();
+  before.Resources.VpcIdParam = {
+    Type: 'AWS::SSM::Parameter',
+    Properties: { Name: '/anywear/beta/vpc_id', Type: 'String', Value: 'vpc-0123456789abcdef0',
+      Description: 'AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared Beta VPC id' },
+  };
+  const after = structuredClone(before);
+  after.Resources.VpcIdParam.Properties.Description =
+    'AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared Beta VPC id';
+  for (const phase of ['legacy', 'roles-added', 'retired']) {
+    const report = compareTemplates(before, after, options({ phase }));
+    assert.equal(report.accepted, true, phase);
+    assert.deepEqual(report.allowed.map(entry => entry.path), ['/Resources/VpcIdParam/Properties/Description']);
+    assert.equal(report.allowed[0].reason, 'Stage-contract parameter description consumer rename');
+  }
+  // A Name, Type or Value change on the same resource is still rejected.
+  for (const [property, value] of [['Name', '/anywear/beta/other'], ['Type', 'StringList'], ['Value', 'vpc-other']]) {
+    const changed = structuredClone(after);
+    changed.Resources.VpcIdParam.Properties[property] = value;
+    const report = compareTemplates(before, changed, options({ phase: 'legacy' }));
+    assert.equal(report.accepted, false, property);
+    assert.ok(report.rejected.some(entry => entry.path === `/Resources/VpcIdParam/Properties/${property}`), property);
+  }
+  // The allowance is exactly this rename: the pre-change baseline text, the
+  // candidate text, a `/anywear/beta/` name and the Beta Base stack are required.
+  const wrongBefore = structuredClone(before);
+  wrongBefore.Resources.VpcIdParam.Properties.Description = 'stage contract: shared Beta VPC id';
+  assert.equal(compareTemplates(wrongBefore, after, options()).accepted, false);
+  const wrongAfter = structuredClone(after);
+  wrongAfter.Resources.VpcIdParam.Properties.Description =
+    'AnyWear-Infra stage contract: shared Beta VPC id';
+  assert.equal(compareTemplates(before, wrongAfter, options()).accepted, false);
+  const otherName = structuredClone(before);
+  otherName.Resources.VpcIdParam.Properties.Name = '/somewhere/else/vpc_id';
+  const otherNameAfter = structuredClone(after);
+  otherNameAfter.Resources.VpcIdParam.Properties.Name = '/somewhere/else/vpc_id';
+  assert.equal(compareTemplates(otherName, otherNameAfter, options()).accepted, false);
+  assert.equal(compareTemplates(before, after, options({ stackName: 'AnyWearPlatformStack-prod' })).accepted, false);
 });
 
 test('any other resource or output change is rejected with its exact path', () => {

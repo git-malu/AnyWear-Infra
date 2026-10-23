@@ -751,7 +751,7 @@ describe('Platform safety controls', () => {
     expect(new Set(names).size).toBe(names.length);
     expect(parameters).toHaveLength(42);
     const stageContract = parameters.filter((parameter) => (
-      parameter.Properties.Description?.startsWith('AnyWear-Service AnyWearRuntimeStack-beta stage contract: ')));
+      parameter.Properties.Description?.startsWith('AnyWear-Infra AnyWearRuntimeStack-beta stage contract: ')));
     expect(stageContract).toHaveLength(35);
     expect(stageContract.map((parameter) => parameter.Properties.Name).sort()).toEqual([
       'api_base_url', 'api_security_group_id', 'auto_tagging_dlq_name', 'auto_tagging_dlq_url', 'auto_tagging_queue_arn',
@@ -804,7 +804,7 @@ describe('Platform safety controls', () => {
       const added = Object.values(synthesizePlatform('beta', 'roles-added').Resources) as any[];
       const retired = Object.values(synthesizePlatform('beta', 'retired').Resources) as any[];
       const contract = (resources: any[]) => resources.filter((resource) => resource.Type === 'AWS::SSM::Parameter'
-        && resource.Properties.Description?.startsWith('AnyWear-Service AnyWearRuntimeStack-beta stage contract: '));
+        && resource.Properties.Description?.startsWith('AnyWear-Infra AnyWearRuntimeStack-beta stage contract: '));
       expect(contract(legacy)).toHaveLength(35);
       expect(contract(added)).toHaveLength(36);
       expect(contract(retired)).toHaveLength(36);
@@ -972,7 +972,9 @@ describe('Explicit infrastructure identity cutover', () => {
       .filter(([, resource]: [string, any]) => resource.Type === 'AWS::SSM::Parameter') as [string, any][];
     expect(cleanupParameter).toHaveLength(1);
     expect(cleanupParameter[0][1].Properties.Name).toBe('/anywear/beta/cleanup_task_role_arn');
-    expect(cleanupParameter[0][1].Properties.Description).toContain('stage contract: dedicated cleanup task role ARN');
+    expect(cleanupParameter[0][1].Properties.Description).toBe(
+      'AnyWear-Infra AnyWearRuntimeStack-beta stage contract: dedicated cleanup task role ARN, '
+        + 'published only while the identity phase creates it');
   });
 
   it('keeps the old Beta role identity but removes its trust and template-owned grants only at retirement', () => {

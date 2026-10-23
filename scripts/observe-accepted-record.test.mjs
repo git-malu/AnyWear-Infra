@@ -84,7 +84,7 @@ test('the producer writes the accepted mutate.yml record with this run\'s identi
   }
 });
 
-test('the producer never reads or requires the Service-owned Runtime stack', async () => {
+test('the producer never reads or requires the Infra-owned Runtime stack', async () => {
   for (const operation of ['deploy-foundation', 'deploy-billing', 'deploy-platform', 'restore-release']) {
     const root = await mkdtemp(path.join(os.tmpdir(), 'infra-observe-accepted-'));
     try {

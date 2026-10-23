@@ -16,7 +16,7 @@ import { deploymentRecordPath } from './deployment-evidence.mjs';
 // write this record type from the job that holds the mutation role.
 //
 // The observation is the same authenticated body the manual `observe` produces,
-// with two reviewed differences: it never reads or requires the Service-owned
+// with two reviewed differences: it never reads or requires the Infra-owned
 // Runtime stack (`requireRuntime: false`, so a Foundation/Billing deploy while
 // Beta is stopped is a complete deployment), and only the pre-M4 operations may
 // record the published subset of the stage-contract surface.

@@ -26,7 +26,7 @@ CloudFront distributions and is persistent. `Egress` (`AnyWearEgressStack-beta`)
 holds only the NAT, EIP, the 0.0.0.0/0 default routes in the Base-owned private
 route tables, and the S3 gateway endpoint, and is deleted on stop; it creates no
 route table and no subnet route-table association (AWS allows one association per
-subnet and Base owns it). `Runtime` (`AnyWearRuntimeStack-beta`, Service-owned; it
+subnet and Base owns it). `Runtime` (`AnyWearRuntimeStack-beta`, Infra-owned; it
 replaced the old Workload identity) holds the ALB, ECS services/task definitions,
 log groups and the cleanup operation and is deleted on stop.
 
@@ -257,7 +257,7 @@ by file presence: the tester payload belongs only to `add-testers`/`set-testers`
 admission accepts no bound input, and identity
 phase/retention protection may vary only for `deploy-*`/`restore-release` (every
 other operation runs `retired`/`true`). Sizing/telemetry are no longer inputs:
-they belong to Service's release chain.
+they are set by Infra's `deploy-runtime` operation.
 Non-deployment operations fixing `retired`/`true` source context does not change
 CFN or prove observed IAM/retention state. Deployment and admission dispatches
 require explicit authorization. Beta's paid compute and egress stop by deleting
@@ -918,8 +918,9 @@ committed pin and no deployment-record download).
 
 The steps below are the recorded pre-C procedure. The `selection` inputs and the
 `deploy-workload` operation they dispatch were deleted in #158 step C and cannot be
-run from this revision; the Workload slice is now deployed only by
-AnyWear-Service's release chain. The sequence is retained as evidence.
+run from this revision; the Workload slice was then deployed only by
+AnyWear-Service's release chain, and Runtime is now deployed by Infra's
+`deploy-runtime`. The sequence is retained as evidence.
 
 The rename from the two boolean parameters to one mode record is expand → prove →
 contract, and it spans three releases because the writable surface moves with the

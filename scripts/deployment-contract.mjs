@@ -117,7 +117,8 @@ const equal = (actual, expected, label) => {
 //   schema    a content hash of the consumed stage-contract schema surface
 //             (parameter names + versions). It is a content identity, never a pin
 //             to another repository's release. The database/applied schema
-//             identity moved to the Service release chain with the release slice.
+//             identity moved to the `deploy-runtime` deployment record with the
+//             release slice.
 //
 // `producer` is the record producer; `stacks[].producer_*` names the repository
 // and commit that produced each listed stack. `template_sha256` is the content

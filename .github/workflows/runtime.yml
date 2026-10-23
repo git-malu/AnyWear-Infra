@@ -78,8 +78,8 @@ jobs:
         with:
           verify_artifact: 'false'
   # The accepted `anywear_infra_deployment` v3 producer. It observes the stacks
-  # Infra still produces; the release slice is observed by AnyWear-Service's own
-  # release chain. It stays behind the stage switch.
+  # Infra still produces; the release slice is deployed and recorded by the
+  # `deploy-runtime` operation. It stays behind the stage switch.
   observe:
     needs: preflight
     if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true' && inputs.operation == 'observe'

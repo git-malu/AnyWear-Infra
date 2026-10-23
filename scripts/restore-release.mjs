@@ -7,9 +7,10 @@ const platformName = 'AnyWearPlatformStack-beta';
 const runtimeName = runtimeStack;
 const stableStatuses = terminalStackStatuses;
 // The Base stack is the only stack this operation deploys. A release recovery
-// restores the persistent Base and leaves the Runtime slice to AnyWear-Service's
-// own release chain; the Runtime is read here to prove it exists and is terminal
-// before and after the deploy, so the two producers never cross a deployment.
+// restores the persistent Base and leaves the Runtime slice to Infra's
+// `deploy-runtime` operation; the Runtime is read here to prove it exists and is
+// terminal before and after the deploy, so the two operations never cross a
+// deployment.
 const platformInterfaceKeys = ['EcsClusterName', 'PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn',
   'OneShotExecutionRoleArn', 'OneShotLogGroupName', 'DatabaseSecretArn', 'DatabaseHost', 'DatabasePort', 'DatabaseName',
   'WardrobeBucketName', 'VtoQueueUrl', 'AutoTaggingQueueUrl', 'ServiceRepositoryUri', 'ServiceRepositoryName',
@@ -113,7 +114,7 @@ async function failureReadback(io, stage) {
 
 // Called inside the ordinary Infra queue after the reviewed Service release and
 // source checks. Only the Base stack is deployed; the Runtime slice is neither
-// verified nor deployed here, because both moved to the Service release chain.
+// verified nor deployed here, because both moved to Infra's `deploy-runtime`.
 export async function runRestoreRelease({ io, infraSha, env = process.env }) {
   // Reject source/context before any authenticated read or deploy.
   assertContext(infraSha, env);

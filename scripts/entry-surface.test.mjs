@@ -8,9 +8,9 @@ import yaml from 'js-yaml';
 import { assertProtectedExecutor, e2eExecutorPaths } from './operation-boundaries.mjs';
 
 // Census guard for the post-#158 Infra surface. It describes the tree that exists
-// now: Infra owns Foundation, Billing and the Beta stage base only;
-// `AnyWearWorkloadStack-beta` and its deploy chain belong to AnyWear-Service, so
-// `deploy-workload` is not an Infra operation. This file asserts the entry files
+// now: Infra owns Foundation, Billing, the Beta stage base, Egress and Runtime;
+// the retired `AnyWearWorkloadStack-beta` and its Service deploy chain are
+// historical, so `deploy-workload` is not an Infra operation. This file asserts the entry files
 // and their job/permission shape per job, not per file, so a future file that
 // grows a dispatch surface or a credential job fails here.
 const execute = promisify(execFile);
@@ -125,8 +125,8 @@ test('mutate.yml keeps one preflight → verify → deploy → observe → recor
   assert.match(natEipInput.description, /eipalloc-/);
   assert.equal(Object.hasOwn(natEipInput, 'pattern'), false);
   assert.equal(mutate.env.NAT_EIP_ALLOCATION_ID, '${{ inputs.nat_eip_allocation_id }}');
-  // #158 step C: the Service-owned release slice is not an Infra operation. No
-  // operation, input or step may reintroduce its deploy chain here.
+  // #158 step C: the retired Service release-slice deploy chain is not an Infra
+  // operation. No operation, input or step may reintroduce it here.
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.options.includes('deploy-workload'), false);
   const text = await readFile(workflowFile('mutate.yml'), 'utf8');
   assert.equal(/deploy-workload/.test(text), false, 'mutate.yml must not name the retired workload operation');

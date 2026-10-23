@@ -203,9 +203,9 @@ export function platformStackName(stage) {
   return `AnyWearPlatformStack-${stage}`;
 }
 
-// Issue #166: the Service-owned release slice is the Runtime stack. Every
-// resource in it is recreated on start, so the identity moved with it; the
-// persistent state stayed in Base (`AnyWearPlatformStack-<stage>`).
+// Issue #166: the release slice is the Runtime stack. Every resource in it is
+// recreated on start, so the identity moved with it; the persistent state stayed
+// in Base (`AnyWearPlatformStack-<stage>`).
 export function runtimeStackName(stage) {
   return `AnyWearRuntimeStack-${stage}`;
 }

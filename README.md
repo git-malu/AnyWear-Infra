@@ -57,16 +57,16 @@ while the identity phase creates the cleanup task role
 `aws_region` parameters are not duplicated. Values come from the existing
 Base resources; nothing reads another stack at deploy time. The ten values
 added by the issue #158 extension replace the remaining weak
-`Fn::GetStackOutput` reads, so once AnyWear-Service's step D converts them the
-Base/Runtime deploy order no longer matters. `private_subnet_ids` and
+`Fn::GetStackOutput` reads; the Runtime stack resolves them from the stage
+contract, so the Base/Runtime deploy order no longer matters. `private_subnet_ids` and
 `isolated_subnet_ids` are the two Base subnet groups and are never empty
 `StringList`s; the Egress stack adds the 0.0.0.0/0 routes to the Base-owned
 Private route tables while it exists (Base keeps the route tables and their single
 per-subnet associations).
 
 Two values have no Base resource: `vlm_config_arn` and
-`cloudfront_prefix_list_id` are reviewed constants read from the live
-Service release-slice parameters before the #166 split (account `650880818323`,
+`cloudfront_prefix_list_id` are reviewed constants read from the then-live
+`AnyWearWorkloadStack-beta` parameters before the #166 split (account `650880818323`,
 `ap-east-1`), recorded as identifiers only. They are changed only in a reviewed
 diff. Any other stage must pass explicit values and fails closed without them.
 
@@ -106,12 +106,10 @@ gate's one stage-free threshold table, the schema-boundary prefix hash, the
 deployed-template normalisation and the two Infra deployment roles' scope. It is
 `@git-malu/stage-contracts` `0.5.0`; the `stage-contracts-v0.5.0` tag is a post-merge publication step created at
 Deployment, not by this change (`0.3.0` is the newest published tag and `0.4.0`
-was never tagged), and the package is packed with `npm pack`. AnyWear-Service
-pins the
-tarball (for example under `infra/vendor/`) instead of a mutable branch or a
-registry credential in its deploy job; a tarball packed from an unmerged branch
-records its source commit in the vendor provenance. Publishing is the separate
-tag-triggered
+was never tagged), and the package is packed with `npm pack`. The package is
+consumed in this repository as an in-repo dependency with one consumer
+repository: there is no cross-repository pin, no vendored tarball and no
+Service deploy job. Publishing is the separate tag-triggered
 [publish workflow](.github/workflows/publish-stage-contracts.yml)
 (`packages: write`, `GITHUB_TOKEN`). `lib/stage-contract.ts` and the runtime
 record scripts consume or re-export the package, and `npm run check` runs its
@@ -271,8 +269,9 @@ record type and family are derived from the dispatched operation: `runtime.yml`
 own run, attempt, source SHA and workflow path. The record covers the stacks Infra
 still produces (Foundation, the Beta stage base, Billing), the stage-contract
 parameters the run read and a derived schema content hash; it contains no
-`selection`. Service produces `anywear_service_deployment` for
-`AnyWearRuntimeStack-beta` from the same generic contract, so neither producer can
+`selection`. The Infra `deploy-runtime` operation produces the v6
+`anywear_service_deployment` for `AnyWearRuntimeStack-beta` from the same generic
+contract; the record types and families stay distinct, so neither record type can
 claim the other's stacks. Other operations emit `anywear_infra_family_observation`
 with their actual workflow path (`mutate.yml` for the absorbed families); this is
 not an accepted E2E deployment input. For an operation outside the accepted-record
