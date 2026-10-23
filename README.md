@@ -274,9 +274,15 @@ parameters the run read and a derived schema content hash; it contains no
 contract; the record types and families stay distinct, so neither record type can
 claim the other's stacks. Other operations emit `anywear_infra_family_observation`
 with their actual workflow path (`mutate.yml` for the absorbed families); this is
-not an accepted E2E deployment input. A deployment chain uploads the accepted
+not an accepted E2E deployment input. For an operation outside the accepted-record
+trigger set, that family observation is required exactly when the operation
+record's `result` is `succeeded`. Such an operation publishes its operation record
+alone when the result is `failed` or `partial` — the record's `result`,
+`final_observation` and `recovery` state what happened and what recovery the
+operator owes — while a succeeded one whose observation never arrived still fails
+the `record` job. A deployment chain uploads the accepted
 record as `infra-deployment-<run-id>-<attempt>` containing
-`deployment-record.json`, and its mutation job's family observation as
+`deployment-record.json`, and a succeeded mutation job's family observation as
 `infra-family-observation-<run-id>-<attempt>`, so the accepted contract and the
 chain's own evidence never share an artifact name. When the accepted record is
 missing after a completed mutation, the credential-free `record` job marks the
