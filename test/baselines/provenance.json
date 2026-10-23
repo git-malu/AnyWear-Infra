@@ -212,7 +212,7 @@
     "identity_revision": {
       "issue": 220,
       "recorded_at": "2026-10-23",
-      "change": "Aligned the three deployed age alarms with the 300-second bake's recorded calibration. Both oldest-message alarms moved from threshold 300 to 150 seconds, keeping period 300 s and evaluationPeriods 2, and the outbox alarm moved from 300000 to 150000 milliseconds, keeping period 60 s and evaluationPeriods 2; all three read DEPLOYMENT_GATE_THRESHOLDS from @git-malu/stage-contracts 0.7.0. The outbox metric filter lost its `defaultValue: 0`, because a default is published whenever the pattern does not match and made a non-empty backlog with no age look healthy, and a second static-value filter publishes the 150001 ms sentinel (threshold + 1) only when a matched worker line reports outboxBacklog > 0 with a null or absent outboxOldestAgeMs. The alarm set, names, metric, statistic, periods and evaluation periods are unchanged. Both Runtime templates, all six phase hashes and the three Beta identity phases were re-recorded from that source; the alarms are stage-free, so the prod template moves with Beta. The live template stays ed4e99ee... until the authorized deploy-runtime applies this non-replacement delta under the unchanged Service release, so that hash is recorded as the accepted live predecessor and the post-deploy Original must normalise to the recorded roles-added identity.",
+      "change": "Aligned the three deployed age alarms with the 300-second bake's recorded calibration. Both oldest-message alarms moved from threshold 300 to 150 seconds, keeping period 300 s and evaluationPeriods 2, and the outbox alarm moved from 300000 to 150000 milliseconds, keeping period 60 s and evaluationPeriods 2; all three read DEPLOYMENT_GATE_THRESHOLDS from @git-malu/stage-contracts 0.7.0. The outbox metric filter lost its `defaultValue: 0`, because a default is published whenever the pattern does not match and made a non-empty backlog with no age look healthy, and a second static-value filter publishes the 150001 ms sentinel (threshold + 1) only when a matched worker line reports outboxBacklog > 0 with a null or absent outboxOldestAgeMs. The alarm set, names, metric, statistic, periods and evaluation periods are unchanged. Both Runtime templates, all six phase hashes and the three Beta identity phases were re-recorded from that source; the alarms are stage-free, so the prod template moves with Beta. The transition deployed in `mutate.yml` `deploy-runtime` run 39988090020 (attempt 1, head a86902304a89c67749e719f5376eeeed4cc31f83): the reviewed non-replacement delta was applied under the unchanged Service release, the deployed Original moved from ed4e99ee... to the recorded roles-added identity, and the predecessor is therefore retired, so the live check accepts only the recorded roles-added identity.",
       "previous_templates": {
         "beta-active/AnyWearRuntimeStack-beta.template.json": "49fec436921b1592c748edaa128f934e13751264051c46e5aaaac7d3200ca1db",
         "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
@@ -228,10 +228,7 @@
           "roles-added": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55",
           "retired": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55"
         }
-      },
-      "accepted_live_predecessors": [
-        "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be"
-      ]
+      }
     },
     "source_files": {
       "lib/runtime-stack.ts": "cb679b436fb5fdcdd31bb0f74cb73ffd117f7b2d",
@@ -267,8 +264,8 @@
       "recorded_at": "2026-10-23",
       "live_stack": "AnyWearRuntimeStack-beta",
       "live_status": "UPDATE_COMPLETE",
-      "live_original_normalised_sha256": "ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be",
-      "note": "`mutate.yml` `deploy-runtime` run 39929648413 (attempt 1, head 1b0abb1) deployed and qualified the transition: the 600-second bake passed with 40 probes, the schema boundary compared compatible, and the deployed template's normalised Original hash is the recorded roles-added identity."
+      "live_original_normalised_sha256": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745",
+      "note": "`mutate.yml` `deploy-runtime` run 39988090020 (attempt 1, head a86902304a89c67749e719f5376eeeed4cc31f83) deployed and qualified the issue #220 transition under the unchanged Service release identity (Service commit 111614abc199ede71323eece14ba7c114e11c3fa, image digest sha256:a16a7326201117aa6bbcca713110e131c813089f577f2d0812df4db8c3dc0970): the 300-second bake passed with 20 probes, the deployed template's normalised Original moved from ed4e99ee... to the recorded roles-added identity, and the five parameters were unchanged."
     },
     "alarm_extension": {
       "issue": 162,
