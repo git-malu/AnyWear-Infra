@@ -77,6 +77,131 @@ test('dedicated identity resources are allowed only outside the legacy phase', (
   assert.equal(compareTemplates(without, added, { ...foundation, phase: 'legacy' }).accepted, false);
 });
 
+test('only the #217 cleanup S3 and E2E CloudTrail statements are allowed on the dedicated identities', () => {
+  const wardrobeObject = (prefix) => ({ 'Fn::Join': ['', [
+    { 'Fn::GetAtt': ['AnyWearWardrobeBucketABCD1234', 'Arn'] }, `/${prefix}`]] });
+  const wardrobeArn = { 'Fn::GetAtt': ['AnyWearWardrobeBucketABCD1234', 'Arn'] };
+  const cleanupPolicy = () => ({
+    Type: 'AWS::IAM::Policy',
+    Properties: {
+      PolicyName: 'CleanupTaskRoleDefaultPolicyABCD1234',
+      Roles: [{ Ref: 'CleanupTaskRoleABCD1234' }],
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          { Action: 's3:DeleteObject', Effect: 'Allow',
+            Resource: [wardrobeObject('wearable-items/*'), wardrobeObject('base-photos/*')] },
+          { Action: 's3:ListBucket', Effect: 'Allow', Resource: wardrobeArn,
+            Condition: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*'] } } },
+        ],
+      },
+    },
+  });
+  const e2ePolicy = (region = { Ref: 'AWS::Region' }) => ({
+    Type: 'AWS::IAM::Policy',
+    Properties: {
+      PolicyName: 'DedicatedPolicy',
+      Roles: ['beta-e2e-qualification-role'],
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [{ Action: 'cloudtrail:LookupEvents', Effect: 'Allow', Resource: '*',
+          Condition: { StringEquals: { 'aws:RequestedRegion': region } } }],
+      },
+    },
+  });
+  const granted = () => {
+    const after = base();
+    after.Resources.CleanupTaskRoleDefaultPolicyABCD1234 = cleanupPolicy();
+    after.Resources.E2EQualificationRoleDedicatedPolicyABCD1234 = e2ePolicy();
+    return after;
+  };
+  const grantReasons = [
+    'Issue #217: E2E qualification role reads CloudTrail AdminCreateUser events',
+    "Issue #217: cleanup task role deletes captured users' S3 objects",
+  ];
+  for (const phase of ['roles-added', 'retired']) {
+    const report = compareTemplates(base(), granted(), options({ phase }));
+    assert.equal(report.accepted, true, phase);
+    assert.deepEqual(report.allowed.map((entry) => entry.reason).filter((reason) => reason.startsWith('Issue #217')).sort(),
+      [...grantReasons].sort());
+    for (const reason of grantReasons) assert.equal(report.allowed.filter((entry) => entry.reason === reason).length, 1);
+  }
+  // The matrix synthesizes with a literal region; both renderings are the same bound.
+  assert.equal(compareTemplates(base(), (() => {
+    const after = granted();
+    after.Resources.E2EQualificationRoleDedicatedPolicyABCD1234 = e2ePolicy('ap-east-1');
+    return after;
+  })(), options({ phase: 'roles-added' })).accepted, true);
+  // `@aws-cdk/aws-iam:minimizePolicies` sorts the delete statement's resource
+  // array and merges the CloudTrail grant into the pre-existing `Resource: '*'`
+  // regional statement. Both are the same reviewed grant, not a wider one.
+  const minimized = granted();
+  minimized.Resources.CleanupTaskRoleDefaultPolicyABCD1234.Properties.PolicyDocument.Statement[0]
+    .Resource = [wardrobeObject('base-photos/*'), wardrobeObject('wearable-items/*')];
+  minimized.Resources.E2EQualificationRoleDedicatedPolicyABCD1234.Properties.PolicyDocument.Statement = [{
+    Action: ['cloudtrail:LookupEvents', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition'],
+    Effect: 'Allow', Resource: '*', Condition: { StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } },
+  }];
+  const minimizedReport = compareTemplates(base(), minimized, options({ phase: 'roles-added' }));
+  assert.equal(minimizedReport.accepted, true);
+  assert.equal(minimizedReport.allowed
+    .filter((entry) => entry.reason.startsWith('Issue #217')).length, 2);
+  // Legacy carries neither identity, so neither grant may appear there.
+  assert.equal(compareTemplates(base(), granted(), options()).accepted, false);
+
+  const rejectedWith = (mutate, policyId) => {
+    const after = granted();
+    mutate(after);
+    const report = compareTemplates(base(), after, options({ phase: 'roles-added' }));
+    assert.equal(report.accepted, false);
+    // The mutated policy loses its grant record and becomes a rejected difference;
+    // a grant on the other policy is unaffected by this mutation.
+    assert.ok(report.rejected.some((entry) => entry.path === `/Resources/${policyId}`));
+    assert.equal(report.allowed.some((entry) => entry.path === `/Resources/${policyId}/Properties/PolicyDocument/Statement`), false);
+  };
+  const CLEANUP = 'CleanupTaskRoleDefaultPolicyABCD1234';
+  const E2E = 'E2EQualificationRoleDedicatedPolicyABCD1234';
+  // A delete on the bucket or another prefix is not the reviewed object scope.
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[0].Resource[0] = wardrobeArn;
+  }, CLEANUP);
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[0].Resource[0] = wardrobeObject('task-attempts/*');
+  }, CLEANUP);
+  // The list grant needs both prefixes and nothing broader.
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition.StringLike['s3:prefix'] = ['wearable-items/*'];
+  }, CLEANUP);
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition.StringLike['s3:prefix'] = ['*'];
+  }, CLEANUP);
+  // A second S3 statement or a second CloudTrail action is not this grant.
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement.push(
+      { Action: 's3:GetObject', Effect: 'Allow', Resource: wardrobeObject('*') });
+  }, CLEANUP);
+  rejectedWith((after) => {
+    after.Resources[E2E].Properties.PolicyDocument.Statement
+      .push({ Action: 'cloudtrail:StartLogging', Effect: 'Allow', Resource: '*' });
+  }, E2E);
+  // The CloudTrail read has no resource-level scope, so `*` without the region
+  // bound (or naming a resource) is not the reviewed statement.
+  rejectedWith((after) => {
+    delete after.Resources[E2E].Properties.PolicyDocument.Statement[0].Condition;
+  }, E2E);
+  rejectedWith((after) => {
+    after.Resources[E2E].Properties.PolicyDocument.Statement[0]
+      .Resource = { 'Fn::GetAtt': ['BetaE2EQualificationRoleABCD1234', 'Arn'] };
+  }, E2E);
+  rejectedWith((after) => {
+    after.Resources[E2E].Properties.PolicyDocument.Statement[0]
+      .Action = ['cloudtrail:LookupEvents', 'cloudtrail:StartLogging'];
+  }, E2E);
+  // The same grants on a Production platform are not reviewed.
+  assert.equal(compareTemplates(base(), granted(), options({ phase: 'roles-added',
+    stackName: 'AnyWearPlatformStack-prod' })).accepted, false);
+});
+
 test('only the phase-dependent cleanup stage-contract parameter may be added outside legacy', () => {
   const parameter = {
     Type: 'AWS::SSM::Parameter',

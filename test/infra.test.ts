@@ -1199,6 +1199,83 @@ describe('Explicit infrastructure identity cutover', () => {
     }
   });
 
+  it('grants the cleanup task role exactly the #217 wardrobe-object statements and no Cognito action', () => {
+    const template = synthesizePlatform('beta', 'roles-added');
+    const [roleId] = (Object.entries(template.Resources) as [string, any][]).find(([, resource]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-anywear-tester-cleanup-task'))!;
+    expect(roleId).toMatch(/^CleanupTaskRole[A-F0-9]{8}$/);
+    const policies = (Object.values(template.Resources) as any[]).filter((resource) => (
+      resource.Type === 'AWS::IAM::Policy' && JSON.stringify(resource.Properties.Roles) === JSON.stringify([{ Ref: roleId }])));
+    expect(policies).toHaveLength(1);
+    const statements = policies[0].Properties.PolicyDocument.Statement;
+    const bucketId = (Object.entries(template.Resources) as [string, any][]).find(([, resource]) => (
+      resource.Type === 'AWS::S3::Bucket'
+        && JSON.stringify(resource.Properties.BucketName ?? '').includes('anywear-wardrobe-bucket')))?.[0];
+    expect(bucketId).toBeDefined();
+    const objectArn = (prefix: string) => ({
+      'Fn::Join': ['', [{ 'Fn::GetAtt': [bucketId, 'Arn'] }, `/${prefix}`]],
+    });
+    // Issue #217: the versioned cleanup operation's `cleanupTesterRecords` deletes
+    // each captured user's objects under the two prefixes and lists only those
+    // two prefixes. The statements stay split: delete on the object ARNs, list on
+    // the bucket ARN under the `s3:prefix` condition.
+    const s3Statements = statements.filter((statement: any) => JSON.stringify(statement.Action).includes('"s3:'));
+    expect(s3Statements).toEqual([
+      { Action: 's3:DeleteObject', Effect: 'Allow',
+        Resource: [objectArn('wearable-items/*'), objectArn('base-photos/*')] },
+      { Action: 's3:ListBucket', Effect: 'Allow', Resource: { 'Fn::GetAtt': [bucketId, 'Arn'] },
+        Condition: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*'] } } },
+    ]);
+    // The pre-#217 grants are retained ahead of the two S3 statements: the
+    // database-secret read and the two-dead-letter-queue statement.
+    expect(statements).toHaveLength(4);
+    expect(statements[0].Action).toContain('secretsmanager:GetSecretValue');
+    expect(statements[1].Action).toEqual(
+      ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility']);
+    expect(statements[1].Resource.map((resource: any) => template.Resources[resource['Fn::GetAtt'][0]]
+      .Properties.QueueName).sort()).toEqual(['beta-anywear-auto-tagging-dlq', 'beta-anywear-vto-dlq']);
+    // The fixed cleanup task role carries no Cognito action (nor SSM), at every
+    // phase that creates it.
+    for (const phase of ['roles-added', 'retired'] as const) {
+      const phased = synthesizePlatform('beta', phase);
+      const phasedRole = (Object.entries(phased.Resources) as [string, any][]).find(([, resource]) => (
+        resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-anywear-tester-cleanup-task'))![0];
+      const phasedPolicies = (Object.values(phased.Resources) as any[]).filter((resource) => (
+        resource.Type === 'AWS::IAM::Policy'
+          && JSON.stringify(resource.Properties.Roles) === JSON.stringify([{ Ref: phasedRole }])));
+      expect(phasedPolicies).toHaveLength(1);
+      expect(JSON.stringify(phasedPolicies[0])).not.toContain('cognito-idp:');
+      expect(JSON.stringify(phasedPolicies[0])).not.toContain('cognito:');
+      expect(JSON.stringify(phasedPolicies[0])).not.toContain('ssm:');
+    }
+  });
+
+  it('grants the E2E qualification role exactly the #217 read-only CloudTrail lookup', () => {
+    const template = synthesizePlatform('beta', 'roles-added');
+    const e2ePolicies = (Object.entries(template.Resources) as [string, any][]).filter(([, resource]) => (
+      resource.Type === 'AWS::IAM::Policy'
+        && JSON.stringify(resource.Properties.Roles) === JSON.stringify(['beta-e2e-qualification-role'])));
+    expect(e2ePolicies).toHaveLength(1);
+    const [policyId, policy] = e2ePolicies[0];
+    expect(policyId).toMatch(/^E2EQualificationRoleDedicatedPolicy[A-F0-9]{8}$/);
+    // Issue #217: the E2E `reconcile` operation reads the Beta pool's
+    // `AdminCreateUser` CloudTrail events over its 7-day lookback. The action has
+    // no resource-level scope, so the region condition is the bound.
+    const cloudTrail = policy.Properties.PolicyDocument.Statement
+      .filter((statement: any) => JSON.stringify(statement.Action).includes('cloudtrail:'));
+    expect(cloudTrail).toEqual([{
+      Action: 'cloudtrail:LookupEvents',
+      Effect: 'Allow',
+      Resource: '*',
+      Condition: { StringEquals: { 'aws:RequestedRegion': { Ref: 'AWS::Region' } } },
+    }]);
+    // Exactly that one CloudTrail action and no account-wide Cognito listing.
+    expect(actionsFor(template, 'e2e-qualification').filter((action) => action.startsWith('cloudtrail:')))
+      .toEqual(['cloudtrail:LookupEvents']);
+    expect(JSON.stringify(policy)).not.toContain('cloudtrail:StartLogging');
+    expect(actionsFor(template, 'e2e-qualification')).not.toContain('cognito-idp:ListUsers');
+  });
+
   it('constrains CDK assumption to the reviewed bootstrap roles and regions', () => {
     const foundation = synthesizeFoundation('roles-added');
     const statements = (Object.values(foundation.Resources) as any[]).filter((resource) => resource.Type === 'AWS::IAM::Policy')
