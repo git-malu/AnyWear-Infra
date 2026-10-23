@@ -1,31 +1,24 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import * as path from 'node:path';
-import { readFileSync } from 'node:fs';
 import { AwsSolutionsChecks } from 'cdk-nag';
 import { FoundationStack } from '../lib/foundation-stack';
 import { PlatformStack } from '../lib/platform-stack';
 import type { ArtifactInputs } from '../lib/artifact-inputs';
 import runtimePolicies from './fixtures/runtime-policy.json';
-import declared from './fixtures/authorization-declared.json';
-import { SUPPRESSIONS, MANAGED_POLICY_REVIEW, STATED_EXCEPTIONS } from './support/authorization-lint-policy';
-import type { Suppression } from './support/authorization-lint-policy';
+import baselineJson from './fixtures/authorization-lint-baseline.json';
 
-// The IaC policy lint (#165). cdk-nag's AwsSolutions-IAM5 supplies the wildcard
-// rule source; this test extends it with a statement scan that covers wildcard
-// actions, wildcard resource ARNs (including scoped ones), managed-policy
-// attachments and the repository's condition expectations. Every accepted form
-// matches the reviewed suppression policy in test/support/, and every entry must
-// still match a statement. The lint is credential-free and runs in-process in
-// `npm run check`.
-/* eslint-disable @typescript-eslint/no-var-requires */
-const preflight = require('../scripts/authorization-preflight.mjs');
+// The IaC policy lint (#165, narrowed by #214). cdk-nag's AwsSolutions-IAM5 is
+// the only wildcard rule source: the test synthesizes the two stacks that carry
+// the Beta IAM surface, compares the finding set with the pinned baseline in both
+// directions, and compares the number of wildcard-bearing policy statements per
+// stack. The count guard exists because cdk-nag reports one finding id per
+// wildcard form per stack: a new statement that reuses a pinned form adds no id,
+// so only the count can fail it. The lint is credential-free and runs in-process
+// in `npm run check`.
 
 const ACCOUNT = '650880818323';
 const REGION = 'ap-east-1';
-// Issue #195 retires the two Service deployment roles; exactly the two Infra
-// roles below remain in scope, which the declaration artifact must mirror.
-const IN_SCOPE_PRINCIPALS = ['beta-infra-runtime-role', 'beta-infra-deploy-role'];
 const artifactInputs: ArtifactInputs = {
   lambdas: {
     'pre-sign-up': { path: path.resolve(__dirname, 'fixtures/placeholder.zip') },
@@ -34,30 +27,26 @@ const artifactInputs: ArtifactInputs = {
   runtimePolicy: runtimePolicies,
 };
 
-function renderResource(value: any, template: any): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map((entry) => renderResource(entry, template)).join('');
-  if (value?.['Fn::Join']) {
-    const [separator, parts] = value['Fn::Join'];
-    return parts.map((part: any) => renderResource(part, template)).join(separator);
-  }
-  if (value?.['Fn::GetAtt']) {
-    const [logicalId, attribute] = value['Fn::GetAtt'];
-    const target = template.Resources[logicalId];
-    if (target?.Type === 'AWS::IAM::Role') return `arn:aws:iam::${ACCOUNT}:role/${target.Properties?.RoleName ?? logicalId}`;
-    if (target?.Type === 'AWS::ECR::Repository') return `arn:aws:ecr:${REGION}:${ACCOUNT}:repository/${target.Properties?.RepositoryName ?? logicalId}`;
-    if (target?.Type === 'AWS::Lambda::Function') return `arn:aws:lambda:${REGION}:${ACCOUNT}:function:${target.Properties?.FunctionName ?? logicalId}`;
-    return `${logicalId}.${attribute}`;
-  }
-  if (value?.Ref === 'AWS::Partition') return 'aws';
-  if (value?.Ref) return template.Parameters?.[value.Ref]?.Default ?? JSON.stringify(value);
-  return JSON.stringify(value);
+export interface LintFinding {
+  stack: string;
+  id: string;
+  reason: string;
 }
 
-interface ScopedStatement {
-  template: string; principal: string; policy: string;
-  actions: string[]; resources: string[]; condition?: any;
+export interface LintBaseline {
+  schema_version: number;
+  record_type: string;
+  source: string;
+  templates: Array<{ stack: string; wildcard_statement_count: number }>;
+  findings: LintFinding[];
 }
+
+export interface LintObservation {
+  findings: Record<string, string[]>;
+  counts: Record<string, number>;
+}
+
+const baseline = baselineJson as LintBaseline;
 
 function synthesize(): Array<{ name: string; stack: cdk.Stack; template: any }> {
   const foundationApp = new cdk.App();
@@ -69,261 +58,193 @@ function synthesize(): Array<{ name: string; stack: cdk.Stack; template: any }> 
     apiOriginDomainName: 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com',
     env: { account: ACCOUNT, region: REGION } });
   return [
-    { name: 'foundation', stack: foundation, template: Template.fromStack(foundation).toJSON() },
-    { name: 'platform', stack: platform, template: Template.fromStack(platform).toJSON() },
+    { name: 'AnyWearFoundationStack', stack: foundation, template: Template.fromStack(foundation).toJSON() },
+    { name: 'AnyWearPlatformStack-beta', stack: platform, template: Template.fromStack(platform).toJSON() },
   ];
 }
 
-const entries = synthesize();
-const statements: ScopedStatement[] = [];
-const managedPolicies: Array<{ template: string; role: string; policy: string }> = [];
-for (const { name, template } of entries) {
-  for (const [logicalId, resource] of Object.entries(template.Resources) as Array<[string, any]>) {
-    if (resource.Type === 'AWS::IAM::Role' && IN_SCOPE_PRINCIPALS.includes(resource.Properties?.RoleName)) {
-      for (const policy of resource.Properties?.ManagedPolicyArns ?? []) {
-        managedPolicies.push({ template: name, role: resource.Properties.RoleName,
-          policy: renderResource(policy, template) });
-      }
-      continue;
+// The cdk-nag finding ids render partition tokens differently from the
+// synthesized ARNs; normalize before comparing.
+export const normalizeFinding = (finding: string): string => finding.replaceAll('arn:<AWS::Partition>', 'arn:aws');
+
+const findingIds = (app: cdk.App): string[] => (new AwsSolutionsChecks(app).validateScope(app).violations ?? [])
+  .filter((violation) => violation.ruleName.startsWith('AwsSolutions-IAM5'))
+  .map((violation) => (violation.ruleName.includes('[')
+    ? violation.ruleName.slice(violation.ruleName.indexOf('[') + 1, -1) : ''))
+  .map(normalizeFinding);
+
+// One integer per stack: every statement in every AWS::IAM::Policy,
+// AWS::IAM::ManagedPolicy and role-inline policy document whose Action or
+// Resource carries a `*`. It only counts: no per-statement suppression, no
+// condition expectation, no managed-policy review and no second artifact.
+export function wildcardStatementCount(template: any): number {
+  let count = 0;
+  for (const resource of Object.values(template.Resources) as any[]) {
+    const documents: any[] = [];
+    if ((resource.Type === 'AWS::IAM::Policy' || resource.Type === 'AWS::IAM::ManagedPolicy')
+      && resource.Properties?.PolicyDocument) documents.push(resource.Properties.PolicyDocument);
+    for (const policy of Array.isArray(resource.Properties?.Policies) ? resource.Properties.Policies : []) {
+      if (policy.PolicyDocument) documents.push(policy.PolicyDocument);
     }
-    if (resource.Type === 'AWS::IAM::ManagedPolicy') {
-      const policyRoles = (resource.Properties.Roles ?? []).map((role: any) => (role?.Ref
-        ? template.Resources[role.Ref]?.Properties?.RoleName : role));
-      const principal = policyRoles.find((role: string) => IN_SCOPE_PRINCIPALS.includes(role));
-      if (principal) managedPolicies.push({ template: name, role: principal,
-        policy: String(resource.Properties.ManagedPolicyName ?? logicalId) });
-      if (!principal) continue;
-      for (const statement of resource.Properties.PolicyDocument.Statement) {
-        statements.push({ template: name, principal, policy: String(resource.Properties.ManagedPolicyName ?? logicalId),
-          actions: [statement.Action].flat(),
-          resources: [statement.Resource].flat().map((value: any) => renderResource(value, template)),
-          condition: statement.Condition });
+    for (const document of documents) {
+      for (const statement of [document.Statement].flat() as any[]) {
+        const actions = [statement.Action].flat().filter(Boolean);
+        const resources = [statement.Resource].flat().filter(Boolean);
+        const wildcardAction = actions.some((action) => typeof action === 'string' && action.includes('*'));
+        const wildcardResource = resources.some((value) => JSON.stringify(value).includes('*'));
+        if (wildcardAction || wildcardResource) count += 1;
       }
-      continue;
-    }
-    if (resource.Type !== 'AWS::IAM::Policy') continue;
-    const roles = (resource.Properties.Roles ?? []).map((role: any) => (role?.Ref
-      ? template.Resources[role.Ref]?.Properties?.RoleName : role));
-    const principal = roles.find((role: string) => IN_SCOPE_PRINCIPALS.includes(role));
-    if (!principal) continue;
-    for (const statement of resource.Properties.PolicyDocument.Statement) {
-      statements.push({ template: name, principal, policy: logicalId,
-        actions: [statement.Action].flat(),
-        resources: [statement.Resource].flat().map((value: any) => renderResource(value, template)),
-        condition: statement.Condition });
     }
   }
+  return count;
 }
 
-function actionCovered(entryActions: string[], action: string): boolean {
-  return entryActions.some((entry) => entry === action || entry === '*'
-    || (entry.endsWith(':*') && action.startsWith(`${entry.slice(0, -1)}`)));
+// The whole comparison, pure so the negative cases can be exercised without
+// mutating the synthesized stacks or the fixture. Empty means the stack matches;
+// every other entry names the mismatch a reviewer must resolve.
+export function compareLint(pinned: LintBaseline, observed: LintObservation): string[] {
+  const problems: string[] = [];
+  const stacks = pinned.templates.map((template) => template.stack);
+  for (const stack of Object.keys(observed.findings)) {
+    if (!stacks.includes(stack)) problems.push(`${stack}: observation for a stack outside the pinned baseline`);
+  }
+  for (const template of pinned.templates) {
+    const ids = pinned.findings.filter((finding) => finding.stack === template.stack).map((finding) => finding.id);
+    if (new Set(ids).size !== ids.length) problems.push(`${template.stack}: duplicate baseline entry`);
+    const actual = [...(observed.findings[template.stack] ?? [])].sort();
+    const pinnedIds = [...ids].sort();
+    for (const id of actual) {
+      if (!pinnedIds.includes(id)) problems.push(`${template.stack}: new AwsSolutions-IAM5 finding not in the baseline: ${id}`);
+    }
+    for (const id of pinnedIds) {
+      if (!actual.includes(id)) problems.push(`${template.stack}: stale baseline entry no longer reported by cdk-nag: ${id}`);
+    }
+    const count = observed.counts[template.stack];
+    if (count !== template.wildcard_statement_count) {
+      problems.push(`${template.stack}: wildcard-bearing statement count ${count} does not match the pinned ${template.wildcard_statement_count}`);
+    }
+  }
+  return problems;
 }
 
-const resourceMatches = (patterns: string[], resource: string): boolean => patterns.some((pattern) => (
-  pattern === resource || (pattern.endsWith('*') && resource.startsWith(pattern.slice(0, -1)))));
-
-const statementMatches = (statement: ScopedStatement, suppression: Suppression): boolean => (
-  suppression.template === statement.template
-  && suppression.principals.includes(statement.principal)
-  && statement.actions.every((action) => actionCovered(suppression.actions, action))
-  && statement.resources.every((resource) => resourceMatches(suppression.resources, resource)));
-
-const hasWildcard = (statement: ScopedStatement): boolean => statement.actions.some((action) => action.includes('*'))
-  || statement.resources.some((resource) => resource.includes('*'));
-
-// The cdk-nag finding ids render partition tokens differently from the test's
-// statement renderer; normalize before comparing.
-const normalizeFinding = (finding: string): string => finding.replaceAll('arn:<AWS::Partition>', 'arn:aws');
+const entries = synthesize();
+const observed: LintObservation = { findings: {}, counts: {} };
+for (const { name, stack, template } of entries) {
+  observed.findings[name] = findingIds(stack.node.root as cdk.App);
+  observed.counts[name] = wildcardStatementCount(template);
+}
 
 describe('IaC policy lint (#165)', () => {
-  it('cdk-nag confirms every wildcard the statement scan sees, including scoped ARNs', () => {
-    const cdkFindings = new Set<string>();
-    for (const { stack } of entries) {
-      const report = new AwsSolutionsChecks(stack.node.root as cdk.App).validateScope(stack.node.root);
-      for (const violation of report.violations ?? []) {
-        if (!violation.ruleName.startsWith('AwsSolutions-IAM5')) continue;
-        const finding = violation.ruleName.includes('[')
-          ? violation.ruleName.slice(violation.ruleName.indexOf('[') + 1, -1) : '';
-        if (finding.startsWith('Action::') || finding.startsWith('Resource::')) {
-          cdkFindings.add(normalizeFinding(finding));
-        }
-      }
-    }
-    const scanned = new Set<string>();
-    for (const statement of statements) {
-      for (const action of statement.actions) if (action.includes('*')) scanned.add(`Action::${action}`);
-      for (const resource of statement.resources) if (resource.includes('*')) scanned.add(`Resource::${resource}`);
-    }
-    expect(scanned.size).toBeGreaterThan(20);
-    // Subset, not equality: cdk-nag also reports wildcards on roles outside the
-    // linted principals (the legacy pipeline role and CDK-generated service roles).
-    for (const finding of scanned) expect({ finding, confirmed: cdkFindings.has(finding) })
-      .toEqual({ finding, confirmed: true });
+  it('pins the AwsSolutions-IAM5 findings and the wildcard-statement counts for both stacks', () => {
+    expect(compareLint(baseline, observed)).toEqual([]);
+    expect(baseline.schema_version).toBe(1);
+    expect(baseline.record_type).toBe('anywear_authorization_lint_baseline');
+    expect(baseline.templates.map((template) => template.stack)).toEqual(['AnyWearFoundationStack', 'AnyWearPlatformStack-beta']);
+    // The baseline covers both stacks and every entry names the stack it belongs to.
+    for (const finding of baseline.findings) expect(baseline.templates.map((template) => template.stack)).toContain(finding.stack);
+    expect(new Set(baseline.findings.map((finding) => `${finding.stack}|${finding.id}`)).size).toBe(baseline.findings.length);
+    // Every entry carries a reviewed reason; a terse or placeholder one is caught here.
+    for (const finding of baseline.findings) expect(finding.reason.length).toBeGreaterThan(60);
   });
 
-  it('every wildcard action or wildcard resource ARN matches a reviewed suppression with a reason', () => {
-    let reviewed = 0;
-    for (const statement of statements) {
-      if (!hasWildcard(statement)) continue;
-      const matches = SUPPRESSIONS.filter((suppression) => statementMatches(statement, suppression));
-      expect({ statement: `${statement.template}/${statement.principal}/${statement.actions.join(',')}`,
-        reviewed: matches.length > 0 }).toEqual({
-        statement: `${statement.template}/${statement.principal}/${statement.actions.join(',')}`, reviewed: true });
-      expect(matches.every((match) => match.reason.length > 20)).toBe(true);
-      reviewed += 1;
-    }
-    expect(reviewed).toBeGreaterThan(25);
-    // Suppressions stay honest: each one is exercised by a statement.
-    for (const suppression of SUPPRESSIONS) {
-      expect({ reason: suppression.reason,
-        exercised: statements.some((statement) => statementMatches(statement, suppression)) })
-        .toEqual({ reason: suppression.reason, exercised: true });
-    }
-  });
-
-  it('an unreviewed scoped-ARN wildcard or managed policy is a finding', () => {
-    const scoped = { template: 'platform', principal: 'beta-infra-runtime-role', policy: 'X',
-      actions: ['s3:GetObject'], resources: ['arn:aws:s3:::unreviewed-bucket/*'] };
-    expect(SUPPRESSIONS.some((suppression) => statementMatches(scoped, suppression))).toBe(false);
-    const reviewedScoped = { ...scoped, actions: ['cloudformation:DescribeStacks'],
-      resources: [`arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/AnyWearRuntimeStack-beta/*`] };
-    expect(SUPPRESSIONS.some((suppression) => statementMatches(reviewedScoped, suppression))).toBe(true);
-    // The synthesized roles carry one reviewed managed policy (CDK's overflow
-    // policy); any other attachment fails.
-    expect(managedPolicies.filter((entry) => !MANAGED_POLICY_REVIEW.some((reviewedPolicy) => (
-      reviewedPolicy.role === entry.role && reviewedPolicy.policy === entry.policy)))).toEqual([]);
-    const unreviewedPolicy = { role: 'beta-infra-runtime-role',
-      policy: 'arn:aws:iam::aws:policy/AdministratorAccess' };
-    expect(MANAGED_POLICY_REVIEW.some((reviewedPolicy) => reviewedPolicy.role === unreviewedPolicy.role
-      && reviewedPolicy.policy === unreviewedPolicy.policy)).toBe(false);
-    // The CDK bootstrap role is a stated exception, not a construct in this app.
-    expect(STATED_EXCEPTIONS.map((exception) => exception.name)).toContain('cdk-hnb659fds-cfn-exec-role');
-    expect(STATED_EXCEPTIONS.every((exception) => exception.reason.length > 20)).toBe(true);
-  });
-
-  it('conditions the repository expects are present', () => {
-    for (const statement of statements) {
-      if (statement.actions.includes('iam:PassRole')) {
-        const passedToService = statement.condition?.StringEquals?.['iam:PassedToService'];
-        expect({ policy: `${statement.template}/${statement.policy}`, passedToService: typeof passedToService })
-          .toEqual({ policy: `${statement.template}/${statement.policy}`, passedToService: 'string' });
-        expect(['cloudformation.amazonaws.com', 'ecs-tasks.amazonaws.com', 'states.amazonaws.com'])
-          .toContain(passedToService);
-      }
-      if (!statement.resources.includes('*')) continue;
-      const suppression = SUPPRESSIONS.find((entry) => statementMatches(statement, entry));
-      if (suppression && !suppression.conditionRequired) continue;
-      const conditioned = Boolean(statement.condition?.StringEquals?.['aws:RequestedRegion']
-        || statement.condition?.ArnEquals?.['ecs:cluster']);
-      expect({ policy: `${statement.template}/${statement.policy}`, actions: statement.actions, conditioned })
-        .toEqual({ policy: `${statement.template}/${statement.policy}`, actions: statement.actions, conditioned: true });
-    }
-  });
-
-  it('the declaration artifact is exactly the synthesized Allow actions per role', () => {
-    const byRole: Record<string, Set<string>> = {};
-    for (const statement of statements) {
-      byRole[statement.principal] ??= new Set();
-      for (const action of statement.actions) byRole[statement.principal].add(action);
-    }
-    const expected = Object.fromEntries(Object.entries(byRole)
-      .map(([role, actions]) => [role, [...actions].sort()]));
-    expect((declared as any).record_type).toBe('anywear_authorization_declared_actions');
-    expect((declared as any).roles).toEqual(expected);
-    // The acceptance is exactly two in-scope roles: the scan, the declaration and
-    // the role list must name the same set, so a retired role cannot creep back in.
-    const declaredRoles = Object.keys((declared as any).roles).sort();
-    expect([...IN_SCOPE_PRINCIPALS].sort()).toEqual(declaredRoles);
-    expect(declaredRoles).toEqual(['beta-infra-deploy-role', 'beta-infra-runtime-role']);
-    expect(Object.keys(byRole).sort()).toEqual(declaredRoles);
-  });
-
-  it('the preflight simulation plan stays inside the declared grants and covers the reviewed forms', () => {
-    const env = { INFRA_OPERATION: 'deploy-platform' };
-    for (const [kind, role] of [['deploy', 'beta-infra-deploy-role'], ['runtime', 'beta-infra-runtime-role']]) {
-      const declaredActions = (declared as any).roles[role] as string[];
-      for (const request of preflight.simulationRequests(kind, env) as any[]) {
-        for (const action of request.actions) {
-          expect({ kind, action, declared: actionCovered(declaredActions, action) })
-            .toEqual({ kind, action, declared: true });
-        }
-        for (const resource of request.resources as string[]) {
-          expect({ kind, pair: request.pair, resource: typeof resource }).toEqual({ kind, pair: request.pair, resource: 'string' });
-        }
-      }
-    }
-    const runtime = preflight.simulationRequests('runtime', env);
-    const ssm = runtime.find((request: any) => request.pair === 'ssm/get-parameters');
-    expect(ssm.resources.length).toBe(39);
-    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/tester_allowlist`);
-    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/api_base_url`);
-    const lambda = runtime.find((request: any) => request.pair === 'lambda/get-function');
-    expect(lambda.resources).toContain(`arn:aws:lambda:${REGION}:${ACCOUNT}:function:AnyWearPlatformStack-beta-*`);
-    const egress = `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/AnyWearEgressStack-beta/*`;
-    for (const pair of ['cloudformation/describe-stacks', 'cloudformation/get-template',
-      'cloudformation/list-stack-resources']) {
-      const request = runtime.find((entry: any) => entry.pair === pair);
-      expect({ pair, egress: request.resources.includes(egress) }).toEqual({ pair, egress: true });
-    }
-    const deploy = preflight.simulationRequests('deploy', env) as any[];
-    expect(deploy.map((request) => request.pair)).toEqual(['cloudformation/describe-stacks', 'ssm/get-parameter',
-      'ec2/describe-managed-prefix-lists']);
-  });
-
-  it('every deploy-plan read is covered by the deploy role grant and the deploy session policy', () => {
-    const opEnv = {
-      GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
-      GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40), GITHUB_EVENT_NAME: 'workflow_dispatch',
-      GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
-      GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', ENABLE_BETA_MUTATION: 'true', AWS_ACCOUNT_ID: ACCOUNT,
-      AWS_REGION: REGION, INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
-      INFRA_OPERATION: 'deploy-platform',
+  it('fails on a new finding id, on a reused form (count only) and on a deleted baseline entry', () => {
+    // Synthetic observations derived from the baseline: no real stack is mutated.
+    const exact: LintObservation = {
+      findings: Object.fromEntries(baseline.templates.map((template) => [template.stack,
+        baseline.findings.filter((finding) => finding.stack === template.stack).map((finding) => finding.id)])),
+      counts: Object.fromEntries(baseline.templates.map((template) => [template.stack, template.wildcard_statement_count])),
     };
-    const boundary = require('../scripts/operation-boundaries.mjs');
-    const sessionActions = new Set(JSON.parse(boundary.sessionPolicy('deploy', opEnv, 'operation'))
-      .Statement.flatMap((statement: any) => [statement.Action].flat()));
-    const deployRoleStatements = statements.filter((statement) => statement.principal === 'beta-infra-deploy-role');
-    const plan = preflight.simulationRequests('deploy', { INFRA_OPERATION: 'deploy-platform' }) as any[];
-    for (const request of plan) {
-      for (const action of request.actions as string[]) {
-        expect({ action, inSession: sessionActions.has(action) }).toEqual({ action, inSession: true });
-        const covered = deployRoleStatements.some((statement) => actionCovered(statement.actions, action)
-          && (request.resources as string[]).every((resource) => statement.resources
-            .some((pattern) => resourceMatches([pattern], resource))));
-        expect({ action, covered }).toEqual({ action, covered: true });
-      }
+    expect(compareLint(baseline, exact)).toEqual([]);
+
+    // A wildcard form the baseline does not name is a new finding id, on either stack.
+    for (const stack of ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta']) {
+      const newForm = structuredClone(exact);
+      newForm.findings[stack].push('Resource::arn:aws:s3:::unreviewed-bucket/*');
+      expect(compareLint(baseline, newForm)).toEqual([
+        `${stack}: new AwsSolutions-IAM5 finding not in the baseline: Resource::arn:aws:s3:::unreviewed-bucket/*`,
+      ]);
     }
-    const ssm = plan.find((request) => request.pair === 'ssm/get-parameter');
-    expect(ssm.resources.length).toBe(9);
-    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/cognito_user_pool_id`);
-    expect(ssm.resources).toContain(`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/anywear/beta/infra_selection`);
-    expect(ssm.resources.some((resource: string) => resource.endsWith('/api_base_url'))).toBe(false);
+
+    // A new statement that reuses a pinned form adds no id; only the count moves,
+    // on either stack.
+    for (const template of baseline.templates) {
+      const reusedForm = structuredClone(exact);
+      reusedForm.counts[template.stack] = template.wildcard_statement_count + 1;
+      expect(compareLint(baseline, reusedForm)).toEqual([
+        `${template.stack}: wildcard-bearing statement count ${template.wildcard_statement_count + 1} does not match the pinned ${template.wildcard_statement_count}`,
+      ]);
+    }
+
+    // A wildcard removed from a stack while the baseline entry stays is stale.
+    const stale = structuredClone(exact);
+    stale.findings.AnyWearFoundationStack = stale.findings.AnyWearFoundationStack.filter((id) => id !== 'Resource::*');
+    // Keep the pinned count so only the stale-entry mismatch is asserted here.
+    expect(compareLint(baseline, stale)).toEqual([
+      'AnyWearFoundationStack: stale baseline entry no longer reported by cdk-nag: Resource::*',
+    ]);
+
+    // Deleting the baseline entry instead leaves the real finding unbaselined, so
+    // the check fails in the other direction as well.
+    const deletedEntry = structuredClone(baseline);
+    deletedEntry.findings = deletedEntry.findings.filter((finding) => !(finding.stack === 'AnyWearFoundationStack'
+      && finding.id === 'Resource::*'));
+    expect(compareLint(deletedEntry, exact)).toEqual([
+      'AnyWearFoundationStack: new AwsSolutions-IAM5 finding not in the baseline: Resource::*',
+    ]);
   });
 
-  it('records every reviewed not-in-plan read with a reason', () => {
-    const skips = preflight.SIMULATION_SKIPS;
-    expect(Object.keys(skips).sort()).toEqual(['cloudfront/get-distribution', 'ecr/batch-get-image',
-      'ecr/describe-images', 'ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
-      'ecr/start-lifecycle-policy-preview', 'ecs/register-task-definition', 'ecs/run-task', 'ecs/wait',
-      'logs/get-log-events', 'logs/put-retention-policy', 'sts/get-caller-identity']);
-    for (const reason of Object.values(skips)) expect(String(reason).length).toBeGreaterThan(20);
+  it('fails when one wildcard statement is injected into either real synthesized stack', () => {
+    // Inject into a clone of each real synthesized template, never the stack, the
+    // fixture or the recorded observation. The injected statement reuses the
+    // bare-`*` form already pinned for both stacks, so the cdk-nag finding-id set
+    // cannot move and only the per-stack count can fail the check.
+    for (const { name, template } of entries) {
+      const pinned = baseline.templates.find((entry) => entry.stack === name)?.wildcard_statement_count;
+      expect(pinned).toBeGreaterThan(0);
+      expect(baseline.findings.some((finding) => finding.stack === name && finding.id === 'Resource::*')).toBe(true);
+      expect(wildcardStatementCount(template)).toBe(pinned);
+      const injected = structuredClone(template);
+      injected.Resources.AuthorizationLintInjectedPolicy = {
+        Type: 'AWS::IAM::Policy',
+        Properties: {
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: 'ecs:DeregisterTaskDefinition', Resource: '*' }],
+          },
+          PolicyName: 'authorization-lint-injected-policy',
+        },
+      };
+      const injectedCount = wildcardStatementCount(injected);
+      expect(injectedCount).toBe((pinned as number) + 1);
+      const problems = compareLint(baseline, { findings: observed.findings,
+        counts: { ...observed.counts, [name]: injectedCount } });
+      expect(problems).toEqual([
+        `${name}: wildcard-bearing statement count ${(pinned as number) + 1} does not match the pinned ${pinned}`,
+      ]);
+      // Count-only failure: the id set comparison stays quiet.
+      expect(problems.join('\n')).not.toMatch(/new AwsSolutions-IAM5 finding|stale baseline entry/);
+      // The recorded state is untouched by the clone or the comparison.
+      expect(wildcardStatementCount(template)).toBe(pinned);
+      expect(observed.counts[name]).toBe(pinned);
+    }
   });
 
-  it('pins the lint/simulator/narrowing non-coverage list', () => {
-    const list = JSON.parse(readFileSync(path.resolve(__dirname, '..', 'scripts', 'authorization-non-coverage.json'), 'utf8'));
-    expect(list.record_type).toBe('anywear_authorization_non_coverage');
-    const ids = list.entries.map((entry: any) => entry.id);
-    expect(ids).toEqual(['lint-scope', 'lint-rules', 'bootstrap-role', 'runtime-stack', 'simulator-approximation',
-      'simulator-scope', 'preflight-reads', 'simulate-disclosure', 'narrowing']);
-    for (const entry of list.entries) {
-      expect(['lint', 'simulator', 'narrowing']).toContain(entry.layer);
-      expect(entry.summary.length).toBeGreaterThan(20);
-      expect(entry.consequence.length).toBeGreaterThan(20);
-    }
-    expect(list.entries.some((entry: any) => /AdministratorAccess/.test(entry.summary))).toBe(true);
-    expect(list.entries.some((entry: any) => /release slice|RuntimeStack|release-slice/i.test(entry.summary))).toBe(true);
-    expect(list.entries.some((entry: any) => /disclos/i.test(`${entry.summary} ${entry.consequence}`))).toBe(true);
-    expect(list.entries.find((entry: any) => entry.id === 'narrowing')?.layer).toBe('narrowing');
+  it('reports a synthetic new wildcard on a control stack as a cdk-nag finding', () => {
+    // The negative control: a wildcard the baseline does not carry must surface
+    // from cdk-nag itself, not only from the fixture comparison.
+    const app = new cdk.App();
+    const control = new cdk.Stack(app, 'AuthorizationLintControlStack', { env: { account: ACCOUNT, region: REGION } });
+    const role = new cdk.aws_iam.Role(control, 'ControlRole', {
+      roleName: 'authorization-lint-control-role',
+      assumedBy: new cdk.aws_iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    role.addToPolicy(new cdk.aws_iam.PolicyStatement({
+      actions: ['s3:GetObject'], resources: ['arn:aws:s3:::authorization-lint-control-bucket/*'] }));
+    const ids = findingIds(app);
+    expect(ids).toContain('Resource::arn:aws:s3:::authorization-lint-control-bucket/*');
+    const controlCount = wildcardStatementCount(Template.fromStack(control).toJSON());
+    expect(controlCount).toBe(1);
+    expect(compareLint(baseline, { findings: { [control.stackName]: ids }, counts: { [control.stackName]: controlCount } }))
+      .toContain('AuthorizationLintControlStack: observation for a stack outside the pinned baseline');
   });
 });

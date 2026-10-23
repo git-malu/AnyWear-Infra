@@ -1,54 +1,54 @@
 {
   "schema_version": 1,
   "record_type": "anywear_authorization_non_coverage",
-  "source": "Issue #165. The policy-quality lint and the simulated preflight state their limits here, and test/authorization-lint.test.ts pins this list exactly. Narrowing is not part of this issue's deliverable.",
+  "source": "Issue #165, narrowed by #214. This list is documentation of what the remaining authorization checks do not cover; no test pins it. The two remaining checks are the cdk-nag AwsSolutions-IAM5 lint over the synthesized Foundation and Platform stacks and the runtime-session IAM policy simulation on the one-shot paths.",
   "entries": [
     {
       "id": "lint-scope",
       "layer": "lint",
-      "summary": "The lint inspects the synthesized Foundation and Platform policy statements for the two Infra deployment and runtime principals only (#195 removed the per-service roles); the legacy pipeline role and CDK-generated service roles are outside its scope.",
-      "consequence": "A wildcard grant added to an unscanned role is caught only by review, not by the check."
+      "summary": "The lint runs cdk-nag's AwsSolutions-IAM5 over the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta, and its scope is every wildcard in those two templates, not two principals. AnyWearRuntimeStack-beta, the Billing and Egress stacks' own templates, the legacy pipeline role's managed policy outside those templates and roles defined outside them are outside the lint. The per-stack wildcard-bearing statement count is a count, not a statement review: it fails a new statement that reuses a pinned wildcard form, but it does not say which statement changed or whether a condition is appropriate.",
+      "consequence": "A wildcard added to a role or stack outside the two synthesized templates is caught only by review, and a reused form is reported as a count delta rather than as the exact statement."
     },
     {
       "id": "lint-rules",
       "layer": "lint",
-      "summary": "The lint fails on wildcard actions, wildcard resource ARNs (including scoped ARNs such as stack or prefix forms), unreviewed managed-policy attachments and the repository's condition expectations. It evaluates statement text, not effective permission or condition values.",
-      "consequence": "The lint evaluates statement text; the simulator checks the plan's ARNs and the deployment itself exercises the real resource."
+      "summary": "The lint compares the cdk-nag AwsSolutions-IAM5 finding ids with a pinned baseline in both directions, plus one wildcard-bearing statement count per stack. cdk-nag reports one id per distinct wildcard form per stack, so a new statement that reuses an existing form changes only the count. The lint evaluates statement text in the synthesized template; it does not evaluate effective permission, condition values, SCPs, resource policies or the deployed account.",
+      "consequence": "A form-shaped change that keeps both the id set and the count (for example an equivalent statement rewritten with the same wildcard tokens) passes, and the deployment itself remains the check on effective permission."
     },
     {
       "id": "bootstrap-role",
       "layer": "lint",
-      "summary": "The CDK bootstrap cfn-exec role holds AdministratorAccess and no permissions boundary; no repository defines it. It is carried as a stated exception in the reviewed suppression table, not as a construct the lint can inspect.",
-      "consequence": "Effective permission on the Infra deploy path remains account-wide; the exception is recorded rather than asserted."
+      "summary": "The CDK bootstrap cfn-exec role holds AdministratorAccess and no permissions boundary; no repository defines it, so no synthesized template contains it and the baseline cannot pin it. The deploy role's trust of the bootstrap roles is visible in the Foundation template, but the execution role's policy is not.",
+      "consequence": "Effective permission on the Infra deploy path remains account-wide; the bootstrap role is a stated limit rather than an assertion."
     },
     {
       "id": "runtime-stack",
       "layer": "lint",
-      "summary": "Since #195 the Runtime stack is synthesized by this repository (deployScope=runtime), so its template identity (AnyWearRuntimeStack) is covered by the matrix; the lint still scans only the Foundation and Platform policy documents, so a Runtime-template resource whose CloudFormation reads are ungranted stays outside the statement scan.",
-      "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the deployment itself or by an optional review, not by the Infra lint."
+      "summary": "AnyWearRuntimeStack-beta is synthesized by this repository (deployScope=runtime) and its identity is covered by the synth-matrix comparison, but the lint synthesizes only Foundation and Platform, so the Runtime template's own IAM documents and CloudFormation reads are outside the baseline. A Runtime-template resource whose CloudFormation execution reads are ungranted stays outside the lint.",
+      "consequence": "A Runtime template type whose CloudFormation reads are ungranted is caught by the deployment itself or by review, not by the Infra lint."
     },
     {
       "id": "simulator-approximation",
       "layer": "simulator",
       "summary": "IAM policy simulation evaluates policies approximately: condition keys, resource policies, SCPs, permissions boundaries and service-specific semantics may differ from the real service.",
-      "consequence": "The preflight is a strong pre-mutation signal, not ground truth; the deployment's own behavior remains the final check."
+      "consequence": "The preflight is a strong pre-mutation signal on the runtime-session paths, not ground truth; the deployment's own behavior remains the final check."
     },
     {
       "id": "simulator-scope",
       "layer": "simulator",
-      "summary": "The preflight simulates the Infra deploy and runtime roles only. The Runtime stack's CloudFormation execution role is the CDK bootstrap cfn-exec role (standard synthesizer, #195), which holds AdministratorAccess and no permissions boundary; it cannot be assumed or simulated from this job and is a stated lint exception.",
-      "consequence": "Those reads are covered by the statement lint and the deployment itself, not by the preflight."
+      "summary": "The preflight simulates the Infra runtime role only, and only on the runtime-session paths (`oneShot` and `oneShotProbe`, including the schema-journal probe `deploy-runtime` runs before its change set). The deploy, change-set and destroy paths run no simulation at all after #214. The deploy role's own reads are the CDK CLI's, which the repository does not model; the Runtime stack's CloudFormation execution role is the CDK bootstrap cfn-exec role, which cannot be assumed or simulated from this job.",
+      "consequence": "A missing deploy-session read surfaces during the change set or the stack update, and the run's stack events are the evidence; the bootstrap execution role's reads are covered by review, not by the preflight."
     },
     {
       "id": "preflight-reads",
       "layer": "simulator",
-      "summary": "The preflight evaluates policy against the reviewed ARNs in its plan; it does not sample live resources or make the real read calls. Mutations, waiter semantics, operator-CLI reads and the conditional CloudFront fallback are recorded as skips with reasons.",
+      "summary": "The preflight evaluates the runtime policy against the reviewed ARNs in its plan; it does not sample live resources or make the real read calls. Mutations, waiter semantics, operator-CLI reads and the conditional CloudFront fallback are recorded as skips with reasons.",
       "consequence": "Create-path authorization, resource existence and the real service semantics stay with the deployment itself."
     },
     {
       "id": "simulate-disclosure",
       "layer": "simulator",
-      "summary": "iam:SimulatePrincipalPolicy can enumerate any principal's effective permissions in the account. The grant is `*` because the simulator actions have no resource-level scope; it is limited to the two simulate actions, runs only in the restricted deploy/runtime session, and is used only by the preflight.",
+      "summary": "iam:SimulatePrincipalPolicy can enumerate any principal's effective permissions in the account. Both Infra roles' identity policies carry the pair on `*` because the simulator actions have no resource-level scope. The runtime session policy also carries the pair because the preflight runs inside it; the deploy session policy no longer carries it after #214, so the deploy role's two-action copy now has no session consumer. Removing that identity grant is #196's separate reviewed change; this issue makes no deployed IAM change.",
       "consequence": "The grant is read-only but is a permission-metadata disclosure surface; it is recorded here as an accepted reviewed wildcard."
     },
     {

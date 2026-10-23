@@ -292,11 +292,11 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image |
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
-| `state` | Record Base/Runtime status and Runtime existence plus sanitized SSM admission state; no DB/schema/policy qualification |
-| `admission-status` | Read the admission mode, the record's key set, the tester list and the database status through the selected existing Service lifecycle command. The record publishes the effective decision every gate uses, the recorded mode each surface stores and whether those raw records disagree |
-| `add-testers`, `set-testers` | Update the exact normalized tester list using the selected lifecycle `set-testers` command, which refuses while admission is not provably closed. The write changes no admission state and cannot open admission: no admission operation may run `resume` except `open-admission`, and the record's admission read-back shows the mode and key set unchanged. Open admission separately with `open-admission` |
-| `open-admission` | Refuse before resuming unless the selected Service's status proves effective closure and DB/SSM agreement, the database decision is closed and the mirror holds a `closed` record; then resume with **no payload**, re-read SSM and require the database status to report `testers`, matching policy and **no** `admission_window_expires_at` field. Records `admission-open-proof` (mode, source, tester count/hash, SSM record key set, database status field absence, SSM/DB agreement). The tester list is unchanged. Its only extra lifecycle action is the recovery-only `suspend` a failed open issues; no operator input can request it |
-| `close-admission` | Close admission through its pinned lifecycle `suspend`, then prove effective DB/SSM agreement and preserve the observed tester list; The Runtime stack must exist and be terminal. Records whether it ended an open admission (`ordinary`) or one already closed (`already-closed`) from the database status |
+| `state` | Print the Base/Runtime status, Runtime existence and the sanitized SSM admission state to the step log and summary; no DB/schema/policy qualification |
+| `admission-status` | Read the admission mode, the record's key set, the tester list and the database status through the selected existing Service lifecycle command. The run prints to the step log the effective decision every gate uses, the recorded mode each surface stores and whether those raw records disagree |
+| `add-testers`, `set-testers` | Update the exact normalized tester list using the selected lifecycle `set-testers` command, which refuses while admission is not provably closed. The write changes no admission state and cannot open admission: no admission operation may run `resume` except `open-admission`, and the printed `before`/`after` read-back shows the mode and key set unchanged. Open admission separately with `open-admission` |
+| `open-admission` | Refuse before resuming unless the selected Service's status proves effective closure and DB/SSM agreement, the database decision is closed and the mirror holds a `closed` record; then resume with **no payload**, re-read SSM and require the database status to report `testers`, matching policy and **no** `admission_window_expires_at` field. Prints the `admission-open-proof` line (mode, source, tester count/hash, SSM record key set, database status field absence, SSM/DB agreement). The tester list is unchanged. Its only extra lifecycle action is the recovery-only `suspend` a failed open issues; no operator input can request it |
+| `close-admission` | Close admission through its pinned lifecycle `suspend`, then prove effective DB/SSM agreement and preserve the observed tester list; The Runtime stack must exist and be terminal. Reports whether it ended an open admission (`ordinary`) or one already closed (`already-closed`) from the database status |
 
 ### Schema-boundary gate and applied evidence
 
@@ -436,17 +436,26 @@ Runtime stack, and a start already deploys a template without it.
 ## Tester and cleanup ownership
 
 Admission dispatch alone supplies `tester_emails` as a JSON string. Input
-normalization occurs before credentials; operation evidence records the effective
-normalized payload hash for the explicit action. `admission-status` requires the
-empty array `[]`. Add/set use exact normalized email addresses, at most 50
-users and the bounded SSM payload size. Their operation evidence records the
-effective payload hash.
+normalization occurs before credentials: the dispatch value is normalized before
+any AWS session exists. `admission-status` requires the empty array `[]`; add/set
+use exact normalized email addresses, at most 50 users and the bounded SSM
+payload size.
+
+An admission run writes no operation record and no payload-hash artifact. What an
+operator reads is the run itself. The step log prints one JSON line per
+operation: `add-testers`/`set-testers` print the `before` and `after` admission
+mode and recorded mode, the recorded key set and the tester count, and
+`admission-status` prints those same fields for each surface it compared; no line
+carries a tester address. On success the step summary also carries the closing
+`Infra operation <operation>; source <sha>` line. No record, no `.sha256`
+companion and no artifact is produced or published (#207).
+
 The tester write is exactly that: `set-testers` replaces the list and changes no
 admission state, and the Service command refuses while admission is not provably
 closed. **A tester write cannot open admission, and no operation supplies a bound**;
 the operator flow is `add-testers` (optional) and then
 `open-admission`. An empty tester payload is not proof of closed admission
-either. `admission-status` publishes the effective mode every gate uses, the
+either. `admission-status` reports the effective mode every gate uses, the
 recorded mode each surface stores and whether those raw records disagree.
 
 ## Admission open and close
@@ -459,11 +468,11 @@ admission, and the only operation whose one-shot authority lists the lifecycle
 Opening and closing are the whole lifecycle:
 
 - **closed:** `{"mode":"closed"}`. `close-admission` runs the pinned lifecycle
-  `suspend` and records `close_kind=ordinary` when the database reported
+  `suspend` and reports `close_kind=ordinary` when the database reported
   `testers`, or `already-closed` when it already reported `closed`. The
   classification is read from the database status, never from the SSM mirror.
 - **testers:** `{"mode":"testers"}`. `open-admission` runs the pinned lifecycle
-  `resume` and records the post-open proof. The tester list is untouched, so no
+  `resume` and prints the post-open proof. The tester list is untouched, so no
   non-tester is admitted.
 
 **Nothing closes on its own.** There is no bound, no expiry and no time-based
@@ -471,7 +480,7 @@ backstop in the parameter, the reader or the writer. Open admission ends only wh
 `close-admission` writes `closed`, so an interrupted or failed `open-admission`
 after its resume attempt leaves admission **open** and the operator recovery is
 `close-admission` followed by an `admission-status` read-back. The failed-open path
-issues one recovery-only `suspend` and records `close_kind=failed-open`, but that
+issues one recovery-only `suspend` and reports `close_kind=failed-open`, but that
 covers only a run still executing: there is no self-healing, and a run interrupted
 mid-flight can stay open until an explicit close.
 
@@ -636,8 +645,9 @@ unless the SSM mirror holds a `closed` record. That read is the executable fence
 against opening from a surface that disagrees with itself. The operation then
 resumes with **no payload**, re-reads SSM, and requires the post-open status to
 report the tester mode, a matching database policy and the absence of the removed
-`admission_window_expires_at` field. Its record carries both admission phases, the
-lifecycle status hash and one `admission-open-proof` event. `suspend` is the
+`admission_window_expires_at` field. It prints one `admission-open-proof` line
+carrying the mirror's recorded mode and key set, the database status mode and
+record with its hash, and the no-bound and agreement verdicts. `suspend` is the
 operation's only extra lifecycle action, and it is recovery-only: the driver issues
 it solely on the failed-open path, and no operator input can request it. No CFN,
 service scaling or migration occurs, and no non-tester is admitted.
@@ -664,7 +674,7 @@ read-back is where absence becomes mandatory: `open-admission` refuses a status
 that still carries the field, because the running Service has not dropped window
 semantics yet. That refusal — not a null value — is the executable proof.
 
-Because each surface stores its own mode word, `admission-status` publishes the
+Because each surface stores its own mode word, `admission-status` prints the
 effective mode, the raw record from each surface and both disagreement flags: the
 Service's `database_record_differs` and this comparison's `mirror_record_differs`
 (does the status's raw word equal the mirror's recorded word), beside

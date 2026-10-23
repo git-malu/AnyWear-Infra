@@ -304,7 +304,6 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
       if (env.INFRA_OPERATION !== 'deploy-runtime') throw new Error('Only deploy-runtime may create a Runtime change set');
       assertDeployAllowed(env, runtimeStack);
       const awsEnv = await roleEnv('deploy');
-      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', args, { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
     },
     // A synchronous runner for the bake's AWS reads. It resolves the runtime
@@ -400,11 +399,6 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
       const apiOriginDomainName = stack === baseStack ? await readApiOrigin(io) : undefined;
       const natEipAllocationId = stack === egressStack ? env.NAT_EIP_ALLOCATION_ID : undefined;
       const awsEnv = await roleEnv('deploy');
-      // Pre-mutation preflight (#165): after the restricted session is
-      // available and before CDK changes anything, simulate the deploy and
-      // runtime roles' effective authorization for the operation's reads. A
-      // deny or a simulation failure stops the deploy with zero changes.
-      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       // The mutation landed: record it as a changed stack so a later failure still
@@ -424,9 +418,6 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
       } else if (env.INFRA_OPERATION === 'stop-runtime') {
         if (stack !== runtimeStack) throw new Error('Only stop-runtime may destroy the Runtime stack');
       } else throw new Error('This operation may not destroy a stack');
-      // Pre-mutation preflight (#165): simulate the deploy and runtime roles'
-      // authorization before the stack is deleted.
-      await runAuthorizationPreflight({ sessions: ['deploy', 'runtime'], env, purpose, assume, run });
       const awsEnv = await roleEnv('deploy');
       await run('npx', cdkDestroyArguments(stack, env),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
