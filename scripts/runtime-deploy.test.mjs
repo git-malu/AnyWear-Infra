@@ -9,12 +9,16 @@ import {
   DECLARED_DIAGNOSTIC_RESOURCE_TYPES,
   RUNTIME_DEPLOY_PARAMETER_KEYS,
   RUNTIME_STACK,
+  acceptedLiveRuntimeHashes,
   assertConvergedChangeSet,
   assertCreateOnlyChangeSet,
+  assertLiveRuntimeIdentity,
   assertRuntimePhase,
   classifyChangeSet,
   deployRuntime,
   readRuntimeHealth,
+  recordedLivePredecessors,
+  recordedRuntimePhaseHash,
   runtimeCdkDeployArguments,
   runtimeChangeSetName,
   runtimeDeployParameters,
@@ -43,7 +47,6 @@ const release = { releaseTag: `service-artifacts-${SERVICE_SHA}`, serviceCommit:
 // The gate's admitted comparison is a return value and a log line now, so a fake
 // gate that resolves is all the deploy path needs from it.
 const SCHEMA_GATE = async () => ({ result: 'compatible' });
-const deploy = (options) => deployRuntime({ schemaGate: SCHEMA_GATE, ...options });
 const env = (overrides = {}) => ({
   GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '2',
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main', GITHUB_REF: 'refs/heads/main',
@@ -53,6 +56,14 @@ const TEMPLATE = JSON.parse(readFileSync('test/baselines/beta-active/AnyWearRunt
 const SYNTHESIZED = { template: TEMPLATE, raw_sha256: 'a'.repeat(64),
   normalised_sha256: 'b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c',
   expected: 'b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c' };
+// The fixture synthesises the legacy-phase baseline (`TEMPLATE`), whose normalised
+// hash is its own `expected`, while the recorded roles-added identity differs. The
+// live-template acceptance set is a deploy seam, so the fixture pins it to that
+// hash rather than widening production's recorded set; the dedicated accepted-set
+// test below exercises the real `acceptedLiveRuntimeHashes()` and its precedence.
+const FIXTURE_ACCEPTED_LIVE = Object.freeze([SYNTHESIZED.expected]);
+const deploy = (options) => deployRuntime({ schemaGate: SCHEMA_GATE,
+  acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE, ...options });
 const HEALTH = async () => 0;
 const BAKE = async () => gateBlock();
 const SSM = ['vlm_config_arn', 'cloudfront_prefix_list_id'].map((name) => ({ name }));
@@ -91,7 +102,6 @@ function liveStack({ identityUnchanged = true, terminal = true } = {}) {
       { ParameterKey: 'ServiceCommitSha', ParameterValue: identityUnchanged ? SERVICE_SHA : 'b'.repeat(40) },
       { ParameterKey: 'ServiceImageDigest', ParameterValue: identityUnchanged ? IMAGE_DIGEST : `sha256:${'9'.repeat(64)}` },
       { ParameterKey: 'BetaApiSizingProfile', ParameterValue: 's1' },
-      { ParameterKey: 'BetaSizingTelemetry', ParameterValue: 'false' },
       { ParameterKey: 'VlmConfigArn', ParameterValue: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/vlm_config-AbCdEf' },
       { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: 'pl-0123456789abcdef' },
     ],
@@ -181,13 +191,15 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
   return { io, calls, setRuntime: (value) => { runtimeObserved = value; } };
 }
 
-test('the six deploy parameters are the release identity, the retained sizing pair and the two reviewed constants', () => {
+test('the five deploy parameters are the release identity, the retained sizing profile and the two reviewed constants', () => {
+  assert.deepEqual([...RUNTIME_DEPLOY_PARAMETER_KEYS], ['ServiceImageDigest', 'ServiceCommitSha',
+    'BetaApiSizingProfile', 'VlmConfigArn', 'CloudFrontPrefixListId']);
   const parameters = runtimeDeployParameters({ liveParameters: [], deployValues: { VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:x', CloudFrontPrefixListId: 'pl-1' },
     release });
   assert.deepEqual(Object.keys(parameters).sort(), [...RUNTIME_DEPLOY_PARAMETER_KEYS].sort());
-  // The reviewed defaults apply only when the live stack never carried them.
+  assert.equal(Object.keys(parameters).length, 5);
+  // The reviewed default applies only when the live stack never carried it.
   assert.equal(parameters.BetaApiSizingProfile, 's1');
-  assert.equal(parameters.BetaSizingTelemetry, 'false');
   const retained = runtimeDeployParameters({ liveParameters: liveStack().Parameters,
     deployValues: { VlmConfigArn: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:x', CloudFrontPrefixListId: 'pl-1' }, release });
   assert.equal(retained.BetaApiSizingProfile, 's1');
@@ -251,14 +263,46 @@ test('the CDK arguments pass one stack-qualified flag per parameter and disable 
     '-c', 'identityPhase=roles-added', '-c', 'ecrImageRetention=true',
     '--previous-parameters=false',
     ...RUNTIME_DEPLOY_PARAMETER_KEYS.flatMap((key) => ['--parameters', `${RUNTIME_STACK}:${key}=${key}-value`])]);
-  assert.equal(args.filter((arg) => arg === '--parameters').length, RUNTIME_DEPLOY_PARAMETER_KEYS.length,
+  assert.equal(args.filter((arg) => arg === '--parameters').length, 5,
     'every parameter needs its own --parameters flag (nargs: 1)');
   for (const key of RUNTIME_DEPLOY_PARAMETER_KEYS) {
     assert.ok(args.includes(`${RUNTIME_STACK}:${key}=${key}-value`), key);
     assert.ok(!args.includes(`${key}=${key}-value`), `${key} must be stack-qualified`);
   }
   assert.throws(() => runtimeCdkDeployArguments({ parameters: { ServiceCommitSha: 'x' }, changeSetName: 'anywear-runtime-1',
-    identityPhase: 'roles-added', retentionProtection: 'true' }), /exactly the six reviewed parameters/);
+    identityPhase: 'roles-added', retentionProtection: 'true' }), /exactly the five reviewed parameters/);
+});
+
+// Issue #183 step 4: the recorded Runtime identity transition accepts the live
+// stack the transition deploy starts from. The accepted set is the recorded
+// roles-added identity plus exactly one recorded predecessor; the synthesis check
+// and the post-deploy read-back stay exact, which the deploy tests above prove with
+// the fixture-pinned seam.
+test('the live template check accepts the recorded identity and its recorded predecessor', () => {
+  const RECORDED = 'ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be';
+  const PREDECESSOR = '6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f';
+  assert.deepEqual(acceptedLiveRuntimeHashes(), [RECORDED, PREDECESSOR]);
+  assert.equal(acceptedLiveRuntimeHashes()[0], recordedRuntimePhaseHash());
+  assert.doesNotThrow(() => assertLiveRuntimeIdentity(RECORDED));
+  assert.doesNotThrow(() => assertLiveRuntimeIdentity(PREDECESSOR));
+  assert.equal(assertLiveRuntimeIdentity(PREDECESSOR), PREDECESSOR);
+  // The recorded identity and the predecessor are both accepted; any other hash
+  // fails closed, and an empty accepted set can never pass.
+  assert.throws(() => assertLiveRuntimeIdentity('f'.repeat(64)), /not the recorded roles-added identity/);
+  assert.throws(() => assertLiveRuntimeIdentity(RECORDED, []), /accepted Runtime live identities are unavailable/);
+  // An absent predecessor member yields only the recorded identity; a malformed
+  // list or entry fails closed instead of widening the drift allowance.
+  const record = (identityRevision) => ({ runtime_identity: { identity_phases: { 'roles-added': RECORDED },
+    identity_revision: identityRevision } });
+  assert.deepEqual(acceptedLiveRuntimeHashes(record(undefined)), [RECORDED]);
+  assert.deepEqual(acceptedLiveRuntimeHashes(record({})), [RECORDED]);
+  assert.deepEqual(recordedLivePredecessors(undefined), []);
+  for (const malformed of [{ accepted_live_predecessors: PREDECESSOR },
+    { accepted_live_predecessors: ['not-a-digest'] },
+    { accepted_live_predecessors: [PREDECESSOR, 'a'.repeat(63)] }]) {
+    assert.throws(() => acceptedLiveRuntimeHashes(record(malformed)), /Runtime live predecessor/);
+  }
+  assert.deepEqual(acceptedLiveRuntimeHashes(record({ accepted_live_predecessors: [PREDECESSOR] })), [RECORDED, PREDECESSOR]);
 });
 
 test('a change set is classified as converged or as a delta, and the guards fail closed', () => {
@@ -613,6 +657,7 @@ test('a bake refusal after the change set executed appends exactly one summary l
       // Only the deploy's own collaborators are fake; the change-set judgement, the
       // mutation, the read-back and the gate ordering are the production ones.
       deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH,
+        acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE,
         bake: async () => failedGate({ stage: 'beta', cluster: 'beta-anywear', logGroup: '/anywear/beta/worker',
           serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST }) },
     }), /The 600-second bake failed/);
@@ -633,7 +678,8 @@ test('a converged deploy-runtime appends no changed-stack summary line', async (
     const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
     await runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }), {
       createIo,
-      deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE },
+      deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH,
+        acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE, bake: BAKE },
     });
     assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false,
       'a converged no-op executes nothing');

@@ -22,16 +22,15 @@ export const RUNTIME_STACK = runtimeStack;
 export const BASE_STACK = 'AnyWearPlatformStack-beta';
 export const RUNTIME_REGION = 'ap-east-1';
 export const PHASE = 'roles-added';
-// The six template parameters a `deploy-runtime` passes. The first two identify
-// the release, the sizing pair is retained from the live stack (the reviewed
-// defaults apply only when the stack has never carried them), and the final pair
+// The five template parameters a `deploy-runtime` passes. The first two identify
+// the release, the retained sizing profile comes from the live stack (the reviewed
+// default applies only when the stack has never carried it), and the final pair
 // comes from the reviewed stage contract.
 export const RUNTIME_DEPLOY_PARAMETER_KEYS = Object.freeze([
-  'ServiceImageDigest', 'ServiceCommitSha', 'BetaApiSizingProfile', 'BetaSizingTelemetry',
+  'ServiceImageDigest', 'ServiceCommitSha', 'BetaApiSizingProfile',
   'VlmConfigArn', 'CloudFrontPrefixListId',
 ]);
 const SIZING_PROFILES = Object.freeze(['s1', 's2-api']);
-const TELEMETRY_VALUES = Object.freeze(['false', 'true']);
 const CHANGE_SET_NAME = /^[A-Za-z][-A-Za-z0-9]{0,127}$/;
 const SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
 // Issue #195: the declared template normalisation (`normaliseDeployedTemplate` in
@@ -61,19 +60,70 @@ export function runtimeChangeSetName(env) {
   return name;
 }
 
+const TEMPLATE_HASH = /^[a-f0-9]{64}$/;
+
+/** The parsed `test/baselines/provenance.json` record. */
+function readRuntimeProvenance() {
+  return JSON.parse(readFileSync(path.join(ROOT, 'test/baselines/provenance.json'), 'utf8'));
+}
+
 /** The recorded normalised identity of the live Runtime phase. */
-export function recordedRuntimePhaseHash() {
-  const provenance = JSON.parse(readFileSync(path.join(ROOT, 'test/baselines/provenance.json'), 'utf8'));
+export function recordedRuntimePhaseHash(provenance = readRuntimeProvenance()) {
   const hash = provenance.runtime_identity?.identity_phases?.[PHASE];
-  if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) {
+  if (typeof hash !== 'string' || !TEMPLATE_HASH.test(hash)) {
     throw new Error('The recorded Runtime roles-added identity is missing');
   }
   return hash;
 }
 
 /**
- * Resolve the six deploy parameters. The live stack's retained sizing pair wins;
- * the documented defaults apply only when the stack never carried them. Release
+ * The recorded live predecessors from one `identity_revision` member. The member is
+ * optional: an absent list means the recorded identity is the only accepted live
+ * template. A malformed list or entry fails closed, because a deployment must never
+ * widen its own drift allowance from a broken record.
+ */
+export function recordedLivePredecessors(identityRevision) {
+  const predecessors = identityRevision?.accepted_live_predecessors;
+  if (predecessors === undefined) return Object.freeze([]);
+  if (!Array.isArray(predecessors)) throw new Error('The recorded Runtime live predecessor set must be an array');
+  for (const hash of predecessors) {
+    if (typeof hash !== 'string' || !TEMPLATE_HASH.test(hash)) {
+      throw new Error('The recorded Runtime live predecessor is not a 64-hex digest');
+    }
+  }
+  return Object.freeze([...predecessors]);
+}
+
+/**
+ * The live-template acceptance set: the recorded phase identity plus the recorded
+ * `accepted_live_predecessors` (issue #183's one recorded transition). It is used
+ * only for the live `Original` drift check; the synthesis check and the post-deploy
+ * read-back stay exact against `recordedRuntimePhaseHash()`.
+ */
+export function acceptedLiveRuntimeHashes(provenance = readRuntimeProvenance()) {
+  return Object.freeze([recordedRuntimePhaseHash(provenance),
+    ...recordedLivePredecessors(provenance.runtime_identity?.identity_revision)]);
+}
+
+/**
+ * Assert the live `Original` template is the recorded identity or a recorded live
+ * predecessor. `accepted` is the injectable seam the deploy path defaults to
+ * `acceptedLiveRuntimeHashes()`; tests pin it to their fixture identity so a fixture
+ * template never widens the production acceptance set.
+ */
+export function assertLiveRuntimeIdentity(liveNormalisedHash, accepted = acceptedLiveRuntimeHashes()) {
+  if (!Array.isArray(accepted) || accepted.length === 0) {
+    throw new Error('The accepted Runtime live identities are unavailable');
+  }
+  if (!accepted.includes(liveNormalisedHash)) {
+    throw new Error(`The deployed Runtime template normalises to ${liveNormalisedHash}, not the recorded ${PHASE} identity ${accepted[0]}`);
+  }
+  return liveNormalisedHash;
+}
+
+/**
+ * Resolve the five deploy parameters. The live stack's retained sizing profile
+ * wins; the reviewed default applies only when the stack never carried it. Release
  * identity values are validated before they reach a template.
  */
 export function runtimeDeployParameters({ liveParameters = [], deployValues, release }) {
@@ -90,14 +140,11 @@ export function runtimeDeployParameters({ liveParameters = [], deployValues, rel
     live.set(entry.ParameterKey, entry.ParameterValue);
   }
   const profile = live.get('BetaApiSizingProfile') ?? 's1';
-  const telemetry = live.get('BetaSizingTelemetry') ?? 'false';
   if (!SIZING_PROFILES.includes(profile)) throw new Error(`Unreviewed retained Beta sizing profile ${profile}`);
-  if (!TELEMETRY_VALUES.includes(telemetry)) throw new Error(`Unreviewed retained Beta sizing telemetry ${telemetry}`);
   return Object.freeze({
     ServiceImageDigest: release.imageDigest,
     ServiceCommitSha: release.serviceCommit,
     BetaApiSizingProfile: profile,
-    BetaSizingTelemetry: telemetry,
     VlmConfigArn: deployValues.VlmConfigArn,
     CloudFrontPrefixListId: deployValues.CloudFrontPrefixListId,
   });
@@ -107,14 +154,14 @@ export function runtimeDeployParameters({ liveParameters = [], deployValues, rel
 export function runtimeCdkDeployArguments({ parameters, changeSetName, identityPhase, retentionProtection }) {
   const keys = Object.keys(parameters).sort();
   if (canonicalJson(keys) !== canonicalJson([...RUNTIME_DEPLOY_PARAMETER_KEYS].sort())) {
-    throw new Error('The Runtime deploy must pass exactly the six reviewed parameters');
+    throw new Error('The Runtime deploy must pass exactly the five reviewed parameters');
   }
   if (!CHANGE_SET_NAME.test(changeSetName ?? '')) throw new Error('Invalid Runtime change-set name');
   // The CDK CLI declares `--parameters` as an `array` option with `nargs: 1` and
   // documents the `STACK:KEY=VALUE` form, so one flag consumes exactly one value.
-  // Prefixing six bare values with a single `--parameters` (the #195 form) kept
+  // Prefixing five bare values with a single `--parameters` (the #195 form) kept
   // only the first and let `--previous-parameters` (default true) silently retain
-  // the other five: the 2026-10-23 compatible dispatch advanced
+  // the other four: the 2026-10-23 compatible dispatch advanced
   // `ServiceImageDigest` while `ServiceCommitSha` stayed on the previous release.
   // One stack-qualified flag per parameter plus `--previous-parameters=false`
   // makes a dropped parameter fail the deploy instead of inheriting a stale value.
@@ -370,7 +417,12 @@ export function runtimePinnedRevision(stack) {
 /** `deploy-runtime`: one converged-or-additive mutation, judged and baked in place. */
 export async function deployRuntime({ io, env, release,
   synthesize = synthesizeRuntimeTemplate, health = readRuntimeHealth, bake = runBakeGate,
-  schemaGate = runSchemaBoundaryGate }) {
+  schemaGate = runSchemaBoundaryGate,
+  // The live-template acceptance set is a seam like the collaborators above: tests
+  // pin it to their fixture identity, while production uses the recorded identity
+  // plus its recorded live predecessor(s). It is used only for the live `Original`
+  // drift check; synthesis and the post-deploy read-back stay exact.
+  acceptedLiveHashes = acceptedLiveRuntimeHashes() }) {
   assertRuntimePhase('deploy-runtime', env);
   const base = await describeStack(io, BASE_STACK);
   if (!terminalStackStatuses.has(base?.StackStatus)) {
@@ -405,16 +457,14 @@ export async function deployRuntime({ io, env, release,
     directory: SELECTED_RELEASE_DIRECTORY });
   const synthesized = await synthesize(env);
 
-  // A running stack's deployed template must already be the recorded identity;
-  // otherwise the change set is drift, not this release, and must fail closed.
+  // A running stack's deployed template must be the recorded identity or one of the
+  // recorded live predecessors (issue #183's single transition). Anything else is
+  // drift, not this release, and fails closed before the change set.
   if (stackExists) {
     const liveBody = (await io.aws(['cloudformation', 'get-template', '--stack-name', RUNTIME_STACK,
       '--template-stage', 'Original'])).TemplateBody;
     const liveTemplate = typeof liveBody === 'string' ? parseJson(liveBody) : liveBody;
-    const liveHash = canonicalDeployedTemplateHash(liveTemplate);
-    if (liveHash !== synthesized.expected) {
-      throw new Error(`The deployed Runtime template normalises to ${liveHash}, not the recorded ${PHASE} identity ${synthesized.expected}`);
-    }
+    assertLiveRuntimeIdentity(canonicalDeployedTemplateHash(liveTemplate), acceptedLiveHashes);
   }
 
   const changeSetName = runtimeChangeSetName(env);
