@@ -88,8 +88,8 @@ const PREFIX_LIST = /^pl-[a-z0-9]+$/;
 
 const valueOf = (values, name) => (values instanceof Map ? values.get(name) : values?.[name]);
 
-// The bake's queue URLs, read from the same contract surface as the record
-// inputs. A missing value, a bare queue name, or anything that is not a full
+// The bake's queue URLs, read from the same contract surface as the hashed
+// deploy inputs. A missing value, a bare queue name, or anything that is not a full
 // `https://sqs.` URL fails closed before the gate runs.
 export function runtimeBakeQueueUrls(values) {
   const queueUrls = {};
@@ -114,8 +114,8 @@ export function runtimeEcsClusterName(values) {
 }
 
 // Read the whole Runtime stage surface in bounded `ssm get-parameters` calls and
-// return the record's sorted `inputs[]` rows (name, SSM version, value sha256)
-// together with the values. A missing name fails closed: the `roles-added` phase
+// return its sorted `inputs[]` rows (name, SSM version, value sha256) together with
+// the values. A missing name fails closed: the `roles-added` phase
 // publishes every one of the 39 names, so an absent name is a wrong phase or a
 // Base that was never deployed.
 export async function readRuntimeStageContract(io) {

@@ -2,22 +2,18 @@
 // Issue #162: the bounded 600-second six-signal deployment bake.
 //
 // The `deploy-runtime` operation runs this after `cdk deploy` returned and the
-// deployed stack identity was read back, and before `service-deployment.json` is
-// written. It reads the six named signals live from the deployed state - never
-// the deployed alarm states, which are recorded only as evidence - and fails
-// closed on missing, delayed or insufficient data. A failing bake writes a
-// `result: "failed"` gate block to `--output` and exits non-zero; the caller then
-// writes no deployment record, and the run's operation evidence is
-// `result=failed` / `recovery=requires-explicit-recovery`.
+// deployed stack identity was read back. It reads the six named signals live from
+// the deployed state - never the deployed alarm states, which are read as evidence
+// only - and fails closed on missing, delayed or insufficient data. A failing bake
+// throws with the failing signals, so the deploy step exits non-zero and the run
+// is failed: the verdict is the job conclusion and the step log. There is no gate
+// block to publish (#207).
 //
 // The reads use the `aws` CLI, which is already the deploy job's interface. The
 // signal evaluation is a separate pure function so every threshold, missing-data
 // case and deadline can be tested without AWS, a network or a wall clock.
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   DEPLOYMENT_GATE_DURATION_SECONDS,
   DEPLOYMENT_GATE_MAX_PROBES,
@@ -29,7 +25,6 @@ import {
   deploymentAlarmName,
   deploymentBakeName,
   deploymentQueueNames,
-  validateDeploymentGate,
   runtimeStageFromStack,
 } from '@git-malu/stage-contracts';
 
@@ -42,7 +37,6 @@ export const MIN_ECS_SAMPLES = 15;
 export const MIN_SQS_SAMPLES = 15;
 export const MIN_OUTBOX_LINES = 5;
 const ALARM_STATE = /^(OK|ALARM|INSUFFICIENT_DATA)$/;
-const STAGE = /^[a-z][a-z0-9-]*$/;
 const fail = (message) => {
   throw new Error(message);
 };
@@ -303,8 +297,8 @@ function cloudWatchReads(name, dimension, datapoints) {
  *
  * `observations` may carry `{ error }` for any surface that could not be read.
  * Every state other than `not-breaching` fails the gate; there is no averaging
- * and no majority vote. A failed gate keeps each signal's evidence so the run's
- * operation record can show which signal failed and that the others were healthy.
+ * and no majority vote. A failed gate keeps each signal's evidence so the run log
+ * can show which signal failed and that the others were healthy.
  */
 export function evaluateBake({
   stage, startedAtMs, windowSeconds = DEPLOYMENT_GATE_DURATION_SECONDS, probesSent,
@@ -585,61 +579,6 @@ export function evaluateBake({
 // --------------------------------------------------------------------------
 // Runner
 
-function optionMap(argv) {
-  const options = new Map();
-  for (let index = 0; index < argv.length; index += 2) {
-    const flag = argv[index];
-    const value = argv[index + 1];
-    if (!flag?.startsWith('--') || value === undefined || value === '') {
-      fail(`Options require --name value pairs; got ${flag ?? 'nothing'}`);
-    }
-    const name = flag.slice(2);
-    if (options.has(name)) fail(`Duplicate option --${name}`);
-    options.set(name, value);
-  }
-  return options;
-}
-
-const REQUIRED_OPTIONS = Object.freeze([
-  'stage', 'stack', 'api-base-url', 'cluster', 'vto-queue-url', 'auto-tagging-queue-url',
-  'vto-dlq-url', 'auto-tagging-dlq-url', 'log-group', 'service-sha', 'image-digest', 'output',
-]);
-
-export function parseOptions(argv) {
-  const options = optionMap(argv);
-  for (const name of options.keys()) {
-    if (!REQUIRED_OPTIONS.includes(name)) fail(`Unknown option --${name}`);
-  }
-  const missing = REQUIRED_OPTIONS.filter((name) => !options.has(name));
-  if (missing.length > 0) fail(`Missing options: ${missing.map((name) => `--${name}`).join(', ')}`);
-  const stage = options.get('stage');
-  if (!STAGE.test(stage)) fail('Invalid --stage');
-  const stack = options.get('stack');
-  if (runtimeStageFromStack(stack) !== stage) fail('The stack does not belong to the selected stage');
-  const imageDigest = options.get('image-digest');
-  if (!/^sha256:[a-f0-9]{64}$/.test(imageDigest)) fail('Invalid --image-digest');
-  const serviceSha = options.get('service-sha');
-  if (!/^[a-f0-9]{40}$/.test(serviceSha)) fail('Invalid --service-sha');
-  const apiBaseUrl = options.get('api-base-url');
-  if (!/^https:\/\/[a-z0-9]+\.cloudfront\.net$/.test(apiBaseUrl)) fail('Invalid --api-base-url');
-  return {
-    stage,
-    stack,
-    apiBaseUrl,
-    cluster: options.get('cluster'),
-    queueUrls: {
-      vto: options.get('vto-queue-url'),
-      auto_tagging: options.get('auto-tagging-queue-url'),
-      vto_dlq: options.get('vto-dlq-url'),
-      auto_tagging_dlq: options.get('auto-tagging-dlq-url'),
-    },
-    logGroup: options.get('log-group'),
-    serviceSha,
-    imageDigest,
-    output: options.get('output'),
-  };
-}
-
 export function failedGate(options, message = 'The bake could not be evaluated') {
   const startedAtMs = alignedStart(Date.now());
   return evaluateBake({
@@ -665,11 +604,10 @@ export function failedGate(options, message = 'The bake could not be evaluated')
 }
 
 /**
- * Run the live 600-second bake and return its gate block.
+ * Run the live 600-second bake and return its gate block either way.
  *
- * The returned block is validated by the pinned package when it passed; a failed
- * block is returned (not thrown) so the caller can persist the evidence before
- * failing the step.
+ * The caller logs the verdict and its failing signals to the run log, then fails
+ * the step on a failed block; nothing persists the block as evidence (#207).
  */
 export async function runBakeGate(options) {
   const {
@@ -775,26 +713,5 @@ export async function runBakeGate(options) {
       probes: { sent: probesSent, failed: probesFailed },
     },
   });
-  if (gate.result === 'passed') validateDeploymentGate(gate, stage);
   return gate;
 }
-
-async function main() {
-  const options = parseOptions(process.argv.slice(2));
-  let gate;
-  try {
-    gate = await runBakeGate(options);
-  } catch (error) {
-    gate = failedGate(options, error.message);
-  }
-  writeFileSync(options.output, `${JSON.stringify(gate, null, 2)}\n`);
-  const failures = gate.signals.filter((signal) => signal.state !== 'not-breaching')
-    .map((signal) => ({ signal: signal.name, state: signal.state, exceptions: signal.exceptions }));
-  process.stdout.write(`${JSON.stringify({ gate: gate.name, result: gate.result, signals: gate.signals.length,
-    failures, output: options.output }, null, 2)}\n`);
-  if (gate.result !== 'passed') process.exitCode = 1;
-}
-
-const invokedDirectly = process.argv[1] !== undefined
-  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedDirectly) await main();

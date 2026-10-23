@@ -27,7 +27,9 @@ function unprefixedAbsenceError(stackName) {
 // Minimal mock of the runtime io: CloudFormation stack reads plus deploy/destroy.
 function operationMock({ runtimeStatus } = {}) {
   const calls = []; const deployments = []; const destroys = [];
-  const stacks = new Map([[baseName, { StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }]]);
+  const stacks = new Map([[baseName, { StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }],
+    [egressName, { StackName: egressName, StackStatus: 'CREATE_COMPLETE',
+      Outputs: [{ OutputKey: 'EgressNatEipAllocationId', OutputValue: 'eipalloc-0a5198fb91b876949' }] }]]);
   if (runtimeStatus !== undefined) stacks.set(runtimeStack, { StackName: runtimeStack, StackStatus: runtimeStatus });
   return { calls, deployments, destroys,
     async aws(args) {

@@ -1,8 +1,23 @@
 import { pathToFileURL } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { parseJson, contentHash, exact, matches, HASH, SHA, DIGEST } from './json-contract.mjs';
-import { liveObservationIo } from './observe-deployment.mjs';
+import { region } from './deployment-contract.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
+
+const execute = promisify(execFile);
+
+// The operator CLI's own AWS seam. It runs under the operator's already-assumed
+// session and is unrelated to the four pre-credential controls: the retention
+// check is an explicitly authorized Deployment-stage read/verification action
+// (see the cutover-and-recovery runbook), and it assumes no role itself.
+const operatorIo = () => ({
+  async aws(args, awsRegion = region) {
+    const result = await execute('aws', [...args, '--region', awsRegion, '--output', 'json'], { timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
+    return result.stdout.trim() ? parseJson(result.stdout) : {};
+  },
+});
 
 export function verifyRetentionPolicy(policy, expectedPolicyHash) {
   exact(policy, ['rules'], 'ECR lifecycle policy');
@@ -40,7 +55,7 @@ export function verifyLifecyclePreview(preview, required) {
   if (preview.previewResults.some(result => digests.has(result.imageDigest) && result.action?.type === 'EXPIRE')) throw new Error('Selected or rollback digest would expire');
   return true;
 }
-export async function checkRetention({ required, expectedPolicyHash, io = liveObservationIo(), env = process.env }) {
+export async function checkRetention({ required, expectedPolicyHash, io = operatorIo(), env = process.env }) {
   const gate = async () => { validateOperationInputs(env); };
   await gate();
   if ((await io.aws(['sts', 'get-caller-identity'])).Account !== '650880818323') throw new Error('Unexpected retention account');

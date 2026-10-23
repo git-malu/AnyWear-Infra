@@ -2,11 +2,19 @@
 //
 // The versioned, dependency-free source of the AnyWear Beta stage contract:
 // the SSM parameter surface the stage base publishes, the stack identities, the
-// deployed-template normalisation, and the pure v6 `anywear_service_deployment`
-// record validators. AnyWear-Infra consumes it directly from
-// `file:packages/stage-contracts`; since #195 it is also the record producer, so
-// no other repository pins a packed tarball. Nothing here reads AWS,
-// CloudFormation or the filesystem.
+// deployed-template normalisation, the task-definition identity, and the bake
+// gate's stage-free thresholds, signal names and resource-name builders.
+// AnyWear-Infra consumes it directly from `file:packages/stage-contracts`, so no
+// other repository pins a packed tarball. Nothing here reads AWS, CloudFormation
+// or the filesystem.
+//
+// Issue #207 retired the operation/deployment record chain, so the record
+// validators (`anywear_infra_*`, `anywear_service_deployment`) and the
+// record-gate block validators are gone. The controls that remain are the
+// schema-boundary gate, the 600-second six-signal bake, deployment authorization
+// and the pre-credential release-byte proof; only their stage-free constants and
+// builders live here. The schema-boundary comparison shape is owned by the gate
+// that produces it, not by this package.
 //
 // The stage reading itself belongs to the consumer: `stageParameters()` returns
 // the typed definitions, and a CDK app creates its own
@@ -54,9 +62,7 @@ function contentHash(value) {
   return sha256(canonicalJson(value));
 }
 
-const SHA = /^[a-f0-9]{40}$/;
 const HASH = /^[a-f0-9]{64}$/;
-const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
 function exact(value, fields, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -66,11 +72,6 @@ function exact(value, fields, label) {
 
 function matches(value, pattern, label) {
   if (typeof value !== 'string' || !pattern.test(value)) throw new Error(`Invalid ${label}`);
-  return value;
-}
-
-function integer(value, label, minimum = 1) {
-  if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`Invalid ${label}`);
   return value;
 }
 
@@ -285,69 +286,32 @@ export function canonicalDeployedTemplateHash(template) {
   return contentHash(normaliseDeployedTemplate(template));
 }
 
-// ---------------------------------------------------------------------------
-// v3 deployment record core (the v6 Infra Service record adds the bake gate and
-// the schema boundary)
-//
-//   producer  the repository/commit/workflow that produced this record
-//   stacks    every stack this record's producer owns, each with its producer
-//             identity and the sha256 of its deployed Original template body
-//   inputs    the stage-contract SSM parameters the deployment consumed
-//   observed  the authenticated observation that producer made
-//   schema    a content hash of the consumed stage-contract schema surface
-//
-// AnyWear-Infra produces `anywear_service_deployment` v6 for
-// `AnyWearRuntimeStack-beta` only, from the `deploy-runtime` operation.
-// `validateServiceDeploymentRecord` is the consumer-side validator: a record it
-// accepts is a record another producer can verify without trusting the writer.
-// Infra's `anywear_infra_deployment` keeps the seven-member core below and never
-// produces a gate.
-
-export const DEPLOYMENT_RECORD_MEMBERS = Object.freeze(
-  ['schema_version', 'record_type', 'producer', 'stacks', 'inputs', 'observed', 'schema']);
-export const DEPLOYMENT_PRODUCER_FIELDS = Object.freeze(
-  ['repository', 'sha', 'workflow_path', 'workflow_ref', 'run_id', 'run_attempt']);
-export const DEPLOYMENT_STACK_FIELDS = Object.freeze(
-  ['name', 'region', 'producer_repository', 'producer_sha', 'template_sha256']);
-export const DEPLOYMENT_INPUT_FIELDS = Object.freeze(['parameter', 'version', 'value_sha256']);
-export const SERVICE_OBSERVED_FIELDS = Object.freeze(
-  ['service_sha', 'image_digest', 'minimum_client_version', 'ecs', 'endpoints']);
-// A task definition revision is CloudFormation bookkeeping, not identity: the same
-// image/environment/roles/command re-registers as a new revision and must not fail.
-// The ARN is recorded as evidence only; equality is the image digest plus the
-// normalized task-definition content hash below.
-export const SERVICE_ECS_IDENTITY_FIELDS = Object.freeze(
-  ['service_arn', 'task_definition_arn', 'task_definition_sha256', 'image_digest']);
+// The one stage-input row shape this package still validates. It is deliberately
+// not exported: the record members it used to describe are retired with #207, and
+// `validateStageInputs` below is the only reader.
+const DEPLOYMENT_INPUT_FIELDS = Object.freeze(['parameter', 'version', 'value_sha256']);
 
 // ---------------------------------------------------------------------------
 // Deployment bake gate (Issue #162)
 //
-// A Service deployment records success only after a bounded 600-second bake read
-// the six named signals live from the deployed state. The gate block is a
-// required top-level member of the v5 and v6 `anywear_service_deployment` record;
-// the Infra `anywear_infra_deployment` v3 record keeps the seven-member core and
-// is never forced to produce one.
+// `deploy-runtime` runs a bounded 600-second bake that reads the six named
+// signals live from the deployed state and fails the deploy job on any breach or
+// on missing evidence. The gate's result is the job conclusion and the run log;
+// no record carries it. The constants and name builders below are the stage-free
+// half of that control, shared with the CDK application so a signal, alarm or
+// queue cannot drift between the bake and the resources it reads.
 //
 // The table below is one stage-free threshold set: `<stage>` appears only in
 // resource and alarm names, never in a threshold, so Beta and Production share
-// exactly the same pass criterion. A signal is `not-breaching` only when its
-// recorded value is inside its threshold and every read produced enough data;
-// missing, delayed or short data is `insufficient` and fails the gate exactly
-// like `breaching`.
+// exactly the same pass criterion. A signal passes only when its recorded value
+// is inside its threshold and every read produced enough data; missing, delayed
+// or short data is `insufficient` and fails the gate exactly like `breaching`.
 
 export const DEPLOYMENT_GATE_NAME_SUFFIX = 'anywear-deployment-bake';
 export const DEPLOYMENT_GATE_DURATION_SECONDS = 600;
 export const DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS = 15;
 export const DEPLOYMENT_GATE_REQUEST_FLOOR = 30;
 export const DEPLOYMENT_GATE_MAX_PROBES = 40;
-export const DEPLOYMENT_GATE_RESULTS = Object.freeze(['passed', 'failed']);
-export const DEPLOYMENT_GATE_STATES = Object.freeze(['not-breaching', 'breaching', 'insufficient']);
-export const DEPLOYMENT_GATE_ALARM_STATES = Object.freeze(['OK', 'ALARM', 'INSUFFICIENT_DATA']);
-export const DEPLOYMENT_GATE_FIELDS = Object.freeze([
-  'name', 'result', 'started_at', 'ended_at', 'duration_seconds', 'service_sha', 'image_digest', 'probe', 'signals']);
-export const DEPLOYMENT_GATE_PROBE_FIELDS = Object.freeze(['interval_seconds', 'probes_sent', 'request_floor']);
-export const DEPLOYMENT_GATE_SIGNAL_FIELDS = Object.freeze([
-  'name', 'state', 'value', 'threshold', 'comparison', 'alarms', 'reads', 'exceptions']);
 export const DEPLOYMENT_GATE_SIGNAL_NAMES = Object.freeze([
   'alb_5xx_rate',
   'alb_p95_latency',
@@ -467,570 +431,6 @@ export function deploymentQueueNames(stage) {
     auto_tagging: `${stage}-anywear-auto-tagging`,
     auto_tagging_dlq: `${stage}-anywear-auto-tagging-dlq`,
   });
-}
-
-const count = (value, label) => {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid ${label}`);
-  return value;
-};
-const nonNegative = (value, label) => {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`Invalid ${label}`);
-  return value;
-};
-const sameValue = (actual, expected, label) => {
-  if (contentHash(actual) !== contentHash(expected)) throw new Error(`Invalid ${label}`);
-  return actual;
-};
-
-function validateCloudWatchRead(read, stage, expected) {
-  exact(read, ['source', 'namespace', 'metric_name', 'dimensions', 'statistic', 'period_seconds', 'datapoints'],
-    'deployment gate CloudWatch read');
-  if (read.source !== 'cloudwatch' || read.namespace !== 'AWS/ApplicationELB') {
-    throw new Error('Invalid deployment gate CloudWatch read identity');
-  }
-  if (read.metric_name !== expected.metric_name || read.statistic !== expected.statistic
-    || read.period_seconds !== expected.period_seconds || read.datapoints !== expected.datapoints) {
-    throw new Error(`Invalid deployment gate ${expected.metric_name} read`);
-  }
-  exact(read.dimensions, ['LoadBalancer'], 'deployment gate read dimensions');
-  matches(read.dimensions.LoadBalancer,
-    new RegExp(`^app/${stage}-anywear-api/[a-z0-9]+$`), 'deployment gate load balancer dimension');
-  return read;
-}
-
-function validateSignalReads(name, reads, stage) {
-  if (!Array.isArray(reads)) throw new Error(`Invalid ${name} reads`);
-  switch (name) {
-    case 'alb_5xx_rate': {
-      if (reads.length !== 3) throw new Error('Invalid alb_5xx_rate reads');
-      validateCloudWatchRead(reads[0], stage, { metric_name: 'HTTPCode_Target_5XX_Count', statistic: 'Sum', period_seconds: 60, datapoints: 10 });
-      validateCloudWatchRead(reads[1], stage, { metric_name: 'HTTPCode_ELB_5XX_Count', statistic: 'Sum', period_seconds: 60, datapoints: 10 });
-      validateCloudWatchRead(reads[2], stage, { metric_name: 'RequestCount', statistic: 'Sum', period_seconds: 60, datapoints: 10 });
-      return reads;
-    }
-    case 'alb_p95_latency':
-      if (reads.length !== 1) throw new Error('Invalid alb_p95_latency reads');
-      validateCloudWatchRead(reads[0], stage, { metric_name: 'TargetResponseTime', statistic: 'p95', period_seconds: 600, datapoints: 1 });
-      return reads;
-    case 'ecs_running_not_desired': {
-      if (reads.length !== 1) throw new Error('Invalid ecs_running_not_desired reads');
-      const read = reads[0];
-      exact(read, ['source', 'cluster', 'services', 'samples'], 'deployment gate ECS read');
-      if (read.source !== 'ecs' || read.cluster !== `${stage}-anywear`) {
-        throw new Error('Invalid deployment gate ECS read identity');
-      }
-      sameValue(read.services, [`${stage}-anywear-api`, `${stage}-anywear-worker`], 'deployment gate ECS read services');
-      count(read.samples, 'deployment gate ECS read samples');
-      if (read.samples < 15) throw new Error('Insufficient deployment gate ECS samples');
-      return reads;
-    }
-    case 'sqs_oldest_message_age': {
-      // Two sources: the AWS/SQS age metric for each work queue, then the three
-      // valid depth attributes from GetQueueAttributes (used only to prove an
-      // idle queue with a missing age datapoint is age 0).
-      if (reads.length !== 4) throw new Error('Invalid sqs_oldest_message_age reads');
-      const queues = deploymentQueueNames(stage);
-      for (const [index, queueName] of [queues.vto, queues.auto_tagging].entries()) {
-        const read = reads[index];
-        exact(read, ['source', 'namespace', 'metric_name', 'dimensions', 'statistic', 'period_seconds', 'datapoints'],
-          'deployment gate SQS age read');
-        if (read.source !== 'cloudwatch' || read.namespace !== 'AWS/SQS'
-          || read.metric_name !== 'ApproximateAgeOfOldestMessage' || read.statistic !== 'Maximum'
-          || read.period_seconds !== 600 || read.datapoints !== 1) {
-          throw new Error('Invalid deployment gate sqs_oldest_message_age CloudWatch read');
-        }
-        exact(read.dimensions, ['QueueName'], 'deployment gate SQS age dimensions');
-        if (read.dimensions.QueueName !== queueName) throw new Error('Invalid deployment gate SQS age queue');
-      }
-      for (const [index, queueName] of [queues.vto, queues.auto_tagging].entries()) {
-        const read = reads[index + 2];
-        exact(read, ['source', 'queue_name', 'attributes', 'samples'], 'deployment gate SQS depth read');
-        if (read.source !== 'sqs' || read.queue_name !== queueName) {
-          throw new Error('Invalid deployment gate sqs_oldest_message_age depth read');
-        }
-        if (!Array.isArray(read.attributes)
-          || read.attributes.length !== DEPLOYMENT_SQS_DEPTH_ATTRIBUTES.length
-          || read.attributes.some((attribute, position) => attribute !== DEPLOYMENT_SQS_DEPTH_ATTRIBUTES[position])) {
-          throw new Error('Invalid deployment gate SQS depth attributes');
-        }
-        count(read.samples, 'deployment gate SQS depth read samples');
-        if (read.samples < 15) throw new Error('Insufficient deployment gate SQS depth samples');
-      }
-      return reads;
-    }
-    case 'sqs_dlq_depth': {
-      if (reads.length !== 2) throw new Error(`Invalid ${name} reads`);
-      const queues = deploymentQueueNames(stage);
-      for (const [index, read] of reads.entries()) {
-        exact(read, ['source', 'queue_name', 'attribute', 'samples'], 'deployment gate SQS read');
-        if (read.source !== 'sqs' || read.queue_name !== [queues.vto_dlq, queues.auto_tagging_dlq][index]
-          || read.attribute !== 'ApproximateNumberOfMessages') {
-          throw new Error(`Invalid deployment gate ${name} read`);
-        }
-        count(read.samples, 'deployment gate SQS read samples');
-        if (read.samples < 15) throw new Error('Insufficient deployment gate SQS samples');
-      }
-      return reads;
-    }
-    case 'outbox_oldest_age': {
-      if (reads.length !== 1) throw new Error('Invalid outbox_oldest_age reads');
-      const read = reads[0];
-      exact(read, ['source', 'log_group', 'filter_pattern', 'samples'], 'deployment gate logs read');
-      if (read.source !== 'logs' || read.log_group !== `/anywear/${stage}/worker`
-        || read.filter_pattern !== '"Durable task outbox metrics"') {
-        throw new Error('Invalid deployment gate logs read identity');
-      }
-      count(read.samples, 'deployment gate logs read samples');
-      if (read.samples < 5) throw new Error('Insufficient deployment gate outbox log samples');
-      return reads;
-    }
-    default:
-      throw new Error(`Unknown deployment gate signal ${name}`);
-  }
-}
-
-// The per-signal predicate is the record's own self-consistency rule: a signal
-// that claims `not-breaching` must actually be inside its threshold.
-function signalBreaches(name, value) {
-  const threshold = DEPLOYMENT_GATE_THRESHOLDS[name];
-  switch (name) {
-    case 'alb_5xx_rate':
-      return value.target_5xx + value.elb_5xx > threshold.max_5xx;
-    case 'alb_p95_latency':
-      return value.p95_milliseconds > threshold.max_milliseconds;
-    case 'ecs_running_not_desired':
-      return value.longest_gap_seconds >= threshold.max_gap_seconds
-        || Object.values(value.services).some((service) => (
-          service.deployment_count !== 1 || service.rollout_state !== 'COMPLETED'));
-    case 'sqs_oldest_message_age':
-      return Math.max(value.vto_seconds, value.auto_tagging_seconds) > threshold.max_seconds;
-    case 'sqs_dlq_depth':
-      return value.vto_depth + value.auto_tagging_depth > threshold.max_depth;
-    case 'outbox_oldest_age':
-      return (value.oldest_age_milliseconds !== null && value.oldest_age_milliseconds > threshold.max_age_milliseconds)
-        || (value.oldest_age_milliseconds === null && value.backlog > 0);
-    default:
-      throw new Error(`Unknown deployment gate signal ${name}`);
-  }
-}
-
-function validateSignalValue(name, value) {
-  const definition = DEPLOYMENT_GATE_SIGNAL_DEFINITIONS[name];
-  if (!definition) throw new Error(`Unknown deployment gate signal ${name}`);
-  exact(value, definition.value, `deployment gate ${name} value`);
-  switch (name) {
-    case 'alb_5xx_rate':
-      count(value.target_5xx, 'target 5xx count');
-      count(value.elb_5xx, 'ELB 5xx count');
-      count(value.request_count, 'request count');
-      if (value.request_count < DEPLOYMENT_GATE_REQUEST_FLOOR) throw new Error('Insufficient deployment gate requests');
-      break;
-    case 'alb_p95_latency':
-      nonNegative(value.p95_milliseconds, 'p95 latency');
-      break;
-    case 'ecs_running_not_desired':
-      nonNegative(value.longest_gap_seconds, 'longest running/desired gap');
-      nonNegative(value.max_sample_gap_seconds, 'maximum ECS sample gap');
-      if (value.max_sample_gap_seconds > DEPLOYMENT_GATE_THRESHOLDS.ecs_running_not_desired.max_gap_seconds) {
-        throw new Error('Insufficient deployment gate ECS sample cadence');
-      }
-      count(value.samples, 'ECS samples');
-      if (value.samples < 15) throw new Error('Insufficient deployment gate ECS samples');
-      exact(value.services, ['api', 'worker'], 'deployment gate ECS services');
-      for (const [purpose, service] of Object.entries(value.services)) {
-        exact(service, ['running_count', 'desired_count', 'deployment_count', 'rollout_state'],
-          `deployment gate ${purpose} service`);
-        count(service.running_count, `${purpose} running count`);
-        count(service.desired_count, `${purpose} desired count`);
-        count(service.deployment_count, `${purpose} deployment count`);
-        matches(service.rollout_state, /^[A-Z][A-Z_]*$/, `${purpose} rollout state`);
-      }
-      break;
-    case 'sqs_oldest_message_age':
-      nonNegative(value.vto_seconds, 'VTO oldest message age');
-      nonNegative(value.auto_tagging_seconds, 'auto-tagging oldest message age');
-      break;
-    case 'sqs_dlq_depth':
-      count(value.vto_depth, 'VTO DLQ depth');
-      count(value.auto_tagging_depth, 'auto-tagging DLQ depth');
-      break;
-    case 'outbox_oldest_age':
-      if (value.oldest_age_milliseconds !== null) nonNegative(value.oldest_age_milliseconds, 'outbox oldest age');
-      count(value.backlog, 'outbox backlog');
-      count(value.lines_observed, 'outbox log lines');
-      if (value.lines_observed < 5) throw new Error('Insufficient deployment gate outbox log samples');
-      break;
-    default:
-      throw new Error(`Unknown deployment gate signal ${name}`);
-  }
-  if (signalBreaches(name, value)) throw new Error(`Deployment gate signal ${name} is breaching`);
-  return value;
-}
-
-function validateGateSignal(signal, expectedName, stage) {
-  exact(signal, DEPLOYMENT_GATE_SIGNAL_FIELDS, `deployment gate signal ${expectedName}`);
-  if (signal.name !== expectedName) throw new Error('Deployment gate signals are not in fixed order');
-  if (!DEPLOYMENT_GATE_STATES.includes(signal.state)) throw new Error('Invalid deployment gate signal state');
-  if (signal.state !== 'not-breaching') throw new Error(`Deployment gate signal ${expectedName} is ${signal.state}`);
-  validateSignalValue(expectedName, signal.value);
-  sameValue(signal.threshold, DEPLOYMENT_GATE_THRESHOLDS[expectedName], `deployment gate ${expectedName} threshold`);
-  if (signal.comparison !== DEPLOYMENT_GATE_SIGNAL_DEFINITIONS[expectedName].comparison) {
-    throw new Error(`Invalid deployment gate ${expectedName} comparison`);
-  }
-  const expectedAlarms = deploymentAlarmName(stage, expectedName);
-  if (!Array.isArray(signal.alarms) || signal.alarms.length !== expectedAlarms.length) {
-    throw new Error(`Invalid deployment gate ${expectedName} alarms`);
-  }
-  for (const [index, alarm] of signal.alarms.entries()) {
-    exact(alarm, ['name', 'state'], `deployment gate ${expectedName} alarm`);
-    if (alarm.name !== expectedAlarms[index]) throw new Error(`Invalid deployment gate ${expectedName} alarm name`);
-    if (!DEPLOYMENT_GATE_ALARM_STATES.includes(alarm.state)) throw new Error('Invalid deployment gate alarm state');
-  }
-  validateSignalReads(expectedName, signal.reads, stage);
-  if (!Array.isArray(signal.exceptions) || signal.exceptions.length > 4) {
-    throw new Error(`Invalid deployment gate ${expectedName} exceptions`);
-  }
-  for (const exception of signal.exceptions) {
-    if (typeof exception !== 'string' || exception.length < 1 || exception.length > 500) {
-      throw new Error(`Invalid deployment gate ${expectedName} exception`);
-    }
-  }
-  return signal;
-}
-
-/**
- * Validate one passed deployment gate block for `stage`.
- *
- * The gate is the record's evidence that a 600-second bake read all six named
- * signals live. Every signal must be `not-breaching`, carry its fixed threshold
- * and comparison, record the deployed alarm names/observed states, its exact
- * read identity and at least the minimum data points.
- */
-export function validateDeploymentGate(gate, stage) {
-  requireStage(stage);
-  exact(gate, DEPLOYMENT_GATE_FIELDS, 'deployment gate');
-  if (gate.name !== deploymentBakeName(stage)) throw new Error('Invalid deployment gate name');
-  if (gate.result !== 'passed') throw new Error('Deployment gate did not pass');
-  matches(gate.started_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/, 'deployment gate start');
-  matches(gate.ended_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/, 'deployment gate end');
-  const started = Date.parse(gate.started_at);
-  const ended = Date.parse(gate.ended_at);
-  if (!Number.isFinite(started) || !Number.isFinite(ended) || ended - started !== DEPLOYMENT_GATE_DURATION_SECONDS * 1000) {
-    throw new Error('Deployment gate window is not exactly 600 seconds');
-  }
-  if (gate.duration_seconds !== DEPLOYMENT_GATE_DURATION_SECONDS) throw new Error('Invalid deployment gate duration');
-  matches(gate.service_sha, SHA, 'deployment gate Service');
-  matches(gate.image_digest, DIGEST, 'deployment gate image');
-  exact(gate.probe, DEPLOYMENT_GATE_PROBE_FIELDS, 'deployment gate probe');
-  if (gate.probe.interval_seconds !== DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS
-    || gate.probe.request_floor !== DEPLOYMENT_GATE_REQUEST_FLOOR) {
-    throw new Error('Invalid deployment gate probe budget');
-  }
-  count(gate.probe.probes_sent, 'deployment gate probes');
-  if (gate.probe.probes_sent < DEPLOYMENT_GATE_REQUEST_FLOOR
-    || gate.probe.probes_sent > DEPLOYMENT_GATE_MAX_PROBES) {
-    throw new Error('Insufficient deployment gate probes');
-  }
-  if (!Array.isArray(gate.signals) || gate.signals.length !== DEPLOYMENT_GATE_SIGNAL_NAMES.length) {
-    throw new Error('Deployment gate must record exactly six signals');
-  }
-  for (const [index, signal] of gate.signals.entries()) {
-    validateGateSignal(signal, DEPLOYMENT_GATE_SIGNAL_NAMES[index], stage);
-  }
-  return gate;
-}
-
-// ---------------------------------------------------------------------------
-// Service record v6: the schema boundary (Issue #194)
-//
-// Before `deploy-runtime` mutates the Runtime stack it reads the sealed release's
-// `service-schema.json` and the live applied Drizzle journal from one bounded
-// read-only verification task. v6 records the comparison that admitted the
-// deployment: the asset digest and versions, the live version and journal
-// length, the compared prefix hash and the reader identity. The member is exact;
-// a v5 record is a historical shape and is rejected as an unknown schema like
-// every earlier one.
-//
-// The prefix hash is the RFC 8785 canonical hash of the compared
-// `{ created_at, sha256 }` pairs, so a consumer holding the full applied rows
-// (the operation record carries them) can recompute it.
-
-export const SERVICE_SCHEMA_BOUNDARY_FIELDS = Object.freeze(
-  ['result', 'asset', 'applied', 'comparison', 'reader']);
-export const SCHEMA_BOUNDARY_ASSET_FIELDS = Object.freeze(
-  ['sha256', 'current_version', 'minimum_version', 'minimum_migration_count', 'journal_length']);
-export const SCHEMA_BOUNDARY_APPLIED_FIELDS = Object.freeze(['schema_version', 'journal_length']);
-export const SCHEMA_BOUNDARY_COMPARISON_FIELDS = Object.freeze(
-  ['checked_entries', 'prefix_sha256', 'pending_migrations']);
-export const SCHEMA_BOUNDARY_READER_FIELDS = Object.freeze(['source', 'service_sha', 'image_digest']);
-// `selected-image` is the release under test; `deployed-image` is the one bounded
-// fallback when the release image predates the `schema-journal` reader.
-export const SCHEMA_BOUNDARY_READER_SOURCES = Object.freeze(['selected-image', 'deployed-image']);
-// A deployment record only ever carries the admitted comparison.
-export const SCHEMA_BOUNDARY_RESULTS = Object.freeze(['compatible']);
-
-/**
- * The canonical hash of the compared `{ created_at, sha256 }` prefix.
- *
- * `entries` are the compared release/live pairs in journal order, each with the
- * migration creation time (the Drizzle journal `when`) and the 64-hex
- * `sha256(<drizzle/<tag>.sql bytes>)`. A producer passes the first
- * `checked_entries` pairs, so the hash identifies exactly what was compared and
- * not the pending tail.
- */
-export function schemaBoundaryPrefixHash(entries) {
-  if (!Array.isArray(entries) || entries.length > 256) throw new Error('Invalid schema boundary prefix');
-  const prefix = entries.map((entry) => {
-    exact(entry, ['created_at', 'sha256'], 'schema boundary prefix entry');
-    return {
-      created_at: integer(entry.created_at, 'schema boundary prefix migration time', 0),
-      sha256: matches(entry.sha256, HASH, 'schema boundary prefix migration hash'),
-    };
-  });
-  return contentHash(prefix);
-}
-
-function validateSchemaBoundaryAsset(asset) {
-  exact(asset, SCHEMA_BOUNDARY_ASSET_FIELDS, 'schema boundary asset');
-  matches(asset.sha256, HASH, 'schema boundary asset digest');
-  integer(asset.current_version, 'schema boundary current version');
-  integer(asset.minimum_version, 'schema boundary minimum version');
-  integer(asset.minimum_migration_count, 'schema boundary minimum migration count');
-  integer(asset.journal_length, 'schema boundary journal length');
-  if (asset.minimum_version > asset.current_version) throw new Error('Invalid schema boundary version range');
-  if (asset.minimum_migration_count > asset.journal_length) {
-    throw new Error('Schema boundary minimum migration count exceeds the release journal');
-  }
-  // Equal versions mean the release supports its whole journal: a minimum equal
-  // to the current version cannot exclude a migration the release itself applies.
-  if (asset.current_version === asset.minimum_version
-    && asset.minimum_migration_count !== asset.journal_length) {
-    throw new Error('Equal schema boundary versions must require the whole release journal');
-  }
-  return asset;
-}
-
-function validateSchemaBoundaryApplied(applied, asset) {
-  exact(applied, SCHEMA_BOUNDARY_APPLIED_FIELDS, 'schema boundary applied');
-  integer(applied.schema_version, 'schema boundary applied version', 0);
-  integer(applied.journal_length, 'schema boundary applied journal length', 0);
-  if (applied.schema_version < asset.minimum_version) {
-    throw new Error('Schema boundary applied version is below the release minimum');
-  }
-  if (applied.journal_length > asset.journal_length) {
-    throw new Error('Schema boundary applied journal is longer than the release journal');
-  }
-  return applied;
-}
-
-function validateSchemaBoundaryComparison(comparison, asset, applied) {
-  exact(comparison, SCHEMA_BOUNDARY_COMPARISON_FIELDS, 'schema boundary comparison');
-  integer(comparison.checked_entries, 'schema boundary checked entries', 0);
-  integer(comparison.pending_migrations, 'schema boundary pending migrations', 0);
-  matches(comparison.prefix_sha256, HASH, 'schema boundary prefix hash');
-  if (comparison.checked_entries !== applied.journal_length) {
-    throw new Error('Schema boundary checked entries differ from the applied journal length');
-  }
-  if (comparison.checked_entries > asset.journal_length) {
-    throw new Error('Schema boundary checked entries exceed the release journal');
-  }
-  if (comparison.pending_migrations !== asset.journal_length - comparison.checked_entries) {
-    throw new Error('Schema boundary pending migrations differ from the release journal tail');
-  }
-  if (comparison.checked_entries < asset.minimum_migration_count) {
-    throw new Error('Schema boundary checked entries are below the minimum migration count');
-  }
-  return comparison;
-}
-
-function validateSchemaBoundaryReader(reader) {
-  exact(reader, SCHEMA_BOUNDARY_READER_FIELDS, 'schema boundary reader');
-  if (!SCHEMA_BOUNDARY_READER_SOURCES.includes(reader.source)) throw new Error('Invalid schema boundary reader source');
-  matches(reader.service_sha, SHA, 'schema boundary reader Service');
-  matches(reader.image_digest, DIGEST, 'schema boundary reader image');
-  return reader;
-}
-
-/**
- * Validate one v6 `schema_boundary` member.
- *
- * Every relation the record can prove is checked: the exact member sets, the
- * admitted result, the version/count range, the journal/prefix arithmetic and
- * the reader identity. Whether a `selected-image` reader really is the observed
- * deployment is a record-level relation; `validateServiceDeploymentRecord`
- * checks it against `observed`.
- */
-export function validateSchemaBoundary(boundary) {
-  exact(boundary, SERVICE_SCHEMA_BOUNDARY_FIELDS, 'schema boundary');
-  if (!SCHEMA_BOUNDARY_RESULTS.includes(boundary.result)) throw new Error('Invalid schema boundary result');
-  const asset = validateSchemaBoundaryAsset(boundary.asset);
-  const applied = validateSchemaBoundaryApplied(boundary.applied, asset);
-  validateSchemaBoundaryComparison(boundary.comparison, asset, applied);
-  validateSchemaBoundaryReader(boundary.reader);
-  return boundary;
-}
-
-export const SERVICE_DEPLOYMENT_RECORD_MEMBERS = Object.freeze(
-  [...DEPLOYMENT_RECORD_MEMBERS, 'gate', 'schema_boundary']);
-
-export const SERVICE_DEPLOYMENT_RECORD_SCHEMA = Object.freeze({
-  schema_version: 6,
-  record_type: 'anywear_service_deployment',
-  members: SERVICE_DEPLOYMENT_RECORD_MEMBERS,
-  producer: DEPLOYMENT_PRODUCER_FIELDS,
-  stack: DEPLOYMENT_STACK_FIELDS,
-  input: DEPLOYMENT_INPUT_FIELDS,
-  observed: SERVICE_OBSERVED_FIELDS,
-  gate: DEPLOYMENT_GATE_FIELDS,
-  signal: DEPLOYMENT_GATE_SIGNAL_FIELDS,
-  signals: DEPLOYMENT_GATE_SIGNAL_NAMES,
-  schema_boundary: SERVICE_SCHEMA_BOUNDARY_FIELDS,
-  schema_boundary_asset: SCHEMA_BOUNDARY_ASSET_FIELDS,
-  schema_boundary_applied: SCHEMA_BOUNDARY_APPLIED_FIELDS,
-  schema_boundary_comparison: SCHEMA_BOUNDARY_COMPARISON_FIELDS,
-  schema_boundary_reader: SCHEMA_BOUNDARY_READER_FIELDS,
-  schema_boundary_reader_sources: SCHEMA_BOUNDARY_READER_SOURCES,
-  schema_boundary_results: SCHEMA_BOUNDARY_RESULTS,
-  // The v6 producer is the Infra `deploy-runtime` operation; `template_sha256`
-  // is the canonical deployed template hash after the declared normalisation.
-  producer_repository: INFRA_REPOSITORY,
-  template_normalisation: DEPLOYED_TEMPLATE_NORMALISATION,
-  stacks: Object.freeze([Object.freeze({
-    name: SERVICE_RUNTIME_STACK.name,
-    region: SERVICE_RUNTIME_STACK.region,
-  })]),
-});
-
-function validateServiceProducer(producer) {
-  exact(producer, DEPLOYMENT_PRODUCER_FIELDS, 'deployment producer');
-  if (producer.repository !== INFRA_REPOSITORY) throw new Error('Unexpected deployment producer repository');
-  if (!producer.workflow_path?.startsWith('.github/workflows/')
-    || producer.workflow_ref !== `${producer.repository}/${producer.workflow_path}@refs/heads/main`) throw new Error('Unexpected deployment workflow');
-  if (producer.workflow_path !== SERVICE_RUNTIME_STACK.workflow_path) throw new Error('Unexpected deployment workflow path');
-  matches(producer.sha, SHA, 'deployment producer SHA');
-  integer(producer.run_id, 'deployment run');
-  integer(producer.run_attempt, 'deployment attempt');
-  return producer;
-}
-
-// A stack row may only name the record's own producer and the exact configured
-// stack set; a stack produced by another repository is that repository's record.
-export function validateServiceStacks(rows) {
-  const expected = SERVICE_DEPLOYMENT_RECORD_SCHEMA.stacks;
-  if (!Array.isArray(rows) || rows.length !== expected.length) {
-    throw new Error('Deployment record must list exactly its producer\'s stacks');
-  }
-  const names = new Set();
-  for (const row of rows) {
-    const configured = expected.find(stack => stack.name === row?.name);
-    if (!configured || names.has(row.name) || row.region !== configured.region) {
-      throw new Error('Invalid stack identity in deployment record');
-    }
-    exact(row, DEPLOYMENT_STACK_FIELDS, 'deployment stack');
-    matches(row.template_sha256, HASH, 'deployed template hash');
-    names.add(row.name);
-  }
-  return rows;
-}
-
-function validateProducerRows(record) {
-  for (const row of record.stacks) {
-    if (row.producer_repository !== record.producer.repository || row.producer_sha !== record.producer.sha) {
-      throw new Error('Stack producer differs from the deployment producer');
-    }
-  }
-}
-
-function validateSchemaMember(record) {
-  exact(record.schema, ['content_sha256'], 'stage contract schema');
-  matches(record.schema.content_sha256, HASH, 'stage contract schema hash');
-  if (record.schema.content_sha256 !== stageContractSchemaHash(record.inputs)) {
-    throw new Error('Stage contract schema hash differs from the recorded inputs');
-  }
-}
-
-// The release slice's observed tuple: its two ECS services, the deployed image
-// digest/source, the minimum Client version floor the deployed Service enforces
-// and the public API endpoint.
-function validateServiceObserved(observed) {
-  exact(observed, SERVICE_OBSERVED_FIELDS, 'workload observed tuple');
-  matches(observed.service_sha, SHA, 'observed Service');
-  matches(observed.image_digest, DIGEST, 'observed image');
-  // The floor is read back from the deployed Service, never defaulted at record
-  // production: a producer that did not read it cannot write a record.
-  integer(observed.minimum_client_version, 'observed minimum client version', 0);
-  exact(observed.ecs, ['api', 'worker'], 'ECS identities');
-  for (const [purpose, identity] of Object.entries(observed.ecs)) {
-    exact(identity, SERVICE_ECS_IDENTITY_FIELDS, `ECS ${purpose} identity`);
-    matches(identity.service_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}$`), `ECS ${purpose} service ARN`);
-    // Evidence only. Re-registering the same task definition produces a new
-    // revision number; identity is the content hash and the image digest.
-    matches(identity.task_definition_arn, new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:[1-9][0-9]*$`), `ECS ${purpose} task definition ARN`);
-    matches(identity.task_definition_sha256, HASH, `ECS ${purpose} task definition content hash`);
-    matches(identity.image_digest, DIGEST, `ECS ${purpose} image digest`);
-    if (identity.image_digest !== observed.image_digest) {
-      throw new Error(`ECS ${purpose} image_digest differs from the deployed image`);
-    }
-  }
-  exact(observed.endpoints, ['api'], 'endpoints');
-  matches(observed.endpoints.api, /^https:\/\/[a-z0-9]+\.cloudfront\.net$/, 'CloudFront endpoint');
-  return observed;
-}
-
-function validateServiceRecordBase(record) {
-  // The version check runs first so a genuine v5 (or older) record is refused as
-  // an unknown schema, which is the acceptance wording, rather than as a member
-  // mismatch: v6 is the only direct-verification input.
-  if (record?.schema_version !== SERVICE_DEPLOYMENT_RECORD_SCHEMA.schema_version
-    || record.record_type !== SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type) {
-    throw new Error(`Unknown ${SERVICE_DEPLOYMENT_RECORD_SCHEMA.record_type} schema; historical records are not direct-verification inputs`);
-  }
-  exact(record, SERVICE_DEPLOYMENT_RECORD_MEMBERS, 'deployment record');
-  validateStageInputs(record.inputs);
-  validateSchemaMember(record);
-  validateServiceStacks(record.stacks);
-  validateProducerRows(record);
-  return record;
-}
-
-/**
- * Validate one v6 `anywear_service_deployment` record.
- *
- * Pure: no AWS, network or filesystem access. The record lists exactly the
- * producer's stack (`AnyWearRuntimeStack-beta`), the stage-contract SSM inputs
- * the deploy read, the authenticated Runtime observation, the passed
- * 600-second six-signal bake gate bound to the same `service_sha`/`image_digest`,
- * and the admitted `schema_boundary` comparison. A v5 or earlier record is a
- * historical shape, not a direct-verification input.
- */
-export function validateServiceDeploymentRecord(record) {
-  validateServiceRecordBase(record);
-  validateServiceProducer(record.producer);
-  validateServiceObserved(record.observed);
-  const stage = runtimeStageFromStack(record.stacks[0].name);
-  validateDeploymentGate(record.gate, stage);
-  // The gate is evidence for this deployment only: a gate block from another
-  // run cannot be reused for a different observed tuple.
-  if (record.gate.service_sha !== record.observed.service_sha) {
-    throw new Error('Deployment gate Service differs from the observed Service');
-  }
-  if (record.gate.image_digest !== record.observed.image_digest) {
-    throw new Error('Deployment gate image differs from the observed image');
-  }
-  // The boundary is evidence for this deployment too. A `selected-image` read is
-  // the release under test, so its identity must be the deployed observation; a
-  // `deployed-image` fallback is by definition the pre-existing image and is
-  // recorded as read.
-  validateSchemaBoundary(record.schema_boundary);
-  if (record.schema_boundary.reader.source === 'selected-image') {
-    if (record.schema_boundary.reader.service_sha !== record.observed.service_sha) {
-      throw new Error('Schema boundary reader Service differs from the observed Service');
-    }
-    if (record.schema_boundary.reader.image_digest !== record.observed.image_digest) {
-      throw new Error('Schema boundary reader image differs from the observed image');
-    }
-  }
-  return record;
 }
 
 // The normalized task definition whose content hash identifies a deployed ECS

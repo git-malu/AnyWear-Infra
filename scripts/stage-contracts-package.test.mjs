@@ -19,20 +19,27 @@ const OTHER_BETA_PARAMETER_NAMES = [
   '/anywear/beta/tester_allowlist',
 ];
 
-test('the package is the single source of the stage and record exports', () => {
+test('the package is the single source of the stage and bake-control exports', () => {
   for (const name of ['STAGE_CONTRACT_STAGE', 'STAGE_CONTRACT_PARAMETERS',
     'STAGE_CONTRACT_CONDITIONAL_PARAMETERS', 'STAGE_CONTRACT_READ_PARAMETERS']) {
     assert.equal(stages[name], pkg[name], `${name} is not re-exported from the package`);
   }
-  for (const name of ['DEPLOYMENT_RECORD_MEMBERS', 'DEPLOYMENT_PRODUCER_FIELDS', 'DEPLOYMENT_STACK_FIELDS',
-    'DEPLOYMENT_INPUT_FIELDS', 'SERVICE_OBSERVED_FIELDS', 'SERVICE_ECS_IDENTITY_FIELDS',
-    'SERVICE_DEPLOYMENT_RECORD_SCHEMA', 'INFRA_REPOSITORY', 'SERVICE_REPOSITORY', 'SERVICE_RUNTIME_STACK',
-    'validateStageInputs', 'stageContractSchemaHash', 'stableTaskDefinition', 'taskDefinitionContentHash',
-    'validateServiceDeploymentRecord', 'runtimeStageFromStack', 'validateServiceStacks',
-    'SERVICE_SCHEMA_BOUNDARY_FIELDS', 'SCHEMA_BOUNDARY_ASSET_FIELDS', 'SCHEMA_BOUNDARY_APPLIED_FIELDS',
-    'SCHEMA_BOUNDARY_COMPARISON_FIELDS', 'SCHEMA_BOUNDARY_READER_FIELDS', 'SCHEMA_BOUNDARY_READER_SOURCES',
-    'SCHEMA_BOUNDARY_RESULTS', 'schemaBoundaryPrefixHash', 'validateSchemaBoundary']) {
-    assert.equal(deployment[name], pkg[name], `${name} is not re-exported from the package`);
+  // #207: the package keeps the stage, stack, normalisation, task-definition and
+  // bake-control surface the CDK application and workflows consume. The record and
+  // record-gate exports are gone, and so are their re-exports here.
+  for (const name of ['DEPLOYMENT_GATE_NAME_SUFFIX', 'DEPLOYMENT_GATE_DURATION_SECONDS',
+    'DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS', 'DEPLOYMENT_GATE_REQUEST_FLOOR',
+    'DEPLOYMENT_GATE_MAX_PROBES', 'DEPLOYMENT_GATE_SIGNAL_NAMES',
+    'DEPLOYMENT_GATE_THRESHOLDS', 'DEPLOYMENT_GATE_COMPARISONS',
+    'DEPLOYMENT_SQS_DEPTH_ATTRIBUTES', 'deploymentBakeName', 'deploymentAlarmName',
+    'deploymentAlarmNames', 'deploymentQueueNames', 'runtimeStageFromStack']) {
+    assert.notEqual(pkg[name], undefined, `${name} must be exported by the package`);
+  }
+  for (const name of ['DEPLOYMENT_RECORD_MEMBERS', 'SERVICE_DEPLOYMENT_RECORD_SCHEMA',
+    'validateServiceDeploymentRecord', 'validateDeploymentGate', 'validateSchemaBoundary',
+    'schemaBoundaryPrefixHash', 'DEPLOYMENT_GATE_FIELDS']) {
+    assert.equal(pkg[name], undefined, `${name} must not be exported after #207`);
+    assert.equal(deployment[name], undefined, `${name} must not be re-exported by deployment-contract.mjs`);
   }
   assert.equal(recovery.platformStackName, pkg.platformStackName);
 });
@@ -45,7 +52,7 @@ test('the package schema hash is the local canonical-JSON content hash', () => {
   assert.equal(pkg.stageContractSchemaHash(rows),
     contentHash(rows.map(({ parameter, version }) => ({ parameter, version }))));
   assert.equal(pkg.stageContractSchemaHash([]), contentHash([]));
-  assert.throws(() => deployment.stageContractSchemaHash([...rows].reverse()), /sorted and unique/);
+  assert.throws(() => pkg.stageContractSchemaHash([...rows].reverse()), /sorted and unique/);
 });
 
 test('the package definitions match the synthesized Beta Platform stage surface', () => {

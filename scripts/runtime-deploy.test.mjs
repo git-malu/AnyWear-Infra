@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -12,7 +12,6 @@ import {
   assertConvergedChangeSet,
   assertCreateOnlyChangeSet,
   assertRuntimePhase,
-  buildRuntimeDeploymentRecord,
   classifyChangeSet,
   deployRuntime,
   readRuntimeHealth,
@@ -30,24 +29,20 @@ import {
   runtimeEcsClusterName,
   runtimeStageInputBatches,
 } from './runtime-stage-inputs.mjs';
-import { validateOperationInputs } from './runtime-operation.mjs';
-import { createOperationRecord } from './operation-record.mjs';
-import { recordDeployment } from './record-deployment.mjs';
-import { canonicalJson, sha256 } from './json-contract.mjs';
+import { runOperation, validateOperationInputs } from './runtime-operation.mjs';
+import { sha256 } from './json-contract.mjs';
 import { failedGate } from './bake-gate.mjs';
 import { SchemaBoundaryError, runSchemaBoundaryGate } from './schema-gate.mjs';
-import { gateBlock, IMAGE_DIGEST, SERVICE_SHA, schemaBoundaryBlock } from '../packages/stage-contracts/test/gate-fixture.mjs';
+import { gateBlock, IMAGE_DIGEST, SERVICE_SHA } from '../packages/stage-contracts/test/gate-fixture.mjs';
 
 // Credential-free tests for the `deploy-runtime` operation (#195, #194). The
 // synthesis, health probe, bake and schema-boundary gate are injected; every AWS
 // surface is a fake that records calls, so each failure leaves the stack untouched
-// and no v6 record is written.
+// and writes no deployment record (#207).
 const release = { releaseTag: `service-artifacts-${SERVICE_SHA}`, serviceCommit: SERVICE_SHA, imageDigest: IMAGE_DIGEST };
-// The admitted boundary the gate returns for the healthy path; the refusal test
-// overrides it. Its `selected-image` reader is the fixture release identity, which
-// is what the record-level validator requires of `observed`.
-const SCHEMA_BOUNDARY = schemaBoundaryBlock();
-const SCHEMA_GATE = async () => SCHEMA_BOUNDARY;
+// The gate's admitted comparison is a return value and a log line now, so a fake
+// gate that resolves is all the deploy path needs from it.
+const SCHEMA_GATE = async () => ({ result: 'compatible' });
 const deploy = (options) => deployRuntime({ schemaGate: SCHEMA_GATE, ...options });
 const env = (overrides = {}) => ({
   GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '2',
@@ -104,18 +99,29 @@ function liveStack({ identityUnchanged = true, terminal = true } = {}) {
 }
 
 function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
-  runtime = liveStack(), changeSet = undefined, executeError = undefined } = {}) {
+  runtime = liveStack(), changeSet = undefined, executeError = undefined, postExecuteRuntime = undefined } = {}) {
   const calls = [];
+  // The changed-stack set the failed-run summary publishes. It starts as the
+  // fake's own array and `runOperation` re-binds it to the array it owns.
+  const changedStacks = [];
   let runtimeObserved = runtime;
-  // A deleted change set can no longer be described. The failed code left one
-  // AVAILABLE, so this fake makes a post-delete describe a test failure: the
-  // operation record must keep the classification it already read.
+  // A deleted change set can no longer be described. The fail-closed path deletes
+  // the set, so a post-delete describe is a test failure: the operation must not
+  // depend on re-reading a deleted set.
   let changeSetDeleted = false;
   const io = {
-    calls, now: () => 0, sleep: async () => {},
+    calls, changedStacks, now: () => 0, sleep: async () => {},
+    // The one changed-stack mechanism: the fake proves the operation records a
+    // landed mutation through `io.markChanged`, not by reaching into its own state.
+    markChanged(stack) { io.changedStacks.push(stack); },
     async aws(args) {
       const key = `${args[0]}/${args[1]}`;
       calls.push({ session: 'runtime', key, args });
+      if (key === 'sts/get-caller-identity') return { Account: '650880818323' };
+      if (key === 'ecr/describe-images') {
+        const tag = args[args.indexOf('--image-ids') + 1].replace(/^imageTag=/, '');
+        return { imageDetails: [{ imageTags: [tag], imageDigest: IMAGE_DIGEST }] };
+      }
       if (key === 'cloudformation/describe-stacks') {
         const name = args[args.indexOf('--stack-name') + 1];
         if (name === 'AnyWearPlatformStack-beta') {
@@ -164,7 +170,7 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
       if (args[1] === 'delete-change-set') changeSetDeleted = true;
       if (args[1] === 'execute-change-set') {
         if (executeError) throw executeError;
-        runtimeObserved = liveStack();
+        runtimeObserved = postExecuteRuntime ?? liveStack();
       }
       return {};
     },
@@ -327,244 +333,155 @@ test('/health identity mismatches fail immediately and an unavailable endpoint t
 });
 
 test('a non-terminal Base or Runtime fails before any change set or mutation', async () => {
-  await assert.rejects(deploy({ env: env(), release, record: { events: [] },
+  await assert.rejects(deploy({ env: env(), release,
     io: fakeIo({ base: { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_IN_PROGRESS' } }).io,
     synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }), /terminal Base stack/);
   const nonTerminal = fakeIo({ runtime: liveStack({ terminal: false }) });
-  await assert.rejects(deploy({ env: env(), release, record: { events: [] }, io: nonTerminal.io,
+  await assert.rejects(deploy({ env: env(), release, io: nonTerminal.io,
     synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }), /terminal Runtime stack/);
   assert.equal(nonTerminal.calls.some((call) => call.key === 'cdk/deploy'), false);
 });
 
 // Issue #194 acceptance: a schema-boundary refusal stops the run at the gate. The
 // gate is the real runner (only its asset, probe, log and comparison transport are
-// injected), so the refusal event is the production one. Nothing after the gate
-// runs: no synthesis, no CDK change-set call, no change-set event and no
-// service-deployment.json.
+// injected), so the refusal is the production one. Nothing after the gate runs: no
+// synthesis, no CDK change-set call, no deployed identity.
 test('a schema-boundary refusal fails the run before synthesis, the change set and the record', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'runtime-deploy-schema-refusal-'));
-  try {
-    const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
-      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
-    const record = { events: [] };
-    const assetBytes = readFileSync('test/fixtures/schema-boundary/schema-asset.json');
-    const liveRead = JSON.parse(readFileSync('test/fixtures/schema-boundary/live-read-compatible.json', 'utf8'));
-    // Synthetic ahead variant: one applied row the release does not contain. The
-    // captured last serial is 133, so the next applied row would be 134.
-    const ahead = structuredClone(liveRead);
-    ahead.applied.push({ id: 134, tag: '0026_newer_fly', created_at: ahead.applied.at(-1).created_at + 1000,
-      hash: 'f'.repeat(64) });
-    const definitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:7';
-    const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
-      clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear', lastStatus: 'STOPPED',
-      taskDefinitionArn: definitionArn,
-      containers: [{ name: 'OneShot', exitCode: 0, imageDigest: IMAGE_DIGEST }] };
-    const definition = { family: 'beta-anywear-verify', taskDefinitionArn: definitionArn };
-    let synthesized = 0;
-    await assert.rejects(deploy({ env: env(), release, record, io,
-      synthesize: async () => { synthesized += 1; return SYNTHESIZED; }, health: HEALTH, bake: BAKE,
-      schemaGate: (options) => runSchemaBoundaryGate({ ...options,
-        loadAsset: async () => ({ asset: JSON.parse(assetBytes.toString('utf8')), bytes: assetBytes,
-          sha256: sha256(assetBytes) }),
-        probe: async () => ({ task, definition }), readLog: async () => ahead }),
-      outputPath: path.join(directory, 'service-deployment.json') }),
-    (error) => error instanceof SchemaBoundaryError && error.reason === 'applied-beyond-release'
-      && /expected release journal ends at 0025_new_human_fly/.test(error.message)
-      && /observed database row 134 at index 26 0026_newer_fly/.test(error.message));
-    assert.equal(synthesized, 0, 'synthesis never runs after a refusal');
-    assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false, 'no CDK change-set call');
-    assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false);
-    assert.equal(record.events.some((event) => event.type === 'runtime-synthesized-template'), false);
-    assert.equal(record.events.some((event) => event.type === 'runtime-change-set'), false);
-    assert.equal(record.events.some((event) => event.type === 'runtime-change-set-executed'), false);
-    await assert.rejects(readFile(path.join(directory, 'service-deployment.json')), /ENOENT/);
-    const refusal = record.events.find((event) => event.type === 'schema-boundary');
-    assert.equal(refusal.result, 'refused');
-    assert.equal(refusal.reason, 'applied-beyond-release');
-    assert.equal(refusal.applied_rows.length, 27);
-    assert.equal(refusal.reader.source, 'selected-image');
-    assert.equal(refusal.asset.sha256, sha256(assetBytes));
-    assert.deepEqual(record.events.find((event) => event.type === 'runtime-pre-state').runtime_last_updated_time,
-      '2026-10-22T12:15:43.000Z');
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+    StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+  const assetBytes = readFileSync('test/fixtures/schema-boundary/schema-asset.json');
+  const liveRead = JSON.parse(readFileSync('test/fixtures/schema-boundary/live-read-compatible.json', 'utf8'));
+  // Synthetic ahead variant: one applied row the release does not contain. The
+  // captured last serial is 133, so the next applied row would be 134.
+  const ahead = structuredClone(liveRead);
+  ahead.applied.push({ id: 134, tag: '0026_newer_fly', created_at: ahead.applied.at(-1).created_at + 1000,
+    hash: 'f'.repeat(64) });
+  const definitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:7';
+  const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
+    clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear', lastStatus: 'STOPPED',
+    taskDefinitionArn: definitionArn,
+    containers: [{ name: 'OneShot', exitCode: 0, imageDigest: IMAGE_DIGEST }] };
+  const definition = { family: 'beta-anywear-verify', taskDefinitionArn: definitionArn };
+  let synthesized = 0;
+  await assert.rejects(deploy({ env: env(), release, io,
+    synthesize: async () => { synthesized += 1; return SYNTHESIZED; }, health: HEALTH, bake: BAKE,
+    schemaGate: (options) => runSchemaBoundaryGate({ ...options,
+      loadAsset: async () => ({ asset: JSON.parse(assetBytes.toString('utf8')), bytes: assetBytes,
+        sha256: sha256(assetBytes) }),
+      probe: async () => ({ task, definition }), readLog: async () => ahead }) }),
+  (error) => error instanceof SchemaBoundaryError && error.reason === 'applied-beyond-release'
+    && /expected release journal ends at 0025_new_human_fly/.test(error.message)
+    && /observed database row 134 at index 26 0026_newer_fly/.test(error.message));
+  assert.equal(synthesized, 0, 'synthesis never runs after a refusal');
+  assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false, 'no CDK change-set call');
+  assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false);
 });
 
-test('a converged stack records an empty change set, executes nothing and writes the v6 record', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'runtime-deploy-converged-'));
-  try {
-    const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
-      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
-    const record = { events: [] };
-    let gateOptions;
-    const deployment = await deploy({ env: env(), release, record, io,
-      synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE,
-      schemaGate: async (options) => { gateOptions = options; return SCHEMA_BOUNDARY; },
-      outputPath: path.join(directory, 'service-deployment.json') });
-    assert.equal(deployment.schema_version, 6);
-    assert.equal(deployment.stacks[0].template_sha256, SYNTHESIZED.normalised_sha256);
-    assert.equal(deployment.observed.service_sha, SERVICE_SHA);
-    assert.equal(deployment.observed.image_digest, IMAGE_DIGEST);
-    assert.equal(deployment.observed.minimum_client_version, 0);
-    // Issue #194: the gate runs on the release identity and the revision the
-    // pre-state parameters pin, and its admitted body reaches the v6 record.
-    assert.deepEqual(gateOptions.release, { releaseTag: release.releaseTag, serviceCommit: SERVICE_SHA,
-      imageDigest: IMAGE_DIGEST });
-    assert.deepEqual(gateOptions.deployedRevision, { serviceCommit: SERVICE_SHA, imageDigest: IMAGE_DIGEST });
-    assert.deepEqual(deployment.schema_boundary, SCHEMA_BOUNDARY);
-    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'a converged no-op executes nothing');
-    assert.ok(calls.some((call) => call.args?.includes('delete-change-set')));
-    const role = record.events.find((event) => event.type === 'runtime-stack-role');
-    assert.equal(role.before, 'arn:aws:iam::650880818323:role/beta-service-deploy-cfn-role');
-    assert.equal(role.after, 'arn:aws:iam::650880818323:role/beta-service-deploy-cfn-role',
-      'a converged no-op must not rebind the stack execution role');
-    assert.equal(JSON.parse(readFileSync(path.join(directory, 'service-deployment.json'), 'utf8')).record_type, 'anywear_service_deployment');
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+test('a converged stack records an empty change set, executes nothing and returns the deployed identity', async () => {
+  const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+    StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+  let gateOptions;
+  const deployment = await deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE,
+    schemaGate: async (options) => { gateOptions = options; return { result: 'compatible' }; } });
+  assert.deepEqual(deployment, { service_sha: SERVICE_SHA, image_digest: IMAGE_DIGEST,
+    minimum_client_version: 0, template_sha256: SYNTHESIZED.normalised_sha256 });
+  // Issue #194: the gate runs on the release identity and the revision the
+  // pre-state parameters pin.
+  assert.deepEqual(gateOptions.release, { releaseTag: release.releaseTag, serviceCommit: SERVICE_SHA,
+    imageDigest: IMAGE_DIGEST });
+  assert.deepEqual(gateOptions.deployedRevision, { serviceCommit: SERVICE_SHA, imageDigest: IMAGE_DIGEST });
+  assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'a converged no-op executes nothing');
+  assert.ok(calls.some((call) => call.args?.includes('delete-change-set')));
 });
 
 // Issue #195 blocking fix: `deploy-runtime` must hand the bake the four queue
 // URLs and the cluster name from the 39-name stage-contract read. A queue name
 // makes every `sqs get-queue-attributes --queue-url` read fail at Deployment, so
-// the gate can never pass and no v6 record is written.
+// the gate can never pass and the run fails.
 test('the bake receives the contract queue URLs and cluster, not hardcoded names', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'runtime-deploy-bake-inputs-'));
-  try {
-    const { io } = fakeIo({ changeSet: { Status: 'FAILED',
-      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
-    const captured = capturingBake();
-    const record = { events: [] };
-    await deploy({ env: env(), release, record, io, synthesize: async () => SYNTHESIZED, health: HEALTH,
-      bake: captured.bake, outputPath: path.join(directory, 'service-deployment.json') });
-    assert.equal(captured.baked.length, 1);
-    const options = captured.baked[0];
-    assert.deepEqual(options.queueUrls, {
-      vto: QUEUE_URLS['/anywear/beta/vto_queue_url'],
-      auto_tagging: QUEUE_URLS['/anywear/beta/auto_tagging_queue_url'],
-      vto_dlq: QUEUE_URLS['/anywear/beta/vto_dlq_url'],
-      auto_tagging_dlq: QUEUE_URLS['/anywear/beta/auto_tagging_dlq_url'],
-    });
-    for (const [purpose, url] of Object.entries(options.queueUrls)) {
-      assert.match(url, /^https:\/\/sqs\.[a-z0-9.-]+\/\d{12}\/[A-Za-z0-9_.-]+$/, purpose);
-    }
-    assert.equal(options.cluster, 'beta-anywear');
-    // The bake still selects the CloudWatch QueueName dimensions by name; the
-    // contract read supplies the URLs and the cluster, and nothing in the
-    // operation hardcodes an account, region or queue URL.
-    const source = readFileSync('scripts/runtime-deploy.mjs', 'utf8');
-    assert.equal(/beta-anywear-vto'|sqs\.ap-east-1\.amazonaws\.com/.test(source), false);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+  const { io } = fakeIo({ changeSet: { Status: 'FAILED',
+    StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+  const captured = capturingBake();
+  await deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH,
+    bake: captured.bake });
+  assert.equal(captured.baked.length, 1);
+  const options = captured.baked[0];
+  assert.deepEqual(options.queueUrls, {
+    vto: QUEUE_URLS['/anywear/beta/vto_queue_url'],
+    auto_tagging: QUEUE_URLS['/anywear/beta/auto_tagging_queue_url'],
+    vto_dlq: QUEUE_URLS['/anywear/beta/vto_dlq_url'],
+    auto_tagging_dlq: QUEUE_URLS['/anywear/beta/auto_tagging_dlq_url'],
+  });
+  for (const [purpose, url] of Object.entries(options.queueUrls)) {
+    assert.match(url, /^https:\/\/sqs\.[a-z0-9.-]+\/\d{12}\/[A-Za-z0-9_.-]+$/, purpose);
   }
+  assert.equal(options.cluster, 'beta-anywear');
+  // The bake still selects the CloudWatch QueueName dimensions by name; the
+  // contract read supplies the URLs and the cluster, and nothing in the
+  // operation hardcodes an account, region or queue URL.
+  const source = readFileSync('scripts/runtime-deploy.mjs', 'utf8');
+  assert.equal(/beta-anywear-vto'|sqs\.ap-east-1\.amazonaws\.com/.test(source), false);
 });
 
 test('an unchanged release identity cannot produce a delta: Add, Remove and Modify still fail closed and delete the change set', async () => {
   for (const action of ['Add', 'Modify', 'Remove']) {
     const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
       { Type: action, ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] } });
-    const record = { events: [] };
-    await assert.rejects(deploy({ env: env(), release, record, io,
+    await assert.rejects(deploy({ env: env(), release, io,
       synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }), /must not change the stack/, action);
     assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, action);
     assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), `${action}: fail-closed delete`);
-    assert.equal(record.events.some((event) => event.type === 'runtime-change-set-deleted'), true, action);
   }
 });
 
 // Issue #195 acceptance: a converged release's only change is the CDKMetadata
 // Analytics payload, which the declared normalisation drops. It must execute
-// nothing, delete the change set, leave the diagnostic delta in the recorded
-// evidence, and let the operation continue to read back, bake and write the v6
-// record.
-test('a CDKMetadata-only change set is converged: it executes nothing, is deleted and still writes the v6 record', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'runtime-deploy-diagnostic-'));
-  try {
-    const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-      { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] } });
-    const record = { events: [] };
-    const deployment = await deploy({ env: env(), release, record, io,
-      synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE,
-      outputPath: path.join(directory, 'service-deployment.json') });
-    assert.equal(deployment.schema_version, 6);
-    assert.equal(deployment.stacks[0].template_sha256, SYNTHESIZED.normalised_sha256);
-    assert.equal(deployment.observed.service_sha, SERVICE_SHA);
-    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'the diagnostic delta executes nothing');
-    assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), 'the diagnostic-only change set is deleted');
-    const deleteIndex = calls.findIndex((call) => call.args?.includes('delete-change-set'));
-    assert.equal(calls.slice(deleteIndex + 1).some((call) => call.args?.includes('describe-change-set')), false,
-      'the record does not depend on describing the deleted change set');
-    const changeSetEvent = record.events.find((event) => event.type === 'runtime-change-set');
-    assert.equal(changeSetEvent.converged, true);
-    assert.equal(changeSetEvent.failed, false);
-    assert.equal(changeSetEvent.replacement, false);
-    assert.deepEqual(changeSetEvent.resource_changes, []);
-    const diagnosticRow = { action: 'Modify', logical_id: 'CDKMetadata', resource_type: 'AWS::CDK::Metadata',
-      action_type: 'Modify', replacement: 'Conditional', declared_diagnostic: true, excluded: DECLARED_DIAGNOSTIC_EXCLUSION };
-    assert.deepEqual(changeSetEvent.diagnostic_changes, [diagnosticRow]);
-    assert.deepEqual(changeSetEvent.changes, changeSetEvent.diagnostic_changes);
-    const convergedEvent = record.events.find((event) => event.type === 'runtime-change-set-converged');
-    assert.equal(convergedEvent.executed, false);
-    assert.deepEqual(convergedEvent.diagnostic_changes, changeSetEvent.diagnostic_changes,
-      'the accepted no-op records the diagnostic it excluded');
-    assert.equal(record.events.some((event) => event.type === 'runtime-change-set-rejected'), false);
-    assert.equal(record.events.some((event) => event.type === 'service-deployment-record'), true);
-    assert.equal(JSON.parse(readFileSync(path.join(directory, 'service-deployment.json'), 'utf8')).record_type, 'anywear_service_deployment');
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+// nothing, delete the change set, and let the operation continue to read back and
+// bake.
+test('a CDKMetadata-only change set is converged: it executes nothing and is deleted', async () => {
+  const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+    { Type: 'Modify', ResourceChange: { LogicalResourceId: 'CDKMetadata', ResourceType: 'AWS::CDK::Metadata', Replacement: 'Conditional' } }] } });
+  const deployment = await deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE });
+  assert.equal(deployment.template_sha256, SYNTHESIZED.normalised_sha256);
+  assert.equal(deployment.service_sha, SERVICE_SHA);
+  assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'the diagnostic delta executes nothing');
+  assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), 'the diagnostic-only change set is deleted');
+  const deleteIndex = calls.findIndex((call) => call.args?.includes('delete-change-set'));
+  assert.equal(calls.slice(deleteIndex + 1).some((call) => call.args?.includes('describe-change-set')), false,
+    'the operation does not depend on describing the deleted change set');
 });
 
 // Issue #195 acceptance: only AWS::CDK::Metadata is declared diagnostics. A
 // conditional replacement on a real resource still fails closed before execution,
-// and the fail-closed path deletes the change set while preserving the delta as
-// operation evidence.
-test('a Modify with Replacement: Conditional on a real resource fails closed, records the delta and deletes the change set', async () => {
+// and the fail-closed path deletes the change set.
+test('a Modify with Replacement: Conditional on a real resource fails closed and deletes the change set', async () => {
   const { io, calls } = fakeIo({ changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
     { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'Conditional' } }] } });
-  const record = { events: [] };
-  await assert.rejects(deploy({ env: env(), release, record, io,
+  await assert.rejects(deploy({ env: env(), release, io,
     synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
   /must not change the stack; the change set lists 1: Modify ComputeRuntimeApiServiceD2475D0A \(Conditional\)/);
   assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, 'a real delta never executes');
   assert.ok(calls.some((call) => call.args?.includes('delete-change-set')), 'the fail-closed path deletes the change set');
-  const rejected = record.events.find((event) => event.type === 'runtime-change-set-rejected');
-  assert.equal(rejected.result, 'failed-closed');
-  assert.deepEqual(rejected.changes, [{ action: 'Modify', logical_id: 'ComputeRuntimeApiServiceD2475D0A',
-    resource_type: 'AWS::ECS::Service', action_type: 'Modify', replacement: 'Conditional' }]);
-  assert.deepEqual(rejected.diagnostic_changes, []);
-  const deleted = record.events.find((event) => event.type === 'runtime-change-set-deleted');
-  assert.equal(deleted.reason, 'fail-closed');
-  assert.equal(record.events.some((event) => event.type === 'service-deployment-record'), false);
 });
 
-// Issue #195 acceptance: the change-set execute failure writes no v6 record and
-// leaves the change-set event as the operation evidence.
-test('a change-set execute failure writes no v6 record and leaves the failed execution as evidence', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'runtime-deploy-execute-failure-'));
-  try {
-    const { io, calls } = fakeIo({ runtime: liveStack({ identityUnchanged: false }),
-      changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
-        { Type: 'Add', ResourceChange: { LogicalResourceId: 'BetaReleaseChange', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } }] },
-      executeError: Object.assign(new Error('An error occurred (AccessDenied) when calling the ExecuteChangeSet operation'), {
-        stderr: 'An error occurred (AccessDenied)' }) });
-    const record = { events: [] };
-    await assert.rejects(deploy({ env: env(), release, record, io,
-      synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE,
-      outputPath: path.join(directory, 'service-deployment.json') }), /AccessDenied/);
-    assert.ok(calls.some((call) => call.args?.includes('execute-change-set')));
-    assert.equal(record.events.some((event) => event.type === 'runtime-change-set-executed'), false,
-      'a failed execution is not recorded as a completed change set');
-    assert.equal(record.events.some((event) => event.type === 'service-deployment-record'), false);
-    assert.equal(record.events.some((event) => event.type === 'release-bake'), false, 'the bake never runs');
-    await assert.rejects(readFile(path.join(directory, 'service-deployment.json')), /ENOENT/);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+// Issue #195 acceptance: a change-set execute failure leaves a failed run, and the
+// bake never runs.
+test('a change-set execute failure fails the run before the bake', async () => {
+  const { io, calls } = fakeIo({ runtime: liveStack({ identityUnchanged: false }),
+    changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+      { Type: 'Add', ResourceChange: { LogicalResourceId: 'BetaReleaseChange', ResourceType: 'AWS::S3::Bucket', Replacement: 'False' } }] },
+    executeError: Object.assign(new Error('An error occurred (AccessDenied) when calling the ExecuteChangeSet operation'), {
+      stderr: 'An error occurred (AccessDenied)' }) });
+  const captured = capturingBake();
+  await assert.rejects(deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: captured.bake }), /AccessDenied/);
+  assert.ok(calls.some((call) => call.args?.includes('execute-change-set')));
+  assert.equal(captured.baked.length, 0, 'the bake never runs after a failed execution');
 });
 
-test('a breaching or insufficient-data bake writes no v6 record and keeps the failed gate as evidence', async () => {
+test('a breaching or insufficient-data bake fails the run', async () => {
   const healthy = gateBlock();
   const breaching = { ...healthy, result: 'failed', signals: healthy.signals.map((signal, index) => (index === 3
     ? { ...signal, state: 'breaching', exceptions: ['vto oldest-message age 301s exceeds 300s'] }
@@ -574,24 +491,13 @@ test('a breaching or insufficient-data bake writes no v6 record and keeps the fa
   assert.equal(insufficient.result, 'failed');
   assert.ok(insufficient.signals.every((signal) => signal.state === 'insufficient'));
   for (const [label, gate] of [['breaching', breaching], ['insufficient', insufficient]]) {
-    const directory = await mkdtemp(path.join(os.tmpdir(), `runtime-deploy-bake-${label}-`));
-    try {
-      const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
-        StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
-      const record = { events: [] };
-      await assert.rejects(deploy({ env: env(), release, record, io,
-        synthesize: async () => SYNTHESIZED, health: HEALTH, bake: async () => gate,
-        outputPath: path.join(directory, 'service-deployment.json') }), /The 600-second bake failed/, label);
-      const evidence = record.events.find((event) => event.type === 'release-bake');
-      assert.equal(evidence.result, 'failed', label);
-      assert.deepEqual(evidence.gate, gate, label);
-      assert.equal(record.events.some((event) => event.type === 'service-deployment-record'), false, label);
-      await assert.rejects(readFile(path.join(directory, 'service-deployment.json')), /ENOENT/, label);
-      // A converged no-op still never executes a change set before a failed bake.
-      assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, label);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
+    const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+    await assert.rejects(deploy({ env: env(), release, io,
+      synthesize: async () => SYNTHESIZED, health: HEALTH, bake: async () => gate }),
+    /The 600-second bake failed/, label);
+    // A converged no-op still never executes a change set before a failed bake.
+    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, label);
   }
 });
 
@@ -599,45 +505,13 @@ test('an absent Runtime stack is an Add-only create that executes, and stop of a
   const { io, calls, setRuntime } = fakeIo({ runtime: null,
     changeSet: { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
       { Type: 'Add', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] } });
-  const record = { events: [] };
-  await deploy({ env: env(), release, record, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE,
-    outputPath: path.join(os.tmpdir(), `runtime-deploy-create-${process.pid}.json`) });
+  const deployment = await deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE });
+  assert.equal(deployment.service_sha, SERVICE_SHA);
   assert.ok(calls.some((call) => call.args?.includes('execute-change-set')));
-  const events = record.events.filter((event) => event.type === 'runtime-change-set-executed');
-  assert.equal(events.length, 1);
-  assert.equal(events[0].mode, 'create');
 
   setRuntime(undefined);
-  const stopRecord = { events: [] };
-  assert.equal(await stopRuntime({ env: env({ INFRA_OPERATION: 'stop-runtime' }), record: stopRecord, io }), 'absent');
-  assert.equal(stopRecord.events.at(-1).extent, 'absent');
+  assert.equal(await stopRuntime({ env: env({ INFRA_OPERATION: 'stop-runtime' }), io }), 'absent');
   assert.equal(calls.some((call) => call.key === 'cdk/destroy'), false);
-});
-
-test('the v6 record fails closed on a wrong producer, stack or template hash', () => {
-  const inputs = [{ parameter: '/anywear/beta/vpc_id', version: '4', value_sha256: 'd'.repeat(64) }];
-  const base = { env: env(), inputs, templateSha256: 'e'.repeat(64),
-    observed: { service_sha: SERVICE_SHA, image_digest: IMAGE_DIGEST, minimum_client_version: 0,
-      ecs: { api: { service_arn: 'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-api',
-        task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:7',
-        task_definition_sha256: 'f'.repeat(64), image_digest: IMAGE_DIGEST },
-      worker: { service_arn: 'arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-worker',
-        task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:7',
-        task_definition_sha256: '1'.repeat(64), image_digest: IMAGE_DIGEST } },
-      endpoints: { api: 'https://example.cloudfront.net' } },
-    gate: gateBlock(), schemaBoundary: SCHEMA_BOUNDARY };
-  const record = buildRuntimeDeploymentRecord(base);
-  assert.equal(record.schema_version, 6);
-  assert.deepEqual(record.schema_boundary, SCHEMA_BOUNDARY);
-  assert.deepEqual(record.stacks.map((row) => row.name), [RUNTIME_STACK]);
-  assert.throws(() => buildRuntimeDeploymentRecord({ ...base, templateSha256: 'not-a-hash' }), /Invalid deployed template hash/);
-  assert.throws(() => buildRuntimeDeploymentRecord({ ...base, env: { ...base.env, GITHUB_SHA: 'short' } }), /Invalid deployment producer SHA/);
-  assert.throws(() => buildRuntimeDeploymentRecord({ ...base, inputs: [{ ...inputs[0], parameter: '/elsewhere/x' }] }), /Invalid stage contract parameter/);
-  // The boundary is required and its reader must be the observed deployment.
-  assert.throws(() => buildRuntimeDeploymentRecord({ ...base, schemaBoundary: undefined }), /Invalid schema boundary fields/);
-  assert.throws(() => buildRuntimeDeploymentRecord({ ...base, schemaBoundary:
-    { ...SCHEMA_BOUNDARY, reader: { ...SCHEMA_BOUNDARY.reader, image_digest: `sha256:${'9'.repeat(64)}` } } }),
-  /Schema boundary reader image differs from the observed image/);
 });
 
 test('the stage-input reader reads the reviewed 39 names in bounded batches', () => {
@@ -655,14 +529,15 @@ test('the stage-input reader reads the reviewed 39 names in bounded batches', ()
   assert.ok(RUNTIME_STAGE_INPUT_NAMES.includes(RUNTIME_ECS_CLUSTER_INPUT));
 });
 
-test('one contract read yields both the hashed record inputs and the bake values', async () => {
+test('one contract read yields both the hashed stage inputs and the bake values', async () => {
   const { io } = fakeIo();
   const contract = await readRuntimeStageContract(io);
   assert.equal(contract.inputs.length, 39);
   assert.equal(contract.values.size, 39);
   assert.equal(contract.values.get('/anywear/beta/ecs_cluster_name'), 'beta-anywear');
-  // The bake consumes the same read the record hashes, so the queue URL bytes can
-  // never differ between the operation's evidence and the gate's transport.
+  // The bake consumes the same read the schema-boundary gate compares, so the
+  // queue URL bytes can never differ between the operation's reads and the gate's
+  // transport.
   assert.deepEqual(runtimeBakeQueueUrls(contract.values), {
     vto: QUEUE_URLS['/anywear/beta/vto_queue_url'],
     auto_tagging: QUEUE_URLS['/anywear/beta/auto_tagging_queue_url'],
@@ -706,41 +581,74 @@ test('a deploy-runtime dispatch from the wrong source, workflow family, account 
     /Service release source commit/);
 });
 
-test('a deploy-runtime run whose v6 record never arrives is marked incomplete by the record job', async () => {
-  // A converged no-op changed no stack, so losing its record stays `failed`; an
-  // executed change set is a real mutation, so losing its record is `partial` with
-  // an explicit recovery decision. Both are incomplete, never a silent success.
-  for (const [label, event, result, recovery] of [
-    ['converged', { type: 'runtime-change-set-converged', executed: false }, 'failed', 'not-required'],
-    ['executed', { type: 'runtime-change-set-executed', executed: true, mode: 'update' }, 'partial', 'requires-explicit-recovery'],
-  ]) {
-    const root = await mkdtemp(path.join(os.tmpdir(), `runtime-deploy-record-${label}-`));
-    try {
-      const recordEnv = { ...env(), GITHUB_REPOSITORY_ID: '1409047265', GITHUB_EVENT_NAME: 'workflow_dispatch',
-        AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', REQUIRE_DEPLOYMENT_RECORD: 'true',
-        DEPLOY_JOB_RESULT: 'success', OBSERVE_JOB_RESULT: 'skipped' };
-      const operationRecord = createOperationRecord({ env: recordEnv,
-        release: { releaseTag: release.releaseTag, serviceCommit: SERVICE_SHA } });
-      // A deploy-runtime has no separate `observe` job: the v6 record is the run's
-      // accepted evidence, so losing it leaves the operation incomplete.
-      operationRecord.events.push(event);
-      operationRecord.result = 'succeeded';
-      operationRecord.final_observation = 'skipped';
-      await mkdir(path.join(root, 'deployment-evidence'), { recursive: true });
-      await writeFile(path.join(root, 'deployment-evidence/operation-record.json'), canonicalJson(operationRecord));
-      await assert.rejects(recordDeployment(recordEnv, { root, stdout: { write() {} } }),
-        /The accepted deployment record is missing/, label);
-      const marked = JSON.parse(await readFile(path.join(root, 'deployment-evidence/operation-record.json'), 'utf8'));
-      assert.equal(marked.operation, 'deploy-runtime');
-      assert.equal(marked.result, result, label);
-      assert.equal(marked.recovery, recovery, label);
-      assert.deepEqual(marked.events.at(-1), { type: 'accepted-deployment-record', result: 'missing',
-        observation_job: 'skipped', expected_workflow: '.github/workflows/mutate.yml' }, label);
-      // The marked record and its checksum are the evidence the run uploads.
-      assert.ok((await readFile(path.join(root, 'deployment-evidence/operation-record.json.sha256'), 'utf8'))
-        .endsWith('  operation-record.json\n'), label);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+// Review I-B1: `deploy-runtime` executes the change set itself, so the mutation has
+// to be recorded at the point it happens — after `execute-change-set` returns and
+// before the stack read-back, the ECS identity proof, `/health` and the bake. A
+// landed update whose later gate refuses must still leave the one step-summary line
+// that says "changed but unqualified"; a converged no-op must leave none.
+const DELTA_CHANGE_SET = { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABLE', Changes: [
+  { Type: 'Modify', ResourceChange: { LogicalResourceId: 'ComputeRuntimeApiServiceD2475D0A', ResourceType: 'AWS::ECS::Service', Replacement: 'False' } }] };
+
+// The dispatch `validateOperationInputs` accepts for `deploy-runtime`, plus the step
+// summary the operation's catch appends to.
+const operationEnv = (overrides = {}) => ({ ...env(), GITHUB_REPOSITORY_ID: '1409047265', GITHUB_EVENT_NAME: 'workflow_dispatch',
+  AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
+  SERVICE_RELEASE_TAG: release.releaseTag, SERVICE_COMMIT: SERVICE_SHA, ...overrides });
+
+async function withSummary(run) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-runtime-summary-'));
+  try {
+    return await run(path.join(directory, 'summary.md'));
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3 });
   }
+}
+
+test('a bake refusal after the change set executed appends exactly one summary line naming the Runtime stack', async () => {
+  await withSummary(async (summary) => {
+    const { io, calls } = fakeIo({ runtime: liveStack({ identityUnchanged: false }), changeSet: DELTA_CHANGE_SET });
+    const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
+    await assert.rejects(runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }), {
+      createIo,
+      // Only the deploy's own collaborators are fake; the change-set judgement, the
+      // mutation, the read-back and the gate ordering are the production ones.
+      deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH,
+        bake: async () => failedGate({ stage: 'beta', cluster: 'beta-anywear', logGroup: '/anywear/beta/worker',
+          serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST }) },
+    }), /The 600-second bake failed/);
+    assert.ok(calls.some((call) => call.args?.includes('execute-change-set')), 'the change set executed first');
+    const lines = (await readFile(summary, 'utf8')).trim().split('\n');
+    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
+    assert.equal((lines[0].match(/AnyWearRuntimeStack-beta/g) ?? []).length, 1,
+      'the Runtime stack is named exactly once');
+    assert.deepEqual(io.changedStacks, [RUNTIME_STACK], 'the landed mutation is recorded once');
+  });
+});
+
+test('a converged deploy-runtime appends no changed-stack summary line', async () => {
+  await withSummary(async (summary) => {
+    const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+    const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
+    await runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }), {
+      createIo,
+      deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE },
+    });
+    assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false,
+      'a converged no-op executes nothing');
+    const lines = (await readFile(summary, 'utf8')).trim().split('\n');
+    assert.equal(lines.length, 1, 'only the completed-operation line');
+    assert.match(lines[0], /Infra operation deploy-runtime; source a{40}\./);
+    assert.equal(lines[0].includes('already changed'), false);
+    assert.deepEqual(io.changedStacks, [], 'a converged no-op records no changed stack');
+  });
+});
+
+test('the executed change set is recorded as changed before the stack read-back can fail', async () => {
+  const { io } = fakeIo({ runtime: liveStack({ identityUnchanged: false }), changeSet: DELTA_CHANGE_SET,
+    postExecuteRuntime: { ...liveStack(), StackStatus: 'ROLLBACK_IN_PROGRESS' } });
+  await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
+    /ended in ROLLBACK_IN_PROGRESS/);
+  assert.deepEqual(io.changedStacks, [RUNTIME_STACK]);
 });

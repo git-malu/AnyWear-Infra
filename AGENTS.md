@@ -30,23 +30,27 @@ and must not be relabeled as an Infra-produced deployment.
   deploy job; `deploy-runtime` downloads only `service-schema.json`, re-hashes it
   once in the deploy job, strictly validates it as a consumer, and the
   schema-boundary gate compares it with the live applied journal before any
-  stack mutation. The deploy records the release tag, Service commit and the ECR
-  digest of the immutable `service-artifacts-<service_commit>` tag. No
+  stack mutation. The deploy resolves the release tag, Service commit and the ECR
+  digest of the immutable `service-artifacts-<service_commit>` tag into its step
+  log and the stack's parameters. No
   Service-built artifact is committed here. Every other operation rejects a
   release identity.
-- Deployment records are v3 (`anywear_infra_deployment`): producer identity, the
-  exact stack set that producer owns, the stage-contract SSM parameters the run
-  read (name, version, value hash), the authenticated observation and a content
-  hash of the stage-contract schema surface. There is no `selection` member and
-  no pin to another repository's release. The `deploy-runtime` operation produces
-  `anywear_service_deployment` v6 from the same core plus a required 600-second
-  six-signal bake `gate` and the admitted `schema_boundary` comparison; the Infra
-  `anywear_infra_deployment` v3 record never carries either.
+- There is no operation or deployment record (#207). An operation is audited from
+  platform facts: the run and its job/step conclusions, the GitHub Environment
+  deployment, CloudFormation stack events and status, the immutable release
+  tag→commit with per-asset digests, the ECR image digest and the live `/health`
+  and `/readyz` endpoints. A mutation that landed before a later gate refused
+  leaves a non-success run and one `$GITHUB_STEP_SUMMARY` line naming the stack it
+  changed; no step uses `continue-on-error`, and nothing reports the operation
+  complete. The one artifact a mutating run publishes is the transport
+  `service-release-bytes-<run_id>-<run_attempt>`, containing only
+  `.service-artifacts/selected/` and retained one day: it is a deploy input, not
+  evidence.
 - The versioned `@git-malu/stage-contracts` package
-  (`packages/stage-contracts/`, currently `0.5.0`) is the single source of the
-  stage-contract names/kinds, stack identities, the v6 Service record,
-  bake-gate and schema-boundary validators, the deployed-template normalisation
-  and no service-role naming. It is consumed from `file:packages/stage-contracts`;
+  (`packages/stage-contracts/`, currently `0.6.0`) is the single source of the
+  stage-contract names/kinds, stack identities, the deployed-template
+  normalisation, the task-definition identity and the bake gate's stage-free
+  constants and name builders. It is consumed from `file:packages/stage-contracts`;
   `npm run check` runs its tests. Change it only with a version bump and the
   matching `stage-contracts-v<version>` tag.
 - Do not claim repository branch protection when the private plan cannot enforce
@@ -88,35 +92,24 @@ and must not be relabeled as an Infra-produced deployment.
   defaults to validation-only, and is a Deployment-stage action.
 - Issue #166 keeps the three bounded Beta entries in the
   [operations catalog](README.md#operations): `check.yml` is automatic;
-  `runtime.yml` is the manual `state`/`observe` entry,
-  where `state` is read-only with restricted STS credentials and works with
-  `ENABLE_BETA_MUTATION` closed, and `observe` is the manual qualified observation
-  that produces the accepted `anywear_infra_deployment` v3 record for E2E
-  compatibility; `mutate.yml` is the single manual mutation entry
-  and rejects cross-family or out-of-scope inputs before credentials. Since #181 a
-  deployment that changes a configured stack runs `preflight` → `verify` → `deploy`
-  → `observe` → `record` in one run: the read-only `observe` job holds only the
-  runtime role and writes the accepted v3 record with producer
-  `.github/workflows/mutate.yml` and that run's id/attempt/source, while the
-  mutation job keeps the write session and produces only its
-  `anywear_infra_family_observation`. A missing accepted record after a completed
-  mutation marks the operation record `partial`/`requires-explicit-recovery` and
-  fails the run, so a deployment cannot enter Acceptance without it.
-  `deploy-egress`/`delete-egress` change only the operation-owned
-  `AnyWearEgressStack-beta` and are outside that trigger set, as are `migrate`, the
-  admission operations and `state`; the trigger set is derived from the frozen
-  stack tables, not restated. It now
-  includes `deploy-egress` / `delete-egress`: both are `beta-deploy` family,
-  change only `AnyWearEgressStack-beta`, and `delete-egress` refuses unless the
-  Runtime stack is absent. `production.yml`
+  `runtime.yml` is the manual `state` entry,
+  where `state` is read-only with restricted STS credentials, works with
+  `ENABLE_BETA_MUTATION` closed and publishes no artifact; `mutate.yml` is the
+  single manual mutation entry
+  and rejects cross-family or out-of-scope inputs before credentials. Since #207
+  every mutation runs `preflight` → `verify` → `deploy` in one run and has no
+  `observe` or `record` job: `deploy` is the only job that holds an AWS
+  credential, and its first step proves the travelled release bytes against the
+  published digests before the first OIDC request. `deploy-egress`/`delete-egress`
+  change only the operation-owned `AnyWearEgressStack-beta`; `delete-egress`
+  refuses unless the Runtime stack is absent. `production.yml`
   is `workflow_call`-only and is not an entry. The five admission operations are
   `admission-status`, `add-testers`, `set-testers`, `open-admission` and
   `close-admission`; admission is one mode record with no window or expiry,
   `open-admission` takes no payload, and `close-admission` is the only thing that
-  closes. Record family and record type derive
-  from the operation, never from the hosting file. Preserve session restrictions for
-  final qualification, actual workflow record identity and the v3 E2E producer
-  boundary. Existing OIDC trust is repository/environment scoped, not workflow
+  closes. Preserve session restrictions for
+  final qualification and the protected-executor boundary. Existing OIDC trust is
+  repository/environment scoped, not workflow
   scoped; source/session checks do not narrow inherited task-role or downstream
   CDK authority.
   Initial `deployScope=foundation`
@@ -130,9 +123,11 @@ and must not be relabeled as an Infra-produced deployment.
   the sealed release's `service-schema.json`, resolves the immutable ECR image
   digest, admits the pre-mutation schema boundary with one bounded read-only
   `schema-journal` verify task under the existing verification-task role,
-  records the change set, runs the unchanged 600-second six-signal bake under the
-  read-only runtime session and writes the v6 `anywear_service_deployment`
-  record from the mutating job itself; `stop-runtime` deletes only that stack,
+  judges and executes the change set, runs the unchanged 600-second six-signal
+  bake under the read-only runtime session, compares the deployed template hash and
+  the six parameters with the requested deployment, and prints the bake result and
+  the `/health` floor in the mutating job's step log; `stop-runtime`
+  deletes only that stack,
   and an absent stack is its accepted no-op. The historical runs below evidence
   the pre-#195 path only: Service run 39137577023
   ("Service release: deploy", `workflow_dispatch`, success, 2026-10-18T14:47:35Z)
@@ -246,5 +241,5 @@ attempt `1`, against reviewed E2E main `b60f2e26adec9ed7c03ee9e671099213321fbb99
 its correlated Service cleanup is [run 37950914153](https://github.com/git-malu/AnyWear-Service/actions/runs/37950914153),
 and final admission closure is [Infra run 37951949885](https://github.com/git-malu/AnyWear-Infra/actions/runs/37951949885).
 This evidence verifies correctness for the recorded tuple, not a latency SLA.
-Preserve source maps, original component/build provenance, operation/recovery
-records and exact run/attempt/artifact hashes before workspace cleanup.
+Preserve source maps, original component/build provenance, the run ids and their
+job/step conclusions, and exact run/attempt/artifact hashes before workspace cleanup.

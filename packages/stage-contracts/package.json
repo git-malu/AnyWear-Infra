@@ -1,7 +1,7 @@
 {
   "name": "@git-malu/stage-contracts",
-  "version": "0.5.0",
-  "description": "Versioned AnyWear Beta stage contract, Base/Egress/Runtime stack identities, the deployed-template normalisation, and v6 Infra-produced Service deployment-record, bake-gate and schema-boundary validators",
+  "version": "0.6.0",
+  "description": "Versioned AnyWear Beta stage contract, Base/Egress/Runtime stack identities, the deployed-template normalisation, the task-definition identity, and the 600-second six-signal bake gate's stage-free constants and name builders",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./index.mjs",

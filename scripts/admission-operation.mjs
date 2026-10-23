@@ -165,22 +165,19 @@ export async function runCloseAdmission({ io, infraSha, env = process.env }) {
   // Source rejection must precede any authenticated activity or lifecycle task.
   assertAdmissionExecutor(env);
   assertProtectedExecutor(infraSha, env);
-  let revision; let prior; let suspendAttempted = false;
+  let revision;
   try {
     const platform = await describeStack(io, 'AnyWearPlatformStack-beta');
     const runtime = await describeStack(io, runtimeStack);
     assertRunningBeta(platform, runtime, 'close admission');
     revision = workloadRevision(runtime);
     const original = await readAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'original', state: original, result: 'observed' });
-    // Read the database admission state before closing so the operation records
+    // Read the database admission state before closing so the run reports
     // whether it ended an open admission.
-    prior = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
+    const prior = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
     const closeKind = classifyCloseKind(prior);
-    suspendAttempted = true;
     await io.oneShot('lifecycle', revision, 'suspend');
     const state = await readAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'closed', state, result: 'observed', close_kind: closeKind });
     assertClosedAdmission(state, original);
     const status = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
     assertStatusMatchesAdmission(status, state, clock(io));
@@ -189,13 +186,18 @@ export async function runCloseAdmission({ io, infraSha, env = process.env }) {
     const finalState = await readAdmissionState(io);
     assertClosedAdmission(finalState, original);
     assertStatusMatchesAdmission(status, finalState, clock(io));
-    io.recordAdmissionState?.({ phase: 'closed', state: finalState, result: 'verified', close_kind: closeKind,
-      lifecycle_status_sha256: contentHash(status) });
+    // The close verdict is a run fact: the step log names what it ended, and the
+    // admission value is redacted to a mode + count (#207).
+    process.stdout.write(`${JSON.stringify({ operation: 'close-admission', close_kind: closeKind,
+      admission: describeAdmission(finalState) })}\n`);
     return { original, state: finalState, status, close_kind: closeKind };
   } catch (error) {
+    // The failed close prints the redacted admission state it actually observed, so
+    // "preserve observed state for explicit recovery" names something the operator
+    // can read from the run (#207).
     const { state } = await observeAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed',
-      ...(suspendAttempted && prior ? { close_kind: classifyCloseKind(prior) } : {}) });
+    process.stdout.write(`${JSON.stringify({ operation: 'close-admission', result: 'failed',
+      admission: describeAdmission(state) })}\n`);
     throw new Error('Beta admission close failed; preserve observed state for explicit recovery', { cause: error });
   }
 }
@@ -252,7 +254,6 @@ export async function runOpenAdmission({ io, infraSha, env = process.env }) {
     // the database policy agrees with the mirror.
     assertClosedAdmissionStatus(parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status')));
     original = await readAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'original', state: original, result: 'observed' });
     // The mirror has no bound, so it reads `testers` until an explicit close writes
     // `closed`. Requiring the record to prove closure is what makes opening refuse
     // from a value it cannot trust; such a record is repaired by `close-admission`.
@@ -265,7 +266,6 @@ export async function runOpenAdmission({ io, infraSha, env = process.env }) {
     const status = parseLifecycleStatus(await io.oneShot('lifecycle', revision, 'status'));
     assertOpenAdmissionStatus(status);
     assertStatusMatchesAdmission(status, state, clock(io));
-    io.recordAdmissionState?.({ phase: 'opened', state, result: 'observed' });
     // Re-read SSM after the status task so the proof binds one version of both
     // surfaces instead of accepting a value that changed during the status read.
     const finalState = await readAdmissionState(io);
@@ -275,35 +275,38 @@ export async function runOpenAdmission({ io, infraSha, env = process.env }) {
     if (proof.no_bound !== true || proof.surfaces_agree !== true) {
       throw new Error(`Admission open proof failed: no_bound=${proof.no_bound}, surfaces_agree=${proof.surfaces_agree}`);
     }
-    io.recordAdmissionOpenProof?.(proof);
-    io.recordAdmissionState?.({ phase: 'verified', state: finalState, result: 'verified',
-      lifecycle_status_sha256: contentHash(status) });
+    // The post-open proof is a run fact: one printed line says "open, no bound,
+    // both surfaces agree", and it is not recorded (#207).
+    process.stdout.write(`${JSON.stringify(proof)}\n`);
     return { original, state: finalState, status, proof };
   } catch (error) {
-    // Nothing before the resume attempt can have opened admission, so those
-    // failures record the observed state and never issue a close of their own.
+    // Nothing before the resume attempt can have opened admission, so this path
+    // issues no close of its own; the printed redacted state and the cause chain
+    // are the whole verdict.
     if (!requested) {
       const { state } = await observeAdmissionState(io);
-      io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed' });
+      process.stdout.write(`${JSON.stringify({ operation: 'open-admission', result: 'failed-before-request',
+        admission: describeAdmission(state) })}\n`);
       throw new Error('Beta admission open failed before it was requested; preserve observed state for explicit recovery', { cause: error });
     }
     // Admission may be open. Close it back to the recorded decision before
-    // throwing; the record names the close as the failed-open recovery it is.
+    // throwing; the printed line names the close as the failed-open recovery it is.
     let closeError;
     try {
       await io.oneShot('lifecycle', revision, 'suspend');
       const closed = await readAdmissionState(io);
       assertClosedAdmission(closed, original);
-      io.recordAdmissionState?.({ phase: 'closed', state: closed, result: 'observed', close_kind: 'failed-open' });
     } catch (recoveryError) { closeError = recoveryError; }
     const { state } = await observeAdmissionState(io);
-    io.recordAdmissionState?.({ phase: 'failed', state, result: 'failed', close_kind: 'failed-open' });
+    process.stdout.write(`${JSON.stringify({ operation: 'open-admission', result: 'failed-open',
+      close_kind: closeError ? 'failed-open-close-failed' : 'failed-open',
+      admission: describeAdmission(state) })}\n`);
     if (closeError) {
       throw new AggregateError([error, closeError],
         `Beta admission open failed and its recovery close did not restore the recorded decision; observed admission may be open: ${describeAdmission(state)}`,
         { cause: error });
     }
-    throw new Error('Beta admission open failed and was closed back to the recorded decision; with no automatic closure an interrupted open can stay open until an explicit close-admission',
+    throw new Error('Beta admission open failed and was closed back to the recorded decision (close_kind=failed-open); with no automatic closure an interrupted open can stay open until an explicit close-admission',
       { cause: error });
   }
 }

@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRuntimeIo, validateOperationInputs, cdkDeploymentArguments, deleteOperationStack,
   resolveServiceImageDigest, serviceImageTag } from './runtime-operation.mjs';
-import { createOperationRecord } from './operation-record.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
 const egressStack = 'AnyWearEgressStack-beta';
@@ -34,18 +33,16 @@ test('the Egress EIP allocation is accepted only for deploy-egress and must be a
   }
 });
 
-test('the Egress deploy passes the retained allocation as CDK context and the record carries it', () => {
+test('the Egress deploy passes the retained allocation as CDK context', () => {
   const args = cdkDeploymentArguments(egressStack, '/tmp/artifacts', env, { natEipAllocationId: allocationId });
   assert.ok(args.includes('natEipAllocationId=eipalloc-0a5198fb91b876949'));
   assert.ok(args.includes('-c'));
   assert.equal(cdkDeploymentArguments(egressStack, '/tmp/artifacts', env).some(arg => arg.startsWith('natEipAllocationId=')), false);
-  const record = createOperationRecord({ env: { ...env, NAT_EIP_ALLOCATION_ID: allocationId } });
-  assert.equal(record.context.nat_eip_allocation_id, allocationId);
-  assert.equal(Object.hasOwn(createOperationRecord({ env }).context, 'nat_eip_allocation_id'), false);
 });
 
-test('delete-egress records the retained EIP allocation before destroying the stack', async () => {
-  const record = { events: [] };
+// The retained EIP is the allocation the next start must reuse, so delete-egress
+// still refuses when the stack cannot report it before the destroy.
+test('delete-egress proves the retained EIP allocation before destroying the stack', async () => {
   const destroyed = [];
   const io = {
     async aws(args) {
@@ -59,13 +56,19 @@ test('delete-egress records the retained EIP allocation before destroying the st
     },
     async destroy(stack) { destroyed.push(stack); },
   };
-  assert.equal(await deleteOperationStack(io, 'delete-egress', record), egressStack);
-  assert.deepEqual(record.events, [{ type: 'egress-nat-eip', action: 'delete', stack_name: egressStack, allocation_id: allocationId }]);
+  assert.equal(await deleteOperationStack(io, 'delete-egress'), egressStack);
   assert.deepEqual(destroyed, [egressStack]);
+  const withoutOutput = { ...io, async aws(args) {
+    const name = args[args.indexOf('--stack-name') + 1];
+    if (name === runtimeStack) throw stackAbsence(name);
+    return { Stacks: [{ StackName: egressStack, StackStatus: 'UPDATE_COMPLETE', Outputs: [] }] };
+  } };
+  await assert.rejects(deleteOperationStack(withoutOutput, 'delete-egress'),
+    /requires the EgressNatEipAllocationId output/);
 });
 
-// #193: a release operation records the deployed image digest, resolved from the
-// immutable ECR tag Service's release chain pushes for one Service commit.
+// #193: a release operation resolves the deployed image digest from the immutable
+// ECR tag Service's release chain pushes for one Service commit.
 test('a release operation resolves the immutable ECR tag to its image digest', async () => {
   const tag = `service-artifacts-${serviceCommit}`;
   const calls = [];
@@ -74,10 +77,6 @@ test('a release operation resolves the immutable ECR tag to its image digest', a
   assert.equal(await resolveServiceImageDigest(io, serviceCommit), imageDigest);
   assert.deepEqual(calls, [['ecr', 'describe-images', '--repository-name', 'beta-anywear-service',
     '--image-ids', `imageTag=${tag}`]]);
-  // The runtime session already permits this read; no new grant is minted.
-  const record = createOperationRecord({ env: { ...env, INFRA_OPERATION: 'deploy-platform', SERVICE_RELEASE_TAG: tag,
-    SERVICE_COMMIT: serviceCommit }, release: { releaseTag: tag, serviceCommit, imageDigest } });
-  assert.deepEqual(record.service_release, { releaseTag: tag, serviceCommit, imageDigest });
 });
 
 test('a missing, ambiguous or malformed ECR tag fails before the deploy', async () => {
@@ -154,13 +153,12 @@ function probeIo({ exitCode = 0, scriptFailure = false, stdout, task = verifyTas
     return { AWS_ACCESS_KEY_ID: 'x', AWS_SECRET_ACCESS_KEY: 'y', AWS_SESSION_TOKEN: 'z' };
   };
   return { calls, assumeCalls, run, assume,
-    io: (record) => createRuntimeIo(verifyEnv, record, { purpose: 'operation', run, assume }) };
+    io: () => createRuntimeIo(verifyEnv, { purpose: 'operation', run, assume }) };
 }
 
-test('the one-shot probe returns a zero container exit and records the probe identity', async () => {
+test('the one-shot probe returns a zero container exit from the measured task', async () => {
   const surface = probeIo({ exitCode: 0 });
-  const record = { events: [] };
-  const io = await surface.io(record);
+  const io = await surface.io();
   const result = await io.oneShotProbe('verify', revision, 'schema-journal');
   assert.equal(result.exitCode, 0);
   assert.equal(result.task.taskArn, verifyTaskArn);
@@ -171,45 +169,33 @@ test('the one-shot probe returns a zero container exit and records the probe ide
   const script = surface.calls.find(([command]) => command === 'bash');
   assert.deepEqual(script[1], ['.github/scripts/run-one-shot-task.sh', 'beta', 'verify', imageDigest,
     serviceCommit, 'schema-journal']);
-  const probe = record.events.find((event) => event.type === 'one-shot-probe');
-  assert.equal(probe.result, 'stopped-success');
-  assert.equal(probe.exit_code, 0);
-  assert.equal(probe.task_arn, verifyTaskArn);
-  assert.equal(probe.task_definition_arn, verifyDefinitionArn);
-  assert.match(probe.command_sha256, /^[a-f0-9]{64}$/);
 });
 
-test('the one-shot probe returns a non-zero container exit instead of throwing, and records it', async () => {
+test('the one-shot probe returns a non-zero container exit instead of throwing', async () => {
   const surface = probeIo({ exitCode: 3, scriptFailure: true });
-  const record = { events: [] };
-  const io = await surface.io(record);
+  const io = await surface.io();
   // run-one-shot-task.sh exits 1 after printing the identity; the container exit
   // code is the probe result the schema gate judges as reader-failed.
   const result = await io.oneShotProbe('verify', revision, 'schema-journal');
   assert.equal(result.exitCode, 3);
-  const probe = record.events.find((event) => event.type === 'one-shot-probe');
-  assert.equal(probe.result, 'stopped-failure');
-  assert.equal(probe.exit_code, 3);
 });
 
 test('the one-shot probe refuses a wrong action, command, image or missing identity', async () => {
   const surface = probeIo();
-  const io = await surface.io({ events: [] });
+  const io = await surface.io();
   // A verify role with any other action is forbidden before a launch.
   await assert.rejects(io.oneShotProbe('verify', revision, 'status'), /One-shot role\/action is forbidden/);
   // Another verify command is not the schema-journal read.
   const wrongCommand = probeIo({ definition: verifyDefinition(['node', 'dist/verify.js']) });
-  await assert.rejects((await wrongCommand.io({ events: [] })).oneShotProbe('verify', revision, 'schema-journal'),
+  await assert.rejects((await wrongCommand.io()).oneShotProbe('verify', revision, 'schema-journal'),
     /Actual verify command differs from the requested action/);
   // A task running another image is not the revision the gate asked for. (The
   // existing file's `imageDigest` is `sha256:9…`, so the wrong image uses `8`.)
   const wrongImage = probeIo({ task: verifyTask(0, `sha256:${'8'.repeat(64)}`) });
-  await assert.rejects((await wrongImage.io({ events: [] })).oneShotProbe('verify', revision, 'schema-journal'),
+  await assert.rejects((await wrongImage.io()).oneShotProbe('verify', revision, 'schema-journal'),
     /Actual one-shot image\/result differs from the deployed revision/);
   // A launch that prints no unique identity is a launch failure, not a result.
   const noIdentity = probeIo({ stdout: 'no identity here' });
-  const record = { events: [] };
-  await assert.rejects((await noIdentity.io(record)).oneShotProbe('verify', revision, 'schema-journal'),
+  await assert.rejects((await noIdentity.io()).oneShotProbe('verify', revision, 'schema-journal'),
     /One-shot probe identity missing/);
-  assert.equal(record.events.at(-1).result, 'launch-failed');
 });

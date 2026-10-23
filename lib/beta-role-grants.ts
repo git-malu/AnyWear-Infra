@@ -40,13 +40,13 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   const getParameters = (principal: iam.IRole, names: string[]) => principal.addToPrincipalPolicy(
     new iam.PolicyStatement({ actions: ['ssm:GetParameter', 'ssm:GetParameters'], resources: parameters(names) }),
   );
-  // The Beta stage contract is published as one `/anywear/beta/` prefix. The
-  // observe path records every value under it (the Runtime conversion replaced
-  // the Base stack-output reads with the contract), and the E2E qualification
-  // observer validates every value under the prefix against the platform record.
-  // The runtime and E2E principals therefore get the prefix read: it is the same
-  // two read actions as the named reads above, and no write, delete or version
-  // mutation is added here or anywhere else.
+  // The Beta stage contract is published as one `/anywear/beta/` prefix. A
+  // `deploy-runtime` operation reads the 39 contract names under it (the Runtime
+  // conversion replaced the Base stack-output reads with the contract), and the
+  // E2E qualification observer reads the same prefix when it qualifies the
+  // deployed tuple. The runtime and E2E principals therefore get the prefix read:
+  // it is the same two read actions as the named reads above, and no write,
+  // delete or version mutation is added here or anywhere else.
   const getStageContractParameters = (principal: iam.IRole) => principal.addToPrincipalPolicy(
     new iam.PolicyStatement({
       actions: ['ssm:GetParameter', 'ssm:GetParameters'],
@@ -153,8 +153,8 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   }
   // The observation read surface is the whole stage-contract prefix, not only
   // the nine pre-contract names the deployment/qualification path still reads.
-  // The E2E qualification role runs the same observer against the platform
-  // record, so it needs the same prefix read as the runtime principal.
+  // The E2E qualification role runs the same observer against the deployed
+  // platform, so it needs the same prefix read as the runtime principal.
   getStageContractParameters(runtime);
   getStageContractParameters(e2e);
   // `delete-egress` reads the stack it destroys; Egress is part of the stage's
@@ -176,9 +176,10 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
       arn('cloudformation', 'changeSet', '*')],
   }));
   // Issue #195: the 600-second six-signal bake runs inside `deploy-runtime` under
-  // the read-only runtime session before the v5 record is written. Two read-only
-  // statements on the existing read role: the deployed bake alarm states and the
-  // worker outbox log lines. No write, no managed policy, no new principal.
+  // the read-only runtime session, and its verdict is the step log and the job
+  // conclusion (#207). Two read-only statements on the existing read role: the
+  // deployed bake alarm states and the worker outbox log lines. No write, no
+  // managed policy, no new principal.
   runtime.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['cloudwatch:DescribeAlarms'],
     resources: [stack.formatArn({
@@ -215,8 +216,10 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     actions: ['ecr:PutImage', 'ecr:GetLifecyclePolicy', 'ecr:StartLifecyclePolicyPreview', 'ecr:GetLifecyclePolicyPreview'],
     resources: [p.repository.repositoryArn],
   }));
-  // The selection/deployment records are emitted as artifacts; nothing writes
-  // them as SSM parameters, so the runtime principal keeps only the read grant.
+  // The four one-shot drivers the runtime session may register and run: the
+  // forward migration, the schema-journal probe, the admission lifecycle and the
+  // E2E qualification helper. Each task acts under its own task role, and the run
+  // and its platform facts are the evidence; this grant is the invoke surface only.
   oneShots(runtime, ['migrate', 'verify', 'lifecycle', 'artifact-verify'], [
     p.migrationTaskRole.roleArn, p.verificationTaskRole.roleArn, p.lifecycleTaskRole.roleArn, p.oneShotExecutionRole.roleArn,
   ]);

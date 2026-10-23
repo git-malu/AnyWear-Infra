@@ -4,6 +4,10 @@ inputs:
   app_private_key:
     required: true
     description: Protected read-only Service App key
+outputs:
+  release_assets:
+    description: The published sha256 digest of each release asset this operation consumes, as a one-line JSON object
+    value: ${{ steps.release-assets.outputs.release_assets }}
 runs:
   using: composite
   steps:
@@ -14,9 +18,7 @@ runs:
       shell: bash
     - name: Validate operation family and reviewed Service release identity before credentials
       shell: bash
-      run: |
-        mkdir -p deployment-evidence
-        node scripts/check-operation.mjs
+      run: node scripts/check-operation.mjs
     - name: Create the read-only Service release token when this operation takes a release
       id: app
       if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime'
@@ -27,17 +29,21 @@ runs:
         owner: git-malu
         repositories: AnyWear-Service
         permission-contents: read
-    - name: Read the Service release identity over REST and download the three consumed assets
+    - name: Read the Service release identity over REST and download only the consumed assets
+      id: release-assets
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app.outputs.token }}
       run: node scripts/verify-operation-inputs.mjs
-    - name: Preserve the verified inputs and the selected release directory
+    # The transport artifact carries the release's own bytes and nothing else: no
+    # record, no schema, no `.sha256`. It is retained one day and has exactly one
+    # reader, the deploy job's byte proof. The published digests cross separately as
+    # this action's `release_assets` output, so they are a run fact, not a file.
+    - name: Publish the release bytes that travel to deploy
+      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime'
       uses: actions/upload-artifact@v4
       with:
-        name: infra-verified-inputs-${{ github.run_id }}-${{ github.run_attempt }}
-        path: |
-          deployment-evidence/verified-inputs.json
-          .service-artifacts/selected
-        retention-days: 90
-        if-no-files-found: warn
+        name: service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}
+        path: .service-artifacts/selected
+        retention-days: 1
+        if-no-files-found: error

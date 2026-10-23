@@ -5,14 +5,12 @@ import {
   DEPLOYMENT_SQS_DEPTH_ATTRIBUTES,
   deploymentAlarmName,
   deploymentQueueNames,
-  validateDeploymentGate,
 } from '@git-malu/stage-contracts';
 import {
   MIN_OUTBOX_LINES,
   alignedStart,
   evaluateBake,
   failedGate,
-  parseOptions,
   runBakeGate,
 } from './bake-gate.mjs';
 
@@ -109,7 +107,6 @@ function assertFailedWith(gate, name, state) {
   for (const other of gate.signals.filter((signal) => signal.name !== name)) {
     assert.equal(other.state, 'not-breaching', `unexpected ${other.name} state`);
   }
-  assert.throws(() => validateDeploymentGate(gate, STAGE));
 }
 
 test('the bake window starts on the next whole minute so 60s and 600s periods are exact', () => {
@@ -124,7 +121,6 @@ test('a healthy bake passes, records the six fixed signals and validates', () =>
   assert.equal(gate.duration_seconds, 600);
   assert.equal(Date.parse(gate.ended_at) - Date.parse(gate.started_at), 600_000);
   assert.deepEqual(gate.signals.map((signal) => signal.name), [...DEPLOYMENT_GATE_SIGNAL_NAMES]);
-  assert.deepEqual(validateDeploymentGate(gate, STAGE), gate);
   assert.equal(signalOf(gate, 'alb_5xx_rate').value.request_count, 40);
   assert.equal(signalOf(gate, 'alb_p95_latency').value.p95_milliseconds, 120);
   assert.equal(signalOf(gate, 'ecs_running_not_desired').value.samples, 20);
@@ -364,30 +360,8 @@ test('every surface error produces a failed six-signal block, never a pass', () 
   assert.equal(gate.result, 'failed');
   assert.equal(gate.signals.length, 6);
   assert.ok(gate.signals.every((signal) => signal.state === 'insufficient'));
-  assert.throws(() => validateDeploymentGate(gate, STAGE), /did not pass/);
 });
 
-test('the CLI accepts exactly the deploy-job options and rejects drift', () => {
-  const base = ['--stage', STAGE, '--stack', 'AnyWearRuntimeStack-beta',
-    '--api-base-url', 'https://d111111abcdef8.cloudfront.net', '--cluster', CLUSTER,
-    '--vto-queue-url', QUEUE_URLS.vto,
-    '--auto-tagging-queue-url', QUEUE_URLS.auto_tagging,
-    '--vto-dlq-url', QUEUE_URLS.vto_dlq,
-    '--auto-tagging-dlq-url', QUEUE_URLS.auto_tagging_dlq,
-    '--log-group', LOG_GROUP, '--service-sha', SERVICE_SHA, '--image-digest', IMAGE_DIGEST,
-    '--output', 'bake-gate.json'];
-  const options = parseOptions(base);
-  assert.equal(options.stage, STAGE);
-  assert.equal(options.queueUrls.vto_dlq.endsWith('beta-anywear-vto-dlq'), true);
-  assert.throws(() => parseOptions([...base, '--window', '600']), /Unknown option --window/);
-  assert.throws(() => parseOptions(base.slice(0, -2)), /Missing options: --output/);
-  assert.throws(() => parseOptions(base.map((value) => value === 'AnyWearRuntimeStack-beta'
-    ? 'AnyWearRuntimeStack-prod' : value)), /does not belong to the selected stage/);
-  assert.throws(() => parseOptions(base.map((value) => value === IMAGE_DIGEST ? 'sha256:abc' : value)),
-    /Invalid --image-digest/);
-  assert.throws(() => parseOptions(base.map((value) => value === 'https://d111111abcdef8.cloudfront.net'
-    ? 'http://d111111abcdef8.cloudfront.net' : value)), /Invalid --api-base-url/);
-});
 
 function fixtureRunAws({ observations = baseObservations(), onMetric } = {}) {
   return (args) => {
@@ -466,7 +440,6 @@ test('the live runner reads all six signals from the injected AWS surface', asyn
   });
   assert.equal(gate.result, 'passed');
   assert.equal(gate.probe.probes_sent, 40);
-  assert.deepEqual(validateDeploymentGate(gate, STAGE), gate);
   assert.equal(signalOf(gate, 'ecs_running_not_desired').reads[0].samples, 20);
   assert.equal(signalOf(gate, 'sqs_dlq_depth').reads[0].samples, 20);
   assert.equal(signalOf(gate, 'outbox_oldest_age').reads[0].samples, 10);

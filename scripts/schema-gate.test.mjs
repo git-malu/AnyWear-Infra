@@ -27,9 +27,9 @@ import {
   readSchemaBoundaryEvidence,
   runSchemaBoundaryGate,
   validateAppliedSchemaRecord,
+  schemaBoundaryPrefixHash,
 } from './schema-gate.mjs';
 import { SCHEMA_ASSET_NAME, validateSchemaAsset } from './schema-asset.mjs';
-import { SCHEMA_BOUNDARY_READER_SOURCES, schemaBoundaryPrefixHash } from '@git-malu/stage-contracts';
 import { canonicalJson, sha256 } from './json-contract.mjs';
 
 // ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ test('the reader rule reads the selected image first, falls back exactly once an
     probe: async () => { throw new Error('one-shot execution failed'); }, readLog: async () => live }),
   (error) => error.reason === 'reader-failed' && /could not be launched/.test(error.message));
   // 10. The probe primitive is the verify action and needs the operation's probe.
-  assert.deepEqual(SCHEMA_READER_SOURCES, SCHEMA_BOUNDARY_READER_SOURCES);
+  assert.ok(Object.isFrozen(SCHEMA_READER_SOURCES));
   assert.deepEqual([...SCHEMA_READER_SOURCES], ['selected-image', 'deployed-image']);
   const probed = [];
   await probeAppliedSchema({ async oneShotProbe(role, revision, argument) {
@@ -517,132 +517,90 @@ test('the predicate collects every violation in one refusal and records an ahead
 });
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Gate runner
 // ---------------------------------------------------------------------------
 function gateProbe(results) {
   return async () => results.shift();
 }
-const recorded = () => ({ events: [] });
 
-test('the gate refuses an invalid travelled asset before any AWS call and records the refusal', async () => {
+test('the gate refuses an invalid travelled asset before any AWS call', async () => {
   // The loader itself already refuses an invalid asset; the injected validator
-  // proves the runner records the travelled digest when the bytes were readable.
+  // proves the runner refuses before any AWS read or task launch.
   const directory = await assetDirectory();
-  const record = recorded();
   let awsCalls = 0;
   let launched = 0;
   await assert.rejects(runSchemaBoundaryGate({ io: { async aws() { awsCalls += 1; } }, env: {}, release,
-    deployedRevision, record, directory,
+    deployedRevision, directory,
     assetValidator: () => { throw new Error('asset content refused by the consumer'); },
     probe: async () => { launched += 1; } }),
   (error) => error instanceof SchemaBoundaryError && error.reason === 'asset-invalid'
-    && /refused before any AWS call/.test(error.message));
+    && /refused before any AWS call/.test(error.message)
+    && (error.evidence.reader === null && error.evidence.applied_rows.length === 0));
   assert.equal(awsCalls, 0);
   assert.equal(launched, 0);
-  assert.equal(record.events.length, 1);
-  const [event] = record.events;
-  assert.equal(event.type, SCHEMA_BOUNDARY_EVENT);
-  assert.equal(event.result, 'refused');
-  assert.equal(event.reason, 'asset-invalid');
-  assert.equal(event.asset.sha256, sha256(await readFile(path.join(directory, SCHEMA_ASSET_NAME))));
-  assert.deepEqual(event.release, { tag: release.releaseTag, service_commit: release.serviceCommit });
-  assert.equal(event.reader, null);
-  assert.equal(event.applied_rows.length, 0);
-  assert.deepEqual(event.violations.map((entry) => entry.reason), ['asset-invalid']);
   // An actually invalid travelled asset (its minimum cannot exceed its current
-  // version) refuses through the loader, and the event says no digest was read.
+  // version) refuses through the loader.
   const invalid = await assetDirectory(Buffer.from(
     `${JSON.stringify({ ...asset, minimum_version: 23 })}\n`));
-  const invalidRecord = recorded();
   await assert.rejects(runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision,
-    record: invalidRecord, directory: invalid }), (error) => error.reason === 'asset-invalid');
-  assert.equal(invalidRecord.events[0].asset.sha256, 'unavailable');
+    directory: invalid }), (error) => error.reason === 'asset-invalid');
   // A missing travelled file is the same refusal.
   const empty = await mkdtemp(path.join(os.tmpdir(), 'schema-gate-empty-'));
   directories.push(empty);
-  const missingRecord = recorded();
   await assert.rejects(runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision,
-    record: missingRecord, directory: empty }), (error) => error.reason === 'asset-invalid');
-  assert.equal(missingRecord.events[0].asset.sha256, 'unavailable');
+    directory: empty }), (error) => error.reason === 'asset-invalid');
 });
 
-test('a compatible gate records one event with the asset, release, reader, rows and boundary and returns the body', async () => {
+test('a compatible gate returns the boundary body it proved', async () => {
   const directory = await assetDirectory();
-  const record = recorded();
-  const boundary = await runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, record, directory,
+  const boundary = await runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, directory,
     probe: gateProbe([taskOf(0)]), readLog: async () => live });
-  assert.equal(record.events.length, 1);
-  const [event] = record.events;
-  assert.equal(event.type, SCHEMA_BOUNDARY_EVENT);
-  assert.equal(event.result, 'compatible');
-  assert.equal(event.reason, 'compatible');
-  assert.deepEqual(event.violations, []);
-  assert.equal(event.version_ahead, false);
-  assert.equal(event.asset.sha256, assetSha256);
-  assert.deepEqual(event.release, { tag: release.releaseTag, service_commit: release.serviceCommit });
-  assert.deepEqual(event.reader, { source: 'selected-image', service_sha: SERVICE_SHA, image_digest: IMAGE_DIGEST });
-  assert.equal(event.readers.length, 1);
-  assert.equal(event.readers[0].task_arn, task.taskArn);
-  assert.equal(event.readers[0].task_definition_arn, definitionArn);
-  assert.equal(event.applied_rows.length, 26);
-  assert.deepEqual(event.applied, { schema_version: 22, journal_length: 26 });
-  assert.deepEqual(event.boundary, boundary);
+  assert.equal(boundary.result, 'compatible');
   assert.equal(boundary.comparison.checked_entries, 26);
   assert.equal(boundary.comparison.pending_migrations, 0);
   assert.equal(boundary.asset.sha256, assetSha256);
   assert.equal(boundary.reader.service_sha, SERVICE_SHA);
+  assert.deepEqual(boundary.applied, { schema_version: 22, journal_length: 26 });
 });
 
-test('a comparison refusal pushes the rows, both sides and the violation list and throws the named error', async () => {
+test('a comparison refusal names the rows, both sides and the violation list and throws the named error', async () => {
   const directory = await assetDirectory();
-  const record = recorded();
   const ahead = structuredClone(live);
   ahead.applied.push(appliedRow(27, '0026_newer_fly', ahead.applied.at(-1).created_at + 1000, 'f'.repeat(64)));
-  await assert.rejects(runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, record, directory,
+  await assert.rejects(runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, directory,
     probe: gateProbe([taskOf(0)]), readLog: async () => ahead }),
   (error) => error instanceof SchemaBoundaryError && error.reason === 'applied-beyond-release'
     && error.violations.length === 1 && /0025_new_human_fly/.test(error.message)
-    && /expected .*0025_new_human_fly/.test(error.message) && /observed .*0026_newer_fly/.test(error.message));
-  const [event] = record.events;
-  assert.equal(event.result, 'refused');
-  assert.equal(event.reason, 'applied-beyond-release');
-  assert.equal(event.applied_rows.length, 27);
-  assert.deepEqual(event.applied, { schema_version: 22, journal_length: 27 });
-  assert.equal(event.reader.source, 'selected-image');
-  assert.equal(event.readers[0].task_arn, task.taskArn);
-  assert.equal(event.boundary, undefined);
+    && /expected .*0025_new_human_fly/.test(error.message) && /observed .*0026_newer_fly/.test(error.message)
+    && error.evidence.applied_rows.length === 27
+    && error.evidence.reader.source === 'selected-image'
+    && error.evidence.readers[0].task_arn === task.taskArn);
 });
 
-test('a reader failure records the exit code and reader identity and never falls back', async () => {
+test('a reader failure names the exit code and reader identity and never falls back', async () => {
   const directory = await assetDirectory();
-  const record = recorded();
   const launches = [];
-  await assert.rejects(runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, record, directory,
+  await assert.rejects(runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, directory,
     probe: async (io, revision) => { launches.push(revision); return taskOf(3); },
     readLog: async () => { throw new Error('no log read after a refusal'); } }),
-  (error) => error.reason === 'reader-failed');
+  (error) => error.reason === 'reader-failed'
+    && error.evidence.readers[0].exit_code === 3
+    && error.evidence.reader.source === 'selected-image'
+    && error.evidence.applied_rows.length === 0);
   assert.equal(launches.length, 1);
-  const [event] = record.events;
-  assert.equal(event.reason, 'reader-failed');
-  assert.equal(event.readers[0].exit_code, 3);
-  assert.equal(event.reader.source, 'selected-image');
-  assert.equal(event.applied_rows.length, 0);
 });
 
-test('the fallback read records both reader identities in the event', async () => {
+test('the fallback read admits the deployed-image reader and returns its boundary', async () => {
   const directory = await assetDirectory();
-  const record = recorded();
   const logs = [null, live];
   const deployedTask = { ...task, containers: [{ name: 'OneShot', exitCode: 0,
     imageDigest: deployedRevision.imageDigest }] };
-  const boundary = await runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, record, directory,
+  const boundary = await runSchemaBoundaryGate({ io: {}, env: {}, release, deployedRevision, directory,
     probe: gateProbe([taskOf(0), { task: deployedTask, definition }]), readLog: async () => logs.shift() });
-  const [event] = record.events;
-  assert.equal(event.result, 'compatible');
-  assert.equal(event.reader.source, 'deployed-image');
-  assert.equal(event.reader.service_sha, deployedRevision.serviceCommit);
-  assert.deepEqual(event.readers.map((entry) => entry.source), ['selected-image', 'deployed-image']);
+  assert.equal(boundary.result, 'compatible');
   assert.equal(boundary.reader.source, 'deployed-image');
+  assert.equal(boundary.reader.service_sha, deployedRevision.serviceCommit);
   assert.equal(boundary.reader.image_digest, deployedRevision.imageDigest);
 });
 

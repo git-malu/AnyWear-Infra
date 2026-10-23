@@ -385,10 +385,10 @@ export class ComputeRuntime extends Construct {
     const loadBalancer = this.loadBalancer;
     const apiService = this.apiService;
     const workerService = this.workerService;
-    // The pinned package is the single source of the deployed alarm names the v4
-    // Service record validator requires, so the resources and that validator can
-    // never name different alarms. `<stage>` appears only in these names; every
-    // threshold below is stage-free, with no deployment switch.
+    // The pinned package is the single source of the deployed alarm names, so the
+    // alarms created here and the bake gate's reads can never name different
+    // alarms. `<stage>` appears only in these names; every threshold below is
+    // stage-free, with no deployment switch.
     const alarmNames = deploymentAlarmNames(props.stage);
     const alarmProps = {
       evaluationPeriods: 1,

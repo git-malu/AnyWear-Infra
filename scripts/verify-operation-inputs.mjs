@@ -1,37 +1,36 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { canonicalJson } from './json-contract.mjs';
+import { appendFile } from 'node:fs/promises';
 import { validateOperationInputs } from './runtime-operation.mjs';
 import { operationBoundary } from './operation-boundaries.mjs';
 import { runVerifyInputs } from './release-inputs.mjs';
 
 // The `verify` job completes every immutable-input check before any job acquires
-// AWS credentials, and publishes exactly what it proved. The `deploy` job binds
-// that artifact back to its own dispatch inputs and re-hashes the travelled bytes
-// once against the published digests before any credential.
+// AWS credentials, and publishes exactly what it proved (#207):
 //
-// Since #194 the record is v4: the members are unchanged, but `assets` is the
-// operation's consumed set rather than always the three stage-base names.
-// `deploy-platform` and `restore-release` download those three; `deploy-runtime`
-// downloads only `service-schema.json`, which the pre-mutation schema-boundary
-// gate then re-hashes, validates and compares against the live applied journal.
-// Every other operation publishes the binding with no release and deploys no
-// Service code.
+//   * the Service-published release BYTES travel as the
+//     `service-release-bytes-<run_id>-<run_attempt>` transport artifact, whose only
+//     content is `.service-artifacts/selected/`;
+//   * the PUBLISHED DIGEST SET travels as this step's `release_assets` output, a
+//     one-line JSON object of `asset name -> sha256:<hex>` produced from the
+//     Releases API response and nothing else.
+//
+// Neither is a record: no schema, no producer identity, no verdict, no `.sha256`
+// companion. The deploy job binds them to its own dispatch inputs, re-hashes each
+// travelled byte against the published digest, and only then requests an OIDC
+// token. An operation that consumes no release publishes an empty asset set, and
+// the deploy job fails closed if its output carries anything else.
+const MAX_RELEASE_ASSETS_BYTES = 2048;
+
 const env = process.env;
 validateOperationInputs(env);
 const boundary = operationBoundary(env);
 const release = await runVerifyInputs({ env });
-await mkdir('deployment-evidence', { recursive: true });
-const record = {
-  schema_version: 4,
-  record_type: 'anywear_infra_verified_inputs',
-  operation: env.INFRA_OPERATION,
-  workflow: boundary.workflow,
-  family: boundary.family,
-  executor: { repository: env.GITHUB_REPOSITORY, sha: env.GITHUB_SHA,
-    run_id: Number(env.GITHUB_RUN_ID), run_attempt: Number(env.GITHUB_RUN_ATTEMPT) },
-  release: release?.release ?? null,
-  assets: release?.assets ?? null,
-};
-await writeFile('deployment-evidence/verified-inputs.json', canonicalJson(record));
-process.stdout.write(`${JSON.stringify({ record_type: record.record_type, operation: record.operation,
-  release: record.release, assets: record.assets })}\n`);
+const assets = release?.assets ?? {};
+const encoded = JSON.stringify(assets);
+if (Buffer.byteLength(encoded, 'utf8') > MAX_RELEASE_ASSETS_BYTES) {
+  throw new Error(`The release asset digest set is larger than ${MAX_RELEASE_ASSETS_BYTES} bytes`);
+}
+if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `release_assets=${encoded}\n`);
+const digests = Object.entries(assets).map(([name, digest]) => `${name} ${digest}`).join(', ');
+process.stdout.write(`Verified ${boundary.workflow} ${env.INFRA_OPERATION}`
+  + (release ? ` release ${release.release.tag}@${release.release.source_sha}; published ${digests}` : ' with no Service release')
+  + '\n');

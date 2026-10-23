@@ -160,22 +160,18 @@ test('restore-release reads the release identity over REST and downloads exactly
   const record = await runVerifyInputs({ env: releaseEnv('restore-release'), run, token: 'read-only-token',
     directory: selected });
 
-  // The record is the v2 release-inputs shape: `release{id, tag, source_sha}` with
-  // no manifest and no image digest, and the three consumed names with the
-  // digests the release published.
-  assert.equal(record.schema_version, 2);
-  assert.equal(record.record_type, 'anywear_infra_release_inputs');
-  assert.equal(record.repository, SERVICE_REPOSITORY);
+  // #207: the verify job returns the release identity and the published digest
+  // set and writes no record file; `release{id, tag, source_sha}` is the identity
+  // the deploy job re-derives from its own inputs, and the three published digests
+  // are what its byte proof compares the travelled files against.
   assert.deepEqual(record.release, { id: 407218593, tag: releaseTag, source_sha: serviceCommit });
   assert.deepEqual(record.assets, Object.fromEntries(STAGE_BASE_ASSETS.map(name => [name, digests[name]])));
   for (const name of STAGE_BASE_ASSETS) assert.match(record.assets[name], /^sha256:[a-f0-9]{64}$/);
 
-  // Only the three consumed files and the binding record are in the directory the
-  // CDK deploy consumes; the schema asset and any legacy manifest were never read.
+  // Only the three consumed release bytes are in the directory the CDK deploy
+  // consumes; there is no record file, no schema asset and no legacy manifest.
   assert.deepEqual((await readdir(selected)).sort(), ['post-confirmation.zip', 'pre-sign-up.zip',
-    'release-inputs.json', 'runtime-policy.json']);
-  const binding = parseJson(await readFile(path.join(selected, 'release-inputs.json')));
-  assert.deepEqual(binding, record);
+    'runtime-policy.json']);
 
   // Two REST reads (release, tag ref) and one download call naming exactly the
   // three consumed patterns. The manifest is neither requested nor fetched.
@@ -219,13 +215,13 @@ test('deploy-runtime downloads only the schema asset and the deploy job re-hashe
   assert.deepEqual(record.release, { id: 407218593, tag: releaseTag, source_sha: serviceCommit });
   assert.deepEqual(record.assets, { 'service-schema.json': digests['service-schema.json'] });
   assert.deepEqual(Object.keys(record.assets), ['service-schema.json']);
-  // Only the schema asset and the binding record travelled; two REST reads and
-  // one download naming exactly that pattern.
-  assert.deepEqual((await readdir(selected)).sort(), ['release-inputs.json', 'service-schema.json']);
+  // Only the schema asset travelled; two REST reads and one download naming
+  // exactly that pattern. Nothing else is written into the byte directory.
+  assert.deepEqual((await readdir(selected)).sort(), ['service-schema.json']);
   assert.equal(calls.length, 3);
   assert.deepEqual(calls[2][1].flatMap((arg, index) => arg === '--pattern' ? [calls[2][1][index + 1]] : []),
     ['service-schema.json']);
-  assert.deepEqual(parseJson(await readFile(path.join(selected, 'release-inputs.json'))), record);
+
   // The deploy-side proof re-hashes the one travelled file and refuses drift.
   assert.deepEqual(await assertSelectedReleaseBytes(record.assets, selected, RUNTIME_RELEASE_ASSETS), record.assets);
   // A stage-base proof over the same bytes refuses the wrong asset set.

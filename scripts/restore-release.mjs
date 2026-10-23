@@ -86,7 +86,7 @@ function redactedAdmission(state) {
 }
 
 async function failureReadback(io, stage) {
-  const observed = { failure_stage: stage, recovery: 'requires-explicit-recovery' };
+  const observed = { failure_stage: stage };
   for (const [key, name] of [['base', platformName], ['runtime', runtimeName]]) {
     try {
       const stack = await stackRead(io, name);
@@ -115,6 +115,10 @@ async function failureReadback(io, stage) {
 // Called inside the ordinary Infra queue after the reviewed Service release and
 // source checks. Only the Base stack is deployed; the Runtime slice is neither
 // verified nor deployed here, because both moved to Infra's `deploy-runtime`.
+// Each stage and the failure readback are printed to the step log; there is no
+// record (#207).
+const say = event => process.stdout.write(`${JSON.stringify({ operation: 'restore-release', ...event })}\n`);
+
 export async function runRestoreRelease({ io, infraSha, env = process.env }) {
   // Reject source/context before any authenticated read or deploy.
   assertContext(infraSha, env);
@@ -126,16 +130,16 @@ export async function runRestoreRelease({ io, infraSha, env = process.env }) {
   };
   const phase = async (name, action) => {
     stage = name;
-    await io.recordRestoreStage?.({ stage, result: 'began' });
+    say({ stage, result: 'began' });
     assertContext(infraSha, env);
     await closed();
     const result = await action();
     await closed();
-    await io.recordRestoreStage?.({ stage, result: 'succeeded' });
+    say({ stage, result: 'succeeded' });
     return result;
   };
   try {
-    await io.recordRestoreStage?.({ stage, result: 'began' });
+    say({ stage, result: 'began' });
     assertContext(infraSha, env);
     const platform = await stackRead(io, platformName); const runtime = await stackRead(io, runtimeName);
     assertRestoreTarget(platform);
@@ -145,7 +149,7 @@ export async function runRestoreRelease({ io, infraSha, env = process.env }) {
     const originalPlatformInterface = selectOutputs(outputs(platform), platformInterfaceKeys);
     originalAdmission = await readAdmissionState(io);
     assertClosedAdmission(originalAdmission, originalAdmission); lastAdmission = originalAdmission;
-    await io.recordRestoreStage?.({ stage, result: 'succeeded' });
+    say({ stage, result: 'succeeded' });
 
     const readSelected = async () => {
       const actualPlatform = await stackRead(io, platformName); const actualRuntime = await stackRead(io, runtimeName);
@@ -160,10 +164,10 @@ export async function runRestoreRelease({ io, infraSha, env = process.env }) {
     return { restored_stack: platformName, admission: redactedAdmission(lastAdmission) };
   } catch (error) {
     const observed = await failureReadback(io, stage);
-    // Evidence-hook failures must never resume a sibling deployment or recovery.
-    try { await io.recordRestoreStage?.({ stage, result: 'failed' }); } catch { /* Preserve the original failure. */ }
-    try { await io.recordRestoreState?.(observed); } catch { /* Preserve the original failure. */ }
-    try { await io.recordRecovery?.('requires-explicit-recovery'); } catch { /* Preserve the original failure. */ }
+    // The readback is a run fact: the step log names the failed stage, both stack
+    // statuses and the redacted admission state, and the thrown message carries
+    // "explicit recovery required". Nothing here resumes a sibling deployment.
+    say({ result: 'failed', ...observed });
     throw new Error(`Beta Base restore failed at ${stage}; explicit recovery required; Base=${observed.base_status} (${observed.base_exists}), Runtime=${observed.runtime_status} (${observed.runtime_exists})`, { cause: error });
   }
 }

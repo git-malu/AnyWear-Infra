@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parseJson, sha256, canonicalJson, exact, matches, integer, DIGEST, SHA } from './json-contract.mjs';
+import { parseJson, sha256, exact, matches, integer, DIGEST, SHA } from './json-contract.mjs';
 import { SCHEMA_ASSET_NAME } from './schema-asset.mjs';
 
 // The reviewed Service release identity that replaces the committed `selection`:
@@ -66,16 +66,9 @@ export function validateReleaseInput(env = process.env, operation = env.INFRA_OP
   return { releaseTag, serviceCommit };
 }
 
-export function releaseInputsRecord({ release, assets, assetNames = STAGE_BASE_ASSETS }) {
-  return { schema_version: 2, record_type: 'anywear_infra_release_inputs', repository: SERVICE_REPOSITORY,
-    release: { id: release.id, tag: release.tag, source_sha: release.sourceSha },
-    assets: Object.fromEntries([...assetNames].map(name => [name, assets[name]])) };
-}
-
 const releaseApiPath = releaseTag => `repos/${SERVICE_REPOSITORY}/releases/tags/${encodeURIComponent(releaseTag)}`;
 const tagRefApiPath = releaseTag => `repos/${SERVICE_REPOSITORY}/git/ref/tags/${encodeURIComponent(releaseTag)}`;
 const tagApiPath = sha => `repos/${SERVICE_REPOSITORY}/git/tags/${sha}`;
-
 // The release API's documented representation is the authority: `immutable` and
 // each asset's `sha256:<hex>` digest come from REST, never from a manifest. Only
 // the names this operation consumes are required; any other published asset (a
@@ -133,8 +126,10 @@ export async function resolveTagCommit(releaseTag, api) {
 
 // Download only the assets this operation consumes, after proving the release
 // identity through the API. The bytes are not hashed here: the deploy job hashes
-// each consumed byte exactly once against the recorded published digest before it
-// requests a credential.
+// each consumed byte exactly once against the published digest before it requests
+// a credential. Since #207 nothing is written into the byte directory except the
+// release's own bytes: the digest set crosses as the `release_assets` job output,
+// and the retired `release-inputs.json` v2 record is gone.
 export async function downloadReleaseInputs({ releaseTag, serviceCommit, directory = SELECTED_RELEASE_DIRECTORY,
   token, run = execute, assetNames = STAGE_BASE_ASSETS }) {
   if (typeof token !== 'string' || !token) throw new Error('A read-only Service token is required to read the Service release');
@@ -149,9 +144,7 @@ export async function downloadReleaseInputs({ releaseTag, serviceCommit, directo
   }
   await run('gh', ['release', 'download', releaseTag, '--repo', SERVICE_REPOSITORY, '--dir', directory, '--clobber',
     ...[...assetNames].flatMap(name => ['--pattern', name])], { env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
-  const record = releaseInputsRecord({ assets, assetNames, release: { id, tag: releaseTag, sourceSha } });
-  await writeFile(path.join(directory, 'release-inputs.json'), canonicalJson(record));
-  return record;
+  return { release: { id, tag: releaseTag, source_sha: sourceSha }, assets };
 }
 
 // Deploy-side proof. The verify job's artifact travelled between jobs, so the
@@ -179,7 +172,7 @@ export async function runVerifyInputs({ env = process.env, run = execute, token 
   const release = validateReleaseInput(env);
   if (!release) return null;
   // Since #194 the verify job also downloads `deploy-runtime`'s schema asset, so
-  // the operation's consumed set is what travels and what the record binds.
+  // the operation's consumed set is what travels and what the deploy job proves.
   return downloadReleaseInputs({ ...release, token, run, directory,
     assetNames: releaseAssetsFor(env.INFRA_OPERATION) });
 }

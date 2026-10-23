@@ -4,24 +4,21 @@ import { normalizeTesterEmails } from './tester-allowlist.mjs';
 import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
-// `state` entry and the accepted `anywear_infra_deployment` producer `observe`;
-// every mutation shares `mutate.yml`, including since #195 the release slice's
-// `deploy-runtime` and `stop-runtime`.
+// `state` entry; every mutation shares `mutate.yml`, including since #195 the
+// release slice's `deploy-runtime` and `stop-runtime`. Issue #207 retired the
+// `observe` operation with the record it produced.
 export const workflowOperations = Object.freeze({
-  '.github/workflows/runtime.yml': ['state', 'observe'],
+  '.github/workflows/runtime.yml': ['state'],
   '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
     'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission'],
 });
 
-// A record's family is derived from the operation, not from the file that hosts
-// several operations. Workflow paths were the family identity while each operation
-// had its own dispatch file; keeping the operation -> family mapping preserves
-// cross-repository record families, keeps `observe` as the accepted
-// deployment-record producer, and keeps `state` from ever being stamped as one.
+// The operation -> family mapping keeps the pre-#207 families stable for the
+// surfaces that still name one (session-policy and admission read-backs), and keeps
+// read-only `state` out of every mutating family. No record is written any more.
 export const operationFamilies = Object.freeze({
   state: 'beta-observe',
-  observe: 'runtime',
   'deploy-foundation': 'beta-deploy',
   'deploy-billing': 'beta-deploy',
   'deploy-platform': 'beta-deploy',
@@ -118,55 +115,34 @@ export function operationReads(env) {
   return Object.keys(reads).filter((pair) => !(pair in readOperations) || readOperations[pair].includes(operation));
 }
 export const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'cloudformation/get-template', 'ssm/get-parameter'];
-// One frozen evidence record per operation. `roles` is exactly what
-// `families(env, 'operation')` materializes for the operation's own session;
-// `qualified_by` names the run that qualifies the operation's mutation for E2E
-// ('self' when the operation's own artifact is accepted, 'not-applicable' when it
-// claims no qualifying mutation), and `evidence` states what evidences it. Every
-// operation in `workflowOperations` appears here, so an operation without a
-// verification dependency is a recorded decision instead of a missing lookup.
-const evidenceEntry = (roles, qualified_by, evidence) => Object.freeze({ roles: Object.freeze(roles), qualified_by, evidence });
-export const operationEvidence = Object.freeze({
-  observe: evidenceEntry([], 'self',
-    'This run emits the accepted anywear_infra_deployment v3 record for the observed Foundation, Beta stage base and Billing. The release slice is deployed and recorded by the deploy-runtime operation.'),
-  state: evidenceEntry([], 'not-applicable',
-    'Read-only: the operation record carries anywear_infra_state and claims no mutation.'),
-  'deploy-foundation': evidenceEntry([], '.github/workflows/runtime.yml',
-    'The accepted record carries the configured stack Original template hash; this does not qualify IAM semantics.'),
-  'deploy-billing': evidenceEntry([], '.github/workflows/runtime.yml',
-    'The accepted record carries the billing stack Original template hash observed in us-east-1.'),
-  'deploy-platform': evidenceEntry([], '.github/workflows/runtime.yml',
-    'The accepted record carries the Base Original template hash and the consumed stage-contract parameter versions and value hashes.'),
-  // Issue #166: the Egress stack is disposable and exists only while Beta runs.
-  'deploy-egress': evidenceEntry([], '.github/workflows/runtime.yml',
-    'The accepted record carries the Egress stack Original template hash after the disposable network edge is created.'),
-  'delete-egress': evidenceEntry([], '.github/workflows/runtime.yml',
-    'The accepted record carries the observed stack state and proves the Runtime stack was absent before the Egress delete; no deployment record is produced.'),
-  // Issue #195: the operation writes the v6 `anywear_service_deployment` record
-  // itself (the passed 600-second gate and the admitted schema-boundary
-  // comparison), so its own mutation run qualifies it. Issue #194: the pre-mutation
-  // schema-boundary gate runs one read-only `schema-journal` task from the
-  // existing `verify` family, under the existing verification-task role.
-  'deploy-runtime': evidenceEntry(['verify'], 'self',
-    'The deploy job writes the v6 anywear_service_deployment record: the six deploy parameters, the 39 stage-contract inputs, the normalised deployed template hash, the passed 600-second gate, the v6 observed tuple and the schema_boundary comparison admitted by one read-only schema-journal verify task before any mutation.'),
-  'stop-runtime': evidenceEntry([], '.github/workflows/runtime.yml',
-    'The operation record carries the observed stack state and proves only AnyWearRuntimeStack-beta was destroyed; no deployment record is produced.'),
-  'restore-release': evidenceEntry([], '.github/workflows/runtime.yml',
-    'Restoring the Base stack leaves the Runtime stack observable by the following fixed observation; the Runtime slice is restored by the deploy-runtime operation.'),
-  migrate: evidenceEntry(['migrate'], '.github/workflows/runtime.yml',
-    'The operation record carries the migrate task identity and its stopped-success result on the deployed Service image.'),
-  'admission-status': evidenceEntry(['lifecycle'], 'not-applicable',
-    'Status only: it reads the admission mode, the record key set and the tester list, and mutates nothing.'),
-  'add-testers': evidenceEntry(['lifecycle'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record admission read-back evidences it. The tester write changes no admission state and cannot open admission: its recorded mode and key set are the ones observed before the write. Open admission separately with `open-admission`.'),
-  'set-testers': evidenceEntry(['lifecycle'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record admission read-back evidences it. The tester write changes no admission state and cannot open admission: its recorded mode and key set are the ones observed before the write. Open admission separately with `open-admission`.'),
-  'close-admission': evidenceEntry(['lifecycle'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record lifecycle status and admission read-back evidence it. It closes admission through the pinned lifecycle `suspend` and records whether it ended an open admission (`ordinary`) or one already closed (`already-closed`).'),
-  'open-admission': evidenceEntry(['lifecycle'], 'not-applicable',
-    'The accepted record does not observe admission state; the operation record carries `admission-open-proof`: the mode, its source, the tester count and hash, the no-bound evidence (the SSM record key set and the absence of the database status window field) and SSM/DB agreement. There is no automatic closure: an interrupted open leaves admission open until an explicit `close-admission` and an `admission-status` read-back.'),
+// One frozen one-shot role allow-list per operation. Each entry is exactly the
+// set of one-shot task families the operation's own session may invoke, so an
+// operation cannot touch a family it was not reviewed for. Every operation in
+// `workflowOperations` appears here, so an operation with no verification
+// dependency is a recorded decision instead of a missing lookup. Issue #207
+// removed the retired record's `qualified_by`/`evidence` prose: the run's own
+// conclusion and the platform facts are the evidence, not a record column.
+export const operationRoles = Object.freeze({
+  state: Object.freeze([]),
+  'deploy-foundation': Object.freeze([]),
+  'deploy-billing': Object.freeze([]),
+  'deploy-platform': Object.freeze([]),
+  'deploy-egress': Object.freeze([]),
+  'delete-egress': Object.freeze([]),
+  // Issue #194: the pre-mutation schema-boundary gate runs one read-only
+  // `schema-journal` task from the existing `verify` family, under the existing
+  // verification-task role.
+  'deploy-runtime': Object.freeze(['verify']),
+  'stop-runtime': Object.freeze([]),
+  'restore-release': Object.freeze([]),
+  migrate: Object.freeze(['migrate']),
+  'admission-status': Object.freeze(['lifecycle']),
+  'add-testers': Object.freeze(['lifecycle']),
+  'set-testers': Object.freeze(['lifecycle']),
+  'close-admission': Object.freeze(['lifecycle']),
+  'open-admission': Object.freeze(['lifecycle']),
 });
-const oneShotRoles = operation => operationEvidence[operation].roles;
+const oneShotRoles = operation => operationRoles[operation];
 // The task role each one-shot family registers under. `verify` keeps the existing
 // verification-task role (#194): the schema-journal read adds no role, task
 // family, log group or IAM statement.
@@ -219,7 +195,7 @@ export function families(env, purpose) {
     return [];
   }
   if (purpose !== 'operation') throw new Error('Unknown credential purpose');
-  return boundary.readOnly ? [] : [...operationEvidence[env.INFRA_OPERATION].roles];
+  return boundary.readOnly ? [] : [...operationRoles[env.INFRA_OPERATION]];
 }
 export function assertAwsAllowed(env, args, purpose = 'operation', session = 'runtime') {
   const boundary = operationBoundary(env);

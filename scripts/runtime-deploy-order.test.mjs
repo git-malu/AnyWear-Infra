@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRuntimeIo } from './runtime-operation.mjs';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createRuntimeIo, runOperation } from './runtime-operation.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
 const baseName = 'AnyWearPlatformStack-beta';
@@ -36,8 +39,8 @@ function stackAbsenceError(stackName) {
   return Object.assign(new Error(stderr), { stderr });
 }
 
-test('a completed Base deploy is recorded before a failing log-retention step', async () => {
-  const record = { events: [] };
+test('a completed Base deploy is a changed stack even when the retention step then fails', async () => {
+  const changedStacks = [];
   const run = async (command, args) => {
     if (command === 'npx') return { stdout: '', stderr: '' };
     assert.equal(command, 'aws');
@@ -63,34 +66,84 @@ test('a completed Base deploy is recorded before a failing log-retention step', 
     }
     throw new Error(`Unexpected AWS call ${args.join(' ')}`);
   };
-  const io = await createRuntimeIo(env, record, {
-    purpose: 'operation', run,
+  const io = await createRuntimeIo(env, {
+    purpose: 'operation', run, changedStacks,
     assume: async () => ({ AWS_ACCESS_KEY_ID: 'x', AWS_SECRET_ACCESS_KEY: 'y', AWS_SESSION_TOKEN: 'z' }),
   });
   await assert.rejects(io.deploy(baseName), /Unexpected Beta log retention account/);
-  assert.deepEqual(record.events, [{
-    type: 'stack-deploy', stack_name: baseName, source_repository: env.GITHUB_REPOSITORY,
-    source_sha: env.GITHUB_SHA, result: 'complete',
-  }]);
-  // The retention event is written only after retention actually succeeds.
-  assert.equal(record.events.some((event) => event.type === 'beta-platform-log-retention'), false);
+  // The mutation landed before the failure: the operation knows the stack changed,
+  // which is the "changed but unqualified" fact the step summary publishes.
+  assert.deepEqual(io.changedStacks, [baseName]);
 });
 
-test('a completed non-Base deploy does not run retention and records its event', async () => {
-  const record = { events: [] };
+test('a completed non-Base deploy marks exactly its own stack changed', async () => {
+  const changedStacks = [];
   const foundationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_RELEASE_TAG: '', SERVICE_COMMIT: '' };
   const run = async (command, args) => {
     if (command === 'npx') return { stdout: '', stderr: '' };
     if (command === 'aws' && args[0] === 'iam' && args[1]?.startsWith('simulate-')) return simulatorAllowed(args);
     throw new Error('No AWS read is required for a Foundation deploy');
   };
-  const io = await createRuntimeIo(foundationEnv, record, {
-    purpose: 'operation', run,
+  const io = await createRuntimeIo(foundationEnv, {
+    purpose: 'operation', run, changedStacks,
     assume: async () => ({ AWS_ACCESS_KEY_ID: 'x', AWS_SECRET_ACCESS_KEY: 'y', AWS_SESSION_TOKEN: 'z' }),
   });
   await io.deploy('AnyWearFoundationStack');
-  assert.deepEqual(record.events, [{
-    type: 'stack-deploy', stack_name: 'AnyWearFoundationStack', source_repository: env.GITHUB_REPOSITORY,
-    source_sha: env.GITHUB_SHA, result: 'complete',
-  }]);
+  assert.deepEqual(io.changedStacks, ['AnyWearFoundationStack']);
+});
+
+test('a failed operation that already changed a stack appends one run-summary line naming it', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-run-summary-'));
+  const summary = path.join(directory, 'summary.md');
+  try {
+    const changedStacks = [];
+    const io = {
+      changedStacks,
+      region: 'ap-east-1', now: Date.now, sleep: async () => {},
+      async aws(args) {
+        if (args[0] === 'sts' && args[1] === 'get-caller-identity') return { Account: '650880818323' };
+        if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
+          const name = args[args.indexOf('--stack-name') + 1];
+          if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
+          throw stackAbsenceError(name);
+        }
+        throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+      },
+      // The mutation returned, then a later gate refused: the run must end failed
+      // and its summary must name the stack it already changed.
+      async deploy(stack) {
+        io.changedStacks.push(stack);
+        throw new Error('the post-mutation gate refused');
+      },
+    };
+    const createIo = async (_environment, options) => { io.changedStacks = options.changedStacks; return io; };
+    const operationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_RELEASE_TAG: '',
+      SERVICE_COMMIT: '', GITHUB_STEP_SUMMARY: summary };
+    await assert.rejects(runOperation(operationEnv, { createIo }), /the post-mutation gate refused/);
+    const line = await readFile(summary, 'utf8');
+    assert.match(line, /AnyWearFoundationStack/);
+    assert.match(line, /did not complete/);
+    assert.equal(line.trim().split('\n').length, 1, 'exactly one summary line');
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test('a refusal before any mutation appends no changed-stack summary line', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-run-summary-'));
+  const summary = path.join(directory, 'summary.md');
+  try {
+    const io = {
+      changedStacks: [],
+      async aws() { throw new Error('refused before any mutation'); },
+      async deploy() { throw new Error('must not deploy'); },
+    };
+    const createIo = async () => io;
+    const operationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_RELEASE_TAG: '',
+      SERVICE_COMMIT: '', GITHUB_STEP_SUMMARY: summary };
+    await assert.rejects(runOperation(operationEnv, { createIo }), /refused before any mutation/);
+    await assert.rejects(readFile(summary, 'utf8'), /ENOENT/);
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
 });
