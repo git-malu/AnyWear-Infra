@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "record_type": "anywear_authorization_lint_baseline",
+  "source": "AwsSolutions-IAM5 findings from the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta, plus the count of wildcard-bearing policy statements in each stack's template. Regenerate with the same inputs test/authorization-lint.test.ts synthesizes. A wildcard-bearing statement is one whose Action or Resource carries a `*` in any AWS::IAM::Policy, AWS::IAM::ManagedPolicy or role-inline policy document, and `id` is the cdk-nag rule argument verbatim with `arn:<AWS::Partition>` normalized to `arn:aws`. Every entry carries a reviewed reason.",
+  "templates": [
+    { "stack": "AnyWearFoundationStack", "wildcard_statement_count": 12 },
+    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 79 }
+  ],
+  "findings": [
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:iam::650880818323:role/cdk-*-role-650880818323-ap-east-1",
+      "reason": "The dev, beta and production GitHub Actions pipeline roles assume the ap-east-1 CDK bootstrap deploy/file-publishing/lookup roles; the `*` is the CDK role-family segment in `cdk-<kind>-role`, and the account and region are fixed. No Infra deploy or runtime statement carries this form."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/dev/*",
+      "reason": "The dev pipeline role reads the dev stage-contract prefix; every parameter under `/anywear/dev/` is published by the reviewed dev deploy. Read only, no write or version action."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/dev/cloudfront_origin_header-*",
+      "reason": "The dev pipeline role reads the dev CloudFront origin-header secret; the wildcard is the Secrets Manager random suffix after the fixed name prefix. Read only."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/dev/qweather_api_key-*",
+      "reason": "The dev pipeline role reads the dev ARK/QWeather API-key secret; the wildcard is the Secrets Manager random suffix after the fixed name prefix. Read only."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:iam::650880818323:role/cdk-*-role-650880818323-us-east-1",
+      "reason": "The beta pipeline role also assumes the us-east-1 CDK bootstrap roles for the Billing stack; the `*` is the CDK role-family segment, and the account and region are fixed."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*",
+      "reason": "The beta pipeline role reads the beta stage-contract prefix; `/anywear/beta/` is published by the reviewed Base deploy. Read only."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*",
+      "reason": "The beta pipeline role reads the Beta CloudFront origin-header secret; the wildcard is the Secrets Manager random suffix after the fixed name prefix. Read only."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/prod/*",
+      "reason": "The production pipeline role reads the production stage-contract prefix; every parameter under `/anywear/prod/` is published by the reviewed production deploy. Read only."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/prod/cloudfront_origin_header-*",
+      "reason": "The production pipeline role reads the production CloudFront origin-header secret; the wildcard is the Secrets Manager random suffix after the fixed name prefix. Read only."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*",
+      "reason": "The runtime role's Foundation statement reads the Runtime stack's terminal state for the one-writer rule; the wildcard is the stack UUID CloudFormation appends, not part of the stack name."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearWorkloadStack-beta/*",
+      "reason": "The runtime role keeps the transitional read of the legacy Workload stack until the one-time split migration deletes it; the wildcard is the stack UUID. The read is used only for the pre-MOVE API origin."
+    },
+    {
+      "stack": "AnyWearFoundationStack",
+      "id": "Resource::*",
+      "reason": "Two statements: the CDK-generated OpenID Connect provider custom-resource role's iam:Create/Delete/UpdateOpenIDConnectProvider* actions, which have no resource-level scope, and the beta artifact role's ecr:GetAuthorizationToken. cdk-nag reports one id per stack for every bare `*` form, so the per-stack count is what catches an added `*` statement."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Action::s3:GetObject*",
+      "reason": "The beta pipeline role's S3 statement on the two retained buckets uses the AWS `GetObject*` action family; the resource side is the bucket ARN plus `/*` only, so the wildcard is in the action name, not in an object path."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Action::s3:GetBucket*",
+      "reason": "The same pipeline statement's `GetBucket*` family (location/versioning/policy reads) on the retained bucket ARNs; no bucket outside the two Base-owned buckets is named."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Action::s3:List*",
+      "reason": "The same pipeline statement's `List*` family on the two retained bucket ARNs; the bucket list surface is the reviewed deployment input, and no other bucket is named."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Action::s3:DeleteObject*",
+      "reason": "The same pipeline statement's `DeleteObject*` family (object and object-version deletion) on the two retained bucket ARNs; it is the release/cleanup surface and adds no bucket."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Action::s3:Abort*",
+      "reason": "The same pipeline statement's `Abort*` family, needed to abort an incomplete multipart upload on either retained bucket. No resource outside the two buckets."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/*",
+      "reason": "The CDK GetAtt rendering of the retained wardrobe bucket ARN plus `/*`; the bucket is Base-owned and retained, and `/*` is the object-key position only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::<AnyWearClientBucketAE190946.Arn>/*",
+      "reason": "The CDK GetAtt rendering of the retained client-publish bucket ARN plus `/*`; the bucket is Base-owned and retained, and `/*` is the object-key position only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::*",
+      "reason": "Twenty-six statements: account-level reads that have no resource type (ECS DescribeTaskDefinition/ListTasks, EC2 DescribeManagedPrefixLists, CloudWatch GetMetricStatistics, RDS Describe*, CloudWatch Logs DescribeLogGroups, application-autoscaling Describe*), ecr:GetAuthorizationToken in the pipeline and one-shot-execution roles, the IAM simulator pair on the deploy and runtime roles, and the CDK LogRetention provider's logs:PutRetentionPolicy/DeleteRetentionPolicy. cdk-nag collapses every bare `*` into one id, so the per-stack count guards an added `*` statement."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/aws/lambda/beta-anywear-pre-sign-up:*",
+      "reason": "The pipeline role sets the retention of the pre-sign-up Lambda log group; the wildcard is the log-stream suffix CloudFormation Logs appends, and the log group name is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/aws/lambda/beta-anywear-post-confirmation-sync:*",
+      "reason": "The pipeline role sets the retention of the post-confirmation-sync Lambda log group; the wildcard is the log-stream suffix, and the log group name is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/aws/lambda/AnyWearPlatformStack-beta-*:*",
+      "reason": "The CDK-generated helper functions of the Base stack get their log-group retention through the same pipeline statement; the first `*` is the generated helper-function suffix, the second is the log-stream suffix."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:lambda:ap-east-1:650880818323:function:AnyWearPlatformStack-beta-*",
+      "reason": "The pipeline role reads the Base stack's generated helper functions; the `*` is the CDK-generated logical/physical suffix in the function name, and no other function matches."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-migrate:*",
+      "reason": "The beta pipeline role registers, tags, lists and runs revisions of the reviewed `migrate` one-shot family; `:*` is the task-definition revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:*",
+      "reason": "The beta pipeline role registers, tags, lists and runs revisions of the reviewed `verify` one-shot family (including the schema-journal probe); `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:*",
+      "reason": "The beta pipeline role registers, tags, lists and runs revisions of the reviewed `lifecycle` one-shot family; `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-tester-cleanup:*",
+      "reason": "The beta pipeline role registers, tags, lists and runs revisions of the reviewed `tester-cleanup` one-shot family; `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-task-audit:*",
+      "reason": "The beta pipeline role registers, tags and lists revisions of the reviewed `task-audit` one-shot family; `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-nonpaid-*:*",
+      "reason": "The reviewed `nonpaid-*` task families (the admission fixture families) share one prefix; the first `*` is the family suffix and the second is the revision number. The prefix is the reviewed admission-test surface."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle-fixture:*",
+      "reason": "The reviewed lifecycle fixture family registered by the admission tests; `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-migrate-evidence-*:*",
+      "reason": "The migration evidence family; the first `*` is the generated evidence suffix, the second is the revision number, and the `beta-anywear-migrate-evidence-` prefix is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify-evidence-*:*",
+      "reason": "The verification evidence family; the first `*` is the generated evidence suffix, the second is the revision number, and the `beta-anywear-verify-evidence-` prefix is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle-evidence-*:*",
+      "reason": "The lifecycle evidence family; the first `*` is the generated evidence suffix, the second is the revision number, and the `beta-anywear-lifecycle-evidence-` prefix is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle-fixture-evidence-*:*",
+      "reason": "The lifecycle-fixture evidence family; the first `*` is the generated evidence suffix, the second is the revision number, and the `beta-anywear-lifecycle-fixture-evidence-` prefix is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/*",
+      "reason": "The pipeline role stops and reads tasks in the dedicated `beta-anywear` cluster; the `*` is the task id, and the cluster and family path are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/api:*",
+      "reason": "The pipeline role filters log events for the API service's reviewed log group; the wildcard is the log-stream suffix, and the log group name is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/worker:*",
+      "reason": "The pipeline role filters log events for the worker's reviewed log group; the wildcard is the log-stream suffix, and the log group name is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/aws/ecs/containerinsights/beta-anywear/performance:*",
+      "reason": "The CDK LogRetention provider deletes the container-insights performance log group; the wildcard is the log-stream suffix and the log group name is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:*",
+      "reason": "The task-evidence managed policy lists tags on worker task definitions; `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:*",
+      "reason": "The task-evidence managed policy lists tags on API task definitions; `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-migrate/OneShot/*",
+      "reason": "The task-evidence managed policy reads the reviewed `migrate` one-shot log stream; the wildcard is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-verify/OneShot/*",
+      "reason": "The task-evidence managed policy reads the reviewed `verify` one-shot log stream; the wildcard is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-lifecycle/OneShot/*",
+      "reason": "The task-evidence managed policy reads the reviewed `lifecycle` one-shot log stream; the wildcard is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-tester-cleanup/OneShot/*",
+      "reason": "The task-evidence managed policy reads the reviewed `tester-cleanup` one-shot log stream; the wildcard is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-task-audit/OneShot/*",
+      "reason": "The task-evidence managed policy reads the reviewed `task-audit` one-shot log stream; the wildcard is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-lifecycle-fixture/OneShot/*",
+      "reason": "The task-evidence managed policy reads the reviewed lifecycle-fixture one-shot log stream; the wildcard is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-migrate-evidence-*/OneShot/*",
+      "reason": "The task-evidence managed policy reads migration evidence streams; the first `*` is the generated evidence suffix, the second is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-verify-evidence-*/OneShot/*",
+      "reason": "The task-evidence managed policy reads verification evidence streams; the first `*` is the generated evidence suffix, the second is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-lifecycle-evidence-*/OneShot/*",
+      "reason": "The task-evidence managed policy reads lifecycle evidence streams; the first `*` is the generated evidence suffix, the second is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-lifecycle-fixture-evidence-*/OneShot/*",
+      "reason": "The task-evidence managed policy reads lifecycle-fixture evidence streams; the first `*` is the generated evidence suffix, the second is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearFoundationStack/*",
+      "reason": "The Infra deploy and runtime roles read the Foundation stack; the wildcard is the stack UUID CloudFormation appends, not part of the stack name."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearPlatformStack-beta/*",
+      "reason": "The Infra deploy and runtime roles read the Base stack; the wildcard is the stack UUID CloudFormation appends, not part of the stack name."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*",
+      "reason": "The Infra deploy role reads the Runtime stack and describes, executes or deletes this run's change set on it; the wildcard is the stack UUID, and the change-set actions stay scoped to the Runtime stack."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:cloudformation:us-east-1:650880818323:stack/AnyWearBillingStack-beta/*",
+      "reason": "The Infra deploy and runtime roles read the Billing stack in us-east-1; the wildcard is the stack UUID, and the region is fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*",
+      "reason": "The `deploy-runtime` deploy session describes, executes or deletes the change set the CDK bootstrap role created; the wildcard is the change-set name, whose reviewed form is `anywear-runtime-<run id>`. No create action is granted."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/cloudfront_origin_header-*",
+      "reason": "The deploy session reads the Beta CloudFront origin-header secret that seeds the distribution; the wildcard is the Secrets Manager random suffix after the fixed name prefix. Read only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*",
+      "reason": "The runtime role reads the full stage-contract prefix: the 39 published contract names plus the admission and record parameter names; every value under `/anywear/beta/` is published by the reviewed Base deploy. Read only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearEgressStack-beta/*",
+      "reason": "The runtime role reads the disposable Egress stack to enforce the stop ordering (Runtime absent before the Egress delete) and the one-writer rule; the wildcard is the stack UUID."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:cloudwatch:ap-east-1:650880818323:alarm:beta-anywear-*",
+      "reason": "The 600-second bake records the deployed bake and queue alarm states under the reviewed `beta-anywear-*` alarm prefix; the alarm names are the only wildcard position and no alarm is written."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:*",
+      "reason": "The runtime role registers, tags and runs revisions of the reviewed `artifact-verify` one-shot family; `:*` is the revision number only."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:logs:ap-east-1:650880818323:log-group:/anywear/beta/one-shot:log-stream:beta-anywear-artifact-verify/OneShot/*",
+      "reason": "The runtime role reads the reviewed `artifact-verify` one-shot log stream; the wildcard is the OneShot stream id, and the log group and family prefix are fixed."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::arn:aws:application-autoscaling:ap-east-1:650880818323:scalable-target/*",
+      "reason": "The E2E qualification role reads the Beta stage's registered scalable targets; the `*` is the scalable-target id, and the account and region are fixed. Read only."
+    }
+  ]
+}

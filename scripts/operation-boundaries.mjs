@@ -250,9 +250,11 @@ export function assertAwsAllowed(env, args, purpose = 'operation', session = 'ru
 }
 
 const arn = (service, suffix, awsRegion = 'ap-east-1') => `arn:aws:${service}:${awsRegion}:650880818323:${suffix}`;
-// Issue #165: the authorization preflight calls the IAM policy simulator from
-// inside the restricted session; the simulator actions have no resource-level
-// scope, so the generated session policy carries them on `*`.
+// Issue #165/#214: the authorization preflight calls the IAM policy simulator
+// from inside the restricted runtime session; the simulator actions have no
+// resource-level scope, so the generated runtime session policy carries them on
+// `*`. The deploy session no longer simulates anything, so its copy is gone; the
+// two roles' identity grants stay (#196 owns narrowing those).
 const simulate = ['iam:SimulatePrincipalPolicy', 'iam:SimulateCustomPolicy'];
 export function sessionPolicy(kind, env, purpose = 'operation') {
   const boundary = operationBoundary(env);
@@ -262,7 +264,7 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
     if (purpose !== 'operation' || !changedStackNames(env.INFRA_OPERATION).length) throw new Error('Deploy credentials are forbidden for this operation');
     const regions = env.INFRA_OPERATION === 'deploy-billing' ? ['us-east-1'] : ['ap-east-1'];
     statements = [statement(['sts:GetCallerIdentity', 'cloudformation:DescribeStacks', 'ssm:GetParameter',
-      'ec2:DescribeManagedPrefixLists', ...simulate]),
+      'ec2:DescribeManagedPrefixLists']),
       statement('sts:AssumeRole', regions.flatMap(roleRegion => ['deploy', 'file-publishing', 'lookup'].map(role =>
         `arn:aws:iam::650880818323:role/cdk-hnb659fds-${role}-role-650880818323-${roleRegion}`))),
       statement('secretsmanager:GetSecretValue', arn('secretsmanager', 'secret:/anywear/beta/cloudfront_origin_header-*'))];

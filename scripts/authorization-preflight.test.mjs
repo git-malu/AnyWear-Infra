@@ -1,18 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { runAuthorizationPreflight, AuthorizationPreflightError, simulationRequests, SIMULATION_SKIPS,
-  PREFLIGHT_MARKER, preflightActionSet, CONTEXT_ENTRIES } from './authorization-preflight.mjs';
+  PREFLIGHT_MARKER, preflightActionSet, CONTEXT_ENTRIES, READ_RESOURCES } from './authorization-preflight.mjs';
 import { sessionPolicy, reads, readOperations, workflowOperations } from './operation-boundaries.mjs';
 import { createRuntimeIo } from './runtime-operation.mjs';
 
-// The pre-mutation preflight's contract (#165): the simulation plan comes from the
-// reviewed reads table, both the base policies and the generated session policy
-// must allow every read, a missing action stops the operation before mutation, and
-// the simulator's own session/actions are excluded from the observed layer.
+// The pre-mutation preflight's contract (#165, narrowed by #214): the simulation
+// plan comes from the reviewed reads table, both the base policy and the generated
+// runtime session policy must allow every read, a missing action stops the
+// operation before mutation, and the CDK deploy, change-set and destroy paths run
+// no simulation at all.
 
-const DECLARATION = JSON.parse(readFileSync(new URL('../test/fixtures/authorization-declared.json', import.meta.url), 'utf8'));
 const operationEnvironment = (operation, workflow = 'mutate') => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra',
   GITHUB_REPOSITORY_ID: '1409047265', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40),
   GITHUB_EVENT_NAME: 'workflow_dispatch',
@@ -20,9 +19,6 @@ const operationEnvironment = (operation, workflow = 'mutate') => ({ GITHUB_REPOS
   GITHUB_RUN_ID: '39100318242', GITHUB_RUN_ATTEMPT: '1', ENABLE_BETA_MUTATION: 'true',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired',
   INFRA_RETENTION_PROTECTION: 'true', INFRA_OPERATION: operation, TESTER_EMAILS: '[]' });
-
-const declaredCovers = (role, action) => (DECLARATION.roles[role] ?? []).some((entry) => entry === action
-  || entry === '*' || (entry.endsWith(':*') && action.startsWith(`${entry.slice(0, -1)}`)));
 
 const simulation = ({ denyAction } = {}) => async (command, args) => {
   if (command !== 'aws') throw new Error(`unexpected command ${command}`);
@@ -51,7 +47,7 @@ const failingSimulation = (stderr) => async () => {
   throw error;
 };
 
-test('the plan comes from the reviewed reads table and stays inside the declared grants', () => {
+test('the plan comes from the reviewed reads table and the runtime session policy', () => {
   const env = operationEnvironment('migrate');
   const runtime = simulationRequests('runtime', env, 'operation');
   const runtimePairs = runtime.map((request) => request.pair).sort();
@@ -60,23 +56,12 @@ test('the plan comes from the reviewed reads table and stays inside the declared
   assert.deepEqual(runtimePairs, expectedPairs);
   for (const request of runtime) {
     assert.equal(request.actions.includes(reads[request.pair]), true);
-    for (const action of request.actions) {
-      assert.equal(declaredCovers('beta-infra-runtime-role', action), true, `${action} is declared`);
-    }
+    assert.equal(request.resources.length > 0, true);
   }
   // `deploy-runtime` runs the bake, so its plan is every reviewed read, skips aside.
   const bake = simulationRequests('runtime', operationEnvironment('deploy-runtime'), 'operation');
   assert.deepEqual(bake.map((request) => request.pair).sort(),
     Object.keys(reads).filter((pair) => !(pair in SIMULATION_SKIPS)).sort());
-  for (const request of bake) for (const action of request.actions) {
-    assert.equal(declaredCovers('beta-infra-runtime-role', action), true, `${action} is declared`);
-  }
-  const deploy = simulationRequests('deploy', env, 'operation');
-  assert.deepEqual(deploy.map((request) => request.pair), ['cloudformation/describe-stacks',
-    'ssm/get-parameter', 'ec2/describe-managed-prefix-lists']);
-  for (const request of deploy) for (const action of request.actions) {
-    assert.equal(declaredCovers('beta-infra-deploy-role', action), true, `${action} is declared`);
-  }
   // Every plan action is also granted by the session policy the preflight runs under,
   // for the operation that runs the bake and for one that does not.
   for (const operation of ['migrate', 'deploy-runtime']) {
@@ -91,36 +76,48 @@ test('the plan comes from the reviewed reads table and stays inside the declared
     'ecr/describe-images', 'ecr/get-lifecycle-policy', 'ecr/get-lifecycle-policy-preview',
     'ecr/start-lifecycle-policy-preview', 'ecs/register-task-definition', 'ecs/run-task', 'ecs/wait',
     'logs/get-log-events', 'logs/put-retention-policy', 'sts/get-caller-identity']);
+  assert.equal(Object.keys(SIMULATION_SKIPS).length, 12);
+});
+
+test('the runtime plan keeps the reviewed resource forms', () => {
+  const plan = simulationRequests('runtime', operationEnvironment('migrate'));
+  const ssm = plan.find((request) => request.pair === 'ssm/get-parameters');
+  assert.equal(ssm.resources.length, 39);
+  assert.ok(ssm.resources.includes('arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/tester_allowlist'));
+  assert.ok(ssm.resources.includes('arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/api_base_url'));
+  const lambda = plan.find((request) => request.pair === 'lambda/get-function');
+  assert.ok(lambda.resources.includes('arn:aws:lambda:ap-east-1:650880818323:function:AnyWearPlatformStack-beta-*'));
+  const egress = 'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearEgressStack-beta/*';
+  for (const pair of ['cloudformation/describe-stacks', 'cloudformation/get-template',
+    'cloudformation/list-stack-resources']) {
+    const request = plan.find((entry) => entry.pair === pair);
+    assert.equal(request.resources.includes(egress), true, `${pair} keeps the Egress stack form`);
+  }
+});
+
+// Issue #214: the deploy session has no plan. A leftover caller must fail before
+// any AWS call rather than simulate a hardcoded guess at the CDK CLI's reads.
+test('the deploy session throws before any AWS call', () => {
+  assert.throws(() => simulationRequests('deploy', { INFRA_OPERATION: 'deploy-runtime' }, 'operation'),
+    /Unknown preflight session deploy/);
+  assert.throws(() => simulationRequests('deploy', {}), /Unknown preflight session deploy/);
+  assert.equal('cloudformation/describe-change-set' in READ_RESOURCES, false);
 });
 
 // Run 39787035530: `deploy-runtime` simulated its DescribeChangeSet read on a
 // change-set ARN, and the IAM policy simulator returns implicitDeny for that action
-// on every change-set ARN form even under an allow-* policy, while the Runtime stack
-// ARN is evaluable. The action stays in the plan on the evaluable form — a simulated
-// gate, not a skip — and the generated session policy carries the real stack and
-// change-set forms the operation calls.
-test('deploy-runtime simulates DescribeChangeSet on the Runtime stack ARN', () => {
+// on every change-set ARN form even under an allow-* policy. The simulation is gone
+// with the deploy plan (#214), but the deploy session policy still carries the real
+// stack and change-set forms the operation calls.
+test('the deploy session policy still grants the change-set read the CDK path performs', () => {
   const env = operationEnvironment('deploy-runtime');
-  const platformEnv = operationEnvironment('deploy-platform');
-  const request = simulationRequests('deploy', env, 'operation')
-    .find((entry) => entry.pair === 'cloudformation/describe-change-set');
-  assert.ok(request, 'the change-set read must stay in the deploy plan');
-  assert.deepEqual(request.actions, ['cloudformation:DescribeChangeSet']);
-  assert.deepEqual(request.resources,
-    ['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*']);
-  assert.equal(preflightActionSet('deploy', env, 'operation').includes('cloudformation:DescribeChangeSet'), true);
-  assert.equal('cloudformation/describe-change-set' in SIMULATION_SKIPS, false);
-  // No other operation's deploy plan gains the request.
-  assert.equal(simulationRequests('deploy', platformEnv, 'operation')
-    .some((entry) => entry.pair === 'cloudformation/describe-change-set'), false);
-  // The custom-policy half of the intersection matches the same real forms; an
-  // ARN with `changeSet` in the region position would deny every real resource.
   const policy = JSON.parse(sessionPolicy('deploy', env, 'operation'));
   const statement = policy.Statement.find((entry) => [entry.Action].flat().includes('cloudformation:DescribeChangeSet'));
   assert.ok(statement, 'the deploy-runtime session must grant the change-set read');
   assert.deepEqual([statement.Resource].flat().sort(), [
     'arn:aws:cloudformation:ap-east-1:650880818323:changeSet/*',
     'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*']);
+  assert.throws(() => preflightActionSet('deploy', env, 'operation'), /Unknown preflight session deploy/);
 });
 
 // Issue #195: the runtime session's plan, its session policy and its call
@@ -154,8 +151,8 @@ test('only deploy-runtime simulates and is granted the bake reads', () => {
   }
 });
 
-test('the preflight passes when both the base policies and the session policy allow every read', async () => {
-  const result = await runAuthorizationPreflight({ sessions: ['runtime', 'deploy'],
+test('the preflight passes when both the base policy and the session policy allow every read', async () => {
+  const result = await runAuthorizationPreflight({ sessions: ['runtime'],
     env: operationEnvironment('deploy-platform'), purpose: 'operation',
     assume: async () => ({ AWS_ACCESS_KEY_ID: 'x' }), run: simulation({}) });
   assert.equal(result.result, 'permitted');
@@ -185,26 +182,38 @@ test('a missing base grant fails closed before any mutation', async () => {
   assert.equal(calls.some((call) => call.command === 'bash'), false, 'the task script must not run');
 });
 
-test('a denied Egress destroy stops before npx cdk destroy', async () => {
+// Issue #214: the CDK paths reach the CLI with no simulation at all. A leftover
+// deploy-plan call would appear here as an `iam simulate-*` invocation.
+test('the deploy, change-set and destroy paths run zero simulations', async () => {
   const calls = [];
-  const deny = async (command, args) => {
+  const run = async (command, args) => {
     calls.push({ command, args });
-    if (command !== 'aws') throw new Error('a mutation must not run');
-    return simulation({ denyAction: 'cloudformation:DescribeStacks' })(command, args);
+    return { stdout: '', stderr: '' };
   };
-  const io = await createRuntimeIo(operationEnvironment('delete-egress'), {
-    purpose: 'operation', assume: async () => ({ AWS_ACCESS_KEY_ID: 'x' }), run: deny,
-  });
-  await assert.rejects(io.destroy('AnyWearEgressStack-beta'), (error) => error.denial === true);
-  assert.equal(calls.some((call) => call.command === 'npx'), false);
+  const assume = async () => ({ AWS_ACCESS_KEY_ID: 'x' });
+  const deployEnv = operationEnvironment('deploy-egress');
+  const deployIo = await createRuntimeIo(deployEnv, { purpose: 'operation', run, assume });
+  await deployIo.deploy('AnyWearEgressStack-beta');
+  const changeSetEnv = { ...operationEnvironment('deploy-runtime'), INFRA_IDENTITY_PHASE: 'roles-added',
+    SERVICE_RELEASE_TAG: 'service-artifacts-4f2ba555', SERVICE_COMMIT: '4f2ba555'.padEnd(40, '0') };
+  const changeSetIo = await createRuntimeIo(changeSetEnv, { purpose: 'operation', run, assume });
+  await changeSetIo.deployRuntimeChangeSet({ args: ['cdk', 'deploy', 'AnyWearRuntimeStack-beta', '--no-execute'] });
+  const destroyEnv = operationEnvironment('delete-egress');
+  const destroyIo = await createRuntimeIo(destroyEnv, { purpose: 'operation', run, assume });
+  await destroyIo.destroy('AnyWearEgressStack-beta');
+  assert.equal(calls.some((call) => call.command === 'npx'), true, 'each path reaches the CDK CLI');
+  assert.equal(calls.filter((call) => (call.args ?? []).some((arg) => String(arg).startsWith('simulate-'))).length, 0,
+    'the CDK paths must not call the IAM policy simulator');
+  assert.equal(calls.some((call) => call.command === 'aws'), false, 'no AWS call is made by these three paths');
 });
 
-// Issue #195's counter-check: scoping the plan must not weaken the one operation
-// that performs the bake. `deploy-runtime` still simulates both bake reads under
-// the runtime session and stops before the change set is created.
-test('deploy-runtime still fails closed when the runtime role denies a bake read', async () => {
+// Issue #195's counter-check: the surviving runtime-session preflight must not be
+// weakened. `deploy-runtime` still simulates the bake reads before the change set
+// (and the schema-journal probe runs the same plan before the change set exists).
+test('the schema-journal probe still fails closed when the runtime role denies a bake read', async () => {
   const env = { ...operationEnvironment('deploy-runtime'), INFRA_IDENTITY_PHASE: 'roles-added',
     SERVICE_RELEASE_TAG: 'service-artifacts-4f2ba555', SERVICE_COMMIT: '4f2ba555'.padEnd(40, '0') };
+  const revision = { digest: `sha256:${'c'.repeat(64)}`, commit: 'd'.repeat(40) };
   for (const denied of ['cloudwatch:DescribeAlarms', 'logs:FilterLogEvents']) {
     const calls = [];
     const deny = async (command, args) => {
@@ -214,16 +223,28 @@ test('deploy-runtime still fails closed when the runtime role denies a bake read
     };
     const io = await createRuntimeIo(env, {
       purpose: 'operation', assume: async () => ({ AWS_ACCESS_KEY_ID: 'x' }), run: deny });
-    await assert.rejects(io.deployRuntimeChangeSet(
-      { args: ['cdk', 'deploy', 'AnyWearRuntimeStack-beta', '--no-execute'] }), (error) => {
+    await assert.rejects(io.oneShotProbe('verify', revision, 'schema-journal'), (error) => {
       assert.ok(error instanceof AuthorizationPreflightError);
       assert.equal(error.kind, 'runtime');
       assert.equal(error.denial, true);
       assert.match(error.message, new RegExp(denied));
       return true;
     });
-    assert.equal(calls.some((call) => call.command === 'npx'), false, 'the change set must not be created');
+    assert.equal(calls.some((call) => call.command === 'bash'), false, 'the probe task must not run');
   }
+});
+
+// Issue #214: the driver keeps exactly the two runtime-session call sites; the
+// deploy, change-set and destroy sites are gone.
+test('exactly two preflight call sites remain, both for the runtime session', async () => {
+  const source = await readFile(new URL('../scripts/runtime-operation.mjs', import.meta.url), 'utf8');
+  const occurrences = source.split('\n').filter((line) => line.includes('runAuthorizationPreflight'));
+  assert.equal(occurrences.length, 3, 'one import line plus two call sites');
+  assert.match(occurrences[0], /^import \{ runAuthorizationPreflight \}/);
+  const sites = source.match(/runAuthorizationPreflight\(\{[^}]*\}\)/g) ?? [];
+  assert.equal(sites.length, 2);
+  for (const site of sites) assert.match(site, /sessions: \['runtime'\]/);
+  assert.doesNotMatch(source, /sessions: \['deploy'/);
 });
 
 test('a simulator API error is classified apart from a denial', async () => {
@@ -247,7 +268,7 @@ test('a simulator API error is classified apart from a denial', async () => {
   });
 });
 
-test('the preflight runs under a marked session and its simulator events are excluded', async () => {
+test('the preflight runs under a marked session', async () => {
   const assumed = [];
   await runAuthorizationPreflight({ sessions: ['runtime'], env: operationEnvironment('migrate'),
     purpose: 'operation', assume: async (kind, _env, _purpose, options) => {
@@ -279,9 +300,11 @@ test('account-level actions simulate on * and resource-level actions stay concre
   // Run 39732059192: ecs:DescribeTaskDefinition has no resource-level support, so a
   // concrete task-definition ARN is an implicit deny even when the policy allows
   // the action on *. Pin the known account-level actions and keep the rest concrete.
+  // The deploy plan's `ec2:DescribeManagedPrefixLists` entry went with #214; the
+  // runtime plan keeps the four account-level actions below.
   const noResource = new Set(['ecs:DescribeTaskDefinition', 'ecs:ListTasks',
-    'ec2:DescribeManagedPrefixLists', 'logs:DescribeLogGroups', 'cloudwatch:GetMetricStatistics']);
-  const plan = [...simulationRequests('runtime', operationEnvironment('deploy-runtime')), ...simulationRequests('deploy', {})];
+    'cloudwatch:GetMetricStatistics', 'logs:DescribeLogGroups']);
+  const plan = simulationRequests('runtime', operationEnvironment('deploy-runtime'));
   const seen = new Set();
   for (const request of plan) {
     for (const action of request.actions) {
