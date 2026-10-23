@@ -134,6 +134,10 @@ export class PlatformStack extends cdk.Stack {
           code: lambda.Code.fromAsset(props.artifactInputs.lambdas['pre-sign-up'].path),
           handler: 'index.handler',
           environment: { STAGE: stage },
+          // The registration decision made one network read inside this invocation,
+          // so the trigger gets a deadline above its own bounded read instead of the
+          // platform's 3-second default (issue #213, NFR).
+          timeout: cdk.Duration.seconds(10),
         })
       : undefined;
     if (preSignUpLambda && stage === 'beta') {
@@ -157,26 +161,20 @@ export class PlatformStack extends cdk.Stack {
     }
     const betaAdmissionParameters: ssm.StringParameter[] = [];
     if (stage === 'beta') {
-      // CloudFormation creates fail-closed defaults. Lifecycle operations own
-      // runtime values, so deploys never include the current tester list. The
-      // admission decision is one mode word with no bound, so opening admits until
-      // an explicit close and nothing closes itself; the tester list is a separate
-      // parameter that opening never changes.
-      for (const [id, name, value] of [
-        ['AdmissionMode', 'admission_mode', '{"mode":"closed"}'],
-        ['TesterAllowlist', 'tester_allowlist', '[]'],
-      ] as const) {
-        betaAdmissionParameters.push(new ssm.StringParameter(this, id, {
-          parameterName: `/anywear/beta/${name}`,
-          stringValue: value,
-        }));
-      }
-      for (const trigger of [preSignUpLambda!, syncLambda]) {
-        trigger.addToRolePolicy(new iam.PolicyStatement({
-          actions: ['ssm:GetParameter', 'ssm:GetParameters'],
-          resources: betaAdmissionParameters.map((parameter) => parameter.parameterArn),
-        }));
-      }
+      // The tester allowlist is the only admission input, and it is the only
+      // `/anywear/beta/*` admission parameter. CloudFormation creates the empty
+      // default; lifecycle operations own the runtime value, so a deploy never
+      // includes the current list.
+      betaAdmissionParameters.push(new ssm.StringParameter(this, 'TesterAllowlist', {
+        parameterName: '/anywear/beta/tester_allowlist',
+        stringValue: '[]',
+      }));
+      // Registration is the one admission decision, so only the PreSignUp trigger
+      // reads the list. PostConfirmation provisions without reading admission.
+      preSignUpLambda!.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+        resources: betaAdmissionParameters.map((parameter) => parameter.parameterArn),
+      }));
     }
 
     this.userPool = new cognito.UserPool(this, 'AnyWearUserPool', {
@@ -205,9 +203,10 @@ export class PlatformStack extends cdk.Stack {
     this.userPoolClient = new cognito.UserPoolClient(this, 'AnyWearUserPoolClient', {
       userPool: this.userPool,
       generateSecret: false,
+      // `custom:e2e_bootstrap` stays in the pool schema (AWS cannot delete a custom
+      // attribute) but is inert: the app client no longer reads it.
       readAttributes: new cognito.ClientAttributes()
-        .withStandardAttributes({ email: true, emailVerified: true })
-        .withCustomAttributes('e2e_bootstrap'),
+        .withStandardAttributes({ email: true, emailVerified: true }),
       writeAttributes: new cognito.ClientAttributes().withStandardAttributes({ email: true }),
       authFlows: { userSrp: true, ...(stage === 'beta' ? { adminUserPassword: true } : {}) },
     });

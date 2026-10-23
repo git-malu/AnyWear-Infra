@@ -31,7 +31,9 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   const stackArns = ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearRuntimeStack-beta']
     .map((name) => arn('cloudformation', 'stack', `${name}/*`));
   const platformAndRuntime = stackArns.slice(1);
-  const admissionNames = ['admission_mode', 'tester_allowlist'];
+  // The tester allowlist is the only admission parameter after #213; there is no
+  // mode parameter for any principal to read.
+  const admissionNames = ['tester_allowlist'];
   const parameters = (names: string[]) => names.map((name) => arn('ssm', 'parameter', `anywear/beta/${name}`));
   const publicParameters = ['cognito_user_pool_id', 'cognito_client_id', 'aws_region', 's3_bucket_name', 'qweather_api_host'];
   const describeStacks = (principal: iam.IRole, resources = platformAndRuntime) => principal.addToPrincipalPolicy(
@@ -217,8 +219,8 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     resources: [p.repository.repositoryArn],
   }));
   // The four one-shot drivers the runtime session may register and run: the
-  // forward migration, the schema-journal probe, the admission lifecycle and the
-  // E2E qualification helper. Each task acts under its own task role, and the run
+  // forward migration, the schema-journal probe, the tester allowlist lifecycle and
+  // the E2E qualification helper. Each task acts under its own task role, and the run
   // and its platform facts are the evidence; this grant is the invoke surface only.
   oneShots(runtime, ['migrate', 'verify', 'lifecycle', 'artifact-verify'], [
     p.migrationTaskRole.roleArn, p.verificationTaskRole.roleArn, p.lifecycleTaskRole.roleArn, p.oneShotExecutionRole.roleArn,
