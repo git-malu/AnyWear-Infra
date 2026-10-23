@@ -428,13 +428,13 @@ observations that read it, so no sizing or telemetry input remains. The
 `deploy-runtime` transition that dropped both from the live stack completed on
 2026-10-23 (run 39929648413, a passed 600-second bake with 40 probes under the
 then-current calibration), and its recorded identity accepted only the roles-added
-template it deployed. Issue #220 records the next Runtime identity transition — the
-age-alarm calibration — so until that deploy the live check accepts the recorded
-roles-added template plus one recorded live predecessor, the `ed4e99ee…` template
-the #183 transition deployed; the post-deploy `Original` must normalise to the new
-recorded roles-added identity. A stop/start is never the way to drop a retained
-parameter: a stop deletes the Runtime stack, and a start already deploys a template
-without it.
+template it deployed. Issue #220 recorded the next Runtime identity transition — the
+age-alarm calibration — and it deployed in `mutate.yml` `deploy-runtime` run
+39988090020, so the live check again accepts only the recorded roles-added identity:
+the `ed4e99ee…` template the #183 transition deployed is retired as the predecessor,
+and the deployed `Original` normalises to the new recorded roles-added identity. A
+stop/start is never the way to drop a retained parameter: a stop deletes the Runtime
+stack, and a start already deploys a template without it.
 
 ## Tester allowlist and status
 
