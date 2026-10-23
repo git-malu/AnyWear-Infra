@@ -6,16 +6,17 @@ import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
 // `state` entry; every mutation shares `mutate.yml`, including since #195 the
 // release slice's `deploy-runtime` and `stop-runtime`. Issue #207 retired the
-// `observe` operation with the record it produced.
+// `observe` operation with the record it produced; #213 retired the admission
+// open/close operations, leaving the tester allowlist surface.
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['state'],
   '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-    'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission'],
+    'admission-status', 'add-testers', 'set-testers'],
 });
 
 // The operation -> family mapping keeps the pre-#207 families stable for the
-// surfaces that still name one (session-policy and admission read-backs), and keeps
+// surfaces that still name one (session-policy and tester read-backs), and keeps
 // read-only `state` out of every mutating family. No record is written any more.
 export const operationFamilies = Object.freeze({
   state: 'beta-observe',
@@ -31,8 +32,6 @@ export const operationFamilies = Object.freeze({
   'admission-status': 'beta-admission',
   'add-testers': 'beta-admission',
   'set-testers': 'beta-admission',
-  'open-admission': 'beta-admission',
-  'close-admission': 'beta-admission',
 });
 
 // Live entries that execute verification or deployment. Every other path is a
@@ -46,7 +45,7 @@ export const qualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.
 export const e2eExecutorPaths = Object.freeze(['.github/workflows/beta-qualification.yml']);
 
 // The reviewed executor/source/account/region gate shared by the observation and
-// the admission/recovery drivers. It reads only repository identity and dispatch
+// the recovery drivers. It reads only repository identity and dispatch
 // metadata, so it runs before any AWS call.
 export function assertProtectedExecutor(infraSha, env = process.env) {
   if (typeof infraSha !== 'string' || !/^[a-f0-9]{40}$/.test(infraSha)) throw new Error('Reviewed Infra source required');
@@ -139,8 +138,6 @@ export const operationRoles = Object.freeze({
   'admission-status': Object.freeze(['lifecycle']),
   'add-testers': Object.freeze(['lifecycle']),
   'set-testers': Object.freeze(['lifecycle']),
-  'close-admission': Object.freeze(['lifecycle']),
-  'open-admission': Object.freeze(['lifecycle']),
 });
 const oneShotRoles = operation => operationRoles[operation];
 // The task role each one-shot family registers under. `verify` keeps the existing
@@ -152,24 +149,19 @@ const ONE_SHOT_TASK_ROLES = Object.freeze({
 const oneShotTaskRole = family => ONE_SHOT_TASK_ROLES[family];
 // The only non-URL verify action: one read-only journal read.
 const VERIFY_SCHEMA_JOURNAL_COMMAND = Object.freeze(['node', 'dist/verify.js', 'schema-journal']);
-// `resume` appears for exactly one operation. `open-admission` also lists
-// `suspend`, and that entry is recovery-only: the driver may issue it solely on
-// its failed-open path, to close what a failure would otherwise leave open. No
-// operator input can request it, and it is the same pinned suspend task
-// `close-admission` runs. Only `set-testers` carries a payload: `resume` takes
-// none, because there is no bound to write. Any other entry listing `resume`, or
-// listing any other payload-bearing action, would be a new admission direction
-// that this table is the place to review.
+// The tester allowlist surface is the whole surviving admission operation set:
+// `status` reads it and `set-testers` replaces it. #213 retired the mode
+// open/close actions (`resume`/`suspend`) with the mode parameter, so no entry
+// lists them. `set-testers` is the only payload-bearing action; `status` takes
+// none.
 export const lifecycleActions = operation => ({ 'admission-status': ['status'], 'add-testers': ['set-testers', 'status'],
-  'set-testers': ['set-testers', 'status'], 'close-admission': ['suspend', 'status'],
-  'open-admission': ['resume', 'status', 'suspend'] }[operation] ?? []);
+  'set-testers': ['set-testers', 'status'] }[operation] ?? []);
 // Issue #194: the `verify` family's only non-URL action is the read-only
 // `schema-journal` read. It takes no payload; any other action is refused.
 export const verifyActions = operation => ({ 'deploy-runtime': ['schema-journal'] }[operation] ?? []);
 const payloadActions = ['set-testers'];
 export function assertOneShotAllowed(env, role, action = '', payload) {
   operationBoundary(env);
-  if (role === 'lifecycle' && action === 'resume' && payload !== undefined) throw new Error('Lifecycle resume takes no payload');
   if (!oneShotRoles(env.INFRA_OPERATION).includes(role)
     || role === 'lifecycle' && !lifecycleActions(env.INFRA_OPERATION).includes(action)
     || role === 'verify' && (!verifyActions(env.INFRA_OPERATION).includes(action) || payload !== undefined)

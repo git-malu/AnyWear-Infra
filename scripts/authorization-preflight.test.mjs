@@ -82,7 +82,7 @@ test('the plan comes from the reviewed reads table and the runtime session polic
 test('the runtime plan keeps the reviewed resource forms', () => {
   const plan = simulationRequests('runtime', operationEnvironment('migrate'));
   const ssm = plan.find((request) => request.pair === 'ssm/get-parameters');
-  assert.equal(ssm.resources.length, 39);
+  assert.equal(ssm.resources.length, 38);
   assert.ok(ssm.resources.includes('arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/tester_allowlist'));
   assert.ok(ssm.resources.includes('arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/api_base_url'));
   const lambda = plan.find((request) => request.pair === 'lambda/get-function');
@@ -126,8 +126,9 @@ test('the deploy session policy still grants the change-set read the CDK path pe
 // would leave the Platform deploy — the operation that installs them — blocked.
 test('only deploy-runtime simulates and is granted the bake reads', () => {
   const operations = Object.values(workflowOperations).flat();
-  // 15 operations: #207 retired `observe` with the record it produced.
-  assert.equal(operations.length, 15);
+  // 13 operations: #207 retired `observe` with the record it produced, and #213
+  // retired the admission open/close operations.
+  assert.equal(operations.length, 13);
   const bakeReads = ['cloudwatch/get-metric-statistics', 'cloudwatch/describe-alarms', 'logs/filter-log-events'];
   assert.deepEqual(Object.keys(readOperations).sort(), [...bakeReads].sort());
   for (const pair of bakeReads) {

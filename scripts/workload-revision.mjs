@@ -1,6 +1,6 @@
-// The one pinned-workload readback shared by the runtime, admission, tester and
-// restore operations. It moved here when the Beta lifecycle entry point retired;
-// every caller names the exact selected Service image/commit it is operating on.
+// The one pinned-workload readback shared by the runtime, tester and restore
+// operations. It moved here when the Beta lifecycle entry point retired; every
+// caller names the exact selected Service image/commit it is operating on.
 function values(entries, nameKey, valueKey) {
   return Object.fromEntries((entries ?? []).map((entry) => [entry[nameKey], entry[valueKey]]));
 }

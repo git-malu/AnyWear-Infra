@@ -7,10 +7,10 @@ import * as recovery from './recovery-contract.mjs';
 import * as stages from './stage-contract-parameters.mjs';
 import * as pkg from '@git-malu/stage-contracts';
 
-// The four existing names that predate this contract, plus the three
-// runtime-owned Beta parameters; they are not stage-contract names.
+// The five existing names that predate this contract, plus the one runtime-owned
+// Beta parameter; they are not stage-contract names. #213 left the tester
+// allowlist as the only admission parameter.
 const OTHER_BETA_PARAMETER_NAMES = [
-  '/anywear/beta/admission_mode',
   '/anywear/beta/aws_region',
   '/anywear/beta/cognito_client_id',
   '/anywear/beta/cognito_user_pool_id',

@@ -29,13 +29,13 @@ const STACKS = Object.freeze([stack('AnyWearFoundationStack'), stack('AnyWearPla
 const ONE_SHOT_FAMILIES = Object.freeze(['migrate', 'verify', 'lifecycle', 'artifact-verify']);
 const TASK_FUNCTIONS = Object.freeze(['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync',
   'AnyWearPlatformStack-beta-*'].map((name) => arn('lambda', `function:${name}`)));
-// The runtime role reads the full published stage contract plus the admission and
-// tester parameter surface; the simulator plan uses every reviewed name rather
-// than a representative subset. The deploy session no longer has a plan: the CDK
-// CLI's own call surface is not modelled here (#214).
+// The runtime role reads the full published stage contract plus the tester
+// allowlist, the only admission parameter after #213; the simulator plan uses
+// every reviewed name rather than a representative subset. The deploy session no
+// longer has a plan: the CDK CLI's own call surface is not modelled here (#214).
 
 const STAGE_PARAMETER_ARNS = Object.freeze([...new Set([...STAGE_CONTRACT_PARAMETERS,
-  '/anywear/beta/admission_mode', '/anywear/beta/tester_allowlist',
+  '/anywear/beta/tester_allowlist',
   '/anywear/beta/infra_selection', '/anywear/beta/infra_deployment']
   .map((name) => `arn:aws:ssm:${region}:${account}:parameter${name}`))]);
 const BASE_QUEUES = Object.freeze(['beta-anywear-vto', 'beta-anywear-vto-dlq',

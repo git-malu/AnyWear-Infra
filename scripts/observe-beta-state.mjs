@@ -1,22 +1,13 @@
-import { canonicalJson, sha256 } from './json-contract.mjs';
-import { readAdmissionState } from './admission-operation.mjs';
+import { readAdmissionState, testerAllowlistHash } from './admission-state.mjs';
 import { retainedBetaSizingProfile, retainedBetaSizingTelemetry } from './beta-sizing-profile.mjs';
 import { runtimeStack, describeStack } from './one-writer.mjs';
 
-const unavailable = value => (value === undefined ? 'unavailable' : value);
-
-// The admission mirror is self-describing: the mode, its recorded key set and
-// where the decision came from are all observed fields, so a fail-closed read
-// never looks like an observed closure. There is no bound field to report.
+// The allowlist is the only admission value left to observe: a count and a hash,
+// never addresses. There is no mode record to report.
 function admissionEvidence(admission) {
   const testers = admission?.tester_emails;
-  return { admission_mode: unavailable(admission?.admission_mode),
-    admission_mode_source: unavailable(admission?.admission_mode_source),
-    admission_mode_reason: unavailable(admission?.admission_mode_reason),
-    admission_recorded_mode: unavailable(admission?.admission_recorded_mode),
-    admission_recorded_keys: unavailable(admission?.admission_recorded_keys),
-    tester_count: Array.isArray(testers) ? testers.length : 'unavailable',
-    tester_emails_sha256: Array.isArray(testers) ? sha256(canonicalJson(testers)) : 'unavailable' };
+  return { tester_count: Array.isArray(testers) ? testers.length : 'unavailable',
+    tester_allowlist_hash: Array.isArray(testers) ? testerAllowlistHash(testers) : 'unavailable' };
 }
 
 // This reports infrastructure/SSM state only; it cannot establish DB/schema
@@ -47,9 +38,8 @@ export async function observeBetaState(io) {
   state.admission = admissionEvidence(await readAdmissionState(io));
   return state;
   } catch (cause) {
-    // The shared reader preserves each independently known field even when another
-    // SSM value is unreadable. Never retain raw tester addresses.
-    state.admission = admissionEvidence(cause.observedAdmissionState);
+    // A failed allowlist read is reported as unavailable, never as an empty list.
+    state.admission = admissionEvidence(undefined);
     const error = new Error('Complete Beta state observation unavailable', { cause });
     error.observedState = state;
     throw error;

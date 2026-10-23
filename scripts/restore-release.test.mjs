@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runRestoreRelease } from './restore-release.mjs';
-import { canonicalJson } from './json-contract.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
 const infraSha = '5'.repeat(40);
@@ -46,11 +45,7 @@ function mockIo(options = {}) {
         return { Distribution: { Id: options.distributionId ?? 'E2ABCDEFGHIJKL',
           DomainName: 'd111111abcdef8.cloudfront.net', Status: options.distributionStatus ?? 'Deployed' } };
       }
-      if (args[0] === 'ssm') {
-        const name = args.at(-1);
-        if (name.endsWith('tester_allowlist')) return { Parameter: { Name: name, Value: '[]' } };
-        return { Parameter: { Name: name, Value: canonicalJson(options.mirror ?? { mode: 'closed' }) } };
-      }
+      // #213: a restore reads no admission state, so no SSM call belongs here.
       throw new Error(`Unexpected AWS call ${args.join(' ')}`);
     },
     async deploy(stack) {
@@ -83,8 +78,9 @@ test('restore deploys only the Base stack and leaves the Runtime slice untouched
   assert.equal(io.deployCount, 1);
   assert.deepEqual(io.calls.filter(call => call[0] === 'deploy'), [['deploy', 'AnyWearPlatformStack-beta']]);
   assert.ok(!io.calls.some(call => call[0] === 'oneShot'), 'no Runtime task runs from a Base restore');
+  // #213: the restore path reads no admission state at all.
+  assert.ok(!io.calls.some(call => call[0] === 'ssm'), 'a Base restore reads no admission parameter');
   assert.equal(result.restored_stack, 'AnyWearPlatformStack-beta');
-  assert.equal(result.admission.admission_mode, 'closed');
   assert.ok(parsed(lines).filter(line => line.result === 'succeeded').length >= 3);
   assert.equal(failuresOf(lines).length, 0);
   assert.equal(parsed(lines).some(line => Object.hasOwn(line, 'recovery')), false,
@@ -127,11 +123,11 @@ test('restore refuses a non-terminal Runtime before deploying the Base stack', a
   }
 });
 
-test('restore refuses a non-terminal Base, an open admission or a non-beta cluster before any deploy', async () => {
+test('restore refuses a non-terminal Base or a non-beta cluster before any deploy', async () => {
   const cause = pattern => error => { assert.match(error.cause?.message ?? error.message, pattern); return true; };
   await assert.rejects(runRestoreRelease({ io: mockIo({ platformStatus: 'UPDATE_IN_PROGRESS' }), infraSha, env }), cause(/stable AnyWearPlatformStack-beta/));
-  await assert.rejects(runRestoreRelease({ io: mockIo({ mirror: { mode: 'testers' } }), infraSha, env }),
-    cause(/not proven closed/));
+  // #213 removed the admission precondition: a restore never reads the mode, so an
+  // admission value cannot refuse it.
   const otherCluster = { ...platformOutputs(), EcsClusterName: 'other' };
   await assert.rejects(runRestoreRelease({ io: mockIo({ platform: otherCluster }), infraSha, env }), cause(/restricted to beta-anywear/));
 });
@@ -168,12 +164,13 @@ test('restore requires the adopted API distribution to report Deployed', async (
   }
 });
 
-test('restore never resumes admission or deploys a sibling stack when a deploy fails', async () => {
+test('restore never touches admission or deploys a sibling stack when a deploy fails', async () => {
   const io = mockIo({ deployError: new Error('CloudFormation failed') });
   const { lines } = await captureStdout(() => assert.rejects(runRestoreRelease({ io, infraSha, env }),
     /Beta Base restore failed at platform-deploy; explicit recovery required/));
   assert.equal(io.deployCount, 1);
   assert.ok(!io.calls.some(call => call[0] === 'oneShot'));
+  assert.ok(!io.calls.some(call => call[0] === 'ssm'));
   const failures = failuresOf(lines);
   assert.equal(failures.length, 1);
   assert.equal(failures[0].failure_stage, 'platform-deploy');

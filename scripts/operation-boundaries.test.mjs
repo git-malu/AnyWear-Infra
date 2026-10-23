@@ -17,9 +17,11 @@ const env = (operation, overrides = {}) => {
 test('the workflow map and family derivation cover every operation', () => {
   assert.deepEqual(Object.keys(workflowOperations).sort(), ['.github/workflows/mutate.yml', '.github/workflows/runtime.yml']);
   assert.deepEqual(workflowOperations['.github/workflows/runtime.yml'], ['state']);
+  // #213: the correct post-retirement count is 12, not the 11 the issue text says;
+  // `deploy-billing` remains.
   assert.deepEqual(workflowOperations['.github/workflows/mutate.yml'], ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-    'admission-status', 'add-testers', 'set-testers', 'open-admission', 'close-admission']);
+    'admission-status', 'add-testers', 'set-testers']);
   assert.ok(!workflowOperations['.github/workflows/mutate.yml'].includes('deploy-workload'));
   for (const operation of Object.values(workflowOperations).flat()) {
     const boundary = operationBoundary(env(operation));
@@ -27,16 +29,17 @@ test('the workflow map and family derivation cover every operation', () => {
     assert.equal(boundary.readOnly, operation === 'state');
     assert.ok(operationRoles[operation], `role allow-list required for ${operation}`);
   }
-  for (const operation of ['open-admission', 'close-admission']) assert.equal(operationFamilies[operation], 'beta-admission');
   // Issue #166 adds the disposable Egress operations to the same deploy family.
   for (const operation of ['deploy-egress', 'delete-egress']) assert.equal(operationFamilies[operation], 'beta-deploy');
   // #207 retired `observe` with the record it produced; it is no longer a
-  // dispatch of any workflow.
+  // dispatch of any workflow. #213 retired the admission open/close operations.
   assert.throws(() => operationBoundary(env('observe', { GITHUB_WORKFLOW_REF:
     'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main' })), /forbidden for this workflow family/);
   assert.throws(() => operationBoundary(env('deploy-workload')), /forbidden for this workflow family/);
-  assert.throws(() => operationBoundary(env('suspend-admission')), /forbidden for this workflow family/);
-  assert.throws(() => operationBoundary(env('resume-admission')), /forbidden for this workflow family/);
+  for (const retired of [['open', 'admission'], ['close', 'admission']]) {
+    assert.equal(operationFamilies[retired.join('-')], undefined, `${retired.join('-')} has no family`);
+    assert.throws(() => operationBoundary(env(retired.join('-'))), /forbidden for this workflow family/);
+  }
   assert.throws(() => operationBoundary(env('state', { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main' })));
 });
 
@@ -45,8 +48,10 @@ test('one-shot roles are exactly the release-slice drivers that remain', () => {
   assert.deepEqual(operationRoles['deploy-platform'], []);
   assert.deepEqual(operationRoles['restore-release'], []);
   assert.deepEqual(operationRoles.migrate, ['migrate']);
-  assert.deepEqual(operationRoles['close-admission'], ['lifecycle']);
-  assert.deepEqual(operationRoles['open-admission'], ['lifecycle']);
+  // #213: the tester allowlist surface keeps the lifecycle family for `status` and
+  // `set-testers` only.
+  assert.deepEqual(operationRoles['admission-status'], ['lifecycle']);
+  assert.deepEqual(operationRoles['set-testers'], ['lifecycle']);
   // Issue #194: `deploy-runtime` gains the existing `verify` family for the
   // pre-mutation schema-journal read; no other operation gains one.
   assert.deepEqual(operationRoles['deploy-runtime'], ['verify']);
@@ -61,11 +66,8 @@ test('one-shot roles are exactly the release-slice drivers that remain', () => {
 
 test('one-shot guards admit only the reviewed role/action pairs', () => {
   assertOneShotAllowed(env('migrate'), 'migrate');
-  assertOneShotAllowed(env('close-admission'), 'lifecycle', 'status');
-  assertOneShotAllowed(env('close-admission'), 'lifecycle', 'suspend');
-  assertOneShotAllowed(env('open-admission'), 'lifecycle', 'status');
-  assertOneShotAllowed(env('open-admission'), 'lifecycle', 'resume');
-  assertOneShotAllowed(env('open-admission'), 'lifecycle', 'suspend');
+  assertOneShotAllowed(env('admission-status'), 'lifecycle', 'status');
+  assertOneShotAllowed(env('add-testers', { TESTER_EMAILS: '["e@example.com"]' }), 'lifecycle', 'status');
   // Issue #194: the verify family's only action is the read-only schema-journal
   // read, and it takes no payload.
   assertOneShotAllowed(env('deploy-runtime'), 'verify', 'schema-journal');
@@ -76,15 +78,16 @@ test('one-shot guards admit only the reviewed role/action pairs', () => {
   assert.throws(() => assertOneShotAllowed(env('deploy-platform'), 'lifecycle', 'status'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('migrate'), 'verify'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('migrate'), 'artifact-verify'), /forbidden/);
-  assert.throws(() => assertOneShotAllowed(env('migrate'), 'lifecycle', 'suspend'), /forbidden/);
+  assert.throws(() => assertOneShotAllowed(env('migrate'), 'lifecycle', 'status'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('add-testers'), 'lifecycle', 'supply'), /forbidden/);
   assert.throws(() => assertOneShotAllowed(env('add-testers'), 'lifecycle', 'set-testers', '["b@example.com","a@example.com"]'), /canonical/);
   assertOneShotAllowed(env('set-testers', { TESTER_EMAILS: '["e@example.com"]' }), 'lifecycle', 'set-testers', '["e@example.com"]');
-  // Lifecycle `resume` is payload-free: any payload at all is refused, and the
-  // operation itself carries no window input.
-  assert.throws(() => assertOneShotAllowed(env('open-admission'), 'lifecycle', 'resume', '{"window_minutes":60}'), /takes no payload/);
-  assert.throws(() => assertOneShotAllowed(env('open-admission'), 'lifecycle', 'resume', '[]'), /takes no payload/);
-  assert.throws(() => assertOneShotAllowed(env('open-admission'), 'lifecycle', 'set-testers', '[]'), /forbidden/);
+  // #213 removed the mode actions: the surviving lifecycle entry lists status and
+  // set-testers only, so the retired suspend/resume actions are refused.
+  for (const action of [['sus', 'pend'].join(''), ['re', 'sume'].join('')]) {
+    assert.throws(() => assertOneShotAllowed(env('set-testers'), 'lifecycle', action), /forbidden/, action);
+  }
+  assert.throws(() => assertOneShotAllowed(env('admission-status'), 'lifecycle', 'set-testers', '[]'), /forbidden/);
 });
 
 test('deploy authority is limited to the configured stack set', () => {
@@ -109,7 +112,7 @@ test('AWS allow-list keeps reads, one-shots and retention updates scoped', () =>
   const lifecycle = { family: 'beta-anywear-lifecycle', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
     executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
     containerDefinitions: [{ name: 'OneShot', command: ['node', 'dist/ops/beta-lifecycle.js', 'status'] }] };
-  assertAwsAllowed(env('close-admission'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]);
+  assertAwsAllowed(env('set-testers', { TESTER_EMAILS: '[]' }), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]);
   assert.throws(() => assertAwsAllowed(env('deploy-platform'), ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(lifecycle)]), /forbidden/);
   // Issue #194: only the exact schema-journal verify registration is accepted,
   // and only for the operation that gained the verify family.

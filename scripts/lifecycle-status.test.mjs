@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readLifecycleStatus } from './lifecycle-status.mjs';
+import { readLifecycleStatus, parseLifecycleStatus } from './lifecycle-status.mjs';
 
 const definition = { taskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:8',
   family: 'beta-anywear-lifecycle', containerDefinitions: [{ name: 'OneShot',
@@ -10,12 +10,12 @@ const definition = { taskDefinitionArn: 'arn:aws:ecs:ap-east-1:650880818323:task
 const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
   clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
   taskDefinitionArn: definition.taskDefinitionArn, lastStatus: 'STOPPED' };
-// The mode-only status contract. The removed window field must be tolerated in
-// every spelling an old Service image can emit while a rollout is in progress.
-const status = { admission_mode: 'closed', admission_record: 'closed', database_record_differs: false,
-  tester_count: 4, database_policy_matches_ssm: true };
-const statusWithNull = { ...status, admission_window_expires_at: null };
-const statusWithInstant = { ...status, admission_window_expires_at: '2026-01-01T00:00:00.000Z' };
+// The #213 Service-Infra status contract: `action` identifies the object, the
+// count and the 64-hex allowlist hash are required, and backlog fields ride along.
+const hash = 'a'.repeat(64);
+const status = { action: 'status', tester_count: 4, tester_allowlist_hash: hash, tasks: 3, outbox: 2,
+  outboxStatusCounts: { pending: 1, sent: 2 },
+  queues: { vto: { visible: 1, notVisible: 0, delayed: 0 }, tagging: { visible: 0, notVisible: 1, delayed: 2 } } };
 function logIo(messages) {
   const calls = [];
   return { calls, async aws(args) {
@@ -32,27 +32,43 @@ test('lifecycle status reads only the actual stopped task log stream, across com
   assert.ok(io.calls.every(args => args[0] === 'logs' && args[1] === 'get-log-events'));
 });
 
-test('the status selector tolerates the removed window field in any form', async () => {
-  for (const value of [status, statusWithNull, statusWithInstant]) {
-    assert.deepEqual(await readLifecycleStatus(logIo([JSON.stringify(value)]), task, definition), value);
-  }
+test('the status selector identifies the object by its action and required allowlist fields', async () => {
+  assert.deepEqual(parseLifecycleStatus({ action: 'status', tester_count: 0, tester_allowlist_hash: hash }),
+    { action: 'status', tester_count: 0, tester_allowlist_hash: hash });
+  // The set-testers line shares the field names but is not status evidence.
+  const setLine = { action: 'set-testers', tester_count: 4, tester_allowlist_hash: hash };
+  await assert.rejects(readLifecycleStatus(logIo([JSON.stringify(setLine)]), task, definition),
+    /status evidence is unavailable/);
 });
 
 test('missing, duplicate, malformed and incomplete status logs fail closed', async () => {
   for (const messages of [[], [JSON.stringify(status), JSON.stringify(status)],
     // An apparent status that cannot be parsed fails closed rather than being
-    // skipped: both contract keys appear before the truncation.
-    ['{"admission_mode":"closed","admission_record":"closed","admission_window_expires_at":null'],
-    // The old field names are not status evidence any more.
-    ['{"intake_open":false,"admission_suspended":true}'],
-    // A mode without the raw record is not the status contract either.
-    ['{"admission_mode":"closed"}']]) {
+    // skipped: the identifying `action` member appears before the truncation.
+    [`{"action":"status","tester_count":4,"tester_allowlist_hash":"${'a'.repeat(64)}`],
+    // A status without the required fields is malformed, not a status to ignore.
+    ['{"action":"status","tester_count":4}'],
+    ['{"action":"status","tester_allowlist_hash":"' + hash + '"}'],
+    [`{"action":"status","tester_count":51,"tester_allowlist_hash":"${hash}"}`],
+    [`{"action":"status","tester_count":4.5,"tester_allowlist_hash":"${hash}"}`],
+    ['{"action":"status","tester_count":4,"tester_allowlist_hash":"ABCDEF"}'],
+    // A line without the identifying action is not status evidence.
+    ['{"previous_mode":"closed"}'],
+    ['{"tester_count":4}']]) {
     await assert.rejects(readLifecycleStatus(logIo(messages), task, definition));
   }
   for (const response of [{}, { events: [], nextForwardToken: '' }, { events: [{ message: 3 }], nextForwardToken: 'end' }]) {
     await assert.rejects(readLifecycleStatus({ async aws() { return response; } }, task, definition));
   }
   await assert.rejects(readLifecycleStatus({ async aws() { throw new Error('Logs unavailable'); } }, task, definition), /Logs unavailable/);
+});
+
+test('optional backlog fields are validated when present', () => {
+  for (const invalid of [{ tasks: -1 }, { outboxOldestAgeMs: -1 }, { outboxOldestAgeMs: 'old' },
+    { outboxStatusCounts: [] }, { queues: { vto: {} } }, { dlqs: { tagging: { visible: 1.5, notVisible: 0, delayed: 0 } } }]) {
+    assert.throws(() => parseLifecycleStatus({ action: 'status', tester_count: 1, tester_allowlist_hash: hash, ...invalid }),
+      /Invalid lifecycle/);
+  }
 });
 
 test('eventually visible status requires matching full scans and rejects a delayed duplicate', async () => {
