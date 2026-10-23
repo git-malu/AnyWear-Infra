@@ -425,13 +425,13 @@ reports the retained profile but cannot prove a running task size.
 
 The second retained switch — the sizing-telemetry parameter and the container
 environment entry it fed — was removed by #183 together with the Service sizing
-observations that read it, so no sizing or telemetry input remains. The live
-stack still carries that parameter until the next `deploy-runtime`, whose change
-set removes it and both container entries; the recorded Runtime identity lists
-the current stack as its one accepted live predecessor for exactly that
-transition, and a follow-up reviewed change retires the predecessor once the
-deploy is recorded. Do not use a stop/start to drop it: a stop deletes the
-Runtime stack, and a start already deploys a template without it.
+observations that read it, so no sizing or telemetry input remains. The
+`deploy-runtime` transition that dropped both from the live stack completed on
+2026-10-23 (run 39929648413, a passed 600-second bake with 40 probes), so the
+recorded Runtime identity now accepts only the recorded roles-added identity, and
+its one recorded live predecessor is retired. A stop/start is never the way to
+drop a retained parameter: a stop deletes the Runtime stack, and a start already
+deploys a template without it.
 
 ## Tester and cleanup ownership
 

@@ -273,36 +273,46 @@ test('the CDK arguments pass one stack-qualified flag per parameter and disable 
     identityPhase: 'roles-added', retentionProtection: 'true' }), /exactly the five reviewed parameters/);
 });
 
-// Issue #183 step 4: the recorded Runtime identity transition accepts the live
-// stack the transition deploy starts from. The accepted set is the recorded
-// roles-added identity plus exactly one recorded predecessor; the synthesis check
-// and the post-deploy read-back stay exact, which the deploy tests above prove with
-// the fixture-pinned seam.
-test('the live template check accepts the recorded identity and its recorded predecessor', () => {
+// Issue #183 step 8: the recorded Runtime identity transition deployed on
+// 2026-10-23 (run 39929648413), so its one recorded live predecessor is retired and
+// the live record accepts only the recorded roles-added identity. The read path
+// keeps its predecessor support — inert and fail-closed for the live record — while
+// the synthesis check and the post-deploy read-back stay exact against the recorded
+// identity, which the deploy tests above prove with the fixture-pinned seam.
+test('the live record accepts only the recorded identity, with its one predecessor retired', () => {
   const RECORDED = 'ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be';
   const PREDECESSOR = '6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f';
-  assert.deepEqual(acceptedLiveRuntimeHashes(), [RECORDED, PREDECESSOR]);
+  // Against the live record the accepted set is exactly the recorded identity: the
+  // pre-transition template the deploy started from is no longer accepted.
+  assert.deepEqual(acceptedLiveRuntimeHashes(), [RECORDED]);
   assert.equal(acceptedLiveRuntimeHashes()[0], recordedRuntimePhaseHash());
   assert.doesNotThrow(() => assertLiveRuntimeIdentity(RECORDED));
-  assert.doesNotThrow(() => assertLiveRuntimeIdentity(PREDECESSOR));
-  assert.equal(assertLiveRuntimeIdentity(PREDECESSOR), PREDECESSOR);
-  // The recorded identity and the predecessor are both accepted; any other hash
-  // fails closed, and an empty accepted set can never pass.
+  assert.equal(assertLiveRuntimeIdentity(RECORDED), RECORDED);
+  assert.throws(() => assertLiveRuntimeIdentity(PREDECESSOR), /not the recorded roles-added identity/);
   assert.throws(() => assertLiveRuntimeIdentity('f'.repeat(64)), /not the recorded roles-added identity/);
+  // An empty accepted set can never pass.
   assert.throws(() => assertLiveRuntimeIdentity(RECORDED, []), /accepted Runtime live identities are unavailable/);
-  // An absent predecessor member yields only the recorded identity; a malformed
-  // list or entry fails closed instead of widening the drift allowance.
+  // The absent-member case is now the live record itself: it carries no predecessor
+  // member and its reader yields none.
+  const liveRecord = JSON.parse(readFileSync('test/baselines/provenance.json', 'utf8'));
+  assert.equal(Object.hasOwn(liveRecord.runtime_identity.identity_revision, 'accepted_live_predecessors'), false);
+  assert.deepEqual(recordedLivePredecessors(liveRecord.runtime_identity.identity_revision), []);
+  // A record that does carry one predecessor still yields [recorded, predecessor] and
+  // accepts it, so the read path stays inert rather than removed; a malformed list or
+  // entry fails closed instead of widening the drift allowance.
   const record = (identityRevision) => ({ runtime_identity: { identity_phases: { 'roles-added': RECORDED },
     identity_revision: identityRevision } });
   assert.deepEqual(acceptedLiveRuntimeHashes(record(undefined)), [RECORDED]);
   assert.deepEqual(acceptedLiveRuntimeHashes(record({})), [RECORDED]);
   assert.deepEqual(recordedLivePredecessors(undefined), []);
+  assert.deepEqual(acceptedLiveRuntimeHashes(record({ accepted_live_predecessors: [PREDECESSOR] })), [RECORDED, PREDECESSOR]);
+  assert.doesNotThrow(() => assertLiveRuntimeIdentity(PREDECESSOR,
+    acceptedLiveRuntimeHashes(record({ accepted_live_predecessors: [PREDECESSOR] }))));
   for (const malformed of [{ accepted_live_predecessors: PREDECESSOR },
     { accepted_live_predecessors: ['not-a-digest'] },
     { accepted_live_predecessors: [PREDECESSOR, 'a'.repeat(63)] }]) {
     assert.throws(() => acceptedLiveRuntimeHashes(record(malformed)), /Runtime live predecessor/);
   }
-  assert.deepEqual(acceptedLiveRuntimeHashes(record({ accepted_live_predecessors: [PREDECESSOR] })), [RECORDED, PREDECESSOR]);
 });
 
 test('a change set is classified as converged or as a delta, and the guards fail closed', () => {
