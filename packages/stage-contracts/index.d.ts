@@ -3,7 +3,7 @@
 // The package is plain ESM JavaScript; these declarations are the consumer-facing
 // contract for the stage-contract parameter surface, the stack identities, the
 // deployed-template normalisation, the task-definition identity, and the
-// 600-second six-signal bake gate's stage-free constants and name builders. Issue
+// 300-second six-signal bake gate's stage-free constants and name builders. Issue
 // #207 retired the operation/deployment record chain, so the record validators,
 // the record-gate block validators and the schema-boundary record member are not
 // declared here any more. No build step and no runtime dependencies.
@@ -99,17 +99,17 @@ export declare const DEPLOYMENT_GATE_THRESHOLDS: Readonly<Record<string, Readonl
 /** The fixed comparison string of each signal, keyed by signal name. */
 export declare const DEPLOYMENT_GATE_COMPARISONS: Readonly<Record<string, string>>;
 
-/** The gate window: exactly 600 seconds. */
-export declare const DEPLOYMENT_GATE_DURATION_SECONDS: 600;
+/** The gate window: exactly 300 seconds. */
+export declare const DEPLOYMENT_GATE_DURATION_SECONDS: 300;
 
 /** Probe cadence: one `GET /readyz` every 15 seconds. */
 export declare const DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS: 15;
 
 /** Minimum probes and the ALB `RequestCount` floor for a usable 5xx denominator. */
-export declare const DEPLOYMENT_GATE_REQUEST_FLOOR: 30;
+export declare const DEPLOYMENT_GATE_REQUEST_FLOOR: 15;
 
-/** The probe budget of a 600-second window. */
-export declare const DEPLOYMENT_GATE_MAX_PROBES: 40;
+/** The probe budget of a 300-second window. */
+export declare const DEPLOYMENT_GATE_MAX_PROBES: 20;
 
 /** The suffix every bake-gate name carries: `-anywear-deployment-bake`. */
 export declare const DEPLOYMENT_GATE_NAME_SUFFIX: 'anywear-deployment-bake';

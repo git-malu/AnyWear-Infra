@@ -16,16 +16,16 @@ import {
 } from '../index.mjs';
 
 // Issue #207 retired the record-gate block validator, so this file now owns only
-// the stage-free bake-control surface the package still ships: the 600-second
+// the stage-free bake-control surface the package still ships: the 300-second
 // window, the probe budget, the six fixed ordered signal names, the one threshold
 // table and the name builders. A breached or short signal is refused by the bake
 // itself in AnyWear-Infra's `scripts/bake-gate.mjs`; its test file owns that
 // behavioural coverage.
 test('the threshold table and comparison strings are stage-free; only names carry the stage', () => {
-  assert.equal(DEPLOYMENT_GATE_DURATION_SECONDS, 600);
+  assert.equal(DEPLOYMENT_GATE_DURATION_SECONDS, 300);
   assert.equal(DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS, 15);
-  assert.equal(DEPLOYMENT_GATE_REQUEST_FLOOR, 30);
-  assert.equal(DEPLOYMENT_GATE_MAX_PROBES, 40);
+  assert.equal(DEPLOYMENT_GATE_REQUEST_FLOOR, 15);
+  assert.equal(DEPLOYMENT_GATE_MAX_PROBES, 20);
   assert.deepEqual([...DEPLOYMENT_GATE_SIGNAL_NAMES], [
     'alb_5xx_rate', 'alb_p95_latency', 'ecs_running_not_desired',
     'sqs_oldest_message_age', 'sqs_dlq_depth', 'outbox_oldest_age',

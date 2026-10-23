@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Issue #162: the bounded 600-second six-signal deployment bake.
+// Issue #162: the bounded 300-second six-signal deployment bake.
 //
 // The `deploy-runtime` operation runs this after `cdk deploy` returned and the
 // deployed stack identity was read back. It reads the six named signals live from
@@ -33,9 +33,13 @@ export const PROBE_TIMEOUT_MS = 5_000;
 export const INGESTION_RETRY_MS = 15_000;
 export const INGESTION_TIMEOUT_MS = 180_000;
 export const DEADLINE_SLACK_MS = 120_000;
-export const MIN_ECS_SAMPLES = 15;
-export const MIN_SQS_SAMPLES = 15;
-export const MIN_OUTBOX_LINES = 5;
+// The whole-window CloudWatch period: `TargetResponseTime` p95 and each work
+// queue's `ApproximateAgeOfOldestMessage` Maximum cover exactly the bake, so the
+// period and the window cannot drift apart.
+export const METRIC_PERIOD_SECONDS = 300;
+export const MIN_ECS_SAMPLES = 10;
+export const MIN_SQS_SAMPLES = 10;
+export const MIN_OUTBOX_LINES = 4;
 const ALARM_STATE = /^(OK|ALARM|INSUFFICIENT_DATA)$/;
 const fail = (message) => {
   throw new Error(message);
@@ -66,9 +70,12 @@ function awsJson(runAws, args) {
 // --------------------------------------------------------------------------
 // Time
 
-/** Align the bake to the next whole minute so 60s and 600s periods are exact. */
+/**
+ * Align the bake to the next whole 300 seconds (the next 5-minute clock boundary)
+ * so the 60s, 30s and 300s periods are exact.
+ */
 export function alignedStart(nowMs) {
-  return Math.ceil(nowMs / 60_000) * 60_000;
+  return Math.ceil(nowMs / (METRIC_PERIOD_SECONDS * 1000)) * METRIC_PERIOD_SECONDS * 1000;
 }
 
 const iso = (milliseconds) => new Date(milliseconds).toISOString();
@@ -142,7 +149,7 @@ async function readP95(runAws, dimension, startMs, endMs) {
   return {
     seconds: readMetric(runAws, {
       namespace: 'AWS/ApplicationELB', metricName: 'TargetResponseTime', dimension,
-      startMs, endMs, period: 600, statistic: 'p95',
+      startMs, endMs, period: METRIC_PERIOD_SECONDS, statistic: 'p95',
     }),
   };
 }
@@ -194,7 +201,7 @@ async function readQueueAges(runAws, stage, startMs, endMs) {
   const read = (queueName) => {
     const values = readMetric(runAws, {
       namespace: 'AWS/SQS', metricName: 'ApproximateAgeOfOldestMessage', dimensionName: 'QueueName',
-      dimension: queueName, startMs, endMs, period: 600, statistic: 'Maximum',
+      dimension: queueName, startMs, endMs, period: METRIC_PERIOD_SECONDS, statistic: 'Maximum',
     });
     return values.length === 0 ? undefined : Math.max(...values);
   };
@@ -289,7 +296,7 @@ function cloudWatchReads(name, dimension, datapoints) {
     ];
   }
   return [{ source: 'cloudwatch', namespace: 'AWS/ApplicationELB', metric_name: 'TargetResponseTime',
-    dimensions: { LoadBalancer: dimension }, statistic: 'p95', period_seconds: 600, datapoints }];
+    dimensions: { LoadBalancer: dimension }, statistic: 'p95', period_seconds: METRIC_PERIOD_SECONDS, datapoints }];
 }
 
 /**
@@ -331,12 +338,12 @@ export function evaluateBake({
     if (!alb || alb.error) {
       signals.push(failSignal('alb_5xx_rate', alb?.error ?? 'ALB metrics were not read', null, reads));
     } else {
-      // RequestCount is the denominator: it must cover the full ten one-minute
+      // RequestCount is the denominator: it must cover the full five one-minute
       // periods for the rate to be meaningful. A 5xx series may legitimately be
       // shorter because CloudWatch does not emit a zero-valued 5xx datapoint;
       // the existing points are summed and an absent point counts as zero.
       const requestPeriods = alb.requests.length;
-      const requestComplete = requestPeriods === 10;
+      const requestComplete = requestPeriods === 5;
       const target5xx = alb.target5xx.reduce((sum, value) => sum + value, 0);
       const elb5xx = alb.elb5xx.reduce((sum, value) => sum + value, 0);
       const requestCount = alb.requests.reduce((sum, value) => sum + value, 0);
@@ -349,7 +356,7 @@ export function evaluateBake({
           value, reads, exceptions));
       } else if (!requestComplete) {
         signals.push(failSignal('alb_5xx_rate',
-          `RequestCount returned ${requestPeriods} of 10 one-minute datapoints`, value, reads, exceptions));
+          `RequestCount returned ${requestPeriods} of 5 one-minute datapoints`, value, reads, exceptions));
       } else if (target5xx + elb5xx > 0) {
         signals.push(buildSignal('alb_5xx_rate', { state: 'breaching', value, reads, exceptions }));
       } else if (requestCount < DEPLOYMENT_GATE_REQUEST_FLOOR) {
@@ -442,9 +449,9 @@ export function evaluateBake({
     const ages = sqs?.ages ?? {};
     const ageReads = [
       { source: 'cloudwatch', namespace: 'AWS/SQS', metric_name: 'ApproximateAgeOfOldestMessage',
-        dimensions: { QueueName: queueNames.vto }, statistic: 'Maximum', period_seconds: 600, datapoints: 1 },
+        dimensions: { QueueName: queueNames.vto }, statistic: 'Maximum', period_seconds: METRIC_PERIOD_SECONDS, datapoints: 1 },
       { source: 'cloudwatch', namespace: 'AWS/SQS', metric_name: 'ApproximateAgeOfOldestMessage',
-        dimensions: { QueueName: queueNames.auto_tagging }, statistic: 'Maximum', period_seconds: 600, datapoints: 1 },
+        dimensions: { QueueName: queueNames.auto_tagging }, statistic: 'Maximum', period_seconds: METRIC_PERIOD_SECONDS, datapoints: 1 },
       { source: 'sqs', queue_name: queueNames.vto, attributes: [...DEPLOYMENT_SQS_DEPTH_ATTRIBUTES], samples: samples.length },
       { source: 'sqs', queue_name: queueNames.auto_tagging, attributes: [...DEPLOYMENT_SQS_DEPTH_ATTRIBUTES], samples: samples.length },
     ];
@@ -604,7 +611,7 @@ export function failedGate(options, message = 'The bake could not be evaluated')
 }
 
 /**
- * Run the live 600-second bake and return its gate block either way.
+ * Run the live 300-second bake and return its gate block either way.
  *
  * The caller logs the verdict and its failing signals to the run log, then fails
  * the step on a failed block; nothing persists the block as evidence (#207).
@@ -686,7 +693,7 @@ export async function runBakeGate(options) {
     } catch (error) {
       sqsAges = { error: error.message, vto: undefined, auto_tagging: undefined };
     }
-    const albReady = !alb.error && alb.datapoints === 10;
+    const albReady = !alb.error && alb.datapoints === 5;
     const p95Ready = !p95.error && p95.seconds.length === 1;
     const outboxReady = !outbox.error && outbox.lines.length >= MIN_OUTBOX_LINES;
     const agesReady = !sqsAges.error && Number.isFinite(sqsAges.vto) && Number.isFinite(sqsAges.auto_tagging);

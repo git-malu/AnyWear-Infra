@@ -3,7 +3,7 @@
   "record_type": "anywear_workload_bake_reads",
   "source_repository": "git-malu/AnyWear-Service",
   "source_path": "infra/scripts/bake-gate.mjs",
-  "source_note": "Every AWS CLI call the 600-second bake runs and the deploy-role grant that covers it. AnyWear-Service's infra/test/bake-reads.test.mjs derives this set from the bake source and fails when a call is added without an entry; this table is the Infra half that proves each entry has exactly one grant in the API's resource form inside its target.",
+  "source_note": "Every AWS CLI call the 300-second bake runs and the deploy-role grant that covers it. AnyWear-Service's infra/test/bake-reads.test.mjs derives this set from the bake source and fails when a call is added without an entry; this table is the Infra half that proves each entry has exactly one grant in the API's resource form inside its target.",
   "reads": [
     {
       "call": "cloudformation:list-stack-resources",
