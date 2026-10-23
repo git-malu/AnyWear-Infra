@@ -187,7 +187,7 @@ publisher-run identity check on this path. See
 
 Runtime uses the reviewed main workspace and `GITHUB_SHA`. A deploy proves the
 synthesized template against the recorded `roles-added` identity, reads the
-`Original` template and the six parameters back, and prints the deployed template
+`Original` template and the five parameters back, and prints the deployed template
 hash, the bake result and the minimum Client version floor in its step log; there
 is no deployment record to write or read.
 `APP_PRIVATE_KEY` stays in protected secrets and is used only by the three
@@ -257,8 +257,9 @@ input scope is enforced in `scripts/runtime-operation.mjs` preflight rather than
 by file presence: the tester payload belongs only to `add-testers`/`set-testers`,
 there is no admission-mode or bound input, and identity
 phase/retention protection may vary only for `deploy-*`/`restore-release` (every
-other operation runs `retired`/`true`). Sizing/telemetry are no longer inputs:
-they are set by Infra's `deploy-runtime` operation.
+other operation runs `retired`/`true`). The retained sizing profile is preserved
+rather than set: `deploy-runtime` reads the live `BetaApiSizingProfile` and passes
+it back unchanged, and no dispatch input carries a sizing value.
 Non-deployment operations fixing `retired`/`true` source context does not change
 CFN or prove observed IAM/retention state. Deployment and tester-write dispatches
 require explicit authorization. Beta's paid compute and egress stop by deleting
@@ -287,7 +288,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Deploy the persistent Base stack from one reviewed Service release identity (`service_release_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job proves the travelled bytes against those published digests before any credential and resolves the release tag, Service commit and ECR image digest. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin. The Environment deployment, the stack's events and the step log are the deployment's record |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
-| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service release identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed release's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set, executes it or takes the converged no-op, bakes the unchanged 600-second six-signal gate under the read-only runtime session, reads `/health`, compares the deployed template hash and the six parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
+| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service release identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed release's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set, executes it or takes the converged no-op, bakes the unchanged 600-second six-signal gate under the read-only runtime session, reads `/health`, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice, and read no admission state |
 | ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Invoke Service's forward migration command in the selected immutable image; no admission precondition |
@@ -405,39 +406,31 @@ removal.
 
 ## Retained Beta sizing (retained on the Runtime stack)
 
-Issue #95 adds retained Workload parameters without changing lifecycle authority.
-`BetaApiSizingProfile` defaults to `s1` (API CPU 512 / memory 1024 MiB); `s2-api`
-selects CPU 256 / memory 512 MiB together. The S2 profile remains an unqualified
-candidate until same-image acceptance and recovery evidence are recorded.
-Worker remains CPU 1024 / memory 2048 MiB, and API desired/minimum counts stay 1/1.
-`BetaSizingTelemetry` defaults to `false` and supplies `BETA_SIZING_TELEMETRY`
-to both API and Worker. The selected Service artifact must implement the telemetry
-contract, and its behavior must be accepted before enabling it; Infra source checks
-alone do not establish that application behavior.
+Issue #95 adds one retained sizing parameter without changing lifecycle
+authority. `BetaApiSizingProfile` defaults to `s1` (API CPU 512 / memory 1024
+MiB); `s2-api` selects CPU 256 / memory 512 MiB together. The S2 profile remains
+an unqualified candidate until same-image acceptance and recovery evidence are
+recorded. Worker remains CPU 1024 / memory 2048 MiB, and API desired/minimum
+counts stay 1/1.
 
-`BetaApiSizingProfile` and `BetaSizingTelemetry` are parameters of
-`AnyWearRuntimeStack-beta` and remain on it while paid compute is stopped.
-`deploy-runtime` reads the live retained values and passes them back unchanged, so
-an ordinary deployment preserves them; it exposes no sizing input, and the
-operation fails closed on an unreviewed retained value.
-A pre-parameter deployment means S1 and telemetry off. Unknown retained values
-fail closed in the state reader and in the deploy parameter resolver. Neither
-input starts or stops Beta or grants an environment writer. State-only observation
-records the retained values but cannot prove running telemetry.
+`BetaApiSizingProfile` is a parameter of `AnyWearRuntimeStack-beta` and remains
+on it while paid compute is stopped. `deploy-runtime` reads the live retained
+value and passes it back unchanged, so an ordinary deployment preserves it; the
+operation exposes no sizing input, and it fails closed on an unreviewed retained
+value. A pre-parameter deployment means `s1`. Unknown retained values fail closed
+in the state observer and in the deploy parameter resolver. The parameter starts
+and stops nothing and grants no environment writer. State-only observation
+reports the retained profile but cannot prove a running task size.
 
-After measurement, a rollout that disables telemetry would need a separately
-reviewed `deploy-runtime` input (the operation preserves the retained values
-today), the unchanged Service image and the sealed release identity; no such input
-exists in #195. (Historical: before #158 step C this was Infra's `deploy-workload`
-operation with `beta_api_sizing_profile=s1` to restore S1 or `preserve` to retain
-an accepted profile, the unchanged Service image and a committed stack-source
-binding. That operation and the stack-source map are deleted, so the command cannot
-run from here.) Verify `BetaSizingTelemetry=false`, both actual containers reporting
-telemetry `false`, stable service rollout and the final observer/health result. An
-ordinary `preserve` input does not disable telemetry. A stopped Beta has no
-Runtime stack, so there is no stopped template to reactivate; start by deploying
-Egress and the Service release first. This source delivery does not claim deployment, runtime acceptance or
-telemetry-off restoration.
+The second retained switch — the sizing-telemetry parameter and the container
+environment entry it fed — was removed by #183 together with the Service sizing
+observations that read it, so no sizing or telemetry input remains. The live
+stack still carries that parameter until the next `deploy-runtime`, whose change
+set removes it and both container entries; the recorded Runtime identity lists
+the current stack as its one accepted live predecessor for exactly that
+transition, and a follow-up reviewed change retires the predecessor once the
+deploy is recorded. Do not use a stop/start to drop it: a stop deletes the
+Runtime stack, and a start already deploys a template without it.
 
 ## Tester allowlist and status
 
@@ -667,8 +660,8 @@ failed or partial run still ends visibly failed.
    operation scoped (`AnyWearFoundationStack`, `AnyWearPlatformStack-beta`,
    `AnyWearBillingStack-beta`, `AnyWearEgressStack-beta` or
    `AnyWearRuntimeStack-beta`), plus the `Original` template's parameters
-   (`ServiceCommitSha`, `ServiceImageDigest`, the sizing pair and the two stage
-   constants on the Runtime stack).
+   (`ServiceCommitSha`, `ServiceImageDigest`, the one retained sizing profile and
+   the two stage constants on the Runtime stack).
 4. The Releases API: `service-artifacts-<service commit>` is immutable, its tag
    resolves to that commit, and each published asset carries its `sha256` digest.
    The deploy step log prints the per-asset digest comparison it performed.

@@ -145,8 +145,8 @@ test('the recorded cdk context hash and app entry bind the recorded baseline', (
   // three per-phase hashes; the Workload move anchor stays in the Service history
   // and is not duplicated here.
   expect(provenance.normalisation.length).toBe(4);
-  expect(provenance.identity_phases.legacy).toBe('454340b8d7f561f4293149bdcaab5d91051958bf95d2401bf4b92feb7e0a2c37');
-  expect(provenance.identity_phases['roles-added']).toBe('6126c8b90f19d2319a6ddc5eede1f4762f195dcc77ee6c2d7b4bc42cc8bcc71f');
+  expect(provenance.identity_phases.legacy).toBe('b1a7c86c14bf664f0cede346f1d764cb7b310ac46407c718abc0453da415f56c');
+  expect(provenance.identity_phases['roles-added']).toBe('ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be');
   expect(provenance.identity_phases.retired).toBe(provenance.identity_phases['roles-added']);
   const cdkJson = readFileSync(path.join(infraRoot, 'cdk.json'));
   const config = JSON.parse(cdkJson.toString('utf8'));
@@ -231,7 +231,9 @@ test.each(VARIANTS.map((variant) => [variant.name, variant] as const))(
     }
     if (variant.stage === 'beta') {
       expect(legacy.Parameters).toHaveProperty('BetaApiSizingProfile');
-      expect(legacy.Parameters).toHaveProperty('BetaSizingTelemetry');
+      // Issue #183 removed the retired sizing-telemetry switch; the retained API
+      // sizing profile and its condition stay.
+      expect(legacy.Parameters).not.toHaveProperty('BetaSizingTelemetry');
       expect(legacy.Conditions.BetaApiS2).toEqual({ 'Fn::Equals': [{ Ref: 'BetaApiSizingProfile' }, 's2-api'] });
     }
     expect(legacy.Parameters.CloudFrontPrefixListId.AllowedPattern).toBe('^pl-[a-z0-9]+$');

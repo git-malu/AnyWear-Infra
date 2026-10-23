@@ -64,14 +64,9 @@ export class RuntimeStack extends cdk.Stack {
     const betaApiS2Condition = betaApiProfile ? new cdk.CfnCondition(this, 'BetaApiS2', {
       expression: cdk.Fn.conditionEquals(betaApiProfile.valueAsString, 's2-api'),
     }) : undefined;
-    const betaSizingTelemetry = props.stage === 'beta' ? new cdk.CfnParameter(this, 'BetaSizingTelemetry', {
-      type: 'String', default: 'false', allowedValues: ['false', 'true'],
-      description: 'Retained Beta API and Worker sizing telemetry; disabled by default',
-    }) : undefined;
     this.compute = new ComputeRuntime(this, 'ComputeRuntime', {
       stage: props.stage,
       betaApiS2Condition,
-      betaSizingTelemetry: betaSizingTelemetry?.valueAsString,
       vpc: platform.vpc,
       database: platform.database,
       wardrobeBucket: platform.wardrobeBucket,

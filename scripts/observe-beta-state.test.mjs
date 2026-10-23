@@ -60,13 +60,12 @@ test('read-only state records a running Runtime and its sizing parameters', asyn
       { ParameterKey: 'VlmConfigArn', ParameterValue: 'arn:aws:ssm:ap-east-1:650880818323:parameter/beta-vlm' },
       { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: 'pl-1234' },
       { ParameterKey: 'BetaApiSizingProfile', ParameterValue: 's1' },
-      { ParameterKey: 'BetaSizingTelemetry', ParameterValue: 'false' },
     ],
   };
   const state = await observeBetaState(stateIo({ runtime }));
   assert.deepEqual(state.stacks[1], { stack_name: runtimeStack, status: 'UPDATE_COMPLETE', runtime_exists: true });
   assert.deepEqual(state.beta_sizing, {
-    beta_api_sizing_profile: 's1', beta_sizing_telemetry: 'false', runtime_verification: 'not-applicable',
+    beta_api_sizing_profile: 's1', runtime_verification: 'not-applicable',
   });
 });
 

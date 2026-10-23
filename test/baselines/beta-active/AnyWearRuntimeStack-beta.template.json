@@ -149,15 +149,6 @@
    ],
    "Description": "Retained Beta API sizing profile; s2-api is an unqualified Issue #95 candidate"
   },
-  "BetaSizingTelemetry": {
-   "Type": "String",
-   "Default": "false",
-   "AllowedValues": [
-    "false",
-    "true"
-   ],
-   "Description": "Retained Beta API and Worker sizing telemetry; disabled by default"
-  },
   "ServiceImageDigest": {
    "Type": "String",
    "AllowedPattern": "^sha256:[a-f0-9]{64}$",
@@ -790,12 +781,6 @@
         }
        },
        {
-        "Name": "BETA_SIZING_TELEMETRY",
-        "Value": {
-         "Ref": "BetaSizingTelemetry"
-        }
-       },
-       {
         "Name": "PORT",
         "Value": "3000"
        },
@@ -1015,12 +1000,6 @@
         "Name": "IMAGE_DIGEST",
         "Value": {
          "Ref": "ServiceImageDigest"
-        }
-       },
-       {
-        "Name": "BETA_SIZING_TELEMETRY",
-        "Value": {
-         "Ref": "BetaSizingTelemetry"
         }
        },
        {

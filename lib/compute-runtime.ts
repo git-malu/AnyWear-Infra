@@ -38,7 +38,6 @@ export interface ComputeRuntimeProps {
   loadBalancerSecurityGroup: ec2.ISecurityGroup;
   operationsTopic?: sns.ITopic;
   betaApiS2Condition?: cdk.CfnCondition;
-  betaSizingTelemetry?: string;
 }
 
 export class ComputeRuntime extends Construct {
@@ -195,8 +194,6 @@ export class ComputeRuntime extends Construct {
       SQS_AUTO_TAGGING_QUEUE_URL: props.autoTaggingQueue.queueUrl,
       SERVICE_COMMIT_SHA: serviceCommit.valueAsString,
       IMAGE_DIGEST: imageDigest.valueAsString,
-      ...(props.stage === 'beta' && props.betaSizingTelemetry !== undefined
-        ? { BETA_SIZING_TELEMETRY: props.betaSizingTelemetry } : {}),
     };
 
     const apiTaskDefinition = new ecs.FargateTaskDefinition(this, 'ApiTaskDefinition', {
