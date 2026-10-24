@@ -1119,8 +1119,8 @@ describe('Explicit infrastructure identity cutover', () => {
     });
     // The E2E qualification observer reads the same stage-contract prefix the
     // runtime observer does, plus the #228 discovery read over the whole prefix
-    // (recursive, without decryption); removing or widening either prefix grant
-    // fails here.
+    // (without decryption); removing or widening either prefix grant fails
+    // here.
     expect(ssmInventory('e2e-qualification')).toEqual({
       actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath'],
       resources: [...preContractParameters, stageContractPrefix].sort(),
@@ -1135,7 +1135,7 @@ describe('Explicit infrastructure identity cutover', () => {
         expect(actionsFor(template, name)).not.toContain(forbidden);
       }
     }
-    // #228: `ssm:GetParametersByPath` is the e2e observer's recursive stage-path
+    // #228: `ssm:GetParametersByPath` is the e2e observer's stage-path
     // discovery read only; the runtime and deploy principals keep the named and
     // prefix `GetParameter(s)` reads and never gain the path read.
     for (const name of ['infra-runtime', 'infra-deploy']) {
@@ -1233,14 +1233,18 @@ describe('Explicit infrastructure identity cutover', () => {
     };
     const forAction = (action: string) => grantsFor(template, 'e2e-qualification')
       .filter((grant) => [grant.Action].flat().includes(action));
-    // The whole-prefix SSM discovery read: recursive, without decryption.
+    // The whole-prefix SSM discovery read, without decryption. The #228
+    // grant-shape correction (smoke 40102752442) pins the condition as a
+    // single-key Bool map: a combined multi-key Bool map never matches, so the
+    // recursive key must not appear in the synthesized statement at all.
     const pathReads = forAction('ssm:GetParametersByPath');
     expect(pathReads).toHaveLength(1);
     expect(pathReads[0].Effect).toBe('Allow');
     expect([pathReads[0].Action].flat()).toEqual(['ssm:GetParametersByPath']);
     expect([pathReads[0].Resource].flat().map(resolvePolicyArn))
       .toEqual(['arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*']);
-    expect(pathReads[0].Condition).toEqual({ Bool: { 'ssm:Recursive': true, 'ssm:WithDecryption': false } });
+    expect(pathReads[0].Condition).toEqual({ Bool: { 'ssm:WithDecryption': false } });
+    expect(JSON.stringify(pathReads[0].Condition)).not.toContain('ssm:Recursive');
     // The CloudFormation read trio on the `AnyWear*` stack prefix in both
     // observation regions (the CDK policy merger unions the two source
     // statements into one trio statement, so pin the effective grant), plus
