@@ -51,6 +51,11 @@ export class ComputeRuntime extends Construct {
   constructor(scope: Construct, id: string, props: ComputeRuntimeProps) {
     super(scope, id);
 
+    // The two identity `allowedPattern`s below are one contract with
+    // AnyWear-Service/src/config/env.ts: they must stay character-identical to
+    // SERVICE_COMMIT_SHA_PATTERN and IMAGE_DIGEST_PATTERN, so a value this
+    // template accepts never fails the Service's startup gate. Change both sides
+    // together.
     const imageDigest = new cdk.CfnParameter(cdk.Stack.of(this), 'ServiceImageDigest', {
       type: 'String',
       description: 'Immutable ECR image digest qualified for this deployment',
