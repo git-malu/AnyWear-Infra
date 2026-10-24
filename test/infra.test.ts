@@ -1233,18 +1233,17 @@ describe('Explicit infrastructure identity cutover', () => {
     };
     const forAction = (action: string) => grantsFor(template, 'e2e-qualification')
       .filter((grant) => [grant.Action].flat().includes(action));
-    // The whole-prefix SSM discovery read, without decryption. The #228
-    // grant-shape correction (smoke 40102752442) pins the condition as a
-    // single-key Bool map: a combined multi-key Bool map never matches, so the
-    // recursive key must not appear in the synthesized statement at all.
+    // The whole-prefix SSM discovery read. The #228 second-iteration
+    // correction (smoke 40105334687) makes it conditionless: the synthesized
+    // statement stays separate from the same-resource GetParameter(s) reads
+    // and carries no condition block, the same style as the stack-trio pin.
     const pathReads = forAction('ssm:GetParametersByPath');
     expect(pathReads).toHaveLength(1);
     expect(pathReads[0].Effect).toBe('Allow');
     expect([pathReads[0].Action].flat()).toEqual(['ssm:GetParametersByPath']);
     expect([pathReads[0].Resource].flat().map(resolvePolicyArn))
       .toEqual(['arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*']);
-    expect(pathReads[0].Condition).toEqual({ Bool: { 'ssm:WithDecryption': false } });
-    expect(JSON.stringify(pathReads[0].Condition)).not.toContain('ssm:Recursive');
+    expect(pathReads[0].Condition).toBeUndefined();
     // The CloudFormation read trio on the `AnyWear*` stack prefix in both
     // observation regions (the CDK policy merger unions the two source
     // statements into one trio statement, so pin the effective grant), plus

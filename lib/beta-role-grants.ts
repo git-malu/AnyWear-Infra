@@ -194,16 +194,14 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     actions: ['cloudfront:ListDistributions'], resources: ['*'],
   }));
   // The discovery read for the stage path: the whole `/anywear/beta/` prefix,
-  // without decryption. The condition must stay a single-key Bool map
-  // (smoke 40102752442, grant-shape correction recorded on #228): IAM never
-  // matches a combined multi-key Bool map, the CDK CLI would re-merge a split
-  // same-action pair's conditions per operator back into the same failing
-  // map, and the recursive pin narrows nothing under this resource scope.
-  // `ssm:WithDecryption: false` alone keeps a later SecureString on the
-  // published surface unreadable.
+  // conditionless (smoke 40105334687, second-iteration correction recorded on
+  // #228). Decryption control is `kms:Decrypt`, which this role does not hold,
+  // so `ssm:WithDecryption` is not a usable SSM IAM condition key here, and
+  // `ssm:Recursive` binds only the call shape, which the flat-prefix resource
+  // scope already bounds. The conditionless form matches the proven
+  // `GetParameter`/`GetParameters` prefix statements on the same ARN below.
   e2e.addToPrincipalPolicy(new iam.PolicyStatement({
     actions: ['ssm:GetParametersByPath'], resources: [arn('ssm', 'parameter', 'anywear/beta/*')],
-    conditions: { Bool: { 'ssm:WithDecryption': false } },
   }));
   // The observation read surface is the whole stage-contract prefix, not only
   // the nine pre-contract names the deployment/qualification path still reads.
