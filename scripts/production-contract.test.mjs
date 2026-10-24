@@ -4,7 +4,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
-import { configuredStacks } from './operation-stacks.mjs';
 import { stageContractSchemaHash } from '../lib/contracts.mjs';
 import { validateProductionContext, readReviewedRelease, assertTrustedQualificationMetadata, assertStableRelease,
   assertQualifiedRelease, verifyProductionRecord, resolveProductionInputs } from './production-preflight.mjs';
@@ -36,16 +35,22 @@ const serviceUrl = 'https://api.beta.anywear.example';
 const platformInputs = [{ parameter: '/anywear/beta/vpc_id', version: '2', value_sha256: 'd'.repeat(64) }];
 
 // One independent authenticated read of the deployed system. v3 carries the live
-// Client/Service identity plus the platform content: every configured Beta stack's
-// Original template hash, the stage-contract inputs, the two Service-built Lambdas,
-// the queue configuration and the Client distribution domain. This replaces the v2
-// `deployment.record` chain: it proves the deployed content, not the Infra commit.
+// Client/Service identity plus the platform content discovered through the
+// platform's public APIs (#228): every `AnyWear*` stack in the two observation
+// regions, the stage-contract inputs, the `beta-anywear-*` Lambdas and queues
+// and the Client distribution domain. This replaces the v2 `deployment.record`
+// chain: it proves the deployed content, not the Infra commit.
 function observedPlatform() {
-  return { stacks: configuredStacks.map(stack => ({ name: stack.stack_name, region: stack.region, template_sha256: 'f'.repeat(64) })),
-    inputs: structuredClone(platformInputs), schema_sha256: stageContractSchemaHash(platformInputs),
-    lambdas: { 'pre-sign-up': { code_sha256: `${'A'.repeat(43)}=`, configuration_sha256: '1'.repeat(64) },
-      'post-confirmation': { code_sha256: `${'B'.repeat(43)}=`, configuration_sha256: '2'.repeat(64) } },
-    queue_config_sha256: '3'.repeat(64), client_domain: clientDomain };
+  return { stacks: [
+    { name: 'AnyWearBillingStack-beta', region: 'us-east-1', template_sha256: 'f'.repeat(64) },
+    { name: 'AnyWearFoundationStack', region: 'ap-east-1', template_sha256: 'f'.repeat(64) },
+    { name: 'AnyWearPlatformStack-beta', region: 'ap-east-1', template_sha256: 'f'.repeat(64) },
+  ], inputs: structuredClone(platformInputs), schema_sha256: stageContractSchemaHash(platformInputs),
+  lambdas: [{ name: 'beta-anywear-post-confirmation-sync', code_sha256: `${'B'.repeat(43)}=`, configuration_sha256: '2'.repeat(64) },
+    { name: 'beta-anywear-pre-sign-up', code_sha256: `${'A'.repeat(43)}=`, configuration_sha256: '1'.repeat(64) }],
+  queues: [{ name: 'beta-anywear-vto', queueVisibilitySeconds: 30, maxReceives: 3 },
+    { name: 'beta-anywear-vto-dlq', queueVisibilitySeconds: 30, maxReceives: null }],
+  client_domain: clientDomain };
 }
 
 function observation(collectedAt) {
@@ -167,12 +172,22 @@ test('qualification v3 binds the reviewed release identity and the independent o
       r.observations.before.client.source_commit = '9'.repeat(40);
       r.observations.after.client.source_commit = '9'.repeat(40);
     }, /differs from the recorded revisions/],
-    ['observation changed during the suite', r => r.observations.before.platform.queue_config_sha256 = '9'.repeat(64), /different system before and after/],
+    ['observation changed during the suite', r => r.observations.before.platform.queues[0].maxReceives = 4, /different system before and after/],
     ['missing platform observation', r => delete r.observations.after.platform, /Invalid after observation fields/],
     ['missing authenticated mark', r => delete r.observations.after.authenticated, /Invalid after observation fields/],
     ['non-boolean authenticated mark', r => r.observations.after.authenticated = 'true', /not an authenticated read/],
-    ['incomplete stack set', r => r.observations.after.platform.stacks.pop(), /must list every configured Beta stack/],
-    ['foreign stack identity', r => r.observations.after.platform.stacks[0].name = 'AnyWearEgressStack-beta', /stack identity differs/],
+    ['empty stack set', r => r.observations.after.platform.stacks = [], /at least one discovered AnyWear stack/],
+    ['unsorted stacks', r => r.observations.after.platform.stacks.reverse(), /observed stacks must be sorted/],
+    ['duplicate stack rows', r => r.observations.after.platform.stacks
+      .push(structuredClone(r.observations.after.platform.stacks[0])), /name each stack once/],
+    ['non-AnyWear stack name', r => r.observations.after.platform.stacks[0].name = 'ForeignStack', /observed stack name/],
+    ['foreign stack region', r => r.observations.after.platform.stacks[0].region = 'eu-west-1', /observation region/],
+    ['empty Lambda set', r => r.observations.after.platform.lambdas = [], /at least one discovered Lambda/],
+    ['non-prefix Lambda name', r => r.observations.after.platform.lambdas[0].name = 'service-function', /observed Lambda name/],
+    ['unsorted Lambdas', r => r.observations.after.platform.lambdas.reverse(), /observed Lambdas must be sorted/],
+    ['empty queue set', r => r.observations.after.platform.queues = [], /at least one discovered queue/],
+    ['non-prefix queue name', r => r.observations.after.platform.queues[0].name = 'other-queue', /observed queue name/],
+    ['invalid queue max receives', r => r.observations.after.platform.queues[0].maxReceives = '3', /observed queue max receives/],
     ['unrecomputed schema hash', r => r.observations.after.platform.schema_sha256 = '9'.repeat(64), /schema hash differs/],
     ['non-CloudFront Client domain', r => r.observations.after.platform.client_domain = 'example.com', /Client distribution domain/],
     ['another E2E run', r => r.workflow.run_id = 80, /another E2E run\/attempt/],

@@ -5,7 +5,6 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { parseJson, sha256, HASH, SHA, DIGEST, canonicalJson, exact, matches, integer } from './json-contract.mjs';
 import { stageContractSchemaHash, validateStageInputs } from '../lib/contracts.mjs';
-import { configuredStacks } from './operation-stacks.mjs';
 
 const execute = promisify(execFile);
 const INFRA = 'git-malu/AnyWear-Infra';
@@ -82,9 +81,16 @@ const OBSERVATION_MEMBERS = Object.freeze(['collected_at', 'client', 'service', 
 const OBSERVATION_CLIENT_MEMBERS = Object.freeze(['url', 'source_commit', 'built_at']);
 const OBSERVATION_SERVICE_MEMBERS = Object.freeze(['url', 'service_commit', 'image_digest']);
 const OBSERVATION_PLATFORM_MEMBERS = Object.freeze(
-  ['stacks', 'inputs', 'schema_sha256', 'lambdas', 'queue_config_sha256', 'client_domain']);
+  ['stacks', 'inputs', 'schema_sha256', 'lambdas', 'queues', 'client_domain']);
 const OBSERVATION_STACK_MEMBERS = Object.freeze(['name', 'region', 'template_sha256']);
-const LAMBDA_NAMES = Object.freeze(['pre-sign-up', 'post-confirmation']);
+// Issue #228: the E2E observer discovers the deployed surface through the
+// platform's public list/describe APIs, so the observed platform follows the
+// discovered grammars instead of the configured stack table. The reviewed
+// entry points are the `AnyWear` stack prefix, the `beta-anywear-` Lambda and
+// queue prefixes and the two observation regions; a rename away from a prefix
+// leaves the sealed set, and the Infra change review remains the naming
+// authority.
+const OBSERVATION_REGIONS = Object.freeze(['ap-east-1', 'us-east-1']);
 
 function httpsUrl(value, label) {
   let url;
@@ -110,30 +116,55 @@ function assertObservation(observation, phase) {
   matches(observation.service.image_digest, DIGEST, `${phase} observed Service image digest`);
   httpsUrl(observation.service.url, `${phase} observed Service URL`);
   const platform = exact(observation.platform, OBSERVATION_PLATFORM_MEMBERS, `${phase} observed platform`);
-  if (!Array.isArray(platform.stacks) || platform.stacks.length !== configuredStacks.length) {
-    throw new Error(`${phase} observed platform must list every configured Beta stack`);
+  if (!Array.isArray(platform.stacks) || platform.stacks.length === 0) {
+    throw new Error(`${phase} observed platform must list at least one discovered AnyWear stack`);
   }
-  const names = new Set();
+  const stackNames = new Set();
+  let previousStack;
   for (const row of platform.stacks) {
     exact(row, OBSERVATION_STACK_MEMBERS, `${phase} observed stack`);
-    const configured = configuredStacks.find(stack => stack.stack_name === row.name);
-    if (!configured || names.has(row.name) || row.region !== configured.region) {
-      throw new Error(`${phase} observed stack identity differs from the configured Beta stack set`);
-    }
+    matches(row.name, /^AnyWear/, `${phase} observed stack name`);
+    if (!OBSERVATION_REGIONS.includes(row.region)) throw new Error(`${phase} observed stack region must be an observation region`);
     matches(row.template_sha256, HASH, `${phase} observed stack template hash`);
-    names.add(row.name);
+    if (stackNames.has(row.name)) throw new Error(`${phase} observed stacks must name each stack once`);
+    stackNames.add(row.name);
+    if (previousStack !== undefined && !(previousStack < row.name)) throw new Error(`${phase} observed stacks must be sorted`);
+    previousStack = row.name;
   }
   validateStageInputs(platform.inputs);
   if (platform.schema_sha256 !== stageContractSchemaHash(platform.inputs)) {
     throw new Error(`${phase} observed schema hash differs from its stage inputs`);
   }
-  exact(platform.lambdas, LAMBDA_NAMES, `${phase} observed Lambdas`);
-  for (const lambda of Object.values(platform.lambdas)) {
-    exact(lambda, ['code_sha256', 'configuration_sha256'], `${phase} observed Lambda identity`);
+  if (!Array.isArray(platform.lambdas) || platform.lambdas.length === 0) {
+    throw new Error(`${phase} observed platform must list at least one discovered Lambda`);
+  }
+  const lambdaNames = new Set();
+  let previousLambda;
+  for (const lambda of platform.lambdas) {
+    exact(lambda, ['name', 'code_sha256', 'configuration_sha256'], `${phase} observed Lambda identity`);
+    matches(lambda.name, /^beta-anywear-/, `${phase} observed Lambda name`);
     matches(lambda.code_sha256, /^[A-Za-z0-9+/]{43}=$/, `${phase} observed Lambda code hash`);
     matches(lambda.configuration_sha256, HASH, `${phase} observed Lambda configuration hash`);
+    if (lambdaNames.has(lambda.name)) throw new Error(`${phase} observed Lambdas must name each function once`);
+    lambdaNames.add(lambda.name);
+    if (previousLambda !== undefined && !(previousLambda < lambda.name)) throw new Error(`${phase} observed Lambdas must be sorted`);
+    previousLambda = lambda.name;
   }
-  matches(platform.queue_config_sha256, HASH, `${phase} observed queue configuration hash`);
+  if (!Array.isArray(platform.queues) || platform.queues.length === 0) {
+    throw new Error(`${phase} observed platform must list at least one discovered queue`);
+  }
+  const queueNames = new Set();
+  let previousQueue;
+  for (const queue of platform.queues) {
+    exact(queue, ['name', 'queueVisibilitySeconds', 'maxReceives'], `${phase} observed queue identity`);
+    matches(queue.name, /^beta-anywear-/, `${phase} observed queue name`);
+    integer(queue.queueVisibilitySeconds, `${phase} observed queue visibility`, 0);
+    if (queue.maxReceives !== null) integer(queue.maxReceives, `${phase} observed queue max receives`, 0);
+    if (queueNames.has(queue.name)) throw new Error(`${phase} observed queues must name each queue once`);
+    queueNames.add(queue.name);
+    if (previousQueue !== undefined && !(previousQueue < queue.name)) throw new Error(`${phase} observed queues must be sorted`);
+    previousQueue = queue.name;
+  }
   matches(platform.client_domain, /^[a-z0-9]+\.cloudfront\.net$/, `${phase} observed Client distribution domain`);
   if (clientUrl.host !== platform.client_domain) {
     throw new Error(`${phase} observed Client URL and distribution domain disagree`);
