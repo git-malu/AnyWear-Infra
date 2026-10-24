@@ -1,4 +1,4 @@
-import { runtimeStackName } from '@git-malu/stage-contracts';
+import { runtimeStackName } from '../lib/contracts.mjs';
 
 // One writer per environment. Infra deploys the persistent Beta Base stack and
 // the Runtime stack, so no Base mutation may cross a Runtime deployment.

@@ -1,0 +1,124 @@
+{
+  "note": "Historical identity of the retired @git-malu/stage-contracts 0.7.0 package. The tag stage-contracts-v0.7.0 is an annotated tag: producer_ref is its tag object and producer_commit is the commit it peels to. The two producer paths are the package blobs at that tag; the committed files are those bytes with the declared comment rewrites applied, which remove the retired package name. Reversing the rewrites reproduces the recorded producer digests. This fixture is a dated historical record, not a current dependency.",
+  "recorded_at": "2026-10-24",
+  "producer_tag": "stage-contracts-v0.7.0",
+  "producer_ref": "418dc408659bccd2e9bb3cac712eedeefec0a7e0",
+  "producer_ref_kind": "annotated tag object",
+  "producer_commit": "c9829c972a08575fd98ff5d93d6aa517d414e4f8",
+  "producer_commit_kind": "peeled commit",
+  "producer_paths": {
+    "lib/contracts.mjs": "packages/stage-contracts/index.mjs",
+    "lib/contracts.d.mts": "packages/stage-contracts/index.d.ts"
+  },
+  "producer_sha256": {
+    "lib/contracts.mjs": "67b573fbbc7333d2f7fdc02e64bdca23591fc2d089de732827bcffa3dbb63588",
+    "lib/contracts.d.mts": "464bb24e2f6ce8d7a108a6f20997f3172211d11bed24da9af99e8ab5119cf2fc"
+  },
+  "producer_bytes": {
+    "lib/contracts.mjs": 22563,
+    "lib/contracts.d.mts": 7190
+  },
+  "declared_rewrites": [
+    {
+      "file": "lib/contracts.mjs",
+      "from": "// @git-malu/stage-contracts\n//\n// The versioned, dependency-free source of the AnyWear Beta stage contract:\n// the SSM parameter surface the stage base publishes, the stack identities, the\n// deployed-template normalisation, the task-definition identity, and the bake\n// gate's stage-free thresholds, signal names and resource-name builders.\n// AnyWear-Infra consumes it directly from `file:packages/stage-contracts`, so no\n// other repository pins a packed tarball. Nothing here reads AWS, CloudFormation\n// or the filesystem.",
+      "to": "// AnyWear-Infra stage and deployment contract\n//\n// The dependency-free source of the AnyWear Beta stage contract:\n// the SSM parameter surface the stage base publishes, the stack identities, the\n// deployed-template normalisation, the task-definition identity, and the bake\n// gate's stage-free thresholds, signal names and resource-name builders.\n// AnyWear-Infra's CDK app, operation scripts and tests import it directly, so no\n// other repository pins a packed tarball. Nothing here reads AWS, CloudFormation\n// or the filesystem."
+    },
+    {
+      "file": "lib/contracts.d.mts",
+      "from": "// Type declarations for @git-malu/stage-contracts.\n//\n// The package is plain ESM JavaScript; these declarations are the consumer-facing",
+      "to": "// Type declarations for the AnyWear-Infra stage and deployment contract.\n//\n// The module is plain ESM JavaScript; these declarations are the consumer-facing"
+    }
+  ],
+  "export_names": [
+    "DEPLOYED_TEMPLATE_NORMALISATION",
+    "DEPLOYMENT_GATE_COMPARISONS",
+    "DEPLOYMENT_GATE_DURATION_SECONDS",
+    "DEPLOYMENT_GATE_MAX_PROBES",
+    "DEPLOYMENT_GATE_NAME_SUFFIX",
+    "DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS",
+    "DEPLOYMENT_GATE_REQUEST_FLOOR",
+    "DEPLOYMENT_GATE_SIGNAL_NAMES",
+    "DEPLOYMENT_GATE_THRESHOLDS",
+    "DEPLOYMENT_SQS_DEPTH_ATTRIBUTES",
+    "INFRA_REPOSITORY",
+    "SERVICE_REPOSITORY",
+    "SERVICE_RUNTIME_STACK",
+    "STAGE_CONTRACT_CONDITIONAL_PARAMETERS",
+    "STAGE_CONTRACT_PARAMETERS",
+    "STAGE_CONTRACT_READ_PARAMETERS",
+    "STAGE_CONTRACT_STAGE",
+    "canonicalDeployedTemplateHash",
+    "deploymentAlarmName",
+    "deploymentAlarmNames",
+    "deploymentBakeName",
+    "deploymentQueueNames",
+    "normaliseDeployedTemplate",
+    "platformStackName",
+    "runtimeStackName",
+    "runtimeStageFromStack",
+    "stableTaskDefinition",
+    "stageContractSchemaHash",
+    "stageParameters",
+    "taskDefinitionContentHash",
+    "validateStageInputs"
+  ],
+  "constant_names": [
+    "DEPLOYED_TEMPLATE_NORMALISATION",
+    "DEPLOYMENT_GATE_COMPARISONS",
+    "DEPLOYMENT_GATE_DURATION_SECONDS",
+    "DEPLOYMENT_GATE_MAX_PROBES",
+    "DEPLOYMENT_GATE_NAME_SUFFIX",
+    "DEPLOYMENT_GATE_PROBE_INTERVAL_SECONDS",
+    "DEPLOYMENT_GATE_REQUEST_FLOOR",
+    "DEPLOYMENT_GATE_SIGNAL_NAMES",
+    "DEPLOYMENT_GATE_THRESHOLDS",
+    "DEPLOYMENT_SQS_DEPTH_ATTRIBUTES",
+    "INFRA_REPOSITORY",
+    "SERVICE_REPOSITORY",
+    "SERVICE_RUNTIME_STACK",
+    "STAGE_CONTRACT_CONDITIONAL_PARAMETERS",
+    "STAGE_CONTRACT_PARAMETERS",
+    "STAGE_CONTRACT_READ_PARAMETERS",
+    "STAGE_CONTRACT_STAGE"
+  ],
+  "function_names": [
+    "canonicalDeployedTemplateHash",
+    "deploymentAlarmName",
+    "deploymentAlarmNames",
+    "deploymentBakeName",
+    "deploymentQueueNames",
+    "normaliseDeployedTemplate",
+    "platformStackName",
+    "runtimeStackName",
+    "runtimeStageFromStack",
+    "stableTaskDefinition",
+    "stageContractSchemaHash",
+    "stageParameters",
+    "taskDefinitionContentHash",
+    "validateStageInputs"
+  ],
+  "canonical_export_sha256": "35b2a57da8b995cba1bcad1d5173425de8c24fe7df612cc6f82b3bcc9c97adb4",
+  "counts": {
+    "parameters": 35,
+    "conditional_parameters": 1,
+    "read_parameters": 36
+  },
+  "bake": {
+    "duration_seconds": 300,
+    "probe_interval_seconds": 15,
+    "max_probes": 20,
+    "request_floor": 15
+  },
+  "service_runtime_stack_sha256": "8bdda1ade3d5e9671f1ca22b73df71439ab175630017933f96465630812937e0",
+  "thresholds_sha256": "7c6d52fad83db2c1488fde80f9a7d9c875a4f11c727332faec3e4d0a74e6f58e",
+  "absent_names": [
+    "DEPLOYMENT_RECORD_MEMBERS",
+    "SERVICE_DEPLOYMENT_RECORD_SCHEMA",
+    "validateServiceDeploymentRecord",
+    "validateDeploymentGate",
+    "validateSchemaBoundary",
+    "schemaBoundaryPrefixHash",
+    "DEPLOYMENT_GATE_FIELDS"
+  ]
+}

@@ -10,7 +10,7 @@ import {
   DEPLOYMENT_GATE_THRESHOLDS,
   deploymentAlarmName,
   deploymentBakeName,
-} from '../index.mjs';
+} from '../../lib/contracts.mjs';
 
 export const SERVICE_SHA = 'b'.repeat(40);
 export const IMAGE_DIGEST = `sha256:${'c'.repeat(64)}`;

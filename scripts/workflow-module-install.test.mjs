@@ -4,13 +4,12 @@ import { readFile, readdir } from 'node:fs/promises';
 import yaml from 'js-yaml';
 
 // Regression guard for observe run 39102443422: a credential-free job ran
-// `node scripts/record-deployment.mjs` without installing dependencies, so the
-// module's pinned `@git-malu/stage-contracts` import failed with
-// ERR_MODULE_NOT_FOUND. Those record jobs retired with #207, so the anchor is now
-// the rule rather than the job: every job that runs a repository module must
-// install the pinned dependencies before its first module-using step. Every
-// workflow is scanned, so a newly added job of that shape — in either entry or any
-// other workflow — fails until it installs.
+// `node scripts/record-deployment.mjs` without installing dependencies, so a
+// bare-specifier dependency import failed with ERR_MODULE_NOT_FOUND. Those record
+// jobs retired with #207, so the anchor is now the rule rather than the job: every
+// job that runs a repository module must install the pinned dependencies before
+// its first module-using step. Every workflow is scanned, so a newly added job of
+// that shape — in either entry or any other workflow — fails until it installs.
 const workflowDirectory = new URL('../.github/workflows/', import.meta.url);
 
 // A shell command uses a repository module when it executes a module from the

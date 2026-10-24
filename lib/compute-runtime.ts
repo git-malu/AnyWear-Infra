@@ -14,7 +14,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmNames } from '@git-malu/stage-contracts';
+import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmNames } from './contracts.mjs';
 import type { PlatformDatabase } from './platform-inputs';
 
 export interface ComputeRuntimeProps {

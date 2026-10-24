@@ -96,27 +96,34 @@ statements for the deployment bake (#195): `cloudwatch:DescribeAlarms` on
 statements scoped to the Runtime stack and its change-set ARNs. Both are read or
 operation-scoped; no managed policy or account-wide grant is added.
 
-### Versioned `@git-malu/stage-contracts`
+### Stage contract
 
-[`packages/stage-contracts/`](packages/stage-contracts/README.md) is the
-dependency-free, versioned source of the stage-contract names/kinds, the stack
-identities, the deployed-template normalisation, the task-definition identity and
-the 300-second bake gate's one stage-free threshold table and name builders. It is
-`@git-malu/stage-contracts` `0.7.0`; the `stage-contracts-v0.7.0` tag is a
-post-merge publication step created at Deployment, not by this change
-(`stage-contracts-v0.6.0` is the newest published tag), and the package
-is packed with `npm pack`. The package is consumed in this repository as an in-repo
-dependency with no installed second consumer: there is no cross-repository pin, no
-vendored tarball and no Service deploy job. Publishing is the separate
-tag-triggered [publish workflow](.github/workflows/publish-stage-contracts.yml)
-(`packages: write`, `GITHUB_TOKEN`). `lib/stage-contract.ts`, the Runtime deploy
-and the bake consume or re-export the package, and `npm run check` runs its tests.
+[`lib/contracts.mjs`](lib/contracts.mjs), with declarations at
+[`lib/contracts.d.mts`](lib/contracts.d.mts), is the dependency-free source of the
+stage-contract names/kinds, the stack identities, the deployed-template
+normalisation, the task-definition identity and the 300-second bake gate's one
+stage-free threshold table and name builders. It is ordinary repository source:
+the CDK app, the operation scripts and the tests import it directly, so there is no
+package boundary, no `file:` dependency, no registry artifact and no build step.
+`lib/stage-contract.ts`, the Runtime deploy and the bake consume or re-export it,
+and `npm run check` runs its tests in [`test/contracts/`](test/contracts/).
+[`test/contracts/identity.test.mjs`](test/contracts/identity.test.mjs) recomputes
+the 31 value exports, the 35/1/36 parameter counts, the 300/15/20/15 bake
+constants and the canonical value hashes against
+[`test/fixtures/contracts-v0.7.0-identity.json`](test/fixtures/contracts-v0.7.0-identity.json),
+which records the identity of the retired 0.7.0 producer as dated history.
+
+Issue #191 retired the former versioned package and its publication path: there is
+no version bump to perform and no tag to push. Change the contract in place in a
+reviewed diff; after an intended value change, regenerate the fixture with
+`node test/support/contracts-identity.mjs` and review the fixture delta with the
+change.
 
 Issue #207 retired the operation/deployment evidence chain: there is no
 `anywear_infra_operation`, `anywear_infra_verified_inputs`,
 `anywear_infra_release_inputs`, `anywear_infra_deployment`,
 `anywear_infra_family_observation` or `anywear_service_deployment` record, no
-`.sha256` companion and no `record` job, and `@git-malu/stage-contracts` no longer
+`.sha256` companion and no `record` job, and the stage contract no longer
 exports their validators. An operator audits an operation from platform facts: the
 run and its job/step conclusions, the GitHub Environment deployment, CloudFormation
 stack events and stack status, the immutable release tag→commit with per-asset

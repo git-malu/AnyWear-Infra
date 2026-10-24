@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareTemplates } from './compare-templates.mjs';
-import { canonicalDeployedTemplateHash } from '@git-malu/stage-contracts';
+import { canonicalDeployedTemplateHash } from '../lib/contracts.mjs';
 import { platformStackName, recoveryFailureMessage, recoveryViolations, synthStage } from './recovery-contract.mjs';
 
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, args) => {

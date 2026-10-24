@@ -1,8 +1,8 @@
-// Jest runs the CDK app as CommonJS. The versioned stage-contracts package is
-// plain ESM, so this test-only transformer compiles that one `.mjs` entrypoint to
-// CommonJS with the repository's own TypeScript. It changes no published byte and
-// is not part of the package; production consumers load the ESM file directly
-// (Node 24) and the Node contract tests import it as ESM.
+// Jest runs the CDK app as CommonJS. The stage contract at `lib/contracts.mjs` is
+// plain ESM, so this test-only transformer compiles that one `.mjs` file to
+// CommonJS with the repository's own TypeScript. It changes no source byte;
+// production consumers load the ESM file directly (Node 24) and the Node contract
+// tests import it as ESM.
 'use strict';
 
 const ts = require('typescript');

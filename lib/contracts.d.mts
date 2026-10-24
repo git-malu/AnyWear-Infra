@@ -1,6 +1,6 @@
-// Type declarations for @git-malu/stage-contracts.
+// Type declarations for the AnyWear-Infra stage and deployment contract.
 //
-// The package is plain ESM JavaScript; these declarations are the consumer-facing
+// The module is plain ESM JavaScript; these declarations are the consumer-facing
 // contract for the stage-contract parameter surface, the stack identities, the
 // deployed-template normalisation, the task-definition identity, and the
 // 300-second six-signal bake gate's stage-free constants and name builders. Issue

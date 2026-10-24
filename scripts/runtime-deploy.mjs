@@ -8,7 +8,7 @@ import {
   stableTaskDefinition,
   taskDefinitionContentHash,
   normaliseDeployedTemplate,
-} from '@git-malu/stage-contracts';
+} from '../lib/contracts.mjs';
 import { canonicalJson, parseJson, sha256, DIGEST, SHA } from './json-contract.mjs';
 import { describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { synthStage } from './recovery-contract.mjs';
@@ -34,8 +34,8 @@ const SIZING_PROFILES = Object.freeze(['s1', 's2-api']);
 const CHANGE_SET_NAME = /^[A-Za-z][-A-Za-z0-9]{0,127}$/;
 const SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
 // Issue #195: the declared template normalisation (`normaliseDeployedTemplate` in
-// stage-contracts) drops the `CDKMetadata` resource and its condition before the
-// deployed template is hashed, because they are CDK diagnostic metadata, not
+// `lib/contracts.mjs`) drops the `CDKMetadata` resource and its condition before
+// the deployed template is hashed, because they are CDK diagnostic metadata, not
 // infrastructure. The change-set judgement applies the same declaration: an
 // `AWS::CDK::Metadata` change is evidence, never a stack change, a delta or a
 // replacement. Every other resource keeps the fail-closed guard unchanged.

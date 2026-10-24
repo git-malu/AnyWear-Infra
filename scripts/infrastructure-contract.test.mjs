@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STAGE_CONTRACT_PARAMETERS, STAGE_CONTRACT_CONDITIONAL_PARAMETERS, STAGE_CONTRACT_READ_PARAMETERS,
   STAGE_CONTRACT_READ_BATCHES, readStageInputs } from './stage-contract-parameters.mjs';
-import { stageContractSchemaHash, validateStageInputs } from '@git-malu/stage-contracts';
+import { stageContractSchemaHash, validateStageInputs } from '../lib/contracts.mjs';
 import { verifyLifecyclePreview, verifyProtectedImages, verifyRetentionPolicy } from './ecr-retention.mjs';
 
 test('the stage-contract name list is the 35 unconditional Beta parameters plus one phase-dependent name', () => {

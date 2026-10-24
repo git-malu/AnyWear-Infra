@@ -4,18 +4,17 @@ import {
   STAGE_CONTRACT_PARAMETERS,
   STAGE_CONTRACT_CONDITIONAL_PARAMETERS,
   STAGE_CONTRACT_READ_PARAMETERS,
-} from '@git-malu/stage-contracts';
+} from '../lib/contracts.mjs';
 
-// The exact `/anywear/beta/...` stage-contract surface is exported by the
-// versioned `@git-malu/stage-contracts` package: 35 names exist in every identity
-// phase and variant (including `api_base_url`), and `cleanup_task_role_arn` exists
-// only while the phase creates the cleanup task role (`identityPhase !==
-// 'legacy'`). The deployment record names each consumed parameter with its SSM
-// parameter version and the sha256 of its value, so a deployment is auditable
-// without a committed cross-repository pin.
+// The exact `/anywear/beta/...` stage-contract surface is exported by
+// `lib/contracts.mjs`: 35 names exist in every identity phase and variant
+// (including `api_base_url`), and `cleanup_task_role_arn` exists only while the
+// phase creates the cleanup task role (`identityPhase !== 'legacy'`). A deployment
+// records each consumed parameter with its SSM parameter version and the sha256 of
+// its value, so it is auditable without a committed cross-repository pin.
 //
 // This script adds only the runtime read: the workflow runs it before (and
-// without) compiling TypeScript, so it imports the package directly and wraps
+// without) compiling TypeScript, so it imports the contract directly and wraps
 // the names in bounded `ssm get-parameters` batches.
 export {
   STAGE_CONTRACT_STAGE,

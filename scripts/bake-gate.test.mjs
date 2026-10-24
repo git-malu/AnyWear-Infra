@@ -5,7 +5,7 @@ import {
   DEPLOYMENT_SQS_DEPTH_ATTRIBUTES,
   deploymentAlarmName,
   deploymentQueueNames,
-} from '@git-malu/stage-contracts';
+} from '../lib/contracts.mjs';
 import {
   MIN_OUTBOX_LINES,
   alignedStart,

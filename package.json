@@ -15,7 +15,7 @@
     "test": "npm run build && jest",
     "cdk": "cdk",
     "test:cdk": "npm run build && jest --runInBand",
-    "test:contracts": "node --test scripts/*.test.mjs .github/scripts/*.test.mjs packages/stage-contracts/test/*.test.mjs",
+    "test:contracts": "node --test scripts/*.test.mjs .github/scripts/*.test.mjs test/contracts/*.test.mjs",
     "check": "npm run test:cdk && npm run test:contracts"
   },
   "devDependencies": {
@@ -31,7 +31,6 @@
     "typescript": "~6.0.2"
   },
   "dependencies": {
-    "@git-malu/stage-contracts": "file:packages/stage-contracts",
     "aws-cdk-lib": "2.272.0",
     "constructs": "^10.6.0"
   },

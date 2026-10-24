@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { canonicalJson, contentHash, sha256 } from './json-contract.mjs';
 import { configuredStacks } from './operation-stacks.mjs';
-import { stageContractSchemaHash } from '@git-malu/stage-contracts';
+import { stageContractSchemaHash } from '../lib/contracts.mjs';
 import { validateProductionContext, readReviewedRelease, assertTrustedQualificationMetadata, assertStableRelease,
   assertQualifiedRelease, verifyProductionRecord, resolveProductionInputs } from './production-preflight.mjs';
 import { assertProductionExecutorReady, buildProductionPromotionPlan, verifyPromotionDigest, verifyPromotionScan } from './promote-production.mjs';
