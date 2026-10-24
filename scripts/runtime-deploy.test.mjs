@@ -38,7 +38,7 @@ import { runOperation, validateOperationInputs } from './runtime-operation.mjs';
 import { sha256 } from './json-contract.mjs';
 import { failedGate } from './bake-gate.mjs';
 import { SchemaBoundaryError, runSchemaBoundaryGate } from './schema-gate.mjs';
-import { gateBlock, IMAGE_DIGEST, SERVICE_SHA } from '../packages/stage-contracts/test/gate-fixture.mjs';
+import { gateBlock, IMAGE_DIGEST, SERVICE_SHA } from '../test/contracts/gate-fixture.mjs';
 
 // Credential-free tests for the `deploy-runtime` operation (#195, #194). The
 // synthesis, health probe, bake and schema-boundary gate are injected; every AWS

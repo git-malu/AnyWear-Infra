@@ -9,7 +9,7 @@ import {
   stageParameters,
   validateStageInputs,
   stageContractSchemaHash,
-} from '../index.mjs';
+} from '../../lib/contracts.mjs';
 
 // The reviewed stage-base surface. The absolute names are the deployment record's
 // `inputs[].parameter` values and the Platform stack's published SSM names, so a

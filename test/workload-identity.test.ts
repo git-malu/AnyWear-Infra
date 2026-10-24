@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { App, type Stack } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
-import { stageParameters } from '@git-malu/stage-contracts';
+import { stageParameters } from '../lib/contracts.mjs';
 import {
   PLATFORM_REFERENCES,
   PLATFORM_REGION,

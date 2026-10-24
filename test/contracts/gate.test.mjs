@@ -13,10 +13,10 @@ import {
   deploymentBakeName,
   deploymentQueueNames,
   runtimeStageFromStack,
-} from '../index.mjs';
+} from '../../lib/contracts.mjs';
 
 // Issue #207 retired the record-gate block validator, so this file now owns only
-// the stage-free bake-control surface the package still ships: the 300-second
+// the stage-free bake-control surface the contract still ships: the 300-second
 // window, the probe budget, the six fixed ordered signal names, the one threshold
 // table and the name builders. A breached or short signal is refused by the bake
 // itself in AnyWear-Infra's `scripts/bake-gate.mjs`; its test file owns that

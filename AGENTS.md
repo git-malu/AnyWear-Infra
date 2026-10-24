@@ -46,13 +46,17 @@ and must not be relabeled as an Infra-produced deployment.
   `service-release-bytes-<run_id>-<run_attempt>`, containing only
   `.service-artifacts/selected/` and retained one day: it is a deploy input, not
   evidence.
-- The versioned `@git-malu/stage-contracts` package
-  (`packages/stage-contracts/`, currently `0.7.0`) is the single source of the
+- `lib/contracts.mjs` (declarations `lib/contracts.d.mts`, tests in
+  `test/contracts/`) is ordinary repository source and the single source of the
   stage-contract names/kinds, stack identities, the deployed-template
   normalisation, the task-definition identity and the bake gate's stage-free
-  constants and name builders. It is consumed from `file:packages/stage-contracts`;
-  `npm run check` runs its tests. Change it only with a version bump and the
-  matching `stage-contracts-v<version>` tag.
+  constants and name builders. The CDK app, the operation scripts and the tests
+  import it directly; there is no package boundary, no `file:` dependency and no
+  publication step. `npm run check` runs its tests, and
+  `test/contracts/identity.test.mjs` recomputes the value identity from the
+  committed fixture. Change it in place in a reviewed diff; regenerate the fixture
+  with `node test/support/contracts-identity.mjs` only for an intended value
+  change.
 - Do not claim repository branch protection when the private plan cannot enforce
   it. The configured Beta environment restricts the branch to main. Apply the
   independently reviewed exact source/inputs and operational coordination
@@ -171,8 +175,9 @@ and must not be relabeled as an Infra-produced deployment.
 - The `infraServices` CDK context and the Foundation per-service deploy roles were
   retired by #195. A stale `infraServices` context now fails synthesis explicitly
   in `bin/infra.ts`, the synthesized Foundation no longer defines
-  `beta-service-deploy-role` or `beta-service-deploy-cfn-role`, and
-  `@git-malu/stage-contracts` no longer exports the service-role naming helpers.
+  `beta-service-deploy-role` or `beta-service-deploy-cfn-role`, and the
+  `lib/contracts.mjs` stage contract no longer exports the service-role naming
+  helpers.
   `deploy-runtime`/`stop-runtime` are the replacement. The authenticated live
   Foundation carries none of the four retired resources: issue #199's separately
   authorized `deploy-foundation` removed both roles and both default policies,

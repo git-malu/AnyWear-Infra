@@ -396,7 +396,7 @@ The `infraServices` CDK context and the two per-service deployment roles it name
 immutable OIDC subject derived from the descriptor) were retired by #195 with the
 Service deploy chain. `bin/infra.ts` now rejects a stale `infraServices` context
 explicitly before creating any resource, the synthesized Foundation contains no
-per-service role, and `@git-malu/stage-contracts` no longer exports the role-naming
+per-service role, and the stage contract no longer exports the role-naming
 helpers. The Runtime stack deploys through the existing `beta-infra-deploy-role`
 and the standard CDK bootstrap path; `deploy-runtime` is the operation. Issue
 #199's separately authorized `deploy-foundation` removed the four retired
@@ -681,7 +681,7 @@ failed or partial run still ends visibly failed.
 | --- | --- | --- |
 | Deployment authorization and credential boundaries | `scripts/authorization-preflight.mjs`, `scripts/operation-boundaries.mjs`, `scripts/operation-stacks.mjs`, `scripts/one-writer.mjs` | A dispatch must not touch a stack, role, one-shot family or AWS action its operation was not reviewed for, and the job that may read the private Service release must never be the job that may change the account. |
 | Schema boundary gate | `scripts/schema-gate.mjs`, `scripts/schema-asset.mjs` | A deployment must not replace a runtime whose database the release image cannot read; the refusal names the release's expectation and the database's state before CloudFormation changes anything. |
-| 300-second six-signal bake | `scripts/bake-gate.mjs`; thresholds, alarm and signal names from `@git-malu/stage-contracts` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. |
+| 300-second six-signal bake | `scripts/bake-gate.mjs`; thresholds, alarm and signal names from `lib/contracts.mjs` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. |
 | Pre-credential byte and identity check | `scripts/release-inputs.mjs` + `scripts/prove-release-bytes.mjs` | The bytes about to be deployed must be the bytes the reviewed release published, and that must be true before an AWS credential exists. |
 
 **The deployed age alarms' calibration (issue #220)**
@@ -689,8 +689,8 @@ failed or partial run still ends visibly failed.
 The bake and the deployed CloudWatch alarms state age limits, and since issue #220
 they state the same limit from the same place. Both thresholds and the outbox
 sentinel are computed from `DEPLOYMENT_GATE_THRESHOLDS` in
-`@git-malu/stage-contracts` (`0.7.0`), the table the 300-second bake reads, so a
-later gate recalibration reaches the deployed alarms on the next Runtime deploy.
+`lib/contracts.mjs`, the table the 300-second bake reads, so a later gate
+recalibration reaches the deployed alarms on the next Runtime deploy.
 No threshold has a stage branch: Beta and Production synthesize the same values.
 
 | Deployed alarm | Threshold | Period × evaluationPeriods | Effective detection | Paired gate threshold | Relation |

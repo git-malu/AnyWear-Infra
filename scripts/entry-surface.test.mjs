@@ -30,11 +30,11 @@ const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', '
   'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
   'admission-status', 'add-testers', 'set-testers']);
 
-test('the workflow directory is exactly the three Beta entries plus the callable and publication files', async () => {
+test('the workflow directory is exactly the three Beta entries plus the callable', async () => {
   // GitHub accepts both `.yml` and `.yaml`; the census must see either extension,
   // or a `.yaml` entry would be invisible to every assertion below.
   const files = (await readdir(workflowDirectory)).filter(file => /\.ya?ml$/.test(file)).sort();
-  assert.deepEqual(files, ['check.yml', 'mutate.yml', 'production.yml', 'publish-stage-contracts.yml', 'runtime.yml']);
+  assert.deepEqual(files, ['check.yml', 'mutate.yml', 'production.yml', 'runtime.yml']);
   const workflows = Object.fromEntries(await Promise.all(files.map(async file => [file, await loadWorkflow(file)])));
 
   const dispatchSurfaces = files.filter(file => Object.hasOwn(workflows[file].on ?? {}, 'workflow_dispatch'));
@@ -53,14 +53,16 @@ test('the workflow directory is exactly the three Beta entries plus the callable
   assert.deepEqual(Object.keys(workflows['production.yml'].on), ['workflow_call']);
   assert.equal(Object.hasOwn(workflows['production.yml'].on, 'workflow_dispatch'), false);
 
-  // `publish-stage-contracts.yml` is the versioned constructs-package publication
-  // workflow, not a Beta entry: it runs only on a `stage-contracts-v*` tag push,
-  // holds `packages: write` and no AWS credential.
-  assert.deepEqual(Object.keys(workflows['publish-stage-contracts.yml'].on), ['push']);
-  assert.deepEqual(workflows['publish-stage-contracts.yml'].on.push, { tags: ['stage-contracts-v*'] });
-  assert.equal(Object.hasOwn(workflows['publish-stage-contracts.yml'].on, 'workflow_dispatch'), false);
-  assert.equal(workflows['publish-stage-contracts.yml'].permissions?.packages, 'write');
-  assert.equal(credentialJobs(workflows['publish-stage-contracts.yml']).length, 0);
+  // Publication retired with the package: no workflow is triggered by a tag or a
+  // release, and none asks for a package-registry write permission.
+  for (const file of files) {
+    const triggers = workflows[file].on ?? {};
+    if (Object.hasOwn(triggers, 'push')) {
+      assert.equal(Object.hasOwn(triggers.push ?? {}, 'tags'), false, `${file} must not trigger on a tag`);
+    }
+    assert.equal(Object.hasOwn(triggers, 'release'), false, `${file} must not trigger on a release`);
+    assert.equal(workflows[file].permissions?.packages, undefined, `${file} must not hold a package-registry permission`);
+  }
 });
 
 test('mutate.yml keeps one preflight → verify → deploy chain and no workload deploy', async () => {
@@ -249,7 +251,7 @@ test('exactly one ENABLE_* switch name exists across workflows and non-test exec
   // not, so the retired names are composed here rather than written out and this
   // file is excluded from the scan as a test.
   const retiredNames = [['ENABLE', 'BETA', 'DEPLOY'].join('_'), ['ENABLE', 'BETA', 'CLEANUP', 'ACCEPTANCE'].join('_')];
-  const tracked = (await execute('git', ['-C', repositoryRoot, 'ls-files', '.github', 'scripts', 'packages'])).stdout
+  const tracked = (await execute('git', ['-C', repositoryRoot, 'ls-files', '.github', 'scripts'])).stdout
     .split(/\r?\n/).filter(Boolean)
     .filter(file => /\.(mjs|cjs|ts|yml|yaml)$/.test(file))
     .filter(file => !/(^|\/)(test|tests|__tests__)\//.test(file))

@@ -6,6 +6,5 @@ module.exports = {
     '^.+\\.tsx?$': 'ts-jest',
     '^.+\\.mjs$': '<rootDir>/test/support/mjs-transformer.cjs',
   },
-  transformIgnorePatterns: ['/node_modules/(?!.*stage-contracts)'],
   setupFilesAfterEnv: ['aws-cdk-lib/testhelpers/jest-autoclean'],
 };

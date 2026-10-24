@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { App, type Stack } from 'aws-cdk-lib';
-import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmName, deploymentAlarmNames } from '@git-malu/stage-contracts';
+import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmName, deploymentAlarmNames } from '../lib/contracts.mjs';
 import { PLATFORM_REGION, platformInputs, type Stage } from '../lib/platform-inputs';
 import { BOOTSTRAP_QUALIFIER, RuntimeStack } from '../lib/runtime-stack';
 

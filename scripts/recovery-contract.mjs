@@ -3,9 +3,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { platformStackName } from '@git-malu/stage-contracts';
+import { platformStackName } from '../lib/contracts.mjs';
 
-// The stack name is the versioned stage-contracts package's identity helper.
+// The stack name is the stage contract's identity helper.
 export { platformStackName };
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

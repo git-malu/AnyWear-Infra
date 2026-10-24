@@ -3,10 +3,9 @@ import assert from 'node:assert/strict';
 import * as deployment from './deployment-contract.mjs';
 
 // Issue #207 shrank this module to the constants the operation controls import.
-// The record and observation validators it used to re-export from the versioned
-// package are retired; `@git-malu/stage-contracts`' own `package.test.mjs` asserts
-// they are gone from the package surface, and this test asserts they are gone from
-// this module too.
+// The record and observation validators it used to re-export are retired; the
+// contract's own surface test asserts they are gone from `lib/contracts.mjs`, and
+// this test asserts they are gone from this module too.
 const REMOVED = Object.freeze([
   'DEPLOYMENT_RECORD_MEMBERS', 'DEPLOYMENT_PRODUCER_FIELDS', 'DEPLOYMENT_STACK_FIELDS',
   'DEPLOYMENT_INPUT_FIELDS', 'SERVICE_OBSERVED_FIELDS', 'SERVICE_ECS_IDENTITY_FIELDS',

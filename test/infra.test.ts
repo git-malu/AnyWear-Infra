@@ -10,7 +10,7 @@ import { FoundationStack } from '../lib/foundation-stack';
 import { API_DISTRIBUTION_IDENTITY, DEFAULT_QWEATHER_API_HOST, PlatformStack } from '../lib/platform-stack';
 import { BASE_EXPORTS } from '../lib/base-exports';
 import { stageContractInputs } from '../lib/stage-contract';
-import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '@git-malu/stage-contracts';
+import { DEPLOYMENT_SQS_DEPTH_ATTRIBUTES } from '../lib/contracts.mjs';
 import runtimePolicies from './fixtures/runtime-policy.json';
 import workloadExtensionResources from './fixtures/workload-extension-resources.json';
 import workloadBakeReads from './fixtures/workload-bake-reads.json';

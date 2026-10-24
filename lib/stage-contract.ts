@@ -5,7 +5,7 @@ import {
   STAGE_CONTRACT_READ_PARAMETERS,
   STAGE_CONTRACT_STAGE,
   stageParameters,
-} from '@git-malu/stage-contracts';
+} from './contracts.mjs';
 import type { PlatformStack } from './platform-stack';
 
 // The Base stack publishes the stage base as plain SSM parameters under
@@ -172,14 +172,14 @@ export class StageContract extends Construct {
       string('cleanup_task_role_arn', cleanupTaskRole.roleArn,
         'dedicated cleanup task role ARN, published only while the identity phase creates it');
     }
-    // The versioned `@git-malu/stage-contracts` package is the single source of
-    // the published surface. Drift here is a stage-contract change that must
-    // update the package (and the package's declared surface), never a local edit.
+    // `lib/contracts.mjs` is the single source of the published surface. Drift
+    // here is a stage-contract change that must update the contract (and its
+    // declared surface), never a local edit.
     const expectedNames = cleanupTaskRole ? STAGE_CONTRACT_READ_PARAMETERS : STAGE_CONTRACT_PARAMETERS;
     const publishedNames = [...publishedKinds.keys()].sort();
     const unexpectedName = publishedNames.find((name, index) => name !== expectedNames[index]);
     if (publishedNames.length !== expectedNames.length || unexpectedName !== undefined) {
-      throw new Error(`Stage contract parameters differ from @git-malu/stage-contracts: expected ${expectedNames.length}, got ${publishedNames.length}`
+      throw new Error(`Stage contract parameters differ from lib/contracts.mjs: expected ${expectedNames.length}, got ${publishedNames.length}`
         + (unexpectedName ? ` (first difference ${unexpectedName})` : ''));
     }
     const expectedKinds = new Map(stageParameters().map(definition => [definition.parameter, definition.kind]));

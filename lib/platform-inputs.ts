@@ -18,7 +18,7 @@ import {
   stageContractSchemaHash,
   stageParameters,
   type StageParameter,
-} from '@git-malu/stage-contracts';
+} from './contracts.mjs';
 
 export type Stage = 'beta' | 'prod';
 export type IdentityPhase = 'legacy' | 'roles-added' | 'retired';
@@ -245,14 +245,14 @@ export const REUSED_PARAMETER_NAMES = [
 ] as const;
 
 /**
- * The typed stage-base contract, read from the pinned `@git-malu/stage-contracts`
- * package: 36 definitions (35 published in every Beta identity phase plus the
- * phase-conditional `cleanup_task_role_arn`).
+ * The typed stage-base contract from `lib/contracts.mjs`: 36 definitions (35
+ * published in every Beta identity phase plus the phase-conditional
+ * `cleanup_task_role_arn`).
  *
- * The package names the Beta stage (`/anywear/beta/...`) and imports no CDK
+ * The contract names the Beta stage (`/anywear/beta/...`) and imports no CDK
  * module; the Service app is the producer of its own `CfnParameter`s.
  * `platformParameterName` scopes the same suffixes to the synthesized stage, and
- * the package's `kind` selects `Value<String>` or `Value<List<String>>`.
+ * the contract's `kind` selects `Value<String>` or `Value<List<String>>`.
  */
 const STAGE_CONTRACT_DEFINITIONS = stageParameters();
 const STAGE_CONTRACT_NAME_SET = new Set(STAGE_CONTRACT_DEFINITIONS.map((definition) => definition.name));
@@ -260,18 +260,18 @@ const CONDITIONAL_STAGE_CONTRACT_NAMES = new Set(STAGE_CONTRACT_DEFINITIONS
   .filter((definition) => STAGE_CONTRACT_CONDITIONAL_PARAMETERS.includes(definition.parameter))
   .map((definition) => definition.name));
 
-// The app declares its own parameters, so the package surface is a build-time
-// invariant: a package change that removes, renames or reclassifies a definition
+// The app declares its own parameters, so the contract surface is a build-time
+// invariant: a contract change that removes, renames or reclassifies a definition
 // must fail here instead of silently dropping a stage-base read.
 if (STAGE_CONTRACT_DEFINITIONS.length !== 36
   || STAGE_CONTRACT_PARAMETERS.length !== 35
   || STAGE_CONTRACT_CONDITIONAL_PARAMETERS.length !== 1
   || CONDITIONAL_STAGE_CONTRACT_NAMES.size !== 1
   || STAGE_CONTRACT_NAME_SET.size !== 36) {
-  throw new Error('The pinned @git-malu/stage-contracts surface is not the reviewed 36/35/1 contract');
+  throw new Error('The lib/contracts.mjs surface is not the reviewed 36/35/1 contract');
 }
 
-/** The 36 package definitions plus the four reused Platform names. */
+/** The 36 contract definitions plus the four reused Platform names. */
 const STAGE_INPUT_DEFINITIONS: ReadonlyMap<string, StageParameter> = new Map([
   ...STAGE_CONTRACT_DEFINITIONS.map((definition) => [definition.name, definition] as const),
   ...REUSED_PARAMETER_NAMES.map((name) => [name, {

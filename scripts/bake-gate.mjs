@@ -27,7 +27,7 @@ import {
   deploymentBakeName,
   deploymentQueueNames,
   runtimeStageFromStack,
-} from '@git-malu/stage-contracts';
+} from '../lib/contracts.mjs';
 
 export const PROBE_PATH = '/readyz';
 export const PROBE_TIMEOUT_MS = 5_000;

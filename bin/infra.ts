@@ -9,7 +9,7 @@ import { RuntimeStack } from '../lib/runtime-stack';
 import { loadArtifactInputs } from '../lib/artifact-inputs';
 import { readIdentityPhase } from '../lib/identity-phase';
 import { readLegacyRoleSource } from '../lib/legacy-role-source';
-import { runtimeStackName } from '@git-malu/stage-contracts';
+import { runtimeStackName } from '../lib/contracts.mjs';
 
 const app = new cdk.App();
 // A stale old key must fail for every scope instead of taking today's default:
