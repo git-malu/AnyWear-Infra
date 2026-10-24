@@ -133,14 +133,15 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
   // cleanup task role stays DB/DLQ-only.
   p.userPool.grant(data, 'cognito-idp:AdminGetUser', 'cognito-idp:AdminDeleteUser');
 
-  for (const principal of [deploy, runtime, e2e]) {
+  const billingRegion = process.env.BILLING_REGION || 'us-east-1';
+  for (const principal of [deploy, runtime]) {
     describeStacks(principal, stackArns);
     principal.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['cloudformation:GetTemplate', 'cloudformation:ListStackResources'], resources: stackArns,
     }));
     principal.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate', 'cloudformation:ListStackResources'],
-      resources: [arn('cloudformation', 'stack', 'AnyWearBillingStack-beta/*', process.env.BILLING_REGION || 'us-east-1')],
+      resources: [arn('cloudformation', 'stack', 'AnyWearBillingStack-beta/*', billingRegion)],
     }));
     getParameters(principal, [...publicParameters, ...admissionNames, 'infra_selection', 'infra_deployment']);
     describeRuntime(principal);
@@ -153,6 +154,52 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
         p.vtoDeadLetterQueue.queueArn, p.autoTaggingDeadLetterQueue.queueArn],
     }));
   }
+  // Issue #228: the E2E qualification observer discovers the deployed surface
+  // through the platform's public list/describe APIs instead of a committed name
+  // list. The e2e principal therefore reads the reviewed `AnyWear*` stack prefix
+  // in both observation regions (the deploy/runtime principals above keep the
+  // named grants) plus the prefix discovery actions. Every statement here is a
+  // read-only superset of the previous named grants, so the pre-#228 observer
+  // keeps working when this lands first.
+  const anywearStackArns = ['AnyWear*/*'].flatMap((resourceName) => [stack.region, billingRegion]
+    .map((region) => arn('cloudformation', 'stack', resourceName, region)));
+  describeStacks(e2e, anywearStackArns);
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudformation:GetTemplate', 'cloudformation:ListStackResources'], resources: anywearStackArns,
+  }));
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudformation:ListStacks'], resources: ['*'],
+    conditions: { StringEquals: { 'aws:RequestedRegion': [stack.region, billingRegion] } },
+  }));
+  getParameters(e2e, [...publicParameters, ...admissionNames, 'infra_selection', 'infra_deployment']);
+  describeRuntime(e2e);
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['lambda:GetFunction', 'lambda:GetFunctionConfiguration'],
+    resources: [stack.formatArn({
+      service: 'lambda', resource: 'function', resourceName: 'beta-anywear-*',
+      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    })],
+  }));
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['lambda:ListFunctions'], resources: ['*'], conditions: regional,
+  }));
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['sqs:GetQueueAttributes'],
+    resources: [stack.formatArn({ service: 'sqs', resource: 'beta-anywear-*', arnFormat: cdk.ArnFormat.NO_RESOURCE_NAME })],
+  }));
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['sqs:ListQueues'], resources: ['*'], conditions: regional,
+  }));
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudfront:ListDistributions'], resources: ['*'],
+  }));
+  // The discovery read for the stage path: the whole `/anywear/beta/` prefix,
+  // recursive, without decryption. The Bool conditions are the design's own
+  // bound, so a later SecureString on the published surface is never decrypted.
+  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['ssm:GetParametersByPath'], resources: [arn('ssm', 'parameter', 'anywear/beta/*')],
+    conditions: { Bool: { 'ssm:Recursive': true, 'ssm:WithDecryption': false } },
+  }));
   // The observation read surface is the whole stage-contract prefix, not only
   // the nine pre-contract names the deployment/qualification path still reads.
   // The E2E qualification role runs the same observer against the deployed
